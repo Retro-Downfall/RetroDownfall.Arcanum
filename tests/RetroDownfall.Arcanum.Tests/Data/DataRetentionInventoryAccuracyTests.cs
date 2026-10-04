@@ -16,6 +16,42 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+    [SkippableFact]
+    public async Task PlanAndApplyAsync_LexiconAnnals_ReportsSameDerivedInventory()
+    {
+        RequireSqlCipher();
+
+        await SeedCuratableLexiconAsync("counted claim");
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.LexiconEntries = EnabledRule();
+
+        var service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Assert.Equal(1, plan.Rows);
+
+        Assert.Equal(3, plan.DerivedRecords);
+
+        var applied = await service.ApplyAsync(new(request, plan.PlanId));
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.Equal(1, applied.Value.RowsDeleted);
+
+        Assert.Equal(3, applied.Value.DerivedRecordsDeleted);
+
+        foreach (string table in new[] { "lexicon_entries", "lexicon_fts", "lexicon_fact_attachment_provenance",
+            "lexicon_annal_fact_provenance", "annal_claims", "annal_versions", "annal_heads" })
+        {
+            Assert.Equal(0, await CountAllAsync(table));
+        }
+    }
+
 
     [SkippableFact]
 

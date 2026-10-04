@@ -57,10 +57,14 @@ internal sealed partial class DataRetentionService
         new("lexicon_entries", RetentionDataClass.LexiconEntries, FactoryRecordKind.Physical),
         new("lexicon_fts", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
         new("lexicon_fact_attachment_provenance", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
+        new("annal_review_events", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_review_decision_receipts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_review_markers", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("annal_claims", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("annal_versions", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("annal_heads", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("annal_dependencies", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("lexicon_annal_fact_provenance", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("WorkspaceContexts", RetentionDataClass.WorkspaceChunks, FactoryRecordKind.Physical),
         new("workspace_file_chunks", RetentionDataClass.WorkspaceChunks, FactoryRecordKind.Derived),
         new("workspace_file_embeddings", RetentionDataClass.WorkspaceEmbeddings, FactoryRecordKind.Derived),
@@ -90,7 +94,6 @@ internal sealed partial class DataRetentionService
         new("saga_memory_embeddings_vec", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("tapestry_node_embeddings_vec", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("Entries_fts", RetentionDataClass.Entries, FactoryRecordKind.Derived),
-        new("lexicon_fts", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
         new("session_attachment_embeddings", RetentionDataClass.AttachmentEmbeddings, FactoryRecordKind.Derived),
         new("session_attachment_chunks", RetentionDataClass.AttachmentChunks, FactoryRecordKind.Derived),
         new("session_attachment_index_state", RetentionDataClass.AttachmentEmbeddings, FactoryRecordKind.Derived),
@@ -107,6 +110,10 @@ internal sealed partial class DataRetentionService
         new("saga_suppression_key", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("attachment_memory_consultations", RetentionDataClass.Entries, FactoryRecordKind.Derived),
         new("lexicon_fact_attachment_provenance", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
+        new("annal_review_decision_receipts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_review_events", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("annal_review_markers", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("lexicon_annal_fact_provenance", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("annal_dependencies", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("annal_heads", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("annal_versions", RetentionDataClass.Annals, FactoryRecordKind.Derived),
@@ -230,13 +237,21 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             excludedOperationId).ConfigureAwait(false);
 
-        return FinalizePlan(
+        DataRetentionPlan plan = FinalizePlan(
             request,
             items,
             [],
             conflicts,
             items.Count == 0 ? [] : ["factory-reset"],
             requiresConfirmation: true);
+
+        // Attached after the identity is fixed and never as an item: a factory reset leaves erasure
+        // evidence in force, so the preview reports what remains rather than proposing to remove it, and
+        // a release between two previews changes nothing this plan would do.
+        (DataRetentionMemoryErasureInventory memoryErasure, _) =
+            await ReadMemoryErasureInventoryAsync(cancellationToken).ConfigureAwait(false);
+
+        return plan with { MemoryErasure = memoryErasure };
     }
 
     private async Task<DataRetentionApplyResult> ApplyFactoryResetAsync(
@@ -311,6 +326,16 @@ internal sealed partial class DataRetentionService
                         cancellationToken).ConfigureAwait(false))
                 {
                     continue;
+                }
+
+                // The entry trigger owns its external-content index deletion. Clearing FTS first
+                // makes the trigger delete the same tokens twice (SQLITE_CORRUPT). Count the index
+                // before its owner goes so apply still agrees exactly with the factory inventory.
+                if (string.Equals(table.Table, "lexicon_entries", StringComparison.Ordinal))
+                {
+                    derivedDeleted += await CountInTransactionAsync(
+                        connection, transaction, "lexicon_fts", predicate: null, cancellationToken)
+                        .ConfigureAwait(false);
                 }
 
                 int deleted = await ClearFactoryTableAsync(
@@ -993,6 +1018,17 @@ internal sealed partial class DataRetentionService
         string table,
         CancellationToken cancellationToken)
     {
+        // A vector mirror is classified rather than probed, because a legacy virtual one also passes
+        // the probe below and cannot be deleted from here.
+        if (SagaVectorMirror.IsMirrorName(table))
+        {
+            return await IsPlainVectorMirrorAsync(
+                connection,
+                transaction,
+                table,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;

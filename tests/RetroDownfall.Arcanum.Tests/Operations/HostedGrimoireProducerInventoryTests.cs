@@ -10882,6 +10882,16 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Contains(Discover(FixtureSource("new System.IO.FileInfo(\"path\").LastWriteTimeUtc = DateTime.UtcNow;")).Diagnostics, static d => d.Code == "HOSTED_SITE_UNCLASSIFIED" && d.Detail.Contains("LastWriteTimeUtc", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("SqliteErrorCode")]
+    [InlineData("SqliteExtendedErrorCode")]
+    public void ProviderErrorCodePropertiesOfASqliteExceptionAreReviewedReads(string property)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource("try { } catch (Microsoft.Data.Sqlite.SqliteException exception) { _ = exception." + property + "; }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail.StartsWith("Microsoft.Data.Sqlite.SqliteException.", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void AuthoredInitOnlyPropertyOnSensitiveTypeIsNotAnExternalEffect()
     {
@@ -27163,6 +27173,23 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
             diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "System.Data.Common.DbParameterCollection.Clear");
+    }
+
+    [Theory]
+    [InlineData("_ = SQLitePCL.raw.sqlite3_get_autocommit(null!);", "SQLitePCL.raw.sqlite3_get_autocommit")]
+    [InlineData("System.Data.Common.DbTransaction transaction = null!; _ = transaction.Connection;", "System.Data.Common.DbTransaction.Connection")]
+    public void TransactionStateInspectionIsReviewedDatabaseSupport(string body, string member)
+    {
+        string source = FixtureSource(body);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.DoesNotContain(result.Items, site => site.Callee == member);
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == member);
     }
 
     [Fact]

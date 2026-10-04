@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
@@ -282,6 +283,10 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         Assert.Contains("origin of its current version", headUpdateDenied.Message, StringComparison.Ordinal);
 
+        // The kernel writes the shipped head's columns, so it publishes where production runs it: after
+        // the same database has evolved on to the head version and drained the sweeps on the way.
+        await ReviewSchemaEvolutionHarness.UpgradeAsync(connection);
+
         (CovenantMutationIntent intent, CovenantMutationReceipt receipt) =
             await PublishReceiptFreeRetirementThroughKernelAsync(connection);
 
@@ -500,11 +505,13 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         await using SqliteTransaction transaction = (SqliteTransaction)await connection
             .BeginTransactionAsync(IsolationLevel.Serializable, CancellationToken.None);
 
-        Result<IReadOnlyList<CovenantMutationReceipt>> published = await new CovenantMutationKernel()
-            .ApplyBatchAsync(
-                batch,
-                new CovenantMutationTransaction(connection, transaction),
-                CancellationToken.None);
+        Result<IReadOnlyList<CovenantMutationReceipt>> published =
+            await new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated())
+                .ApplyBatchAsync(
+                    batch,
+                    new CovenantMutationTransaction(connection, transaction),
+                    CovenantAgentErasureGate.None,
+                    CancellationToken.None);
 
         Assert.True(published.IsSuccess, published.IsFailure ? published.Error.Message : string.Empty);
 

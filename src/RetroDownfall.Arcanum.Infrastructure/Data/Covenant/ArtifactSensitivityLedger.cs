@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -27,9 +28,31 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// to be recomputed from labels on a hot path, and it must never go clean while any tainted artifact
 /// is still counted.</para>
 /// </remarks>
-internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connections)
+internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSource connections)
     : IArtifactSensitivityLedger
 {
+    /// <summary>The point read of one label, in the column order <see cref="Materialize"/> decodes.</summary>
+    private const string LabelByArtifactSql = """
+        SELECT LabelId,
+               ArtifactKindCode,
+               ArtifactId,
+               SessionId,
+               CampaignId,
+               TurnId,
+               ArtifactRevision,
+               ArtifactContentDigest,
+               SensitivityCode,
+               ProvenanceModeCode,
+               ExactGenerationIds,
+               GenerationBloom,
+               ProducingPlanDigest,
+               ProducingAdmissionDigest,
+               ProducingMaintenanceReceiptDigest,
+               CreatedAtUtc
+        FROM artifact_sensitivity
+        WHERE ArtifactKindCode = $kind AND ArtifactId = $artifactId;
+        """;
+
     public async Task<Result<LabeledArtifactWriteReceipt>> LabelAsync(
         DerivedArtifactWrite write,
         CancellationToken cancellationToken)
@@ -193,26 +216,7 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         command.Transaction = transaction;
 
-        command.CommandText = """
-            SELECT LabelId,
-                   ArtifactKindCode,
-                   ArtifactId,
-                   SessionId,
-                   CampaignId,
-                   TurnId,
-                   ArtifactRevision,
-                   ArtifactContentDigest,
-                   SensitivityCode,
-                   ProvenanceModeCode,
-                   ExactGenerationIds,
-                   GenerationBloom,
-                   ProducingPlanDigest,
-                   ProducingAdmissionDigest,
-                   ProducingMaintenanceReceiptDigest,
-                   CreatedAtUtc
-            FROM artifact_sensitivity
-            WHERE ArtifactKindCode = $kind AND ArtifactId = $artifactId;
-            """;
+        command.CommandText = LabelByArtifactSql;
 
         _ = command.Parameters.AddWithValue("$kind", (long)artifactKind);
 
@@ -231,6 +235,61 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         return materialized.IsFailure
             ? Result<ArtifactSensitivityLabel?>.Failure(materialized.Error)
             : Result<ArtifactSensitivityLabel?>.Success(materialized.Value);
+    }
+
+    /// <summary>
+    /// The point read for a caller that holds only the provider-neutral transaction its delete runs in.
+    /// </summary>
+    /// <remarks>
+    /// The same row, the same decoder and the same failure as <see cref="ReadLabelWithinAsync"/>, asked
+    /// through <see cref="DbConnection"/> and <see cref="DbTransaction"/>. The labelled-artifact guard
+    /// reaches this from deletes that began as an ORM or retention transaction, so the connection it holds
+    /// is whatever the transaction names and carries no proof of its concrete type. A command opened on
+    /// such a connection is cleaned up through the provider-neutral contract, which is the form the
+    /// hosted-producer analysis reviews, where the provider-typed command in
+    /// <see cref="ReadLabelWithinAsync"/> would have to be traced to a connection it cannot see.
+    /// </remarks>
+    internal static async Task<Result<ArtifactSensitivityLabel?>> ReadLabelThroughAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        SensitiveArtifactKind artifactKind,
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = LabelByArtifactSql;
+
+        AddParameter(command, "$kind", (long)artifactKind);
+
+        AddParameter(command, "$artifactId", Format(artifactId));
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return Result<ArtifactSensitivityLabel?>.Success(null);
+        }
+
+        Result<ArtifactSensitivityLabel> materialized = Materialize(reader);
+
+        return materialized.IsFailure
+            ? Result<ArtifactSensitivityLabel?>.Failure(materialized.Error)
+            : Result<ArtifactSensitivityLabel?>.Success(materialized.Value);
+    }
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = name;
+
+        parameter.Value = value;
+
+        command.Parameters.Add(parameter);
     }
 
     /// <summary>
@@ -311,7 +370,7 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
     }
 
     /// <summary>The one decoder shared by point reads and bounded inventory pages.</summary>
-    private static Result<ArtifactSensitivityLabel> Materialize(SqliteDataReader reader)
+    private static Result<ArtifactSensitivityLabel> Materialize(DbDataReader reader)
     {
         try
         {
@@ -402,7 +461,7 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
     private static async Task InsertLabelAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)
     {
@@ -589,7 +648,7 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
     /// </remarks>
     private static async Task<byte[]> MergedProvenanceDigestAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         Guid sessionId,
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)

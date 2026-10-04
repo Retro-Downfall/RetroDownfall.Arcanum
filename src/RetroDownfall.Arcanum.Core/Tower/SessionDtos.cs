@@ -113,10 +113,22 @@ public sealed record SessionExportPayload(
     Storage.Entities.Session Session,
     List<Storage.Entities.Entry> Entries);
 
+/// <summary>
+/// What one compaction removed.
+/// </summary>
+/// <param name="TokensBefore">The context size before compaction, in tokens.</param>
+/// <param name="TokensAfter">The context size measured after whatever compaction removed.</param>
+/// <param name="EntriesRemoved">The Entries that are gone, including ones removed before a stop.</param>
+/// <param name="StoppedBy">
+/// The typed error code of the refused erasure that ended compaction early, or null when it ran to
+/// completion. A stop leaves the rest of the selected Entries in place, so the count above is what the
+/// Session lost and the code is why it lost no more.
+/// </param>
 public sealed record CompactResult(
     int TokensBefore,
     int TokensAfter,
-    int EntriesRemoved);
+    int EntriesRemoved,
+    string? StoppedBy = null);
 
 public sealed record SessionEntryCountDto(int Count);
 

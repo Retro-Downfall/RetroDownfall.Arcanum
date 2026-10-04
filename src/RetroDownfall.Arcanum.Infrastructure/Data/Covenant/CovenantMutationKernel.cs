@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -22,25 +23,36 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <para>The kernel never opens, commits, rolls back, or retries a transaction. A failure returns a
 /// typed error and leaves the caller's transaction to be rolled back as a whole, which is what makes
 /// "a failed batch writes nothing" true rather than merely intended.</para>
+///
+/// <para>It is also the authoritative Covenant erasure chokepoint. Every batch carries the erasure gate
+/// its caller captured through <see cref="CaptureErasureGate"/> before <c>BEGIN</c>, whatever the batch's
+/// origin; agent intents are classified against it inside the transaction, and operator intents never
+/// consult it. The key provider is a required dependency: a kernel composed without it could not tell
+/// an installation holding erasure evidence from one without, and would have to write either way.</para>
 /// </remarks>
-internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
+internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryErasureKeyProvider erasureKeys)
 {
     /// <summary>
-    /// A kernel over the process-wide connection initializer, for callers with no guard of their own.
+    /// Reads the erasure gate a batch carries into its transaction: the one capture for agent and
+    /// operator paths alike.
     /// </summary>
-    internal CovenantMutationKernel()
-        : this(new CovenantQuotaGuard())
-    {
-    }
+    /// <remarks>
+    /// A latch read and never credential I/O, so it may be taken while a write lease or a turn lease is
+    /// held. Callers take it before <c>BEGIN</c> and dispose it once the transaction has ended.
+    /// </remarks>
+    internal CovenantAgentErasureGate CaptureErasureGate() => CovenantAgentErasureGate.FromLatch(erasureKeys);
 
     public async ValueTask<Result<IReadOnlyList<CovenantMutationReceipt>>> ApplyBatchAsync(
         CovenantMutationBatch batch,
         CovenantMutationTransaction transaction,
+        CovenantAgentErasureGate erasureGate,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(batch);
 
         ArgumentNullException.ThrowIfNull(transaction);
+
+        ArgumentNullException.ThrowIfNull(erasureGate);
 
         Result<CanonicalState> state = await ReadStateAsync(transaction, cancellationToken).ConfigureAwait(false);
 
@@ -137,6 +149,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
                     transaction,
                     batch,
                     intent,
+                    erasureGate,
                     searchSequence,
                     changedHeads,
                     cancellationToken)
@@ -171,11 +184,11 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
     {
         await using SqliteCommand command = transaction.CreateCommand();
 
-        // The receipt table carries no EntryId column, so the committed entry has to be recovered
-        // through what the row does record. An Applied outcome names a resulting version, and every
-        // version belongs to exactly one entry. A NoChange outcome has a NULL version by the table's
-        // own CHECK, so it resolves through the scoped key instead, which the partial unique indexes
-        // on covenant_entries make a single row.
+        // Receipts written before canonical version 6 carry no EntryId, so the committed entry is
+        // recovered through what every receipt records, which resolves old and new receipts alike. An
+        // Applied outcome names a resulting version, and every version belongs to exactly one entry. A
+        // NoChange outcome has a NULL version by the table's own CHECK, so it resolves through the
+        // scoped key instead, which the partial unique indexes on covenant_entries make a single row.
         command.CommandText = """
             SELECT r.RequestIdempotencyDigest, r.FinalMutationDigest, r.ResponseReceiptDigest, r.MutationKindCode,
                    r.ScopeCode, r.CampaignId, r.LaneCode, r.OutcomeCode, r.ResultingVersionId, r.ResultingLaneRevision,
@@ -248,6 +261,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationTransaction transaction,
         CovenantMutationBatch batch,
         CovenantMutationIntent intent,
+        CovenantAgentErasureGate erasureGate,
         long searchSequence,
         int ordinal,
         CancellationToken cancellationToken)
@@ -277,11 +291,30 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         // at staging: the staging probe is an early courtesy so a refused proposal does not cost the
         // turn its answer, and this transaction is the one place a mutation cannot get past.
         if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved
-            && await IsPinnedAsync(transaction, intent, keyEpoch, cancellationToken).ConfigureAwait(false))
+            && await IsPinnedAsync(transaction, intent, cancellationToken).ConfigureAwait(false))
         {
-            return new Error(
-                ErrorCodes.Covenant.ForbiddenAuthority,
-                "This Covenant entry is pinned, so the agent may not write over it or retire it.");
+            return new Error(ErrorCodes.Covenant.ForbiddenAuthority, CovenantAgentErasureGate.OperatorManagedRefusal);
+        }
+
+        // An erased identity is refused to the same agent origins, with the pin's own answer, so a
+        // tool result cannot tell an erased key from a pinned one. A store whose evidence the gate's key
+        // cannot verify refuses every agent write. Operator origins never consult the gate.
+        if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved)
+        {
+            CovenantAgentErasureState erasure = await erasureGate
+                .ClassifyAsync(
+                    transaction.Connection,
+                    transaction.Transaction,
+                    intent.Target.Scope.Kind,
+                    intent.Target.Scope.CampaignId,
+                    intent.Target.NormalizedKey.Value,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (CovenantAgentErasureGate.RefusalFor(erasure) is { } withheld)
+            {
+                return withheld;
+            }
         }
 
         bool retired = head is { OperationCode: (int)CovenantOperation.Retire };
@@ -396,21 +429,25 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
     /// Whether the operator has pinned the scoped lane this intent targets.
     /// </summary>
     /// <remarks>
-    /// Bound to the key epoch the intent already proved current, so a pin recorded against a key that
-    /// was retired and reclaimed cannot refuse a write to the key that re-created the name.
+    /// Joined on the key's binding epoch, read in the same statement. The dependency epoch the intent
+    /// proved current moves on every head change for the key, in any scope or lane, so a pin looked up
+    /// by it would lapse the moment the operator wrote the other lane. The binding epoch moves only
+    /// when the key's epoch row is deleted and recreated, and every deleter removes the key's curation
+    /// with it, so a pin recorded against a reclaimed key cannot refuse a write to the key that
+    /// re-created the name.
     /// </remarks>
     private static async ValueTask<bool> IsPinnedAsync(
         CovenantMutationTransaction transaction,
         CovenantMutationIntent intent,
-        long keyEpoch,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = transaction.CreateCommand();
 
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT COALESCE(MAX(IsPinned), 0)
             FROM covenant_curation_heads
-            WHERE CampaignId IS $campaign AND NormalizedKey = $key AND LaneCode = $lane AND KeyEpoch = $epoch;
+            WHERE CampaignId IS $campaign AND NormalizedKey = $key AND LaneCode = $lane
+              AND KeyEpoch = {CovenantStoreSql.BindingEpoch("$key")};
             """;
 
         Bind(
@@ -421,8 +458,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Bind(command, "$key", intent.Target.NormalizedKey.Value);
 
         Bind(command, "$lane", (int)intent.Target.Lane);
-
-        Bind(command, "$epoch", keyEpoch);
 
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
@@ -808,9 +843,22 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         // The counter advances before the head exists, because the head insert trigger refuses a row
         // ID at or past it. The ID is never reused within a dataset generation, so an accelerator row
         // can never be claimed by a different head after a delete and recreate.
+        //
+        // The allocation never lands at or below an ID a head or a pending delta still holds. A restore by
+        // an earlier build restarted the counter at 1 beside restored heads holding IDs from 1 upward, and
+        // covenant_heads holds them unique, so every new key collided and rolled back. The delta term is
+        // reachable on exactly that installation: nothing consumes its outbox while the applied tuple is
+        // unpublished, so an erased entry's absent delta stays pending with a row ID above every head's,
+        // and a counter still at 1 would hand that ID to the next key. On any other installation the
+        // counter is already past every ID the outbox names, and the term changes nothing. Both reads are
+        // indexed, the counter only moves forward, and the healed value persists with the allocation.
         command.CommandText = """
             UPDATE covenant_state
-            SET NextSearchRowId = NextSearchRowId + 1, UpdatedAtUtc = $updated
+            SET NextSearchRowId = MAX(
+                    NextSearchRowId,
+                    COALESCE((SELECT MAX(SearchRowId) FROM covenant_heads), 0) + 1,
+                    COALESCE((SELECT MAX(SearchRowId) FROM covenant_search_outbox), 0) + 1) + 1,
+                UpdatedAtUtc = $updated
             WHERE StateKey = 1
             RETURNING NextSearchRowId - 1;
             """;
@@ -943,11 +991,11 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             INSERT INTO covenant_mutation_receipts (
                 MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, MutationKindCode,
                 ScopeCode, CampaignId, TargetIdentityDigest, LaneCode, OutcomeCode, ResultingVersionId,
-                ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc)
+                ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc, EntryId)
             VALUES (
                 $mutation, $requestDigest, $authorizationDigest, $finalDigest, $kind,
                 $scope, $campaign, $target, $lane, $outcome, $version,
-                $revision, $responseDigest, $turn, $committed);
+                $revision, $responseDigest, $turn, $committed, $entry);
             """;
 
         Bind(command, "$mutation", intent.MutationId.ToString("D"));
@@ -985,6 +1033,10 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Bind(command, "$turn", intent.SourceTurnId is { } turnId ? turnId.ToString("D") : DBNull.Value);
 
         Bind(command, "$committed", Iso(batch.CommittedAtUtc));
+
+        // Both outcomes name the entry they resolved, so an erasure finds a NoChange receipt as surely
+        // as an Applied one.
+        Bind(command, "$entry", receipt.EntryId.ToString("D"));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }

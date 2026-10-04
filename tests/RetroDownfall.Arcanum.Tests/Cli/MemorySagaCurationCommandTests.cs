@@ -122,14 +122,17 @@ public sealed class MemorySagaCurationCommandTests
     /// own write verbs take content that way: it would otherwise sit in shell history and in the
     /// process list of a shared machine.
     /// </summary>
-    [Fact]
-    public async Task Correct_reads_the_replacement_text_from_piped_standard_input()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("-")]
+    public async Task Correct_reads_the_replacement_text_from_piped_standard_input(string? file)
     {
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(
             handler,
-            ["memory", "saga", "correct", MemoryId, "--expected-content-hash", ServerContentHash, "--yes"],
+            ["memory", "saga", "correct", MemoryId, "--expected-content-hash", ServerContentHash, "--yes",
+                .. file is null ? Array.Empty<string>() : ["--file", file]],
             input: "the operator prefers spaces");
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
@@ -243,6 +246,55 @@ public sealed class MemorySagaCurationCommandTests
         Assert.DoesNotContain("Unchanged", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("No other memory store was touched.", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A correction that re-created erased content in its scope released that content's fingerprint,
+    /// and the operator is told, because agents may now write it again.
+    /// </summary>
+    [Fact]
+    public async Task Correct_reports_a_released_fingerprint()
+    {
+        RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied, ReleasedErasureFingerprint = true };
+
+        CliTestResult result = await RunCorrectAsync(handler, "a better sentence");
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Contains("Released an erasure fingerprint for this content.", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Correct_without_a_release_prints_no_release_line()
+    {
+        RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied, ReleasedErasureFingerprint = false };
+
+        CliTestResult result = await RunCorrectAsync(handler, "a better sentence");
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.DoesNotContain("erasure", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Fingerprints the host could not check are reported as that, with the command that can, rather
+    /// than as nothing to release.
+    /// </summary>
+    [Fact]
+    public async Task Correct_with_unverifiable_fingerprints_points_to_erasure_status()
+    {
+        RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied, ReleasedErasureFingerprint = null };
+
+        CliTestResult result = await RunCorrectAsync(handler, "a better sentence");
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Contains(
+            "Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.",
+            result.Output,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Released an erasure fingerprint", result.Output, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -659,6 +711,8 @@ public sealed class MemorySagaCurationCommandTests
 
         internal (HttpStatusCode Status, Error Error)? Failure { get; init; }
 
+        internal bool? ReleasedErasureFingerprint { get; init; } = false;
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
@@ -693,7 +747,7 @@ public sealed class MemorySagaCurationCommandTests
                     ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail)
                 : Json(
                     HttpStatusCode.OK,
-                    new ApiResponse<SagaCurationResult>(new SagaCurationResult(Outcome, detail), true, null),
+                    new ApiResponse<SagaCurationResult>(new SagaCurationResult(Outcome, detail, ReleasedErasureFingerprint), true, null),
                     ArcanumJsonContext.Default.ApiResponseSagaCurationResult);
         }
 

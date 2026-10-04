@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
@@ -141,47 +142,70 @@ public sealed class CovenantDerivedOutputInventoryTests
     }
 
     /// <summary>
-    /// Nothing declared here labels a kind whose rows carry an Annals claim, which is the condition a
-    /// memory reset's recovery reads those rows under.
+    /// Every Annals subject store's purge plan takes the store's claim graph, in the Annals erasure
+    /// order, ahead of the row the claim describes.
     /// </summary>
     /// <remarks>
     /// A reset interrupted before its commit is recovered by counting the store's own tables and
     /// inferring from them that the store's claims went too. That inference needs every removal of a
-    /// <c>saga_memories</c> or <c>lexicon_entries</c> row to take the claim describing it, and every
-    /// removal that can reach one does - except the protected-artifact purge, whose plan for these two
-    /// kinds deletes the row and no claim. The purge runs only against a labelled artifact, so the
-    /// inference is sound exactly while nothing labels these kinds, and this is where that condition
-    /// lives rather than in a comment on the list it protects.
+    /// <c>saga_memories</c> or <c>lexicon_entries</c> row to take the claim describing it, and the
+    /// protected-artifact purge is one of those removals: the live kernel and the staged restore purge
+    /// both run the plan this case reads.
+    ///
+    /// <para>Closed over the plan rather than over who can label a row. A pin on the labelling side is
+    /// closed over types implementing a labelled-write contract, and the ledger is an injected interface
+    /// anything can hold, so a producer that labelled a Saga memory without declaring it would have
+    /// passed one. What removes the claim is the plan, so the plan is what is pinned: the claimed
+    /// targets are exactly <see cref="AnnalsErasurePlan.ForStore"/>'s steps, in that order and at those
+    /// Core versions; no unclaimed target reaches an Annals table on its own; each statement is the
+    /// subject-keyed predicate the Annals plan states; and the artifact is the store's subject
+    /// table.</para>
     ///
     /// <para>Derived from <see cref="AnnalSubjectStore"/> rather than restated, so a third subject
-    /// store arrives here as a failure asking whether its rows can be labelled.</para>
-    ///
-    /// <para><b>This is weaker than the condition it stands for, and the gap is not small.</b> The
-    /// inventory is closed over types implementing a labelled-write contract, not over label-writing
-    /// call sites, and the ledger is an injected interface anything can hold: <c>CovenantDispatchGate</c>,
-    /// <c>CovenantSensitiveRetentionPurgeCoordinator</c> and <c>CovenantLabeledArtifactGuard</c> already
-    /// hold it without appearing in the inventory at all. A producer that labels a Saga memory by
-    /// calling the ledger and implements none of the governed contracts would leave this case green.
-    /// What it catches is the label being <i>declared</i>, which is the honest step rather than the
-    /// only one - and is why the purge plan carries the same statement for a reader who never reaches
-    /// this suite.</para>
+    /// store arrives here as a failure asking which table holds its rows and which kind purges
+    /// them.</para>
     /// </remarks>
     [Fact]
-    public void No_declared_producer_labels_a_kind_whose_rows_carry_an_annals_claim()
+    public void Every_annals_store_plan_takes_its_claim_in_annals_order_before_the_subject_row()
     {
 
         foreach (AnnalSubjectStore store in Enum.GetValues<AnnalSubjectStore>())
         {
 
-            Assert.True(
-                Enum.TryParse(store.ToString(), ignoreCase: false, out SensitiveArtifactKind kind),
-                $"The Annals subject store '{store}' has no sensitive-artifact kind of the same name, so "
-                    + "whether a purge can reach its rows without their claim is unanswered.");
+            SensitiveArtifactKind kind = Enum.Parse<SensitiveArtifactKind>(store.ToString());
 
-            Assert.DoesNotContain(
-                CovenantDerivedOutputInventory.Consumers,
-                consumer => consumer.ArtifactKind == kind
-                    && consumer.Policy is DerivedOutputPolicy.PropagateLabel);
+            string subjectTable = store switch
+            {
+                AnnalSubjectStore.Saga => "saga_memories",
+                AnnalSubjectStore.Lexicon => "lexicon_entries",
+                _ => throw new InvalidOperationException($"The Annals subject store '{store}' declares no subject table."),
+            };
+
+            CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(kind);
+
+            IReadOnlyList<AnnalsErasureStep> annals = AnnalsErasurePlan.ForStore(store);
+
+            CovenantArtifactPurgeTarget[] claimed = [.. plan.Projections.Where(t => t.AnnalStore == store)];
+
+            Assert.Equal(annals.Select(s => s.Table), claimed.Select(t => t.Table));
+
+            Assert.Equal(annals.Select(s => s.RequiredFromCoreVersion), claimed.Select(t => t.RequiredFromCoreVersion));
+
+            Assert.DoesNotContain(plan.Projections, t => t.AnnalStore is null && annals.Any(s => s.Table == t.Table));
+
+            IReadOnlyList<AnnalsErasureStep> subject = AnnalsErasurePlan.ForSubjectQuery(
+                store,
+                $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", "$artifactKey")}");
+
+            Assert.Equal(
+                subject.Select(s => $"DELETE FROM {s.Table} WHERE {s.Predicate};"),
+                claimed.Select(t => t.DeleteBy("$artifactKey")));
+
+            Assert.Equal(
+                subject.Select(s => $"SELECT count(*) FROM {s.Table} WHERE {s.Predicate};"),
+                claimed.Select(t => t.CountBy("$artifactKey")));
+
+            Assert.Equal(subjectTable, plan.Artifact!.Table);
 
         }
 

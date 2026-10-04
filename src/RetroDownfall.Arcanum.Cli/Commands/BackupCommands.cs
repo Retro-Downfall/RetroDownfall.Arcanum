@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
+using RetroDownfall.Arcanum.Cli.UX;
+
 using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -531,16 +533,7 @@ internal sealed class BackupCommands(
         dispatcher.WriteDiagnostic(
             DescribeExposure(plan.DestinationDisclosure ?? BackupRestoreDisclosureExposure.None));
 
-        foreach (CovenantRetentionHelpTarget target in
-                 CovenantExternalRetentionDisclosure.ResolveHelpTargets(settings.Value.Providers ?? []))
-        {
-
-            dispatcher.WriteDiagnostic(
-                target.Provider.Length == 0
-                    ? $"  Retention guidance: {target.Uri}"
-                    : $"  Retention guidance ({target.Provider}): {target.Uri}");
-
-        }
+        new CovenantExternalRetentionDisclosureWriter(dispatcher, settings).WriteHelpTargets();
 
         return await confirmationPrompt
             .PromptForConfirmationAsync(
@@ -735,6 +728,13 @@ internal sealed class BackupCommands(
 
         }
 
+        if (plan.DestinationErasureEvidence is BackupRestoreErasureEvidenceSummary erasure)
+        {
+
+            dispatcher.WritePayload(DescribeErasureEvidence(erasure));
+
+        }
+
         foreach (BackupComponent component in plan.Components)
         {
 
@@ -811,6 +811,13 @@ internal sealed class BackupCommands(
                 + $"{FormatCount(reconciliation.BatchFiles)} batches, "
                 + $"{FormatCount(reconciliation.EmbeddingsToRebuild)} embeddings to rebuild, "
                 + $"{FormatCount(reconciliation.PendingOperationsCleared)} pending operations cleared");
+
+            if (reconciliation.ErasureApplication is { } erasure)
+            {
+
+                dispatcher.WritePayload(DescribeErasureApplication(erasure));
+
+            }
 
             foreach (string issue in reconciliation.Issues)
             {
@@ -1201,6 +1208,40 @@ internal sealed class BackupCommands(
     private static string FormatCount(long value) =>
         value.ToString("N0", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// States what a restore did with this installation's erasure evidence, in counts only, and whether the
+    /// local scrub behind it is proven.
+    /// </summary>
+    private static string DescribeErasureApplication(BackupRestoreErasureApplication erasure) =>
+        $"Erasure applied: removed {FormatCount(erasure.SagaMemoriesRemoved)} Saga memories, "
+        + $"{FormatCount(erasure.LexiconEntriesRemoved)} Lexicon entries, "
+        + $"{FormatCount(erasure.CovenantEntriesRemoved)} Covenant entries and "
+        + $"{FormatCount(erasure.RetirementPairsRemoved)} retirement pairs; "
+        + $"joined {FormatCount(erasure.FingerprintsJoined)} fingerprints and {FormatCount(erasure.ReceiptsJoined)} receipts; "
+        + $"dropped {FormatCount(erasure.ArchiveRowsDropped)} archive rows; "
+        + $"local scrub {BackupCliCatalog.Format(erasure.Scrub)}";
+
+    /// <summary>
+    /// States what the destination's erasure evidence means for this restore, in counts only.
+    /// </summary>
+    /// <remarks>
+    /// Present evidence is spelled out as what it does, because a rehearsal is the operator's chance to
+    /// learn that archived items will not all come back. A refusal is spelled out as what it stops; its
+    /// blocker, printed with the others, names the ways out.
+    /// </remarks>
+    private static string DescribeErasureEvidence(BackupRestoreErasureEvidenceSummary erasure) =>
+        "Erasure evidence: "
+        + BackupCliCatalog.Format(erasure.Status)
+        + erasure.Status switch
+        {
+            BackupRestoreErasureEvidenceStatus.Present =>
+                $" ({FormatCount(erasure.SagaFingerprints)} Saga, {FormatCount(erasure.LexiconFingerprints)} Lexicon, "
+                + $"{FormatCount(erasure.CovenantFingerprints)} Covenant fingerprints; "
+                + $"{FormatCount(erasure.Receipts)} receipts); archived items that match are removed before commit",
+            BackupRestoreErasureEvidenceStatus.Refused => "; this restore is blocked",
+            _ => string.Empty,
+        };
+
 }
 
 internal static class BackupCliCatalog
@@ -1339,6 +1380,24 @@ internal static class BackupCliCatalog
 
     public static string Format(BackupProtectedStateMode mode) =>
         ProtectedStateModes.FirstOrDefault(pair => pair.Value == mode).Key ?? mode.ToString();
+
+    public static string Format(BackupRestoreErasureEvidenceStatus status) =>
+        status switch
+        {
+            BackupRestoreErasureEvidenceStatus.None => "none",
+            BackupRestoreErasureEvidenceStatus.Present => "present",
+            BackupRestoreErasureEvidenceStatus.Refused => "could not be proven",
+            _ => status.ToString(),
+        };
+
+    public static string Format(BackupRestoreErasureScrubStatus status) =>
+        status switch
+        {
+            BackupRestoreErasureScrubStatus.Verified => "verified",
+            BackupRestoreErasureScrubStatus.ScrubPending => "pending",
+            BackupRestoreErasureScrubStatus.NotApplicable => "not applicable",
+            _ => status.ToString(),
+        };
 
     public static string Format(BackupRestoreStatus status) =>
         status switch

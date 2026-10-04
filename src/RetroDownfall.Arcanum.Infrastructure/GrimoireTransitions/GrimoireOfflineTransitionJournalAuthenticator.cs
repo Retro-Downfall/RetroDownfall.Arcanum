@@ -767,65 +767,12 @@ internal static class GrimoireOfflineTransitionJournalAuthenticator
 
         return encoded is { Length: var length }
             && length == expectedCharacters
-            && TryDecodeBounded(encoded, expectedBytes, out decoded)
-            && decoded.Length == expectedBytes;
+            && CanonicalBase64Url.TryDecodeExact(encoded, expectedBytes, out decoded);
 
     }
 
-    private static bool TryDecodeBounded(string? encoded, int maximumBytes, out byte[] decoded)
-    {
-
-        decoded = [];
-
-        if (string.IsNullOrEmpty(encoded) || encoded.Any(static value => value is not (>= 'A' and <= 'Z')
-            and not (>= 'a' and <= 'z') and not (>= '0' and <= '9') and not '-' and not '_'))
-        {
-
-            return false;
-
-        }
-
-        int maximumCharacters = checked(((maximumBytes + 2) / 3) * 4);
-
-        if (encoded.Length > maximumCharacters)
-        {
-
-            return false;
-
-        }
-
-        byte[] buffer = new byte[Base64Url.GetMaxDecodedLength(encoded.Length)];
-
-        if (buffer.Length > maximumBytes || !Base64Url.TryDecodeFromChars(encoded, buffer, out int written))
-        {
-
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-
-        }
-
-        if (written != buffer.Length)
-        {
-
-            Array.Resize(ref buffer, written);
-
-        }
-
-        if (!string.Equals(Base64Url.EncodeToString(buffer), encoded, StringComparison.Ordinal))
-        {
-
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-
-        }
-
-        decoded = buffer;
-
-        return true;
-
-    }
+    private static bool TryDecodeBounded(string? encoded, int maximumBytes, out byte[] decoded) =>
+        CanonicalBase64Url.TryDecodeBounded(encoded, 1, maximumBytes, out decoded);
 
     private static Result Invalid() => new Error(
         ErrorCodes.Covenant.IntegrityFailure,

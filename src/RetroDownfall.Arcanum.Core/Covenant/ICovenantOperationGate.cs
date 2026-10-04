@@ -56,6 +56,23 @@ public interface ICovenantOperationGate
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Closes and drains the scope one Covenant entry erasure changes, and returns the compound
+    /// read-and-exclusive lease the erase runs under.
+    /// </summary>
+    /// <remarks>
+    /// A Campaign entry that keeps its key closes only its Campaign. A Global entry, or any erase that
+    /// reclaims its key, closes the installation: every Campaign's turns read Global entries, and
+    /// reclamation removes the key's curation in every scope. The owner must carry
+    /// <see cref="CovenantExclusiveOperation.CovenantEntryErasure"/>, which no other acquisition,
+    /// resume, or durable adoption admits, so the closure lives only as long as this process.
+    /// </remarks>
+    ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+        CovenantOperationScope entryScope,
+        bool reclaimsKey,
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken);
+
     ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken);

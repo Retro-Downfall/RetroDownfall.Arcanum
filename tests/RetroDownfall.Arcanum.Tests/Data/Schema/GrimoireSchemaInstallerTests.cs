@@ -1,5 +1,8 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+
+using SQLitePCL;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
@@ -311,6 +314,79 @@ public sealed class GrimoireSchemaInstallerTests
             CancellationToken.None);
 
         Assert.Equal(0L, await CountLexiconMatchesAsync(connection, "unmoored"));
+    }
+
+    [Fact]
+    public async Task InstallAsync_preserves_a_row_arriving_immediately_before_lexicon_cleanup()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, Dimensions, CancellationToken.None);
+
+        await using SqliteConnection writer = await file.OpenAsync(CancellationToken.None);
+
+        bool intercepted = false;
+
+        Exception? writerFailure = null;
+
+        long? indexedBeforeCleanup = null;
+
+        // SQLite calls this before the cleanup statement executes. On the buggy path the separate
+        // empty-corpus probe has already returned; the writer commits before delete-all starts.
+        // No scheduling delay or sleep is needed to reproduce that exact ordering.
+        raw.sqlite3_trace(
+            connection.Handle,
+            (_, statement) =>
+            {
+                if (intercepted || !statement.StartsWith("INSERT INTO lexicon_fts(lexicon_fts)", StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                intercepted = true;
+
+                try
+                {
+                    using SqliteCommand insert = writer.CreateCommand();
+
+                    insert.CommandText = """
+                        INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
+                        VALUES ('arriving', 'Arriving', 'arriving', 'Place', '[]', 'survivingtoken', '2026-01-01T00:00:00.0000000Z');
+                        """;
+
+                    _ = insert.ExecuteNonQuery();
+
+                    using SqliteCommand indexed = writer.CreateCommand();
+
+                    indexed.CommandText = "SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'survivingtoken';";
+
+                    indexedBeforeCleanup = (long?)indexed.ExecuteScalar();
+                }
+                catch (Exception exception)
+                {
+                    writerFailure = exception;
+                }
+            },
+            null);
+
+        try
+        {
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, Dimensions, CancellationToken.None);
+        }
+        finally
+        {
+            raw.sqlite3_trace(connection.Handle, (delegate_trace?)null, null);
+        }
+
+        Assert.True(intercepted);
+
+        Assert.Null(writerFailure);
+
+        Assert.Equal(1L, indexedBeforeCleanup);
+
+        Assert.Equal(1L, await CountLexiconMatchesAsync(connection, "survivingtoken"));
     }
 
     /// <summary>

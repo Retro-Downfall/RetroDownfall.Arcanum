@@ -26,6 +26,8 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed partial class InstallationResetActiveAuthenticationTests : IDisposable
@@ -359,6 +361,58 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
             {
 
                 Error error = AssertFailure(refusal);
+
+                Assert.Equal(expected.Code, error.Code);
+
+                Assert.Equal(expected.Message, error.Message);
+
+            });
+
+    }
+
+    [Fact]
+    public void V2_envelope_with_noncanonical_trailing_bits_or_an_impossible_length_is_refused_without_detail()
+    {
+
+        InstallationResetActiveEnvelopeV2 fixture = FixtureEnvelope();
+
+        InstallationResetActiveLocation location = FixtureLocation();
+
+        Assert.True(OpenFixture(FixtureKey(), location, fixture.InstallationId, fixture).IsSuccess);
+
+        Error expected = AssertFailure(
+            OpenFixture(
+                FixtureKey(),
+                location,
+                fixture.InstallationId,
+                fixture with { OperationId = Guid.Parse("20213243-5465-7687-98a9-bacbdcedfe0f") }));
+
+        // Spellings no encoder writes, and lengths no decoder can read, in the three encoded fields.
+        // The framework's throwing decoder raises FormatException for each of them, and the one answer
+        // an unreadable record may give is the same content-free refusal as every other tamper.
+        InstallationResetActiveEnvelopeV2[] tampered =
+        [
+            fixture with
+            {
+                AuthenticationTagBase64Url =
+                    NonCanonicalBase64Url.WithUnusedBitSet(fixture.AuthenticationTagBase64Url),
+            },
+            fixture with
+            {
+                CiphertextBase64Url =
+                    NonCanonicalBase64Url.WithAnImpossibleLength(fixture.CiphertextBase64Url),
+            },
+            fixture with { CiphertextBase64Url = "AB" },
+            fixture with { AuthenticationTagBase64Url = "AAAAAAAAAAAAAAAAAAAAAB" },
+        ];
+
+        Assert.All(
+            tampered,
+            envelope =>
+            {
+
+                Error error = AssertFailure(
+                    OpenFixture(FixtureKey(), location, fixture.InstallationId, envelope));
 
                 Assert.Equal(expected.Code, error.Code);
 
@@ -1572,6 +1626,59 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
         Assert.Equal("not-canonical", credentials.Values[account]);
 
         Assert.Equal(0, credentials.SetCount);
+
+        Assert.Equal(0, credentials.DeleteCount);
+
+    }
+
+    [Fact]
+    public void Active_key_with_unused_trailing_bits_set_is_a_typed_integrity_failure_not_an_exception()
+    {
+
+        RecordingCredentialStore credentials = new();
+
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        InstallationResetActiveRecordKeyProvider keys = new(credentials);
+
+        using InstallationResetActiveRecordKeyLease created = Value(
+            keys.CreateOrOpen(_lock, _guarded, profile));
+
+        string account = ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(
+            profile.AccountSuffix);
+
+        string stored = credentials.Values[account];
+
+        // Forty-three characters of the alphabet, so only a canonical decode can tell this from the key
+        // itself. The framework's throwing decoder raises FormatException here instead of reporting
+        // failure, and a credential-store value that was corrupted or tampered with has to be a refusal.
+        string noncanonical = NonCanonicalBase64Url.WithUnusedBitSet(stored);
+
+        Assert.Equal(stored.Length, noncanonical.Length);
+
+        credentials.Values[account] = noncanonical;
+
+        Result<InstallationResetActiveRecordKeyLease> opened = keys.OpenExisting(profile);
+
+        Assert.True(opened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, opened.Error.Code);
+
+        Result<InstallationResetActiveRecordKeyLease> reopened = keys.CreateOrOpen(_lock, _guarded, profile);
+
+        Assert.True(reopened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
+
+        Result<bool> present = keys.IsPresent(profile);
+
+        Assert.True(present.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, present.Error.Code);
+
+        Assert.Equal(noncanonical, credentials.Values[account]);
+
+        Assert.Equal(1, credentials.SetCount);
 
         Assert.Equal(0, credentials.DeleteCount);
 

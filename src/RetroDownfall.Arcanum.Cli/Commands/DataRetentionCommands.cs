@@ -372,6 +372,16 @@ internal sealed class DataRetentionCommands(
 
         }
 
+        if (status.MemoryErasure is { } erasure)
+        {
+
+            dispatcher.WritePayload(
+                $"Erasure evidence: {FormatCount(erasure.Fingerprints)} fingerprints, "
+                + $"{FormatCount(erasure.Receipts)} receipts, "
+                + $"{FormatCount(erasure.ReceiptSubjects)} subjects; never aged out");
+
+        }
+
         if (status.PreservedOutsideSelectedRoot.Length > 0)
         {
 
@@ -459,6 +469,20 @@ internal sealed class DataRetentionCommands(
             $"Blockers: {FormatCount(plan.Blockers.Length)}; "
             + $"conflicts: {FormatCount(plan.Conflicts.Length)}; "
             + $"confirmation required: {(plan.RequiresConfirmation ? "yes" : "no")}");
+
+        if (plan.SagaCuration is { } saga)
+        {
+            dispatcher.WritePayload(
+                $"Saga pins: {FormatCount(saga.PinnedRows)}; "
+                + $"exempt from this plan: {FormatCount(saga.PinnedRowsExemptFromPlan)}");
+        }
+
+        if (plan.LexiconCuration is { } lexicon)
+        {
+            dispatcher.WritePayload(
+                $"Lexicon pins: {FormatCount(lexicon.PinnedRows)}; "
+                + $"exempt from this plan: {FormatCount(lexicon.PinnedRowsExemptFromPlan)}");
+        }
 
         foreach (DataRetentionPlanItem item in plan.Items)
         {

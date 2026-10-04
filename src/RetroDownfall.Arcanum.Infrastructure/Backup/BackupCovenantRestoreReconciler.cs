@@ -39,6 +39,11 @@ internal sealed record BackupCovenantRestoreDestinationState(
     /// Missing tables are absence rather than failure. A destination that predates the Covenant
     /// tables genuinely has nothing to carry forward, and refusing the restore over it would make an
     /// installation unable to adopt a generation it is entitled to.
+    ///
+    /// <para>The buckets are the effective ones: the persisted state plus every receipt the fold has
+    /// not reached, as a lower bound. A destination upgraded from a build without the live fold holds
+    /// receipts no bucket counts yet, and a join fed only the persisted buckets would tell the restored
+    /// installation that nothing ever left this machine (§10.13).</para>
     /// </remarks>
     internal static async Task<BackupCovenantRestoreDestinationState> ReadAsync(
         SqliteConnection destination,
@@ -56,15 +61,9 @@ internal sealed record BackupCovenantRestoreDestinationState(
                     .ConfigureAwait(false)
                 : null;
 
-        List<CovenantDisclosureState> buckets =
-            await BackupRestoreDatabaseWorker.TableExistsAsync(
-                    destination,
-                    "external_disclosure_state",
-                    cancellationToken).ConfigureAwait(false)
-                ? await CovenantDisclosureStateJoiner
-                    .ReadAllAsync(destination, transaction: null, cancellationToken)
-                    .ConfigureAwait(false)
-                : [];
+        IReadOnlyList<CovenantDisclosureState> buckets = await ExternalDisclosureStateReader
+            .ReadEffectiveAsync(destination, cancellationToken)
+            .ConfigureAwait(false);
 
         return new BackupCovenantRestoreDestinationState(authority, buckets);
     }
@@ -82,7 +81,6 @@ internal sealed record BackupCovenantRestoreReconciliationReceipt(
     ulong RetainedLabels,
     ulong UnresolvedCampaignPaths,
     ulong TerminalizedTurnClaims,
-    int JoinedDisclosureBuckets,
     CovenantHostToolsState HostToolsState,
     BackupRestoreProtectedStatePurgeReceipt? ProtectedStatePurge = null);
 
@@ -125,9 +123,30 @@ internal static class BackupCovenantRestoreReconciler
     private const long EpochCeiling = long.MaxValue;
 
     /// <summary>
-    /// Reissues this generation's identities, joins the destination's authority and disclosure
-    /// evidence into it, and retires everything the source machine left in flight.
+    /// The search row counter a reissued dataset keeps: past every ID a kept head holds, and never below
+    /// the archived counter, which reserved every ID the projection was given.
     /// </summary>
+    /// <remarks>
+    /// The outbox is not read. The reissue drains it before this statement runs, so it holds no row ID to
+    /// reserve, and the restore keeps no delta.
+    /// </remarks>
+    private const string NextUnusedSearchRowId = """
+        SELECT MAX(
+            NextSearchRowId,
+            COALESCE((SELECT MAX(SearchRowId) FROM covenant_heads), 0) + 1)
+        FROM covenant_state
+        WHERE StateKey = 1;
+        """;
+
+    /// <summary>
+    /// Reissues this generation's identities, joins the destination's authority evidence into it, and
+    /// retires everything the source machine left in flight.
+    /// </summary>
+    /// <remarks>
+    /// The destination's disclosure buckets are not joined here. The erasure-evidence step that runs
+    /// before this phase, in both gate states, folds the archive's disclosure tails and joins them, so a
+    /// restore with the gate off keeps this machine's disclosure accounting too (§10.19.3).
+    /// </remarks>
     /// <param name="purgeProtectedState">
     /// Whether this restore is a <c>PurgeProtectedState</c> one. The decision itself belongs to
     /// <see cref="BackupRestoreProtectedStatePolicy"/> and was already made — before the staged tree
@@ -185,22 +204,11 @@ internal static class BackupCovenantRestoreReconciler
             return authority.Error;
         }
 
-        Result<int> disclosure = await JoinDisclosureAsync(
-            staged,
-            transaction,
-            destination.DisclosureBuckets,
-            timeProvider,
-            cancellationToken).ConfigureAwait(false);
-
-        if (disclosure.IsFailure)
-        {
-            return disclosure.Error;
-        }
-
-        // After both joins and before the reissue. The joins are what carry this machine's own taint and
-        // its nonrevocable disclosure counts into the generation it is about to adopt, and a purge that
-        // ran before them would have nothing to preserve; one that ran after the reissue would leave the
-        // fresh generation stamped onto rows that are about to be deleted anyway.
+        // After both joins and before the reissue. The joins, the authority one above and the disclosure
+        // one the evidence step already committed, are what carry this machine's own taint and its
+        // nonrevocable disclosure counts into the generation it is about to adopt, and a purge that ran
+        // before them would have nothing to preserve; one that ran after the reissue would leave the fresh
+        // generation stamped onto rows that are about to be deleted anyway.
         BackupRestoreProtectedStatePurgeReceipt? purged = null;
 
         if (purgeProtectedState)
@@ -256,7 +264,6 @@ internal static class BackupCovenantRestoreReconciler
                 : labels.Value - Math.Min(labels.Value, purged.RemovedLabels),
             unresolved,
             claims,
-            disclosure.Value,
             authority.Value,
             purged);
     }
@@ -445,29 +452,6 @@ internal static class BackupCovenantRestoreReconciler
         return joined.Value.HostToolsState;
     }
 
-    private static async Task<Result<int>> JoinDisclosureAsync(
-        SqliteConnection staged,
-        SqliteTransaction transaction,
-        IReadOnlyList<CovenantDisclosureState> destinationBuckets,
-        TimeProvider timeProvider,
-        CancellationToken cancellationToken)
-    {
-        if (destinationBuckets.Count == 0
-            || !await BackupRestoreDatabaseWorker
-                .TableExistsAsync(staged, "external_disclosure_state", cancellationToken, transaction)
-                .ConfigureAwait(false))
-        {
-            return 0;
-        }
-
-        return await CovenantDisclosureStateJoiner.JoinIntoStagedAsync(
-            staged,
-            transaction,
-            destinationBuckets,
-            timeProvider,
-            cancellationToken).ConfigureAwait(false);
-    }
-
     /// <summary>
     /// Stamps a new dataset generation, advances both epochs, and discards every archived projection.
     /// </summary>
@@ -478,6 +462,12 @@ internal static class BackupCovenantRestoreReconciler
     /// generation's reset exception precisely so a captured epoch cannot survive the dataset it was
     /// captured against.
     ///
+    /// <para>The canonical search sequence restarts at zero with the drained outbox, but the search row
+    /// counter does not restart at 1. The restored heads keep the row IDs the archive gave them, and
+    /// <c>covenant_heads</c> holds those unique, so the counter stays past every ID a kept head holds,
+    /// and at or above the archived counter, which reserved every ID the archive's projection rows were
+    /// given.</para>
+    ///
     /// <para>The applied FTS tuple is nulled and the rebuild state set to
     /// <see cref="CovenantFtsRebuildState.FullRebuildRequired"/> rather than trusted. An accelerator
     /// projection is a cache of canonical rows under a generation that no longer exists, and the
@@ -485,7 +475,12 @@ internal static class BackupCovenantRestoreReconciler
     /// projection rows themselves are deliberately left where they are: only the outbox worker and the
     /// rebuilder write accelerator state, and a null applied tuple already makes those rows unusable —
     /// the worker refuses a nonempty projection it never published a tuple for, and the rebuilder
-    /// clears the whole table before its first batch.</para>
+    /// clears the whole table before its first batch. An empty projection is refused as well, because
+    /// this reissue resets the sequence to zero and drains the outbox while keeping the archived heads:
+    /// no pending delta names them, and the worker adopts an empty projection only when the outbox can
+    /// replay every head onto it. Search therefore answers restored entries through the canonical
+    /// fallback until a rebuild projects them, or until every restored entry has been rewritten, which
+    /// names each head in a pending delta.</para>
     /// </remarks>
     private static async Task<Result<CanonicalReissue>> ReissueCanonicalIdentitiesAsync(
         SqliteConnection staged,
@@ -554,6 +549,18 @@ internal static class BackupCovenantRestoreReconciler
             "DELETE FROM covenant_search_outbox;",
             cancellationToken).ConfigureAwait(false);
 
+        // The restored heads keep the search row IDs the archive gave them, and covenant_heads holds
+        // those IDs unique, so the counter does not restart at 1. It stays past every ID a kept head
+        // holds, and at or above the archived counter, which never moves backward within a generation
+        // and so already reserved every ID the archive's projection rows were given. An archive whose
+        // own counter an earlier build restarted is still carried past its heads. The outbox was just
+        // drained, so it contributes nothing.
+        long nextSearchRowId = await CountAsync(
+            staged,
+            transaction,
+            NextUnusedSearchRowId,
+            cancellationToken).ConfigureAwait(false);
+
         await using SqliteCommand update = staged.CreateCommand();
 
         update.Transaction = transaction;
@@ -566,7 +573,7 @@ internal static class BackupCovenantRestoreReconciler
                 AppliedSearchSequence = NULL,
                 AcceleratorEpoch = $accelerator,
                 EnvelopeKeyEpoch = $envelope,
-                NextSearchRowId = 1,
+                NextSearchRowId = $nextSearchRowId,
                 RebuildStateCode = $rebuild,
                 RebuildTargetSequence = NULL,
                 RebuildCursor = NULL,
@@ -579,6 +586,8 @@ internal static class BackupCovenantRestoreReconciler
         _ = update.Parameters.AddWithValue("$accelerator", checked(accelerator + 1));
 
         _ = update.Parameters.AddWithValue("$envelope", checked(envelope + 1));
+
+        _ = update.Parameters.AddWithValue("$nextSearchRowId", nextSearchRowId);
 
         _ = update.Parameters.AddWithValue("$rebuild", FullRebuildRequiredCode);
 

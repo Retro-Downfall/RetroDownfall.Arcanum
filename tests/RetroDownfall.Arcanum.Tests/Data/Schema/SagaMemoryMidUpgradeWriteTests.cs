@@ -11,11 +11,13 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -23,6 +25,8 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+
+using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
@@ -72,6 +76,143 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).ToString("o", CultureInfo.InvariantCulture);
 
     static SagaMemoryMidUpgradeWriteTests() => SqliteNativeRuntime.Instance.Initialize();
+
+    public static IEnumerable<object[]> LegacyAnnalsCases() =>
+        from version in Enumerable.Range(3, 8)
+        from operation in new[] { AnnalOperation.Assert, AnnalOperation.Correct, AnnalOperation.Retire }
+        select new object[] { version, operation };
+
+    [Theory]
+    [MemberData(nameof(LegacyAnnalsCases))]
+    public async Task Saga_legacy_digest_writes_remain_available_on_every_Annals_schema(
+        int schemaVersion,
+        AnnalOperation operation)
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        GrimoireSchemaVersionChainSet chain = schemaVersion switch
+        {
+            3 => CoreSchemaVersionThreeFixture.ChainSet(),
+            4 => CoreSchemaVersionFourFixture.ChainSet(),
+            5 => CoreSchemaVersionFiveFixture.ChainSet(),
+            6 => CoreSchemaVersionSixFixture.ChainSet(),
+            7 => CoreSchemaVersionSevenFixture.ChainSet(),
+            8 => CoreSchemaVersionEightFixture.ChainSet(),
+            9 => CoreSchemaVersionNineFixture.ChainSet(),
+            10 => CoreSchemaVersionTenFixture.ChainSet(),
+            _ => throw new ArgumentOutOfRangeException(nameof(schemaVersion)),
+        };
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, chain, TestDimensions, CancellationToken.None);
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        byte[] original = AnnalContentDigest.ForSagaMemory("original");
+
+        byte[] corrected = AnnalContentDigest.ForSagaMemory("corrected");
+
+        if (operation != AnnalOperation.Assert)
+        {
+            Assert.NotNull(await AnnalsClaimWriter.AppendAssertAsync(
+                connection, transaction, AnnalSubjectStore.Saga, "legacy-memory", AnnalOrigin.AgentExtracted,
+                SagaMemoryScopeKind.Global, null, ContentSensitivity.None, AnnalContentHashFormat.LegacyStoreDigest,
+                original, now, now, null, CancellationToken.None, legacySchema: true));
+        }
+
+        bool written = operation switch
+        {
+            AnnalOperation.Assert => await AnnalsClaimWriter.AppendAssertAsync(
+                connection, transaction, AnnalSubjectStore.Saga, "legacy-memory", AnnalOrigin.AgentExtracted,
+                SagaMemoryScopeKind.Global, null, ContentSensitivity.None, original, now, now, null, CancellationToken.None),
+            AnnalOperation.Correct => await AnnalsClaimWriter.AppendCorrectionAsync(
+                connection, transaction, AnnalSubjectStore.Saga, "legacy-memory", AnnalOrigin.OperatorStated,
+                SagaMemoryScopeKind.Global, null, ContentSensitivity.None, corrected, now, now, null, CancellationToken.None),
+            _ => await AnnalsClaimWriter.AppendRetirementAsync(
+                connection, transaction, AnnalSubjectStore.Saga, "legacy-memory", AnnalOrigin.OperatorStated,
+                SagaMemoryScopeKind.Global, null, ContentSensitivity.None, now, now, null, CancellationToken.None),
+        };
+
+        Assert.True(written);
+
+        await transaction.CommitAsync();
+
+        Assert.Equal((int)operation, await CountAsync(connection, "SELECT CurrentOperationCode FROM annal_heads;"));
+
+        Assert.Equal(operation == AnnalOperation.Assert ? 1 : 2,
+            await CountAsync(connection, "SELECT COUNT(*) FROM annal_versions;"));
+
+        Assert.Equal(operation == AnnalOperation.Assert ? 0 : 1,
+            await CountAsync(connection, "SELECT COUNT(*) FROM annal_dependencies;"));
+
+        await using SqliteCommand hash = connection.CreateCommand();
+
+        hash.CommandText = "SELECT ContentHash FROM annal_versions ORDER BY Revision DESC LIMIT 1;";
+
+        object? actualHash = await hash.ExecuteScalarAsync();
+
+        if (operation == AnnalOperation.Retire)
+        {
+            Assert.Equal(DBNull.Value, actualHash);
+        }
+        else
+        {
+            Assert.Equal(operation == AnnalOperation.Assert ? original : corrected, Assert.IsType<byte[]>(actualHash));
+        }
+    }
+
+    [Fact]
+    public async Task Annals_reader_projects_legacy_format_then_observes_the_upgraded_format_column()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection, CoreSchemaVersionTenFixture.ChainSet(), TestDimensions, CancellationToken.None);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        await using (SqliteTransaction transaction = connection.BeginTransaction())
+        {
+            _ = await AnnalsClaimWriter.AppendAssertAsync(
+                connection, transaction, AnnalSubjectStore.Saga, "legacy-memory", AnnalOrigin.AgentExtracted,
+                SagaMemoryScopeKind.Global, null, ContentSensitivity.None, AnnalContentHashFormat.LegacyStoreDigest,
+                AnnalContentDigest.ForSagaMemory("original"), now, now, null, CancellationToken.None, legacySchema: true);
+
+            await transaction.CommitAsync();
+        }
+
+        await using ArcanumDbContext db = CreateContext(file);
+
+        AnnalsStore store = new(db);
+
+        AnnalClaimHead legacy = (await store.GetClaimAsync(AnnalSubjectStore.Saga, "legacy-memory", CancellationToken.None))!;
+
+        Assert.Equal(AnnalContentHashFormat.LegacyStoreDigest,
+            Assert.Single(await store.GetVersionsAsync(legacy.ClaimId, CancellationToken.None)).ContentHashFormat);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection, CoreSchemaVersionElevenFixture.ChainSet(), TestDimensions, CancellationToken.None);
+
+        await using (SqliteTransaction transaction = connection.BeginTransaction())
+        {
+            _ = await AnnalsClaimWriter.AppendAssertAsync(
+                connection, transaction, AnnalSubjectStore.Lexicon, "snapshot-entry", AnnalOrigin.OperatorStated,
+                SagaMemoryScopeKind.Global, null, ContentSensitivity.None, AnnalContentHashFormat.LexiconStructuredSnapshot,
+                new byte[32], now, now, null, CancellationToken.None);
+
+            await transaction.CommitAsync();
+        }
+
+        AnnalClaimHead snapshot = (await store.GetClaimAsync(AnnalSubjectStore.Lexicon, "snapshot-entry", CancellationToken.None))!;
+
+        Assert.Equal(AnnalContentHashFormat.LexiconStructuredSnapshot,
+            Assert.Single(await store.GetVersionsAsync(snapshot.ClaimId, CancellationToken.None)).ContentHashFormat);
+    }
 
     [Fact]
     public async Task A_memory_written_before_the_sweep_drains_succeeds_and_records_the_canonical_campaign()
@@ -148,6 +289,67 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                 "CampaignId",
                 CancellationToken.None));
 
+    }
+
+    /// <summary>
+    /// A memory written while version 12's sweep is still pending needs no erasure key: the recorded
+    /// Core version is below 13, so the store holds no evidence to guard against.
+    /// </summary>
+    /// <remarks>
+    /// Built the way an upgrade produces it, as the version-5 case above is: install version 11, then
+    /// hand the installer the shipped chain once. Version 12 declares a backfill, so that one call
+    /// commits its DDL and stops with 11 recorded, and the evidence table does not exist yet. The case
+    /// asserts that state before it writes, and then proves the write never asked the credential store.
+    /// </remarks>
+    [Fact]
+    public async Task A_memory_written_while_the_version_twelve_sweep_is_pending_needs_no_erasure_key()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            CoreSchemaVersionElevenFixture.ChainSet(),
+            TestDimensions,
+            CancellationToken.None);
+
+        Assert.Equal(11, installed.Core.SchemaVersion);
+
+        // One call, which leaves version 12's DDL committed and its sweep still pending.
+        GrimoireSchemaInstallResult upgraded = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            GrimoireSchemaVersionChains.Default,
+            TestDimensions,
+            CancellationToken.None);
+
+        Assert.Equal(11, upgraded.Core.SchemaVersion);
+
+        Assert.Null(await ScalarStringAsync(
+            connection,
+            "SELECT name FROM sqlite_master WHERE name = 'memory_erasure_fingerprints';"));
+
+        CountingOsCredentialStore credentials = new(new InMemoryOsCredentialStore());
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        await using ArcanumDbContext db = CreateContext(file);
+
+        SagaMemoryWriteOutcome outcome = await CreateStore(db, keyring).InsertAsync(
+            Guid.NewGuid().ToString(),
+            "a conclusion drawn while version twelve drains",
+            DateTimeOffset.UtcNow,
+            sessionId: null,
+            tags: null,
+            source: "test",
+            new float[TestDimensions],
+            CancellationToken.None);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
+
+        Assert.Equal(1, await CountAsync(connection, "SELECT COUNT(*) FROM saga_memories;"));
+
+        Assert.Equal(0, credentials.Calls);
     }
 
     /// <summary>
@@ -437,7 +639,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     }
 
-    private static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
+    internal static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
     {
 
         string id = Guid.NewGuid().ToString();
@@ -458,7 +660,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     }
 
-    private static SagaMemoryStore CreateStore(ArcanumDbContext db) =>
+    internal static SagaMemoryStore CreateStore(ArcanumDbContext db, IMemoryErasureKeyProvider? erasureKeys = null) =>
         new(
             db,
             new WeaveIndexAvailability(),
@@ -469,7 +671,8 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
                     },
-                }));
+                }),
+            erasureKeys ?? MemoryErasureTestKeys.Isolated());
 
     private static async Task<int> CountAsync(SqliteConnection connection, string sql)
     {
@@ -555,7 +758,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     /// An object-relational context over the same scratch file the installer just wrote, because
     /// <see cref="SagaMemoryStore"/> takes one and the point of the case is to drive the real store.
     /// </summary>
-    private static ArcanumDbContext CreateContext(EvolutionScratchDatabase file)
+    internal static ArcanumDbContext CreateContext(EvolutionScratchDatabase file)
     {
 
         DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()

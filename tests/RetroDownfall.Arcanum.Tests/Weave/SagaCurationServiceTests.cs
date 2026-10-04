@@ -1,10 +1,20 @@
+using System.Text.Json;
+
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.Extensions.AI;
 
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
@@ -24,7 +34,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -57,7 +67,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaMemoryDetail> result = await service
             .ShowAsync("m-1", CancellationToken.None).ConfigureAwait(false);
@@ -71,7 +81,8 @@ public sealed class SagaCurationServiceTests
     {
 
         // Retrievable in no scope at all is a different answer from retired and a different answer from
-        // broken, and the operator has to be able to tell the three apart.
+        // broken, and the operator has to be able to tell the three apart. That is the answer only while
+        // Campaign scoping is on; with it off a turn ranks this memory like any other.
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
         Guid orphan = await harness.SessionWithUnresolvedBindingAsync().ConfigureAwait(false);
@@ -80,7 +91,8 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             orphan, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(
+            harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness, campaignScopedMemory: true));
 
         Result<SagaMemoryDetail> result = await service
             .ShowAsync("m-1", CancellationToken.None).ConfigureAwait(false);
@@ -99,7 +111,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaMemoryDetail> result = await service
             .ShowAsync("m-1", CancellationToken.None).ConfigureAwait(false);
@@ -118,7 +130,7 @@ public sealed class SagaCurationServiceTests
 
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaMemoryDetail> result = await service
             .ShowAsync("m-absent", CancellationToken.None).ConfigureAwait(false);
@@ -139,7 +151,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1", "not-a-valid-hex-string", "the operator prefers spaces", CancellationToken.None)
@@ -168,7 +180,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -196,7 +208,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -250,7 +262,7 @@ public sealed class SagaCurationServiceTests
         // FakeWeaveService.Available always hands back an all-zero vector, distinct from harness.Embedding()'s
         // seeded random one above -- so a store write that used it would move the embedding bytes and this
         // test would catch it, even though the service still pays for the (wasted) embed call to get here.
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -271,13 +283,13 @@ public sealed class SagaCurationServiceTests
 
         Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
 
-        // The vec0 mirror is not asserted here: WeaveIndexAvailability.IsVecAvailable is permanently
-        // false on this hermetic build (SQLite is compiled with SQLITE_OMIT_LOAD_EXTENSION, per that
-        // type's own doc comment), so SagaStoreHarness never exercises CorrectAsync's
-        // "if (availability.IsVecAvailable)" branch and no test built on this harness -- including the
-        // pre-existing Correction_replaces_the_content_and_the_vector_together -- writes to
-        // saga_memory_embeddings_vec at all. There is no build reachable from this harness where the
-        // omission could be filled in.
+        // The vector mirror is not asserted here because this case never creates one: no schema file
+        // installs saga_memory_embeddings_vec, and an Unchanged correction rolls back before it would
+        // reach the mirror anyway. The mirror rule itself -- a plain mirror's row rewritten only while
+        // the accelerator is live and removed otherwise, a legacy virtual mirror never touched -- is
+        // pinned by SagaVectorMirrorTests, which stand a mirror up with
+        // SagaStoreHarness.CreatePlainVectorMirrorAsync and drive the flag through
+        // SagaStoreHarness.VectorAccelerator.
         AnnalClaimHead claimAfter = (await harness.Annals
             .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
 
@@ -321,7 +333,7 @@ public sealed class SagaCurationServiceTests
         int revisionsBefore = (await harness.Annals
             .GetVersionsAsync(claimBefore.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -363,7 +375,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -389,7 +401,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
@@ -420,7 +432,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
@@ -449,7 +461,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -482,7 +494,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
@@ -510,7 +522,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service.RetireAsync(
             "m-1",
@@ -546,7 +558,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
 
         string hash = Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs"));
 
@@ -578,7 +590,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals);
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
 
         Result<SagaCurationResult> result = await service
             .SetPinAsync("m-1", true, CancellationToken.None).ConfigureAwait(false);
@@ -592,21 +604,26 @@ public sealed class SagaCurationServiceTests
     }
 
     /// <summary>
-    /// <see cref="SagaCurationService.ClassifyEligibility"/> directly, against hand-built rows.
+    /// <see cref="SagaRetrievalEligibilityClassifier.Classify"/> directly, against hand-built rows.
     /// Hand-building a classifier's input is normally a smell in this suite -- a test that constructs
     /// its own input can pass while no production caller ever produces that shape. It is safe here
-    /// because <c>ClassifyEligibility</c>'s production reachability is already proven above, through
+    /// because <c>Classify</c>'s production reachability is already proven above, through
     /// <c>ShowAsync</c>: <see cref="A_retired_memory_reports_retired_rather_than_a_missing_embedding"/>
     /// and <see cref="A_memory_whose_ownership_never_resolved_reports_that_rather_than_eligible"/> both
     /// drive this same method from a real store-backed row. What those two tests cannot do is force
     /// apart the rungs that never co-occur in a store-produced row -- every inserted memory carries an
     /// embedding, so <c>HasEmbedding</c> is true everywhere those tests reach. This theory pins the
     /// ordering itself, including the two combinations that would silently swap under a reordered
-    /// ladder: retired-and-unembedded, and unresolved-and-unembedded.
+    /// ladder: retired-and-unembedded, and unresolved-and-unembedded. It runs with Campaign scoping
+    /// enforced, the one policy under which unresolved ownership withholds a memory;
+    /// <see cref="Classify_reports_unresolved_ownership_only_while_campaign_scoping_is_enforced"/> pins
+    /// the other.
     /// </summary>
     [Theory]
     [InlineData(SagaMemoryScopeKind.Global, true, false, SagaRetrievalEligibility.Retired)]
     [InlineData(SagaMemoryScopeKind.Unclassified, true, true, SagaRetrievalEligibility.Retired)]
+    [InlineData(SagaMemoryScopeKind.LegacyUnresolved, true, false, SagaRetrievalEligibility.Retired)]
+    [InlineData(SagaMemoryScopeKind.Unclassified, false, true, SagaRetrievalEligibility.OwnershipUnresolved)]
     [InlineData(SagaMemoryScopeKind.Unclassified, false, false, SagaRetrievalEligibility.OwnershipUnresolved)]
     [InlineData(SagaMemoryScopeKind.LegacyUnresolved, false, false, SagaRetrievalEligibility.OwnershipUnresolved)]
     [InlineData(SagaMemoryScopeKind.LegacyUnresolved, false, true, SagaRetrievalEligibility.OwnershipUnresolved)]
@@ -620,9 +637,96 @@ public sealed class SagaCurationServiceTests
 
         SagaMemoryCurationRow row = BuildRow(scopeKind, retired, hasEmbedding);
 
-        Assert.Equal(expected, SagaCurationService.ClassifyEligibility(row));
+        Assert.Equal(expected, SagaRetrievalEligibilityClassifier.Classify(row, campaignScopingEnforced: true));
 
     }
+
+    /// <summary>
+    /// With Campaign scoping off a turn ranks every embedded memory whoever owns it, so an unresolved
+    /// memory is not withheld, and reporting it as <c>OwnershipUnresolved</c> would contradict what
+    /// retrieval actually does. Retirement and a missing embedding still withhold it either way.
+    /// </summary>
+    [Theory]
+    [InlineData(SagaMemoryScopeKind.Unclassified, false, true, SagaRetrievalEligibility.Eligible)]
+    [InlineData(SagaMemoryScopeKind.LegacyUnresolved, false, true, SagaRetrievalEligibility.Eligible)]
+    [InlineData(SagaMemoryScopeKind.LegacyUnresolved, false, false, SagaRetrievalEligibility.EmbeddingMissing)]
+    [InlineData(SagaMemoryScopeKind.Unclassified, true, true, SagaRetrievalEligibility.Retired)]
+    [InlineData(SagaMemoryScopeKind.Global, false, true, SagaRetrievalEligibility.Eligible)]
+    public void Classify_reports_unresolved_ownership_only_while_campaign_scoping_is_enforced(
+        SagaMemoryScopeKind scopeKind, bool retired, bool hasEmbedding, SagaRetrievalEligibility expected)
+    {
+
+        SagaMemoryCurationRow row = BuildRow(scopeKind, retired, hasEmbedding);
+
+        Assert.Equal(expected, SagaRetrievalEligibilityClassifier.Classify(row, campaignScopingEnforced: false));
+
+    }
+
+    /// <summary>
+    /// The detail route, the Saga review items, and search all write eligibility through this one
+    /// converter, so a client reads a name it can match rather than an ordinal that changes meaning if
+    /// the enum is ever reordered — and a number met when a response is read back is refused rather
+    /// than guessed at. No request body carries this value.
+    /// </summary>
+    [Fact]
+    public void Saga_eligibility_is_written_as_its_name_and_a_number_is_refused()
+    {
+
+        Assert.Equal(
+            "\"Retired\"",
+            JsonSerializer.Serialize(SagaRetrievalEligibility.Retired, ArcanumJsonContext.Default.SagaRetrievalEligibility));
+
+        Assert.Throws<JsonException>(
+            () => JsonSerializer.Deserialize("2", ArcanumJsonContext.Default.SagaRetrievalEligibility));
+
+    }
+
+    /// <summary>
+    /// Every production surface that reports a memory's eligibility asks the Core classifier, so the
+    /// detail route, the review queue, search, and explain cannot drift apart. A source file outside
+    /// the classifier's own that names an eligibility member is a second ladder in the making.
+    /// </summary>
+    /// <remarks>
+    /// Doc-comment <c>cref</c>s are structured trivia, and <c>DescendantNodes()</c> does not descend
+    /// into trivia, so prose that mentions a member does not count as a decision.
+    /// </remarks>
+    [Fact]
+    public void Only_the_core_classifier_decides_saga_eligibility()
+    {
+
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string[] files =
+        [
+            .. Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+                .Where(static file => !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                    && !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                .Where(static file => CSharpSyntaxTree
+                    .ParseText(File.ReadAllText(file), new CSharpParseOptions(LanguageVersion.Preview))
+                    .GetRoot()
+                    .DescendantNodes()
+                    .OfType<MemberAccessExpressionSyntax>()
+                    .Any(static access => access.Expression is IdentifierNameSyntax
+                    {
+                        Identifier.ValueText: nameof(SagaRetrievalEligibility),
+                    }))
+                .Select(file => Path.GetRelativePath(root, file).Replace('\\', '/'))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(["src/RetroDownfall.Arcanum.Core/Weave/SagaCurationContracts.cs"], files);
+
+    }
+
+    /// <summary>
+    /// The production scope seam over this harness's Grimoire, with the Campaign-scoped-memory gate set
+    /// as given. Off by default, which is the shipped default.
+    /// </summary>
+    private static MemoryScopeResolver Scoping(SagaStoreHarness harness, bool campaignScopedMemory = false) =>
+        new(
+            harness.Context,
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings { Features = new FeatureSettings { CampaignScopedMemory = campaignScopedMemory } }));
 
     private static SagaMemoryCurationRow BuildRow(SagaMemoryScopeKind scopeKind, bool retired, bool hasEmbedding)
     {

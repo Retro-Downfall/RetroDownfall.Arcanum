@@ -30,6 +30,8 @@ internal static partial class CliCommandTree
 
         CovenantCommands handler = sp.GetRequiredService<CovenantCommands>();
 
+        MemoryCommands memoryHandler = sp.GetRequiredService<MemoryCommands>();
+
         Command covenant = new(
             "covenant",
             "Read and write the standing agreement between this operator and the agent.");
@@ -111,6 +113,44 @@ internal static partial class CliCommandTree
                     pr.GetValue(listLifecycle) ?? CovenantLifecycle.Set,
                     ct).ConfigureAwait(false));
 
+        Command search = new("search", "Search current Covenant preference heads.");
+
+        Argument<string> searchQuery = new("query") { Description = "The preference text or key prefix to find." };
+
+        Option<bool> searchAllScopes = new("--all-scopes")
+        {
+            Description = "Search Global and every Campaign scope together.",
+        };
+
+        Option<CovenantLane?> searchLane = LaneOption(
+            "Confirmed (operator-authored) or Proposed (agent-suggested). Omit for both.");
+
+        Option<CovenantLifecycle?> searchLifecycle = new("--lifecycle")
+        {
+            Description = "Set (the default), Retired, or Any.",
+            CustomParser = static result => Parse<CovenantLifecycle>(result, "Covenant lifecycle"),
+        };
+
+        search.Add(searchQuery);
+
+        search.Add(campaign);
+
+        search.Add(searchAllScopes);
+
+        search.Add(searchLane);
+
+        search.Add(searchLifecycle);
+
+        search.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Search(
+                    pr.GetValue(searchQuery)!,
+                    pr.GetValue(campaign),
+                    pr.GetValue(searchAllScopes),
+                    pr.GetValue(searchLane),
+                    pr.GetValue(searchLifecycle) ?? CovenantLifecycle.Set,
+                    ct).ConfigureAwait(false));
+
         Command show = new("show", "Show both lane heads for one preference key.");
 
         Argument<string> showKey = new("key") { Description = "The preference key." };
@@ -180,13 +220,13 @@ internal static partial class CliCommandTree
 
         Option<Guid> targetVersion = new("--target-version")
         {
-            Description = "The version identity being corrected, as `show --history` reports it.",
+            Description = "The version identity being corrected, as `show` reports it.",
             Required = true,
         };
 
         Option<string> targetHash = new("--target-hash")
         {
-            Description = "The compiled hash of the version being corrected, as `show` reports it.",
+            Description = "The rendered hash of the version being corrected, as `show` reports it.",
             Required = true,
         };
 
@@ -228,9 +268,49 @@ internal static partial class CliCommandTree
 
         covenant.Add(list);
 
+        covenant.Add(search);
+
         covenant.Add(show);
 
         covenant.Add(retire);
+
+        Command erase = new(
+            "erase",
+            "Erase one preference entry for good, every version in both lanes, so agents cannot propose its key again in that scope.");
+
+        Argument<string> eraseKey = new("key") { Description = "The preference key." };
+
+        erase.Add(eraseKey);
+
+        erase.Add(campaign);
+
+        erase.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Erase(
+                    pr.GetValue(eraseKey)!,
+                    pr.GetValue(campaign),
+                    ct).ConfigureAwait(false));
+
+        covenant.Add(erase);
+
+        Command release = new(
+            "release",
+            "Release one key's erasure fingerprint in exactly one scope, so agents may propose that key there again.");
+
+        Argument<string> releaseKey = new("key") { Description = "The preference key." };
+
+        release.Add(releaseKey);
+
+        release.Add(campaign);
+
+        release.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Release(
+                    pr.GetValue(releaseKey)!,
+                    pr.GetValue(campaign),
+                    ct).ConfigureAwait(false));
+
+        covenant.Add(release);
 
         covenant.Add(CurationCommand(
             handler,
@@ -259,6 +339,8 @@ internal static partial class CliCommandTree
             "unmask",
             "Let a masked Global preference apply in this Campaign again.",
             campaignRequired: true));
+
+        covenant.Add(BuildCovenantReview(memoryHandler));
 
         return covenant;
 
@@ -301,7 +383,7 @@ internal static partial class CliCommandTree
 
         Option<long> expectedRevision = new("--expected-revision")
         {
-            Description = "The curation revision this change expects to replace. Zero is an uncurated subject.",
+            Description = "The curation revision `show` reports for this lane. Zero is an uncurated subject.",
         };
 
         command.Add(key);

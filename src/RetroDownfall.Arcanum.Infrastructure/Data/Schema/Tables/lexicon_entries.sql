@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS lexicon_entries (
     FactsJson TEXT NOT NULL,
     FactsText TEXT NOT NULL,
     UpdatedAt TEXT NOT NULL
-, ScopeCampaignId TEXT NOT NULL DEFAULT '');
+, ScopeCampaignId TEXT NOT NULL DEFAULT '',
+    RetiredAtUtc TEXT NULL,
+    PinnedAtUtc TEXT NULL,
+    CurationGeneration INTEGER NOT NULL DEFAULT 1 CHECK (CurationGeneration > 0));
 
 -- Scope first: every lookup knows which scope it is asking about before it knows the name, and the
 -- two-tier match reads one scope and then the other.

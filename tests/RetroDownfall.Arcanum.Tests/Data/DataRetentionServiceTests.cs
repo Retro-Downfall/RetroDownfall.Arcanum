@@ -48,6 +48,10 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Core.Lexicon;
+
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+
 namespace RetroDownfall.Arcanum.Tests.Data;
 
 [Collection("Grimoire")]
@@ -3961,6 +3965,38 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     }
 
+    private LexiconService CreateLexiconService(ArcanumDbContext? context = null) =>
+        new(context ?? _db!, NullLogger<LexiconService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
+            {
+                Features = new FeatureSettings { Annals = true },
+            }),
+            MemoryErasureTestKeys.Isolated());
+
+    private async Task<LexiconEntryDetail> SeedCuratableLexiconAsync(string name, bool aged = true)
+    {
+        LexiconService lexicon = CreateLexiconService();
+
+        AttachmentMemoryProvenance source = new(Guid.NewGuid(), Guid.NewGuid(), "retention-source", 1,
+            "source-hash", DateTimeOffset.UtcNow, "WorkspaceFile", AttachmentSourceAvailability.Available);
+
+        var seeded = await lexicon.UpsertAsync(name, "concept", ["retentionevidence"], source, LexiconScope.Global);
+
+        Assert.True(seeded.IsSuccess, seeded.Error.Message);
+
+        if (aged)
+        {
+            await ExecuteAsync("UPDATE lexicon_entries SET UpdatedAt = @at WHERE Id = @id",
+                ("@at", OldTimestamp), ("@id", seeded.Value.Id.ToString("N")));
+        }
+
+        var detail = await lexicon.ShowExactAsync(new(LexiconScopeKind.Global, null), name, null);
+
+        Assert.True(detail.IsSuccess, detail.Error.Message);
+
+        return detail.Value.Value;
+    }
+
     private async Task<(
         LongRunningOperationReconciliationSummary Summary,
         LongRunningOperation Operation)> ReconcileFactoryResetV0Async(
@@ -4869,6 +4905,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         : ILongRunningOperationStore
     {
 
+        internal Func<CancellationToken, Task>? AfterStartAsync { get; init; }
+
         private int _heartbeats;
 
         public int Heartbeats => Volatile.Read(ref _heartbeats);
@@ -4916,18 +4954,27 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             inner.ResolveOrCreateAsync(request, identity, cancellationToken);
 
-        public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+        public async Task<LongRunningOperation?> TryStartSingleFlightAsync(
             LongRunningOperationCreateRequest request,
             string ownerId,
             DateTimeOffset utcNow,
             DateTimeOffset leaseExpiresAt,
-            CancellationToken cancellationToken = default) =>
-            inner.TryStartSingleFlightAsync(
+            CancellationToken cancellationToken = default)
+        {
+            LongRunningOperation? started = await inner.TryStartSingleFlightAsync(
                 request,
                 ownerId,
                 utcNow,
                 leaseExpiresAt,
                 cancellationToken);
+
+            if (started is not null && AfterStartAsync is not null)
+            {
+                await AfterStartAsync(cancellationToken);
+            }
+
+            return started;
+        }
 
         public Task<LongRunningOperation?> GetAsync(
             Guid operationId,

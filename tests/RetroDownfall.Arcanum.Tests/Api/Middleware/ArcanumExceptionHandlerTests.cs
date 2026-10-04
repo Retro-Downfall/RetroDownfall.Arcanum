@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -259,6 +260,99 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.Equal(StatusCodes.Status200OK, httpContext.Response.StatusCode);
 
         Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+    }
+
+    /// <summary>
+    /// A raw delete the labelled-artifact guard refused is answered with the guard's own error, mapped
+    /// to the status its code carries, and logged as the expected refusal it is.
+    /// </summary>
+    [Theory]
+    [InlineData(ErrorCodes.Covenant.ForbiddenAuthority, StatusCodes.Status403Forbidden)]
+    [InlineData(ErrorCodes.Covenant.Unavailable, StatusCodes.Status503ServiceUnavailable)]
+    public async Task TryHandleAsync_LabeledArtifactRefusal_AnswersTheMappedStatusWithTheGuardsError(string code, int status)
+    {
+
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/sessions/00000000-0000-0000-0000-000000000000/compact";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new LabeledArtifactRefusalException(new Error(code, "The guard refused the delete.")),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(status, httpContext.Response.StatusCode);
+
+        ApiResponse<string>? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.ApiResponseString);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(code, body.Error?.Code);
+
+        Assert.Equal("The guard refused the delete.", body.Error?.Message);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.All(logger.Entries, static entry => Assert.Null(entry.Exception));
+
+    }
+
+    /// <summary>
+    /// The OpenAI-compatible surface keeps its own error envelope: a refusal there is not given the
+    /// native one.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_LabeledArtifactRefusal_V1Path_KeepsTheOpenAiUnhandledAnswer()
+    {
+
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/v1/chat/completions";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new LabeledArtifactRefusalException(new Error(ErrorCodes.Covenant.ForbiddenAuthority, "The guard refused the delete.")),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
+
+        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_LabeledArtifactRefusal_WithResponseStarted_ReturnsFalse()
+    {
+
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext(responseStarted: true);
+
+        httpContext.Request.Path = "/api/saga/00000000-0000-0000-0000-000000000000";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new LabeledArtifactRefusalException(new Error(ErrorCodes.Covenant.Unavailable, "The guard refused the delete.")),
+            CancellationToken.None);
+
+        Assert.False(handled);
 
     }
 

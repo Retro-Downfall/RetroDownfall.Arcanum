@@ -8,7 +8,9 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -49,6 +51,10 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountTableRowsAsync("annal_versions"));
 
         Assert.Equal(1, await CountTableRowsAsync("annal_heads"));
+
+        Assert.Equal(1, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
 
     }
 
@@ -189,6 +195,8 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CountTableRowsAsync("annal_claims"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
+
     }
 
     /// <summary>
@@ -246,6 +254,10 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(1, await CountAnnalClaimsAsync(1, memory));
 
+        Assert.Equal(0, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
+
     }
 
     /// <summary>
@@ -277,6 +289,8 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountAnnalClaimsAsync(1, ownedByB));
 
         Assert.Equal(1, await CountAnnalClaimsAsync(1, installationScoped));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
 
     }
 
@@ -340,6 +354,8 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CountTableRowsAsync("annal_heads"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
+
     }
 
     private async Task ApplyUntargetedResetAsync(MemoryResetScope scope)
@@ -402,6 +418,101 @@ public sealed partial class DataRetentionServiceTests
             ("@versionId", versionId),
             ("@at", OldTimestamp));
 
+        if (subjectStoreCode == 2)
+        {
+            await ExecuteAsync(
+                """
+                INSERT INTO lexicon_annal_fact_provenance
+                    (AnnalVersionId, FactOrdinal, SessionId, AttachmentId, LogicalKey, AttachmentVersion,
+                     AttachmentContentHash, MaterializedAt, SourceType)
+                VALUES (@versionId, 0, @session, @attachment, 'source', 1, 'attachment-digest', @at, 'text')
+                """,
+                ("@versionId", versionId),
+                ("@session", Guid.NewGuid().ToString()),
+                ("@attachment", Guid.NewGuid().ToString()),
+                ("@at", OldTimestamp));
+        }
+
+    }
+
+    [SkippableFact]
+    public async Task Historical_Lexicon_provenance_is_inventoried_and_factory_reset_as_Annals()
+    {
+        RequireSqlCipher();
+
+        string entry = await SeedClaimedLexiconEntryAsync("history", string.Empty);
+
+        await SeedLexiconReviewStateAsync(entry, 1, null);
+
+        Assert.Equal(1, await CountLexiconFtsMatchesAsync("history"));
+
+        TestCapturingLogger<DataRetentionService> logger = new();
+
+        DataRetentionService service = CreateService(logger: logger);
+
+        DataRetentionStatus status = await service.GetStatusAsync(CancellationToken.None);
+
+        AssertStatusRows(status, RetentionDataClass.Annals, 7, "lexicon_annal_fact_provenance");
+
+        DataRetentionPlan plan = await service.PlanAsync(new DataRetentionRequest(DataRetentionOperation.FactoryReset), CancellationToken.None);
+
+        Assert.Equal(7, plan.Items.Where(static item => item.DataClass == RetentionDataClass.Annals).Sum(static item => item.DerivedRecords));
+
+        (LongRunningOperationReconciliationSummary recovery, LongRunningOperation operation) =
+            await ReconcileFactoryResetV0Async(service, "lexicon-history-factory-reset");
+
+        Assert.True(recovery.Completed == 1,
+            $"{recovery}; {operation.TerminalErrorCode}; {string.Join(System.Environment.NewLine, logger.Entries.Select(static entry => entry.Exception?.ToString() ?? entry.Message))}");
+
+        Assert.Equal(0, recovery.RequiresAttention);
+
+        Assert.Equal(0, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_review_decision_receipts"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_review_events"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_review_markers"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_claims"));
+
+        Assert.Equal(0, await CountTableRowsAsync("lexicon_entries"));
+
+        Assert.Equal(0, await CountLexiconFtsMatchesAsync("history"));
+    }
+
+    [SkippableFact]
+    public async Task Campaign_Lexicon_reset_removes_only_its_historical_coordinates_and_counts_them()
+    {
+        RequireSqlCipher();
+
+        await SeedCampaignRowAsync(AnnalsCampaignA);
+
+        string owned = await SeedClaimedLexiconEntryAsync("owned", AnnalsCampaignA.ToString());
+
+        await SeedLexiconReviewStateAsync(owned, 2, AnnalsCampaignA.ToString());
+
+        string global = await SeedClaimedLexiconEntryAsync("global", string.Empty);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.ResetMemory, AnnalsCampaignA, MemoryResetScope.Lexicon);
+
+        DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
+
+        // The entry, claim, head, version, historical source coordinate, review event, decision
+        // receipt, and Campaign marker are all owned.
+        Assert.Equal(8, plan.DerivedRecords);
+
+        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(new(request, plan.PlanId), CancellationToken.None);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        Assert.Equal(8, applied.Value.DerivedRecordsDeleted);
+
+        Assert.Equal(1, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
+
+        Assert.Equal(1, await CountAnnalClaimsAsync(2, global));
     }
 
     private async Task<string> SeedClaimedLexiconEntryAsync(string nameNormalized, string scopeCampaignId)
@@ -424,6 +535,67 @@ public sealed partial class DataRetentionServiceTests
 
         return id;
 
+    }
+
+    private async Task SeedLexiconReviewStateAsync(
+        string entryId,
+        int scopeKindCode,
+        string? campaignId)
+    {
+
+        await ExecuteAsync(
+            """
+            INSERT INTO annal_review_decision_receipts
+                (DecisionId, ReviewEventSequence, RequestIdempotencyDigest, DecisionCode, ResponseReceiptDigest)
+            SELECT @decisionId, Sequence, zeroblob(32), 1, zeroblob(32)
+            FROM annal_review_events
+            WHERE SubjectStoreCode = 2 AND SubjectId = @entryId
+            """,
+            ("@decisionId", Guid.NewGuid().ToString("N")),
+            ("@entryId", entryId));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO annal_review_markers
+                (SubjectStoreCode, ScopeKindCode, CampaignId, MarkerGeneration, ReviewedThroughSequence, Revision)
+            VALUES (2, @scopeKindCode, @campaignId, X'0102030405060708090A0B0C0D0E0F10', 0, 1)
+            """,
+            ("@scopeKindCode", scopeKindCode),
+            ("@campaignId", campaignId is null ? DBNull.Value : campaignId));
+
+    }
+
+    [SkippableFact]
+    public async Task Pruning_an_aged_Lexicon_entry_removes_its_historical_source_coordinates()
+    {
+        RequireSqlCipher();
+
+        _ = await SeedClaimedLexiconEntryAsync("aged", string.Empty);
+
+        Assert.Equal(1, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
+
+        IDataRetentionService service = CreateService(new ArcanumSettings
+        {
+            Retention = new RetentionSettings
+            {
+                AutomaticSweepsEnabled = false,
+                LexiconEntries = new RetentionRuleSettings { Enabled = true, Days = 1 },
+            },
+        });
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(new(request, plan.PlanId), CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : string.Empty);
+
+        Assert.True(result.Value.Reconciled);
+
+        Assert.Equal(0, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_versions"));
     }
 
     private Task<int> CountAnnalClaimsAsync(int subjectStoreCode, string subjectId) =>

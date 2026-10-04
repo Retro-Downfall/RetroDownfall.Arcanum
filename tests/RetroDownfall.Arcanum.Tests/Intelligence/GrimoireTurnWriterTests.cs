@@ -1221,9 +1221,6 @@ public sealed class GrimoireTurnWriterTests
         public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
-        public Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(0);
-
         public Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             Task.FromResult<List<GrimoireEntryDto>?>(null);
 

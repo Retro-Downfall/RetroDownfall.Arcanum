@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -26,6 +27,8 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -87,6 +90,12 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
     private readonly AcceptingJournal _journal = new();
 
+    /// <summary>
+    /// One process-wide erasure keyring, shared by the publication kernel and the staging store, as the
+    /// host's singleton is.
+    /// </summary>
+    private readonly MemoryErasureKeyring _erasureKeys = MemoryErasureTestKeys.Isolated(new InMemoryOsCredentialStore());
+
     private string _dbPath = string.Empty;
 
     private ArcanumDbContext? _db;
@@ -111,6 +120,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+
+        _erasureKeys.Dispose();
 
         if (_db is not null)
         {
@@ -204,6 +215,139 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// An erasure of one key withholds that key and nothing else: a turn proposing a different key in
+    /// the same Campaign stages it, publishes it beside its answer, and a later turn is shown it.
+    /// </summary>
+    /// <remarks>
+    /// The store holds Covenant evidence, so publication needs the key the latch holds. A publication
+    /// that did not capture it would refuse the whole turn as unverifiable, and the operator would lose
+    /// an answer that had nothing to do with anything erased.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_turn_publishes_an_unrelated_proposal_while_another_key_is_fingerprinted()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync();
+
+        Guid sessionId = await SeedUntaintedSessionAsync();
+
+        await SeedFingerprintAsync("tests.other.key", CancellationToken.None);
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        await using CovenantToolCall toolCall = await CovenantToolCall.CreateAsync(registry, _availability);
+
+        StagingChatClient chat = new(toolCall, ProposedKey, ProposedContent, AssistantAnswer, failAfterStaging: false);
+
+        Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: true)
+            .ExecutePromptAsync(Ping(sessionId), Invocation(), CancellationToken.None);
+
+        Assert.True(turn.IsSuccess, turn.IsFailure ? $"{turn.Error.Code}: {turn.Error.Message}" : string.Empty);
+
+        Assert.Null(chat.ToolFailure);
+
+        Assert.NotNull(chat.Staged);
+
+        Assert.Equal(AssistantAnswer, await ReadLastAssistantContentAsync(sessionId));
+
+        Assert.Contains(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A key erased after the model staged it is refused by the write authority inside publication,
+    /// and the whole turn goes with it: neither the answer nor the proposal is saved.
+    /// </summary>
+    /// <remarks>
+    /// Staging read no fingerprint, because none existed yet, and told the model the proposal was
+    /// staged. The erasure then commits before the reply is saved. The staging check is a courtesy;
+    /// the kernel inside the publication transaction is the one a mutation cannot get past, and a turn
+    /// shares its batch's fate rather than saving an answer whose proposal was silently dropped.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_key_fingerprinted_after_staging_refuses_the_whole_turn_at_publication()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync();
+
+        Guid sessionId = await SeedUntaintedSessionAsync();
+
+        // The key exists and is latched before the turn, as erase prepare leaves it, so the refusal
+        // below is the fingerprint's and not an unverifiable store's.
+        OpenErasureKey().Dispose();
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        await using CovenantToolCall toolCall = await CovenantToolCall.CreateAsync(registry, _availability);
+
+        StagingChatClient chat = new(
+            toolCall,
+            ProposedKey,
+            ProposedContent,
+            AssistantAnswer,
+            failAfterStaging: false,
+            afterStaging: cancellationToken => SeedFingerprintAsync(ProposedKey, cancellationToken));
+
+        Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: true)
+            .ExecutePromptAsync(Ping(sessionId), Invocation(), CancellationToken.None);
+
+        Assert.True(turn.IsFailure);
+
+        Assert.Null(chat.ToolFailure);
+
+        Assert.NotNull(chat.Staged);
+
+        Assert.Null(await ReadLastAssistantContentAsync(sessionId));
+
+        Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
+
+    }
+
+    /// <summary>Opens the erasure key the way erase prepare does, publishing Present into the latch.</summary>
+    private MemoryErasureKey OpenErasureKey()
+    {
+
+        MemoryErasureKeyOpenResult opened = _erasureKeys.OpenOrCreate(evidenceRowsExist: false);
+
+        Assert.Equal(MemoryErasureKeyState.Present, opened.State);
+
+        return opened.Key!;
+
+    }
+
+    /// <summary>
+    /// Records the Campaign-scoped fingerprint of <paramref name="key"/> from a sibling context, the
+    /// way a concurrent erasure would commit it.
+    /// </summary>
+    private async Task SeedFingerprintAsync(string key, CancellationToken cancellationToken)
+    {
+
+        using MemoryErasureKey erasureKey = OpenErasureKey();
+
+        await using ArcanumDbContext sibling = _fixture.CreateContext(_dbPath);
+
+        SqliteConnection connection = (SqliteConnection)sibling.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(cancellationToken);
+
+        }
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            connection,
+            erasureKey,
+            MemoryErasureIdentity.ForCovenant(CovenantScope.Campaign, CampaignId, key),
+            cancellationToken);
+
+    }
+
+    /// <summary>
     /// The Proposed section a second, independent turn would be shown.
     /// </summary>
     /// <remarks>
@@ -275,7 +419,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             new CovenantContextProvider(
                 _availability,
                 OperationGate(),
-                new CovenantStore(new FixedCovenantConnectionSource(Connection())),
+                new CovenantStore(new FixedCovenantConnectionSource(Connection()), _erasureKeys),
                 new CovenantLinker()),
             _journal,
             new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(Connection())),
@@ -336,8 +480,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
-            attachmentIndex: null,
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), _erasureKeys),
+            DetachedAvailabilityRepublisher.Create(),
             FixtureOrdinaryConnectionFactory.For(_db!),
             FixtureLabeledArtifactGuard.For(_db!));
 
@@ -516,13 +660,17 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// here is a turn in which no tool call could have seen it either. The failure is thrown after the
     /// tool has already reported the proposal staged, because a provider that failed first would leave
     /// the collector empty and prove nothing about what happens to a batch.
+    ///
+    /// <para><paramref name="afterStaging"/> runs once the tool has answered and before the model does,
+    /// which is where a concurrent operator action lands between staging and publication.</para>
     /// </remarks>
     private sealed class StagingChatClient(
         CovenantToolCall toolCall,
         string key,
         string content,
         string answer,
-        bool failAfterStaging) : IChatClient
+        bool failAfterStaging,
+        Func<CancellationToken, Task>? afterStaging = null) : IChatClient
     {
 
         public bool SawStagingCapability { get; private set; }
@@ -561,6 +709,13 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
                 Staged = JsonSerializer.Deserialize(
                     result.StructuredContent!.Value,
                     McpJsonSerializerContext.Default.CovenantMutationStagedResultWire);
+
+            }
+
+            if (afterStaging is not null)
+            {
+
+                await afterStaging(cancellationToken).ConfigureAwait(false);
 
             }
 

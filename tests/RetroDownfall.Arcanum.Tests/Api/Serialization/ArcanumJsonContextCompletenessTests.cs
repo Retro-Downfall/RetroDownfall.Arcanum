@@ -1,18 +1,153 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Wards;
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Serialization;
 
 public sealed class ArcanumJsonContextCompletenessTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Generation_provenance_roundtrips_exact_and_Bloom_payloads(bool overflow)
+    {
+        Guid[] identities = Enumerable.Range(1, overflow ? CovenantLimits.MaxExactGenerationIds + 1 : 2)
+            .Select(static index => new Guid(index, 0, 0, new byte[8]))
+            .ToArray();
+
+        GenerationProvenance value = GenerationProvenance.Create(identities);
+
+        string json = JsonSerializer.Serialize(value, ArcanumJsonContext.Default.GenerationProvenance);
+
+        GenerationProvenance restored = Assert.IsType<GenerationProvenance>(
+            JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.GenerationProvenance));
+
+        Assert.Equal(overflow ? GenerationProvenanceMode.BloomOverflow : GenerationProvenanceMode.Exact, restored.Mode);
+
+        Assert.Equal(value, restored);
+
+        Assert.Equal(value.ExactGenerationIds.ToArray(), restored.ExactGenerationIds.ToArray());
+
+        Assert.Equal(value.BloomBits.ToArray(), restored.BloomBits.ToArray());
+    }
+
+    [Theory]
+    [InlineData(typeof(LexiconShowRequest))]
+    [InlineData(typeof(LexiconCorrectRequest))]
+    [InlineData(typeof(LexiconRetireRequest))]
+    [InlineData(typeof(LexiconReinstateRequest))]
+    [InlineData(typeof(LexiconPinRequest))]
+    [InlineData(typeof(LexiconUnpinRequest))]
+    [InlineData(typeof(LexiconCurationScope))]
+    [InlineData(typeof(LexiconScopeKind))]
+    [InlineData(typeof(LexiconRetrievalEligibility))]
+    [InlineData(typeof(LexiconCurationOutcomeKind))]
+    [InlineData(typeof(LexiconEntryLifecycle))]
+    [InlineData(typeof(LexiconReplacementContent))]
+    [InlineData(typeof(LexiconCurationAnnalHead))]
+    [InlineData(typeof(LexiconCurationSensitivityLabel))]
+    [InlineData(typeof(LexiconCurationTarget))]
+    [InlineData(typeof(LexiconCurationResult))]
+    [InlineData(typeof(LexiconEntryDetail))]
+    [InlineData(typeof(LexiconEntryDto))]
+    [InlineData(typeof(LexiconEntryDto[]))]
+    [InlineData(typeof(LexiconAnnalFactProvenance))]
+    [InlineData(typeof(LexiconAnnalFactProvenance[]))]
+    [InlineData(typeof(LexiconFactProvenance))]
+    [InlineData(typeof(LexiconFactProvenance[]))]
+    [InlineData(typeof(AttachmentMemoryProvenance))]
+    [InlineData(typeof(AttachmentSourceAvailability))]
+    [InlineData(typeof(AnnalClaimVersion))]
+    [InlineData(typeof(AnnalClaimVersion[]))]
+    [InlineData(typeof(AnnalOperation))]
+    [InlineData(typeof(AnnalOrigin))]
+    [InlineData(typeof(AnnalContentHashFormat))]
+    [InlineData(typeof(ContentSensitivity))]
+    [InlineData(typeof(SagaMemoryScopeKind))]
+    [InlineData(typeof(GenerationProvenance))]
+    [InlineData(typeof(GenerationProvenanceMode))]
+    [InlineData(typeof(DataRetentionLexiconCurationInventory))]
+    [InlineData(typeof(ApiResponse<LexiconEntryDetail>))]
+    [InlineData(typeof(ApiResponse<LexiconCurationResult>))]
+    public void Lexicon_wire_types_have_explicit_source_generation_registrations(Type type)
+    {
+        Assert.Contains(typeof(ArcanumJsonContext).CustomAttributes, attribute => attribute.AttributeType == typeof(JsonSerializableAttribute)
+            && attribute.ConstructorArguments[0].Value is Type registered && registered == type);
+
+        Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type));
+    }
+
+    [Theory]
+    [InlineData(typeof(MemoryLocalErasureOutcome))]
+    [InlineData(typeof(MemoryErasureScrubPendingReason))]
+    [InlineData(typeof(MemoryErasureWalCheckpointAttempt))]
+    [InlineData(typeof(MemoryExternalChannel))]
+    [InlineData(typeof(MemoryExternalEvidence))]
+    [InlineData(typeof(MemoryExternalRevocation))]
+    [InlineData(typeof(MemoryRetainedLocalCopy))]
+    [InlineData(typeof(MemoryErasureNote))]
+    [InlineData(typeof(MemoryErasureReleaseOutcome))]
+    [InlineData(typeof(MemoryErasureKeyStatus))]
+    [InlineData(typeof(MemoryExternalExposureChannelDto))]
+    [InlineData(typeof(MemoryErasureExternalExposureDto))]
+    [InlineData(typeof(LexiconErasurePlanFacts))]
+    [InlineData(typeof(CovenantErasurePlanFacts))]
+    [InlineData(typeof(MemoryErasurePlanDto))]
+    [InlineData(typeof(MemoryErasurePreflightDto))]
+    [InlineData(typeof(MemoryErasureLocalResultDto))]
+    [InlineData(typeof(MemoryErasureResultDto))]
+    [InlineData(typeof(MemoryErasureReleaseResultDto))]
+    [InlineData(typeof(MemoryErasureStoreCountsDto))]
+    [InlineData(typeof(MemoryErasureStatusDto))]
+    [InlineData(typeof(MemoryErasureScrubResultDto))]
+    [InlineData(typeof(MemoryErasureKeyResetPreflightDto))]
+    [InlineData(typeof(MemoryErasureKeyResetRequest))]
+    [InlineData(typeof(MemoryErasureKeyResetResultDto))]
+    [InlineData(typeof(SagaErasePrepareRequest))]
+    [InlineData(typeof(SagaEraseRequest))]
+    [InlineData(typeof(SagaErasureReleaseRequest))]
+    [InlineData(typeof(LexiconErasePrepareRequest))]
+    [InlineData(typeof(LexiconEraseRequest))]
+    [InlineData(typeof(LexiconErasureReleaseRequest))]
+    [InlineData(typeof(MemoryErasureScrubPendingReason[]))]
+    [InlineData(typeof(MemoryExternalExposureChannelDto[]))]
+    [InlineData(typeof(MemoryRetainedLocalCopy[]))]
+    [InlineData(typeof(MemoryErasureNote[]))]
+    [InlineData(typeof(MemoryErasureStoreCountsDto[]))]
+    [InlineData(typeof(CovenantEraseHeadExpectation))]
+    [InlineData(typeof(CovenantErasePrepareRequest))]
+    [InlineData(typeof(CovenantEraseRequest))]
+    [InlineData(typeof(CovenantErasureReleaseRequest))]
+    [InlineData(typeof(ApiResponse<MemoryErasurePreflightDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureResultDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureReleaseResultDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureStatusDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureScrubResultDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureKeyResetPreflightDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureKeyResetResultDto>))]
+    [InlineData(typeof(DataRetentionMemoryErasureInventory))]
+    public void Memory_erasure_wire_types_have_explicit_source_generation_registrations(Type type)
+    {
+        Assert.Contains(typeof(ArcanumJsonContext).CustomAttributes, attribute => attribute.AttributeType == typeof(JsonSerializableAttribute)
+            && attribute.ConstructorArguments[0].Value is Type registered && registered == type);
+
+        Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type));
+    }
 
     [Theory]
     [InlineData(typeof(ApiResponse<bool>))]
@@ -40,6 +175,20 @@ public sealed class ArcanumJsonContextCompletenessTests
     [InlineData(typeof(OpenAiReasoningEffort))]
     [InlineData(typeof(SubmitHumanResponseRequest))]
     [InlineData(typeof(Error))]
+    [InlineData(typeof(LexiconCurationScope))]
+    [InlineData(typeof(LexiconScopeKind))]
+    [InlineData(typeof(LexiconRetrievalEligibility))]
+    [InlineData(typeof(LexiconCurationOutcomeKind))]
+    [InlineData(typeof(LexiconEntryLifecycle))]
+    [InlineData(typeof(LexiconReplacementContent))]
+    [InlineData(typeof(LexiconCurationAnnalHead))]
+    [InlineData(typeof(LexiconCurationSensitivityLabel))]
+    [InlineData(typeof(LexiconCurationTarget))]
+    [InlineData(typeof(LexiconCurationResult))]
+    [InlineData(typeof(LexiconAnnalFactProvenance))]
+    [InlineData(typeof(LexiconEntryDetail))]
+    [InlineData(typeof(ApiResponse<LexiconEntryDetail>))]
+    [InlineData(typeof(ApiResponse<LexiconCurationResult>))]
     public void TypeInfo_RegisteredForType(Type type)
     {
 

@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-    private const int ExpectedProductionAcquisitionCount = 435;
+    private const int ExpectedProductionAcquisitionCount = 467;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -36,6 +36,8 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOrdinarySnapshotAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs", "CovenantHealthyCatalogErasureGuard", "RequireHealthyAsync(1)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs", "MemoryErasureScrubber", "CheckpointAsync(1)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs", "MemoryErasureScrubber", "ReadCommittedReceiptAsync(2)"),
     ];
 
     private static readonly string[] Task9AmbientMaintenanceTestBridge =
@@ -53,6 +55,35 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         "tests/RetroDownfall.Arcanum.Tests/InstallationReset/HostToolsMarkerPairResetCoordinatorTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/InstallationReset/HostToolsMarkerPairResetDatabaseTests.cs",
     ];
+
+    [Fact]
+    public void Repeated_exact_acquisitions_fail_as_duplicate_discovery_without_catalog_noise()
+    {
+        AcquisitionSource repeated = Source("""
+            using Microsoft.Data.Sqlite;
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new SqliteConnection("Data Source=fixture.db");
+                    _ = new SqliteConnection("Data Source=fixture.db");
+                }
+            }
+            """);
+
+        IReadOnlyList<AcquisitionIdentity> discoveries = GrimoireConnectionAcquisitionScanner.Discover([repeated]);
+
+        Assert.Equal(2, discoveries.Count);
+
+        Assert.Equal(discoveries[0], discoveries[1]);
+
+        InventoryFailure failure = Assert.Single(GrimoireConnectionAcquisitionScanner.Validate(
+            discoveries, [Entry(discoveries[0])]));
+
+        Assert.Equal(InventoryFailureCode.DuplicateDiscovery, failure.Code);
+
+        Assert.Equal(discoveries[0], failure.Identity);
+    }
 
     [Fact]
     public void Injected_unlisted_acquisition_fails_independently()

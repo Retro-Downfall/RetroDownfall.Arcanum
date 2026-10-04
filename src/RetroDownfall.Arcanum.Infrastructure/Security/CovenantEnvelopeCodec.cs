@@ -259,11 +259,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
             return Invalid();
         }
 
-        if (!IsUnpaddedBase64Url(token))
-        {
-            return Invalid();
-        }
-
         // Bound the character count against the largest token this framing can produce, before
         // touching a buffer. The check is on the encoded length rather than an estimate of the decoded
         // one so that a token exactly at the payload ceiling still parses.
@@ -277,7 +272,11 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         try
         {
 
-            if (!TryDecodeWire(token, wireBuffer, out int wireLength))
+            // Whatever is wrong with a token, from a character outside the alphabet to a length no
+            // decoder can read to a respelling of a real one, is this same refusal and never an
+            // exception, which would hand anyone who can reach a token-bearing route an unhandled fault
+            // and single that token out from every other refusal: the oracle this codec exists to deny.
+            if (!CanonicalBase64Url.TryDecode(token, wireBuffer, out int wireLength))
             {
                 return Invalid();
             }
@@ -507,54 +506,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         BinaryPrimitives.WriteUInt32BigEndian(destination, (uint)purpose);
 
         BinaryPrimitives.WriteUInt64BigEndian(destination[4..], counter);
-
-    }
-
-    private static bool IsUnpaddedBase64Url(string token)
-    {
-
-        foreach (char value in token)
-        {
-
-            bool allowed = value is >= 'A' and <= 'Z'
-                or >= 'a' and <= 'z'
-                or >= '0' and <= '9'
-                or '-'
-                or '_';
-
-            if (!allowed)
-            {
-                return false;
-            }
-
-        }
-
-        return token.Length % 4 != 1;
-
-    }
-
-    /// <remarks>
-    /// The filter above admits tokens whose final group sets bits a two- or three-character group
-    /// cannot represent — <c>"AB"</c> is one — and the framework decoder raises
-    /// <see cref="FormatException"/> for those rather than reporting failure. Letting it escape would
-    /// hand anyone who can reach a token-bearing route an unhandled exception, and would single that
-    /// token out from every other refusal, which is the oracle this codec exists to deny.
-    /// </remarks>
-    private static bool TryDecodeWire(string token, Span<byte> destination, out int wireLength)
-    {
-
-        try
-        {
-            return Base64Url.TryDecodeFromChars(token, destination, out wireLength);
-        }
-        catch (FormatException)
-        {
-
-            wireLength = 0;
-
-            return false;
-
-        }
 
     }
 

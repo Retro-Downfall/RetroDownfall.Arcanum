@@ -22,13 +22,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 ///
 /// <para>No partial generation is ever eligible. The applied tuple is written once, after rank-1
 /// integrity passes.</para>
+///
+/// <para>Every committed batch republishes availability, under the caller's accelerator lease: the start
+/// clears the applied tuple and records the rebuild as owed, and the completion publishes the tuple and
+/// clears the debt, so both change what status reports.</para>
 /// </remarks>
 internal sealed class CovenantIndexRebuilder(
     ICovenantConnectionSource connections,
-    ICovenantSqliteConnectionInitializer initializer)
+    ICovenantSqliteConnectionInitializer initializer,
+    CovenantAvailabilityRepublisher? availabilityRepublisher)
 {
+    /// <summary>The algorithm alone, for a caller that publishes no availability of its own.</summary>
     internal CovenantIndexRebuilder(ICovenantConnectionSource connections)
-        : this(connections, CovenantSqliteConnectionInitializer.Instance)
+        : this(connections, CovenantSqliteConnectionInitializer.Instance, availabilityRepublisher: null)
     {
     }
 
@@ -79,6 +85,13 @@ internal sealed class CovenantIndexRebuilder(
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (availabilityRepublisher is { } republisher)
+        {
+            await republisher
+                .RepublishAsync(connection, CovenantHealthTransition.AcceleratorRebuild)
+                .ConfigureAwait(false);
+        }
 
         return advanced;
     }

@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -389,7 +390,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task SaveCompletedExchangeAsync_and_PurgeSessionAsync_round_trip()
+    public async Task SaveCompletedExchangeAsync_records_the_exchange_as_a_session()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -408,54 +409,6 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.NotNull(session);
 
         Assert.True(await repository.SessionExistsAsync(session!.Id, CancellationToken.None));
-
-        int removed = await repository.PurgeSessionAsync(session.Id, CancellationToken.None);
-
-        Assert.Equal(1, removed);
-
-        Assert.False(await repository.SessionExistsAsync(session.Id, CancellationToken.None));
-    }
-
-    [SkippableFact]
-    public async Task PurgeSessionAsync_removes_only_the_sessions_entry_embeddings()
-    {
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        GrimoireRepository repository = CreateRepository();
-
-        (Guid purgedSessionId, Guid purgedEntryId) = await repository.BeginAssistantReplyAsync(
-            sessionId: null,
-            prompt: "purge embedded entry",
-            model: "test-model",
-            cancellationToken: CancellationToken.None);
-
-        (Guid retainedSessionId, Guid retainedEntryId) = await repository.BeginAssistantReplyAsync(
-            sessionId: null,
-            prompt: "retain embedded entry",
-            model: "test-model",
-            cancellationToken: CancellationToken.None);
-
-        await EnsureEntryEmbeddingTablesAsync();
-
-        await InsertEntryEmbeddingAsync(purgedEntryId);
-
-        await InsertEntryEmbeddingAsync(retainedEntryId);
-
-        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings", purgedEntryId));
-
-        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings_vec", purgedEntryId));
-
-        Assert.Equal(1, await repository.PurgeSessionAsync(purgedSessionId, CancellationToken.None));
-
-        Assert.Equal(0, await CountEntryEmbeddingAsync("entry_embeddings", purgedEntryId));
-
-        Assert.Equal(0, await CountEntryEmbeddingAsync("entry_embeddings_vec", purgedEntryId));
-
-        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings", retainedEntryId));
-
-        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings_vec", retainedEntryId));
-
-        Assert.True(await repository.SessionExistsAsync(retainedSessionId, CancellationToken.None));
     }
 
     [SkippableFact]
@@ -2096,8 +2049,10 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         await LabelAssistantEntryAsync(composed, assistantEntryId, CancellationToken.None);
 
-        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
             () => repository.DeleteEntryAsync(sessionId, assistantEntryId, CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
         Assert.Contains("purge boundary", refused.Message, StringComparison.Ordinal);
 
@@ -2180,97 +2135,10 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             attachments ?? new NoOpSessionAttachmentStore(),
             logger ?? NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
-            attachmentIndex: null,
             covenantKernel: null,
+            availabilityRepublisher: null,
             connections ?? FixtureOrdinaryConnectionFactory.For(context),
             FixtureLabeledArtifactGuard.For(context));
-    }
-
-    private async Task EnsureEntryEmbeddingTablesAsync()
-    {
-        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
-
-        if (connection.State != System.Data.ConnectionState.Open)
-        {
-            await connection.OpenAsync(CancellationToken.None);
-        }
-
-        await using System.Data.Common.DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            """
-            CREATE TABLE IF NOT EXISTS entry_embeddings (
-                EntryId TEXT PRIMARY KEY,
-                Embedding BLOB NOT NULL,
-                Dim INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS entry_embeddings_vec (
-                EntryId TEXT PRIMARY KEY,
-                Embedding BLOB NOT NULL
-            );
-            """;
-
-        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-    }
-
-    private async Task InsertEntryEmbeddingAsync(Guid entryId)
-    {
-        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
-
-        await using System.Data.Common.DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            """
-            INSERT INTO entry_embeddings (EntryId, Embedding, Dim)
-            VALUES (@entryId, @embedding, 64);
-
-            INSERT INTO entry_embeddings_vec (EntryId, Embedding)
-            VALUES (@entryId, @embedding);
-            """;
-
-        System.Data.Common.DbParameter entryIdParameter = command.CreateParameter();
-
-        entryIdParameter.ParameterName = "@entryId";
-
-        // The weaving service copies whatever spelling Entries."Id" holds, which the value binder
-        // renders uppercase; a bare ToString() seeded an embedding its own Entry's join would miss.
-        entryIdParameter.Value = entryId.ToString("D").ToUpperInvariant();
-
-        command.Parameters.Add(entryIdParameter);
-
-        System.Data.Common.DbParameter embeddingParameter = command.CreateParameter();
-
-        embeddingParameter.ParameterName = "@embedding";
-
-        embeddingParameter.Value = new byte[64 * sizeof(float)];
-
-        command.Parameters.Add(embeddingParameter);
-
-        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-    }
-
-    private async Task<long> CountEntryEmbeddingAsync(string table, Guid entryId)
-    {
-        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
-
-        await using System.Data.Common.DbCommand command = connection.CreateCommand();
-
-        command.CommandText = $"SELECT COUNT(*) FROM {table} WHERE EntryId = @entryId";
-
-        System.Data.Common.DbParameter parameter = command.CreateParameter();
-
-        parameter.ParameterName = "@entryId";
-
-        // The read has to bind the spelling the column holds, which is the canonical one the
-        // weaving service copies out of Entries."Id" and the guard now enforces.
-        parameter.Value = entryId.ToString("D").ToUpperInvariant();
-
-        command.Parameters.Add(parameter);
-
-        object? result = await command.ExecuteScalarAsync(CancellationToken.None);
-
-        return Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private async Task<Guid> SeedUnsummarizedWindowAsync(

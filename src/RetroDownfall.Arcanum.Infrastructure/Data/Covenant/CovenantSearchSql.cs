@@ -28,7 +28,8 @@ internal static class CovenantSearchSql
                st.AppliedDatasetGeneration,
                st.AppliedSearchSequence,
                st.AppliedCampaignDeletionSequence,
-               st.AcceleratorEpoch
+               st.AcceleratorEpoch,
+               st.RebuildStateCode
         FROM covenant_state st
         WHERE st.StateKey = 1;
         """;

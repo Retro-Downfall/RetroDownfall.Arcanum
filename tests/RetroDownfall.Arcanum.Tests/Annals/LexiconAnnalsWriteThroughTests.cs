@@ -7,12 +7,15 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Lexicon;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Annals;
@@ -29,6 +32,97 @@ namespace RetroDownfall.Arcanum.Tests.Annals;
 [Trait("Category", "Integration")]
 public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Operator_correction_records_baseline_and_coordinates_independently_of_capture(bool legacy, bool capture)
+    {
+        await using CorrectionFixture test = new(_fixture, annals: false);
+
+        LexiconEntryDetail before = await test.SeedAsync();
+
+        if (legacy)
+        {
+            await using SqliteTransaction transaction = test.Connection.BeginTransaction();
+
+            await AnnalsClaimWriter.AppendCorrectionAsync(test.Connection, transaction, AnnalSubjectStore.Lexicon,
+                before.Entry.Id.ToString("N"), AnnalOrigin.AgentAsserted, SagaMemoryScopeKind.Global, null,
+                ContentSensitivity.None, AnnalContentDigest.ForLexiconEntry(before.Entry.Type, string.Join('\n', before.Entry.Facts)),
+                before.Entry.UpdatedAt, before.Entry.UpdatedAt, null, CancellationToken.None);
+
+            await transaction.CommitAsync();
+
+            before = await test.ShowAsync();
+        }
+
+        string[] immutableVersions = (await test.SnapshotAsync()).Where(row => row.StartsWith("annal_versions:", StringComparison.Ordinal)).ToArray();
+
+        test.Settings.Features.Annals = capture;
+
+        var corrected = await test.Service.CorrectAsync(before.Target, new("Person", ["beta", "gamma"]), null);
+
+        Assert.True(corrected.IsSuccess, corrected.Error.Message);
+
+        LexiconEntryDetail after = await test.ShowAsync();
+
+        Assert.Equal(legacy ? 3 : 2, after.AnnalHistory.Length);
+
+        var baseline = after.AnnalHistory[^2];
+
+        var operation = after.AnnalHistory[^1];
+
+        Assert.Equal(legacy ? AnnalOperation.Correct : AnnalOperation.Assert, baseline.Operation);
+
+        Assert.Equal(legacy ? AnnalOrigin.SystemBackfilled : AnnalOrigin.AgentAsserted, baseline.Origin);
+
+        Assert.Equal(AnnalContentHashFormat.LexiconStructuredSnapshot, baseline.ContentHashFormat);
+
+        Assert.Equal(Convert.FromHexString(before.SnapshotDigest), baseline.ContentHash);
+
+        Assert.Equal(before.Entry.UpdatedAt, baseline.ValidFromUtc);
+
+        Assert.Equal(AnnalOperation.Correct, operation.Operation);
+
+        Assert.Equal(AnnalOrigin.OperatorStated, operation.Origin);
+
+        Assert.Equal(AnnalContentHashFormat.LexiconStructuredSnapshot, operation.ContentHashFormat);
+
+        Assert.Equal(Convert.FromHexString(after.SnapshotDigest), operation.ContentHash);
+
+        Assert.Equal(after.Entry.UpdatedAt, operation.ValidFromUtc);
+
+        Assert.Equal(baseline.RecordedAtUtc, operation.RecordedAtUtc);
+
+        Assert.Equal(baseline.VersionId, operation.PredecessorVersionId);
+
+        Assert.Equal(Enumerable.Range(1, after.AnnalHistory.Length), after.AnnalHistory.Select(version => version.Revision));
+
+        string[] afterRows = await test.SnapshotAsync();
+
+        Assert.All(immutableVersions, row => Assert.Contains(row, afterRows));
+
+        Assert.Equal([0, 1], after.HistoricalFactProvenance.Where(source => source.AnnalVersionId == baseline.VersionId).Select(source => source.FactOrdinal));
+
+        var retained = Assert.Single(after.HistoricalFactProvenance, source => source.AnnalVersionId == operation.VersionId);
+
+        Assert.Equal(0, retained.FactOrdinal);
+
+        Assert.Equal(before.Entry.FactProvenance![1].Source.AttachmentId, retained.AttachmentId);
+
+        Assert.Equal(before.Entry.FactProvenance![1].Source.ContentHash, retained.AttachmentContentHash);
+
+        var second = await test.Service.CorrectAsync(after.Target, new("Person", ["gamma", "delta"]), null);
+
+        Assert.True(second.IsSuccess, second.Error.Message);
+
+        Assert.Equal(after.AnnalHistory.Length + 1, second.Value.Entry.AnnalHistory.Length);
+
+        Assert.Equal(after.HistoricalFactProvenance, second.Value.Entry.HistoricalFactProvenance);
+
+        Assert.Empty(second.Value.Entry.Entry.FactProvenance!);
+    }
 
     private static readonly Guid CampaignA = new("A0000000-0000-4000-8000-0000000000AA");
 
@@ -483,7 +577,8 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
             _db!,
             logger,
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings { Features = features }));
+                new ArcanumSettings { Features = features }),
+            MemoryErasureTestKeys.Isolated());
 
     private async Task<IReadOnlyList<VersionRow>> ReadVersionsAsync(string entryId)
     {

@@ -1,10 +1,14 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
+using System.Text;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Tower;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -28,7 +32,9 @@ internal sealed class CovenantManagementService(
     ICovenantOperationGate gate,
     ICovenantAvailability availability,
     ICovenantEnvelopeCodec codec,
-    ICampaignAvailabilityReader campaigns) : ICovenantManagementService
+    ICampaignAvailabilityReader campaigns,
+    ICovenantSearchIndex? searchIndex = null,
+    CovenantSearchQueryCompiler? searchCompiler = null) : ICovenantManagementService
 {
 
     /// <summary>How long a page cursor stays usable.</summary>
@@ -85,25 +91,143 @@ internal sealed class CovenantManagementService(
 
     }
 
-    /// <summary>
-    /// Free-text inspection over current heads.
-    /// </summary>
-    /// <remarks>
-    /// Not yet implemented over the accelerator. The typed refusal is deliberate: an unbuilt search
-    /// that answered with an empty page would be indistinguishable from a Covenant that holds nothing
-    /// matching, which is the one answer an operator must never be given wrongly.
-    ///
-    /// <para>No route reaches this. The endpoint was unmapped rather than left mapped and refusing,
-    /// because an advertised inspection surface that can only refuse teaches an operator the search is
-    /// broken rather than absent. The method stays so a stale caller fails closed with a reason.</para>
-    /// </remarks>
-    public ValueTask<Result<CovenantPageDto>> QueryAsync(
+    public async ValueTask<Result<CovenantPageDto>> QueryAsync(
         CovenantQueryRequest request,
         ICovenantSnapshotReadLease readLease,
-        CancellationToken cancellationToken) =>
-        ValueTask.FromResult(Result<CovenantPageDto>.Failure(new Error(
-            ErrorCodes.Covenant.Unavailable,
-            "Covenant free-text inspection is not available on this build; list the scope instead.")));
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (searchIndex is null || searchCompiler is null)
+        {
+            return new Error(
+                ErrorCodes.Covenant.Unavailable,
+                "Covenant free-text inspection is not available on this host.");
+        }
+
+        ICovenantSearchIndex availableSearchIndex = searchIndex;
+
+        CovenantSearchQueryCompiler availableSearchCompiler = searchCompiler;
+
+        Result validated = request.Validate();
+
+        if (validated.IsFailure)
+        {
+            return validated.Error;
+        }
+
+        Result<CovenantCompiledSearchTerms> compiled = availableSearchCompiler.Compile(request.Query);
+
+        if (compiled.IsFailure)
+        {
+            return compiled.Error;
+        }
+
+        CovenantDigest queryDigest = new(SHA256.HashData(Encoding.UTF8.GetBytes(compiled.Value.MatchExpression)));
+
+        Result<SearchCursor?> cursor = ResolveSearchCursor(request.Cursor);
+
+        if (cursor.IsFailure)
+        {
+            return cursor.Error;
+        }
+
+        // One read of the published tier state serves the query and the health report it returns, so the
+        // rows and the report describe the same tier.
+        CovenantCapabilityState accelerator = availability.Current.Accelerator;
+
+        CovenantSearchQuery query = new(
+            compiled.Value,
+            request.Scope,
+            request.CampaignId,
+            request.Lane,
+            request.Lifecycle,
+            request.EffectiveLimit,
+            cursor.Value?.Keyset,
+            accelerator);
+
+        Result<CovenantSearchPage> searched = await availableSearchIndex
+            .SearchAsync(query, readLease, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (searched.IsFailure)
+        {
+            return searched.Error;
+        }
+
+        CovenantSearchPage page = searched.Value;
+
+        CovenantDigest filterDigest = QueryFilterDigest(request, queryDigest, page.ExecutionMode);
+
+        if (cursor.Value is { } continuation)
+        {
+            if (continuation.ExecutionMode != page.ExecutionMode
+                || continuation.FilterDigest != filterDigest)
+            {
+                return new Error(ErrorCodes.Covenant.StaleCursor, "This Covenant cursor belongs to a different query.");
+            }
+
+            if (continuation.Sources != page.Sources)
+            {
+                return new Error(ErrorCodes.Covenant.StaleCursor, "The Covenant changed after this cursor was issued.");
+            }
+        }
+
+        List<CovenantHeadDto> items = [];
+
+        foreach (CovenantSearchHit hit in page.Hits)
+        {
+            CovenantOperationScope scope = hit.Scope is CovenantScope.Global
+                ? CovenantOperationScope.Global
+                : CovenantOperationScope.ForCampaign(hit.CampaignId!.Value);
+
+            Result<CovenantDetail> detail = await store
+                .ReadDetailAsync(new CovenantDetailQuery(scope, hit.NormalizedKey), readLease, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (detail.IsFailure)
+            {
+                return detail.Error;
+            }
+
+            CovenantHeadItem? head = hit.Lane is CovenantLane.Confirmed
+                ? detail.Value.ConfirmedHead
+                : detail.Value.ProposedHead;
+
+            if (head is null || head.VersionId != hit.VersionId)
+            {
+                return new Error(ErrorCodes.Covenant.StaleCursor, "The Covenant changed while the search page was read.");
+            }
+
+            items.Add(Head(head, request.EffectiveForCampaignId));
+        }
+
+        return new CovenantPageDto(
+            [.. items],
+            page.NextKeyset is { } next ? IssueSearchCursor(new SearchCursor(
+                page.ExecutionMode,
+                filterDigest,
+                page.Sources,
+                next)) : null,
+            Hex(filterDigest),
+            new CovenantSearchHealthDto(
+                // The same rule status applies, over the same published tier state the query was answered
+                // under. A page answered from the index is the synchronized case, and one that was not is
+                // waiting on the outbox or on a rebuild, which status calls synchronizing too, unless the
+                // tier itself is degraded, which status reports as degraded.
+                CovenantSearchHealthRule.State(
+                    acceleratorUnavailable: page.Guidance is CovenantSearchRebuildGuidance.AcceleratorUnavailable,
+                    acceleratorDegraded: accelerator is CovenantCapabilityState.Degraded,
+                    synchronized: page.ExecutionMode is CovenantSearchExecutionMode.Fts),
+                page.ExecutionMode,
+                page.Guidance),
+            page.Truncated || page.NextKeyset is not null,
+            page.Truncated
+                ? CovenantPageTruncation.FallbackCandidateCapReached
+                : page.NextKeyset is not null
+                    ? CovenantPageTruncation.PageSizeReached
+                    : CovenantPageTruncation.None);
+    }
 
     public async ValueTask<Result<CovenantDetailDto>> DetailAsync(
         CovenantDetailRequest request,
@@ -153,7 +277,9 @@ internal sealed class CovenantManagementService(
             // sources route reports their leaves. Folding an unbounded read into a lookup would make
             // one key's detail cost depend on how much the agent attached to it.
             ConfirmedSources: null,
-            ProposedSources: null);
+            ProposedSources: null,
+            detail.Value.ConfirmedCuration,
+            detail.Value.ProposedCuration);
 
     }
 
@@ -464,20 +590,17 @@ internal sealed class CovenantManagementService(
     /// The four states search can actually be in, from the published availability snapshot.
     /// </summary>
     /// <remarks>
-    /// Derived rather than named, and derived here rather than at each caller. This DTO is frozen and
-    /// reaches an operator through the API, the CLI, and the ordinary memory status block alike; a
-    /// second producer computing its own answer would give one contract four fields that mean
-    /// different things depending on which of them replied.
+    /// Derived rather than named, and derived by <see cref="CovenantSearchHealthRule"/> rather than at each
+    /// caller. This DTO is frozen and reaches an operator through the API, the CLI, and the ordinary memory
+    /// status block alike, and a search page carries the same one; a second producer computing its own
+    /// answer would give one contract several fields that mean different things depending on which of
+    /// them replied.
     /// </remarks>
     private static CovenantSearchHealthState SearchHealth(CovenantAvailabilitySnapshot snapshot) =>
-        snapshot.Accelerator switch
-        {
-            CovenantCapabilityState.Unavailable => CovenantSearchHealthState.Unavailable,
-            CovenantCapabilityState.Degraded => CovenantSearchHealthState.Degraded,
-            _ => snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
-                ? CovenantSearchHealthState.Healthy
-                : CovenantSearchHealthState.Synchronizing,
-        };
+        CovenantSearchHealthRule.State(
+            acceleratorUnavailable: snapshot.Accelerator is CovenantCapabilityState.Unavailable,
+            acceleratorDegraded: snapshot.Accelerator is CovenantCapabilityState.Degraded,
+            synchronized: snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized);
 
     /// <summary>
     /// How the next query would run, by the same rule the store itself applies.
@@ -497,17 +620,22 @@ internal sealed class CovenantManagementService(
     /// The one remediation this snapshot actually calls for, most specific first.
     /// </summary>
     /// <remarks>
-    /// Order matters. An unavailable accelerator cannot be waited out, so reporting "wait for
-    /// synchronization" there would send an operator to sit through a state that will never change.
+    /// <see cref="CovenantSearchHealthRule.Guidance"/> decides, and a search page asks the same function
+    /// with the facts it was answered from, so the two routes agree on a state. The order it applies, and
+    /// why, is documented there: an unavailable accelerator cannot be waited out, a synchronized snapshot
+    /// asks for nothing even while a fresh installation's recorded rebuild is still owed, a published
+    /// tuple for this dataset means the outbox will carry search the rest of the way, and only without
+    /// one does the recorded rebuild decide, which includes a restore that kept its heads: the outbox will
+    /// not adopt a projection it cannot replay those heads onto.
     /// </remarks>
     private static CovenantSearchRebuildGuidance RebuildGuidance(CovenantAvailabilitySnapshot snapshot) =>
-        snapshot.Accelerator is CovenantCapabilityState.Unavailable
-            ? CovenantSearchRebuildGuidance.AcceleratorUnavailable
-            : snapshot.RebuildRequired
-                ? CovenantSearchRebuildGuidance.RebuildRequired
-                : snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
-                    ? CovenantSearchRebuildGuidance.None
-                    : CovenantSearchRebuildGuidance.WaitForSynchronization;
+        CovenantSearchHealthRule.Guidance(
+            acceleratorUnavailable: snapshot.Accelerator is CovenantCapabilityState.Unavailable,
+            synchronized: snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized,
+            outboxCanContinue: snapshot.Accelerator is CovenantCapabilityState.Healthy
+                && snapshot.DatasetGeneration is { } dataset
+                && snapshot.AppliedDatasetGeneration == dataset,
+            rebuildOwed: snapshot.RebuildRequired);
 
     private static CovenantExplainDto Explain(
         CovenantExplainRequest request,
@@ -628,8 +756,9 @@ internal sealed class CovenantManagementService(
 
     /// <summary>The retention sentence every Covenant surface reports, in one place.</summary>
     private const string CovenantRetentionSummary =
-        "Durable immutable versions until an operator retires the entry or a Covenant reset, family "
-        + "reinitialize, or installation erasure removes it.";
+        "Durable immutable versions until an operator erases the entry, its Campaign is deleted, or a "
+        + "Covenant reset, family reinitialize, or installation erasure removes it; retirement keeps "
+        + "history inspectable. Content already sent to a provider is outside every local erasure path.";
 
     private static CovenantSourcesDto Sources(CovenantSourcePage page) =>
         new(
@@ -795,6 +924,142 @@ internal sealed class CovenantManagementService(
             QueryDigest: null,
             checked((uint)request.EffectiveLimit),
             CovenantCursorSort.CanonicalHeads));
+
+    private static CovenantDigest QueryFilterDigest(
+        CovenantQueryRequest request,
+        CovenantDigest queryDigest,
+        CovenantSearchExecutionMode mode) =>
+        CovenantDigests.CursorFilter(new CursorFilterDigestInput(
+            mode is CovenantSearchExecutionMode.Fts
+                ? CovenantCursorEndpoint.FtsQuery
+                : CovenantCursorEndpoint.FallbackQuery,
+            request.Scope,
+            request.CampaignId,
+            request.EffectiveForCampaignId,
+            request.Lane,
+            request.Lifecycle,
+            queryDigest,
+            checked((uint)request.EffectiveLimit),
+            mode is CovenantSearchExecutionMode.Fts
+                ? CovenantCursorSort.FtsRank
+                : CovenantCursorSort.FallbackHeads));
+
+    private string? IssueSearchCursor(SearchCursor cursor)
+    {
+        using MemoryStream stream = new();
+
+        using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write((byte)1);
+            writer.Write((byte)cursor.ExecutionMode);
+            writer.Write(cursor.FilterDigest.Bytes);
+            writer.Write(cursor.Sources.DatasetGeneration.ToByteArray());
+            writer.Write(cursor.Sources.CanonicalSearchSequence);
+            writer.Write(cursor.Sources.CoreCampaignDeletionSequence);
+            writer.Write(cursor.Sources.AppliedDatasetGeneration?.ToByteArray() ?? Guid.Empty.ToByteArray());
+            writer.Write(cursor.Sources.AppliedSearchSequence ?? -1);
+            writer.Write(cursor.Sources.AppliedCampaignDeletionSequence ?? -1);
+            writer.Write(cursor.Sources.AcceleratorEpoch);
+            writer.Write((byte)cursor.Keyset.MatchClass);
+            writer.Write(cursor.Keyset.ScoreBits);
+            writer.Write(cursor.Keyset.EntryId.ToByteArray());
+            writer.Write(cursor.Keyset.VersionId.ToByteArray());
+        }
+
+        return Issue(stream.ToArray());
+    }
+
+    private Result<SearchCursor?> ResolveSearchCursor(string? cursor)
+    {
+        if (string.IsNullOrEmpty(cursor))
+        {
+            return Result<SearchCursor?>.Success(null);
+        }
+
+        Result<CovenantEnvelopeBody> envelope = codec.Decode(CovenantEnvelopePurpose.Cursor, cursor);
+
+        if (envelope.IsFailure)
+        {
+            return envelope.Error;
+        }
+
+        try
+        {
+            using MemoryStream stream = new(envelope.Value.Payload, writable: false);
+
+            using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: false);
+
+            if (reader.ReadByte() != 1)
+            {
+                return InvalidSearchCursor();
+            }
+
+            CovenantSearchExecutionMode mode = (CovenantSearchExecutionMode)reader.ReadByte();
+
+            CovenantDigest filter = new(reader.ReadBytes(32));
+
+            Guid dataset = new(reader.ReadBytes(16));
+
+            long canonical = reader.ReadInt64();
+
+            long deletion = reader.ReadInt64();
+
+            Guid appliedDatasetValue = new(reader.ReadBytes(16));
+
+            long appliedSearchValue = reader.ReadInt64();
+
+            long appliedDeletionValue = reader.ReadInt64();
+
+            ulong acceleratorEpoch = reader.ReadUInt64();
+
+            CovenantSearchMatchClass matchClass = (CovenantSearchMatchClass)reader.ReadByte();
+
+            ulong scoreBits = reader.ReadUInt64();
+
+            Guid entryId = new(reader.ReadBytes(16));
+
+            Guid versionId = new(reader.ReadBytes(16));
+
+            if (stream.Position != stream.Length
+                || !Enum.IsDefined(mode)
+                || !Enum.IsDefined(matchClass)
+                || entryId == Guid.Empty
+                || versionId == Guid.Empty)
+            {
+                return InvalidSearchCursor();
+            }
+
+            CovenantSearchSourceSnapshot sources = new(
+                dataset,
+                canonical,
+                deletion,
+                appliedDatasetValue == Guid.Empty ? null : appliedDatasetValue,
+                appliedSearchValue < 0 ? null : appliedSearchValue,
+                appliedDeletionValue < 0 ? null : appliedDeletionValue,
+                acceleratorEpoch);
+
+            return Result<SearchCursor?>.Success(new SearchCursor(
+                mode,
+                filter,
+                sources,
+                new CovenantSearchKeyset(matchClass, scoreBits, entryId, versionId)));
+        }
+        catch (Exception exception) when (exception is EndOfStreamException or ArgumentException)
+        {
+            return InvalidSearchCursor();
+        }
+    }
+
+    private static Result<SearchCursor?> InvalidSearchCursor() =>
+        Result<SearchCursor?>.Failure(new Error(
+            ErrorCodes.Covenant.InvalidCursor,
+            "This Covenant cursor could not be read."));
+
+    private sealed record SearchCursor(
+        CovenantSearchExecutionMode ExecutionMode,
+        CovenantDigest FilterDigest,
+        CovenantSearchSourceSnapshot Sources,
+        CovenantSearchKeyset Keyset);
 
     private static string Hex(CovenantDigest digest) => Convert.ToHexStringLower(digest.Bytes);
 

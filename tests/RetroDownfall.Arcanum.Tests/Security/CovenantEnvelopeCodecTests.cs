@@ -987,6 +987,50 @@ public sealed class CovenantEnvelopeCodecTests
 
     }
 
+    [Fact]
+    public void A_signed_token_respelled_with_an_unused_trailing_bit_is_refused_though_its_bytes_verify()
+    {
+
+        using CodecHarness harness = CodecHarness.Create();
+
+        int respelled = 0;
+
+        // Three payload sizes walk the wire length through every residue modulo three, so two of them
+        // end in a short group whose last character carries bits no encoder sets.
+        for (int length = 1; length <= 3; length++)
+        {
+
+            string token = harness.Codec
+                .Encode(CovenantEnvelopePurpose.Cursor, new byte[length], TimeSpan.FromMinutes(1))
+                .Value;
+
+            Assert.True(harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token).IsSuccess);
+
+            if (token.Length % 4 is 0)
+            {
+
+                continue;
+
+            }
+
+            // The respelling decodes to exactly the signed bytes, so the tag verifies. It is a second
+            // name for the same token, and every token has one.
+            Result<CovenantEnvelopeBody> refused = harness.Codec.Decode(
+                CovenantEnvelopePurpose.Cursor,
+                NonCanonicalBase64Url.WithUnusedBitSet(token));
+
+            Assert.False(refused.IsSuccess);
+
+            Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), refused.Error);
+
+            respelled++;
+
+        }
+
+        Assert.Equal(2, respelled);
+
+    }
+
     private static ulong Counter(string token) =>
         BinaryPrimitives.ReadUInt64BigEndian(Base64Url.DecodeFromChars(token).AsSpan(18));
 

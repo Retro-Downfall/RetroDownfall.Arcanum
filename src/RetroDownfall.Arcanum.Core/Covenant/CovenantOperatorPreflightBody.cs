@@ -41,7 +41,7 @@ public sealed record CovenantOperatorPreflightBody(
     /// </remarks>
     Guid? TargetVersionId = null,
 
-    /// <summary>The compiled hash of the version a correction believes it is replacing, or absent.</summary>
+    /// <summary>The rendered hash of the version a correction believes it is replacing, or absent.</summary>
     /// <remarks>
     /// The revision alone can be guessed. The hash is what proves the operator saw the content they
     /// are correcting rather than a number that happened to be right.

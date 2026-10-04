@@ -578,6 +578,8 @@ public static class ErrorCodes
 
         public const string ResetInProgress = "Data.ResetInProgress";
 
+        public const string PinnedAfterPlanning = "Data.PinnedAfterPlanning";
+
         public const string RecoveryRequired = "Data.RecoveryRequired";
 
         public const string FileLocked = "Data.FileLocked";
@@ -735,6 +737,34 @@ public static class ErrorCodes
         public const string InvalidName = "Lexicon.InvalidName";
 
         public const string InvalidFact = "Lexicon.InvalidFact";
+
+        public const string InvalidScope = "Lexicon.InvalidScope";
+
+        public const string InvalidCurationTarget = "Lexicon.InvalidCurationTarget";
+
+        public const string InvalidReplacement = "Lexicon.InvalidReplacement";
+
+        public const string StaleCurationTarget = "Lexicon.StaleCurationTarget";
+
+        public const string RetiredMutationRefused = "Lexicon.RetiredMutationRefused";
+
+        /// <summary>
+        /// An agent write named an entry the operator erased in this exact scope, so nothing was recorded.
+        /// </summary>
+        public const string SuppressedNameRefused = "Lexicon.SuppressedNameRefused";
+
+        /// <summary>An agent asked to delete an entry the operator pinned.</summary>
+        public const string PinnedMutationRefused = "Lexicon.PinnedMutationRefused";
+
+        public const string ProtectedMutationRefused = "Lexicon.ProtectedMutationRefused";
+
+        public const string CurationIntegrityFailed = "Lexicon.CurationIntegrityFailed";
+
+        public const string CurationUnavailable = "Lexicon.CurationUnavailable";
+
+        public const string CurationGenerationExhausted = "Lexicon.CurationGenerationExhausted";
+
+        public const string ArtifactRevisionExhausted = "Lexicon.ArtifactRevisionExhausted";
 
         public const string NotFound = "Lexicon.NotFound";
 
@@ -898,6 +928,56 @@ public static class ErrorCodes
     {
         /// <summary>The submitted Sanctum configuration is internally inconsistent.</summary>
         public const string InvalidConfig = "Sanctum.InvalidConfig";
+    }
+
+    /// <summary>Cross-store exact-version review workflow.</summary>
+    public static class MemoryReview
+    {
+        public const string InvalidToken = "MemoryReview.InvalidToken";
+
+        public const string InvalidTokenFacts = "MemoryReview.InvalidTokenFacts";
+
+        public const string StaleObservation = "MemoryReview.StaleObservation";
+
+        public const string UnseenObservation = "MemoryReview.UnseenObservation";
+
+        public const string RequestReuse = "MemoryReview.RequestReuse";
+
+        public const string IntegrityFailure = "MemoryReview.IntegrityFailure";
+    }
+
+    /// <summary>Selective hard erasure across the Saga, Lexicon, and Covenant memory stores.</summary>
+    /// <remarks>
+    /// Content-free, like every memory family: a message paired with one of these codes names a
+    /// decision, never the content, name, key, or fingerprint behind it.
+    /// </remarks>
+    public static class MemoryErasure
+    {
+        /// <summary>The schema this erasure needs has not been reached yet. Retryable.</summary>
+        public const string Unavailable = "MemoryErasure.Unavailable";
+
+        /// <summary>The erasure key could not be read from secure storage right now. Retryable.</summary>
+        public const string KeyUnavailable = "MemoryErasure.KeyUnavailable";
+
+        /// <summary>
+        /// Erasure evidence exists that the current key cannot verify, so nothing is decided against it.
+        /// </summary>
+        public const string KeyLost = "MemoryErasure.KeyLost";
+
+        /// <summary>The preflight token is missing, expired, unreadable, or bound to a different request.</summary>
+        public const string InvalidPreflight = "MemoryErasure.InvalidPreflight";
+
+        /// <summary>What the erase would remove changed after it was prepared.</summary>
+        public const string StalePlan = "MemoryErasure.StalePlan";
+
+        /// <summary>A durable receipt proves this subject was already erased.</summary>
+        public const string SubjectErased = "MemoryErasure.SubjectErased";
+
+        /// <summary>
+        /// The erase could not prove every planned row absent inside its own transaction, so it rolled
+        /// back and recorded nothing.
+        /// </summary>
+        public const string ErasureIncomplete = "MemoryErasure.ErasureIncomplete";
     }
 
     /// <summary>

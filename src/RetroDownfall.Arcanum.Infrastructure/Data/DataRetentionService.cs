@@ -60,7 +60,7 @@ internal sealed partial class DataRetentionService(
     ILongRunningOperationStore operations,
     TimeProvider timeProvider,
     ILogger<DataRetentionService> logger,
-    ICovenantLabeledArtifactGuard labeledArtifactGuard,
+    ICovenantLabeledArtifactTransactionGuard labeledArtifactGuard,
     string? attachmentsRootOverride = null,
     string? filesRootOverride = null,
     string? logsRootOverride = null,
@@ -316,8 +316,12 @@ internal sealed partial class DataRetentionService(
                 "annal_versions",
                 "annal_heads",
                 "annal_dependencies",
+                "lexicon_annal_fact_provenance",
+                "annal_review_events",
+                "annal_review_decision_receipts",
+                "annal_review_markers",
             ],
-            "Bitemporal claim identities, immutable versions, current pointers, and dependency edges over Saga and Lexicon rows. Removed with the memory each claim describes; never aged out on their own.",
+            "Bitemporal claim identities, immutable versions, current pointers, dependency edges, historical Lexicon source coordinates, and content-free exact-review state. Removed with the memory each claim describes; never aged out on their own.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -454,6 +458,19 @@ internal sealed partial class DataRetentionService(
             "Volatile daemon execution summaries and durable schedule watermarks; active executions are protected.",
             retention);
 
+        (DataRetentionMemoryErasureInventory memoryErasure, string memoryErasureStore) =
+            await ReadMemoryErasureInventoryAsync(cancellationToken).ConfigureAwait(false);
+
+        AddStatus(
+            items,
+            RetentionDataClass.MemoryErasureEvidence,
+            memoryErasure.Fingerprints + memoryErasure.Receipts + memoryErasure.ReceiptSubjects,
+            0,
+            0,
+            memoryErasureStore,
+            "Content-free erasure fingerprints, receipts and receipt subjects; never aged out.",
+            retention);
+
         DataRetentionCovenantInventory? covenant = null;
 
         CovenantInstallationReadLease? covenantLease =
@@ -498,7 +515,7 @@ internal sealed partial class DataRetentionService(
                 "OS credential and Data Protection stores",
                 "Registered workspaces outside the Arcanum data root",
             ],
-            covenant);
+            covenant) with { MemoryErasure = memoryErasure };
     }
 
     /// <summary>
@@ -1521,11 +1538,12 @@ internal sealed partial class DataRetentionService(
         }
         catch (RetentionCovenantLabelException ex)
         {
-            // Nothing was mutated: every guard asks before its transaction opens. The operation is
-            // terminalized under the guard's own code so a client can tell protected state that must
-            // leave through the purge boundary from an ordinary retention hold, and the refusal
-            // itself is returned verbatim because its message names the boundary rather than the
-            // artifact (§10.20.2).
+            // The refused delete mutated nothing: every guard asks inside the transaction that would
+            // delete, ahead of that transaction's first write, so a refusal rolls it back untouched.
+            // The operation is terminalized under the guard's own code so a client can tell protected
+            // state that must leave through the purge boundary from an ordinary retention hold, and
+            // the refusal itself is returned verbatim because its message names the boundary rather
+            // than the artifact (§10.20.2).
             LongRunningOperation refused = await operations.GetAsync(
                 operation.Id,
                 CancellationToken.None).ConfigureAwait(false)
@@ -2676,6 +2694,11 @@ internal sealed partial class DataRetentionService(
         {
             MemoryResetScope.Saga =>
             [
+                new(
+                    "annal_review_markers",
+                    "SubjectStoreCode = 1 AND ScopeKindCode = @campaignKind AND CampaignId = @campaignId",
+                    campaignAndKind),
+
                 .. AnnalsResetSelections(
                     AnnalSubjectStore.Saga,
                     "SELECT \"Id\" FROM \"saga_memories\""
@@ -2730,6 +2753,11 @@ internal sealed partial class DataRetentionService(
 
             MemoryResetScope.Lexicon =>
             [
+                new(
+                    "annal_review_markers",
+                    "SubjectStoreCode = 2 AND ScopeKindCode = 2 AND CampaignId = @campaignId",
+                    campaignOnly),
+
                 .. AnnalsResetSelections(
                     AnnalSubjectStore.Lexicon,
                     "SELECT Id FROM lexicon_entries WHERE ScopeCampaignId = @campaignId",
@@ -2752,7 +2780,7 @@ internal sealed partial class DataRetentionService(
     /// Every table a whole-store reset clears, in delete order.
     /// </summary>
     /// <remarks>
-    /// The Annals steps carry a predicate rather than clearing their tables outright, because the four
+    /// The Annals steps carry a predicate rather than clearing their tables outright, because the shared
     /// tables hold both stores' claims: resetting Saga must leave the Lexicon's claims exactly where they
     /// were, and a bare <c>DELETE FROM annal_claims</c> would take both. Their order and their predicates
     /// come from <see cref="AnnalsErasurePlan"/>, which the claim writer also reads, so a store reset and
@@ -2781,6 +2809,7 @@ internal sealed partial class DataRetentionService(
 
             MemoryResetScope.Saga =>
                 [
+                    new("annal_review_markers", "SubjectStoreCode = 1", []),
                     .. AnnalsResetSelections(AnnalSubjectStore.Saga),
                     Whole("saga_memory_embeddings_vec"),
                     Whole("saga_memory_embeddings"),
@@ -2803,6 +2832,7 @@ internal sealed partial class DataRetentionService(
             // whole reset. A whole-store Lexicon reset could not complete at all while any entry existed.
             MemoryResetScope.Lexicon =>
                 [
+                    new("annal_review_markers", "SubjectStoreCode = 2", []),
                     .. AnnalsResetSelections(AnnalSubjectStore.Lexicon),
                     Whole("lexicon_fact_attachment_provenance"),
                     Whole("lexicon_entries"),
@@ -2892,10 +2922,6 @@ internal sealed partial class DataRetentionService(
             return EmptyApply(operationId, plan);
         }
 
-        await RefuseLabeledSessionEntriesAsync(
-            snapshot,
-            cancellationToken).ConfigureAwait(false);
-
         bool ftsTableExists = await TableExistsAsync(
             "Entries_fts",
             cancellationToken).ConfigureAwait(false);
@@ -2935,6 +2961,14 @@ internal sealed partial class DataRetentionService(
             }
 
             snapshot = transactionSnapshot;
+
+            // Asked about the Entries this transaction will remove, now that it holds the write lock, so
+            // no label can be committed between the answer and the delete below.
+            await RefuseLabeledSessionEntriesAsync(
+                snapshot,
+                connection,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
 
             if (ageCutoff is DateTimeOffset cutoff
                 && !await SessionCandidateOldEnoughInTransactionAsync(
@@ -3407,11 +3441,6 @@ internal sealed partial class DataRetentionService(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-        await RefuseLabeledUntargetedResetAsync(
-            scope,
-            campaignId,
-            cancellationToken).ConfigureAwait(false);
-
         List<MemoryResetSelection> selections = [];
 
         foreach (MemoryResetSelection selection in BuildMemoryResetSelections(scope, campaignId))
@@ -3433,6 +3462,15 @@ internal sealed partial class DataRetentionService(
 
         try
         {
+            // First, once the transaction holds the write lock, so no label can be committed between
+            // the answer and the deletes below.
+            await RefuseLabeledUntargetedResetAsync(
+                scope,
+                campaignId,
+                connection,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
+
             DataRetentionConflict[] conflicts =
                 await ReadMemoryResetConflictsInTransactionAsync(
                     connection,
@@ -3458,11 +3496,18 @@ internal sealed partial class DataRetentionService(
                     selection.Parameters).ConfigureAwait(false);
             }
 
+            // A store that held nothing at preview pins no candidate, and applying that preview is a
+            // no-op that succeeds with nothing removed, provided the store still holds nothing: rows that
+            // appeared since are still refused by the count. A preview that did select rows must still
+            // name exactly this reset, so a Campaign's plan can never apply to the whole store.
+            bool previewedEmpty = plan.CandidateIds.Length == 0 && plan.DerivedRecords == 0;
+
             if (currentRows != plan.DerivedRecords
                 || plan.Rows != 0
                 || plan.Files != 0
                 || plan.EstimatedBytes != 0
-                || !plan.CandidateIds.SequenceEqual([MemoryResetCandidateId(scope, campaignId)]))
+                || !(previewedEmpty
+                    || plan.CandidateIds.SequenceEqual([MemoryResetCandidateId(scope, campaignId)])))
             {
                 throw new RetentionConflictException(
                     "Memory data changed after preview; request a new dry-run before retrying.");
@@ -4503,21 +4548,36 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-        await using DbCommand tableCommand = connection.CreateCommand();
-
-        tableCommand.Transaction = transaction;
-
-        tableCommand.CommandText =
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table";
-
-        Add(tableCommand, "@table", table);
-
-        object? tableResult = await tableCommand.ExecuteScalarAsync(
-            cancellationToken).ConfigureAwait(false);
-
-        if (Convert.ToInt64(tableResult, CultureInfo.InvariantCulture) == 0)
+        if (SagaVectorMirror.IsMirrorName(table))
         {
-            return 0;
+            // Classified rather than probed, for the reason TableExistsAsync gives.
+            if (!await IsPlainVectorMirrorAsync(
+                    connection,
+                    transaction,
+                    table,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                return 0;
+            }
+        }
+        else
+        {
+            await using DbCommand tableCommand = connection.CreateCommand();
+
+            tableCommand.Transaction = transaction;
+
+            tableCommand.CommandText =
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table";
+
+            Add(tableCommand, "@table", table);
+
+            object? tableResult = await tableCommand.ExecuteScalarAsync(
+                cancellationToken).ConfigureAwait(false);
+
+            if (Convert.ToInt64(tableResult, CultureInfo.InvariantCulture) == 0)
+            {
+                return 0;
+            }
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -5578,6 +5638,31 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>
+    /// The erasure evidence the installation holds, as counts, and the store those counts describe.
+    /// </summary>
+    /// <remarks>
+    /// Counts only: no fingerprint, key identifier, digest, or store split reaches status or the factory
+    /// preview. The evidence store reads them and names the tables, so this service names none: no prune,
+    /// reset, or factory selection here can reach evidence that outlives every one of them and goes only
+    /// through a release, operator re-creation, <c>memory erasure reset-key</c>, restore's
+    /// destination-authoritative join, or a full installation reset.
+    /// </remarks>
+    private async Task<(DataRetentionMemoryErasureInventory Inventory, string Store)> ReadMemoryErasureInventoryAsync(
+        CancellationToken cancellationToken)
+    {
+        SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(
+            cancellationToken).ConfigureAwait(false);
+
+        (long fingerprints, long receipts, long subjects) = await MemoryErasureEvidence
+            .ReadInventoryAsync(connection, null, cancellationToken)
+            .ConfigureAwait(false);
+
+        return (
+            new DataRetentionMemoryErasureInventory(fingerprints, receipts, subjects),
+            MemoryErasureEvidence.InventoryStore);
+    }
+
+    /// <summary>
     /// Names the operation that currently owns the retention single-flight.
     /// </summary>
     /// <remarks>
@@ -5857,12 +5942,45 @@ internal sealed partial class DataRetentionService(
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
     }
 
+    /// <summary>
+    /// Whether a vector mirror is a plain table, the only kind this runtime can count or delete from.
+    /// </summary>
+    private static async Task<bool> IsPlainVectorMirrorAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string table,
+        CancellationToken cancellationToken) =>
+        await SagaVectorMirror.ClassifyAsync(
+            connection,
+            transaction,
+            table,
+            cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
+
+    /// <summary>
+    /// Whether a table is there to be counted or deleted from.
+    /// </summary>
+    /// <remarks>
+    /// A vector mirror is classified from its definition rather than probed for existence, because a
+    /// legacy <c>vec0</c> virtual table also has a row in <c>sqlite_master</c> and this runtime has no
+    /// module to open it with: a count or delete over it fails with "no such module". So a mirror is
+    /// present here only when it is a plain table, and a legacy one is skipped as though it held
+    /// nothing, which is how the Covenant purge and the staged restore treat it.
+    /// </remarks>
     private async Task<bool> TableExistsAsync(
         string table,
         CancellationToken cancellationToken)
     {
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
+
+        if (SagaVectorMirror.IsMirrorName(table))
+        {
+            return await IsPlainVectorMirrorAsync(
+                connection,
+                transaction: null,
+                table,
+                cancellationToken).ConfigureAwait(false);
+        }
 
         await using DbCommand command = connection.CreateCommand();
 
@@ -5883,40 +6001,47 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>
-    /// Whether the labelled-artifact guard permits removing one named artifact by raw delete.
+    /// Whether the labelled-artifact guard permits removing one named artifact, asked inside the
+    /// transaction that removes it.
     /// </summary>
     /// <remarks>
-    /// Asked before the mutation transaction opens, not inside it. This service and the guard read
-    /// the same scoped Grimoire connection, and a command issued on a connection that already holds
-    /// a transaction is refused by the provider, so "inside the transaction" is not a shape this
-    /// seam can take. <c>SagaMemoryStore</c>'s own bulk delete asks in the same place.
+    /// The answer and the delete are one moment: a label cannot be committed between them, because the
+    /// transaction already holds the write lock every label writer needs. The guard reads through the
+    /// transaction it is handed, which is what a command issued on a connection that already holds a
+    /// transaction has to do. Every delete in this service owns a transaction, so there is no form of
+    /// the question that is asked outside one.
     ///
-    /// <para>The guard is required rather than optional. An installation with no Covenant arm still
-    /// gets a truthful answer from the guard itself, which reads a missing label table as "nothing
-    /// protected exists here" and returns success — so the absent-guard branch bought nothing, and
-    /// what it cost was every composition that forgot the argument skipping the refusal in silence.</para>
+    /// <para>The guard is required rather than optional. Every composition has the Core label table,
+    /// so the guard always has something to read, and what an optional guard cost was every
+    /// composition that forgot the argument skipping the refusal in silence.</para>
     /// </remarks>
     private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
         SensitiveArtifactKind kind,
         Guid artifactId,
+        DbConnection connection,
+        DbTransaction transaction,
         CancellationToken cancellationToken) =>
         await labeledArtifactGuard
-            .EnsureUnlabeledAsync(kind, artifactId, cancellationToken)
+            .EnsureUnlabeledAsync(kind, artifactId, connection, transaction, cancellationToken)
             .ConfigureAwait(false);
 
     /// <summary>
-    /// Whether the labelled-artifact guard permits a set-based delete over one whole kind.
+    /// Whether the labelled-artifact guard permits a set-based delete over one whole kind, asked inside
+    /// the transaction that deletes.
     /// </summary>
     /// <remarks>
     /// The bulk arm, for the statements that examine no identity at all. A per-artifact check cannot
     /// see rows it never enumerated, so the only honest question is whether the kind still has a
-    /// labelled member anywhere and the only safe answer for "yes" is to refuse (§10.20.2).
+    /// labelled member anywhere and the only safe answer for "yes" is to refuse (§10.20.2). Asked in
+    /// the delete's own transaction for the reason the per-artifact overload is.
     /// </remarks>
     private async ValueTask<Result> EnsureKindUnlabeledAsync(
         SensitiveArtifactKind kind,
+        DbConnection connection,
+        DbTransaction transaction,
         CancellationToken cancellationToken) =>
         await labeledArtifactGuard
-            .EnsureNoneLabeledAsync(kind, cancellationToken)
+            .EnsureNoneLabeledAsync(kind, connection, transaction, cancellationToken)
             .ConfigureAwait(false);
 
     /// <summary>
@@ -5976,6 +6101,8 @@ internal sealed partial class DataRetentionService(
     private async Task RefuseLabeledUntargetedResetAsync(
         MemoryResetScope scope,
         Guid? campaignId,
+        DbConnection connection,
+        DbTransaction transaction,
         CancellationToken cancellationToken)
     {
         if (campaignId is not null)
@@ -5999,6 +6126,8 @@ internal sealed partial class DataRetentionService(
 
         Result unlabeled = await EnsureKindUnlabeledAsync(
             protectedKind,
+            connection,
+            transaction,
             cancellationToken).ConfigureAwait(false);
 
         if (unlabeled.IsFailure)
@@ -6015,22 +6144,31 @@ internal sealed partial class DataRetentionService(
     /// transaction — so a protected member is a reason to refuse the whole operation rather than to
     /// leave a Session deleted around Entries that are still there. The single-entry route already
     /// dispatches through the purge boundary; this is the bulk twin that did not.
+    ///
+    /// <para>Asked inside that transaction, about the snapshot it read, so the Entries asked about are
+    /// the Entries it removes and no label can be committed between an answer and the delete. Asked as
+    /// one batched question, which the guard answers in bounded chunks, because the transaction already
+    /// holds the write lock every other writer waits for and a point query per Entry would hold it for
+    /// as long as the Session has Entries.</para>
     /// </remarks>
     private async Task RefuseLabeledSessionEntriesAsync(
         SessionPlanSnapshot snapshot,
+        DbConnection connection,
+        DbTransaction transaction,
         CancellationToken cancellationToken)
     {
-        foreach (Guid entryId in snapshot.EntryIds)
-        {
-            Result unlabeled = await EnsureArtifactUnlabeledAsync(
+        Result unlabeled = await labeledArtifactGuard
+            .EnsureAllUnlabeledAsync(
                 SensitiveArtifactKind.AssistantEntry,
-                entryId,
-                cancellationToken).ConfigureAwait(false);
+                snapshot.EntryIds,
+                connection,
+                transaction,
+                cancellationToken)
+            .ConfigureAwait(false);
 
-            if (unlabeled.IsFailure)
-            {
-                throw new RetentionCovenantLabelException(unlabeled.Error);
-            }
+        if (unlabeled.IsFailure)
+        {
+            throw new RetentionCovenantLabelException(unlabeled.Error);
         }
     }
 
@@ -7171,10 +7309,13 @@ internal sealed partial class DataRetentionService(
     /// kind is running the Annals erasure plan for the store in the same transaction, which is where
     /// the requirement is written down and what a removal added later has to adopt.</para>
     ///
-    /// <para><b>The protected-artifact purge is a known exception, wherever its plan table is read.</b>
-    /// It deletes a Saga memory or a Lexicon entry by that plan and takes no claim, and it runs only
-    /// against a labelled artifact - so it cannot reach these rows while nothing produces a label of
-    /// either kind, which is pinned rather than assumed here. This is what is known rather than a
+    /// <para><b>The protected-artifact purge is the first kind too, wherever its plan table is read.</b>
+    /// The Saga and Lexicon purge plans carry the store's Annals erasure steps ahead of the row, so the
+    /// live erasure kernel and the staged restore purge both take the claim in the transaction that
+    /// takes the row. That is pinned on the plan itself by
+    /// <c>CovenantDerivedOutputInventoryTests.Every_annals_store_plan_takes_its_claim_in_annals_order_before_the_subject_row</c>,
+    /// and <c>AnnalsOrphanAssertions</c> closes the erasure-path tests that erase a claimed row, by
+    /// asking the database whether any claim outlived its row. This is what is known rather than a
     /// closed account of what can exist: a removal composed from a table name held elsewhere is
     /// invisible to a search for the statement that would name it, and the account above has been
     /// incomplete that way before.</para>
@@ -7552,8 +7693,8 @@ internal sealed partial class DataRetentionService(
     /// <c>Data.Blocked</c> would tell an operator their deletion hit an ordinary retention hold
     /// rather than protected state that must be dispatched through the purge boundary (§10.20.2).
     ///
-    /// <para>Every throw site runs before its transaction is opened, so unwinding this leaves
-    /// nothing half-applied.</para>
+    /// <para>Every throw site is inside the transaction that would delete, ahead of that transaction's
+    /// first write, so unwinding this rolls it back and leaves nothing half-applied.</para>
     /// </remarks>
     private sealed class RetentionCovenantLabelException(Error error)
         : Exception(error.Message)

@@ -27,6 +27,18 @@ public sealed class AnnalsSchemaInvariantTests
 
     static AnnalsSchemaInvariantTests() => SqliteNativeRuntime.Instance.Initialize();
 
+    [Fact]
+    public async Task A_version_insert_omitting_hash_format_keeps_legacy_interpretation()
+    {
+        await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
+
+        (string version, _) = await scratch.SeedVersionAsync("legacy-default");
+
+        Assert.Equal(1, await scratch.ScalarAsync(
+            "SELECT ContentHashFormatCode FROM annal_versions WHERE VersionId = $version",
+            ("$version", version)));
+    }
+
     /// <summary>
     /// Cycle safety is structural: an edge may only point strictly backwards in allocation order, so a
     /// cycle needs an edge this table cannot hold. A self-edge is excluded by the same check.
@@ -438,7 +450,7 @@ public sealed class AnnalsSchemaInvariantTests
 
         }
 
-        private async Task<long> ScalarAsync(string sql, params (string Name, object? Value)[] parameters)
+        internal async Task<long> ScalarAsync(string sql, params (string Name, object? Value)[] parameters)
         {
 
             await using SqliteCommand command = _connection.CreateCommand();

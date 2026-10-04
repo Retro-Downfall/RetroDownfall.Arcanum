@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -68,6 +69,10 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         await harness.LabelAsync(SensitiveArtifactKind.Saga, memoryId, sessionId: null, "The operator prefers dark mode.");
 
+        // The precondition the last count is about. Extraction opens a claim while the Annals is on, and
+        // a claim that was never written would satisfy the zero below whether or not the purge took it.
+        Assert.Equal(1, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
+
         CovenantArtifactErasureProgress progress = await harness.EraseAsync(SensitiveArtifactKind.Saga, memoryId);
 
         Assert.Equal(1UL, progress.ErasedCount);
@@ -79,6 +84,10 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
 
     }
 
@@ -111,11 +120,17 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         await harness.LabelAsync(SensitiveArtifactKind.Saga, memoryId, sessionId: null, "The operator prefers dark mode.");
 
+        // The claim the closing assertion is about: extraction opened it, and one that was never written
+        // would satisfy that assertion whether or not the erase took it.
+        Assert.Equal(1, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
+
         CovenantArtifactErasureProgress progress = await harness.EraseAsync(SensitiveArtifactKind.Saga, memoryId);
 
         Assert.Equal(1UL, progress.ErasedCount);
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
 
     }
 
@@ -153,6 +168,14 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         LexiconEntryDto entry = await harness.UpsertLexiconEntryAsync("Nimue", "The lake keeps her counsel.");
 
+        await harness.ExecuteAsync("""
+            INSERT INTO lexicon_annal_fact_provenance
+                (AnnalVersionId, FactOrdinal, SessionId, AttachmentId, LogicalKey, AttachmentVersion, AttachmentContentHash, MaterializedAt, SourceType)
+            SELECT VersionId, 0, 'session', 'attachment', 'source', 1, 'attachment-hash', RecordedAtUtc, 'text' FROM annal_versions;
+            """);
+
+        Assert.Equal(1, await harness.CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+
         await harness.LabelAsync(SensitiveArtifactKind.Lexicon, entry.Id, sessionId: null, entry.Name);
 
         CovenantArtifactErasureProgress progress = await harness.EraseAsync(SensitiveArtifactKind.Lexicon, entry.Id);
@@ -162,6 +185,12 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(CovenantErasureBlocker.None, progress.Blocker);
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM lexicon_entries;"));
+
+        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+
+        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
 
     }
 
@@ -239,7 +268,7 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         internal WeaveIndexAvailability VectorAccelerator { get; } = new();
 
-        private DbConnection Connection => _db.Database.GetDbConnection();
+        internal DbConnection Connection => _db.Database.GetDbConnection();
 
         internal static ErasureHarness Create()
         {
@@ -323,6 +352,10 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
             _ = services.AddSingleton<ISagaMemoryStore, SagaMemoryStore>();
 
+            _ = services.AddSingleton<IMemoryErasureKeyProvider>(MemoryErasureTestKeys.Isolated());
+
+            _ = services.AddScoped<SagaErasureWriteGate>();
+
             _ = services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
                 new TestOptionsMonitor<ArcanumSettings>(settings));
 
@@ -337,8 +370,8 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                     new NoOpSessionAttachmentStore(),
                     NullLogger<GrimoireRepository>.Instance,
                     new TestOptionsSnapshot<ArcanumSettings>(settings),
-                    attachmentIndex: null,
                     covenantKernel: null,
+                    availabilityRepublisher: null,
                     sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                     FixtureLabeledArtifactGuard.For(_db)));
 
@@ -388,7 +421,8 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             LexiconService lexicon = new(
                 _db,
                 NullLogger<LexiconService>.Instance,
-                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+                MemoryErasureTestKeys.Isolated());
 
             Result<LexiconEntryDto> written = await lexicon.UpsertAsync(
                 name,

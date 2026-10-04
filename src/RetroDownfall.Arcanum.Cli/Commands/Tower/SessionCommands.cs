@@ -616,8 +616,14 @@ public sealed class SessionCommands(
         else
         {
 
+            // A stop is reported beside the count rather than instead of it: the entries removed before
+            // the stop are gone whether or not compaction finished.
+            string stopped = compact!.StoppedBy is { } code
+                ? $" Stopped early on {code}; the rest of the selected entries were left unchanged."
+                : string.Empty;
+
             dispatcher.WritePayload(
-                $"Compacted session {resolution.Id:D}: {compact!.TokensBefore} -> {compact.TokensAfter} tokens; {compact.EntriesRemoved} entries removed.");
+                $"Compacted session {resolution.Id:D}: {compact.TokensBefore} -> {compact.TokensAfter} tokens; {compact.EntriesRemoved} entries removed.{stopped}");
 
         }
 

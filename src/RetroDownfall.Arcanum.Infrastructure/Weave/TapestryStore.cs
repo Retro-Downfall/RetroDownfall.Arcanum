@@ -1,7 +1,6 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
@@ -681,42 +680,44 @@ internal sealed class TapestryStore(
             cancellationToken);
 
     /// <summary>
-    /// Deletes matching generations. The optional vec0 mirror has no foreign key, so its rows are
+    /// Deletes matching generations. The optional vector mirror has no foreign key, so its rows are
     /// removed explicitly before the cascade takes the BLOB rows with the nodes.
     /// </summary>
-    private async Task<int> DeleteGenerationsAsync(
+    /// <remarks>
+    /// The mirror holds the embedding itself, so whether it is deleted from is a property of the
+    /// database, not of whether this process loaded an accelerator: a plain mirror an earlier build
+    /// filled is deleted from whatever the flag says, and a legacy vec0 mirror this runtime cannot open
+    /// is skipped rather than failing the delete it rides on.
+    /// </remarks>
+    private static async Task<int> DeleteGenerationsAsync(
         DbConnection connection,
         DbTransaction transaction,
         string predicate,
         Action<DbCommand> bind,
         CancellationToken cancellationToken)
     {
-        if (availability.IsVecAvailable)
+        if (await SagaVectorMirror.ClassifyAsync(
+                connection,
+                transaction,
+                TapestryStorageKeys.VectorTable,
+                cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable)
         {
-            try
-            {
-                await using DbCommand vecCommand = connection.CreateCommand();
+            await using DbCommand vecCommand = connection.CreateCommand();
 
-                vecCommand.Transaction = transaction;
+            vecCommand.Transaction = transaction;
 
-                vecCommand.CommandText =
-                    $"""
-                    DELETE FROM "tapestry_node_embeddings_vec"
-                    WHERE "NodeId" IN (
-                        SELECT "NodeId" FROM "tapestry_nodes"
-                        WHERE "GenerationId" IN (
-                            SELECT "GenerationId" FROM "tapestry_generations" WHERE {predicate}))
-                    """;
+            vecCommand.CommandText =
+                $"""
+                DELETE FROM "tapestry_node_embeddings_vec"
+                WHERE "NodeId" IN (
+                    SELECT "NodeId" FROM "tapestry_nodes"
+                    WHERE "GenerationId" IN (
+                        SELECT "GenerationId" FROM "tapestry_generations" WHERE {predicate}))
+                """;
 
-                bind(vecCommand);
+            bind(vecCommand);
 
-                _ = await vecCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
-            {
-                // sqlite-vec became unavailable after schema creation: the BLOB tables below remain
-                // authoritative, so this is not a failure.
-            }
+            _ = await vecCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         await using DbCommand command = connection.CreateCommand();

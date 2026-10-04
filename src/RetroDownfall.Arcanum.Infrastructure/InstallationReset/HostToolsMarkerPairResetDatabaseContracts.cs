@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -757,34 +759,12 @@ internal sealed class HostToolsMarkerPairResetDatabaseSession : IAsyncDisposable
     private async Task<Result> TruncateWalAsync(CancellationToken cancellationToken)
     {
 
-        await using SqliteCommand command = _connection.CreateCommand();
+        Result<CovenantWalCheckpointOutcome> outcome =
+            await GrimoireWalCheckpoint.TruncateAsync(_connection, cancellationToken).ConfigureAwait(false);
 
-        command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
-
-        await using SqliteDataReader reader =
-            await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            || reader.FieldCount != 3)
-        {
-
-            return Result.Failure(IntegrityError());
-
-        }
-
-        CovenantWalCheckpointOutcome outcome =
-            CovenantWalCheckpointOutcome.Project(reader);
-
-        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-
-            return Result.Failure(IntegrityError());
-
-        }
-
-        Result truncated = outcome.RequireTruncated();
-
-        return truncated.IsSuccess
+        // Every refusal, the helper's own and a busy or partial checkpoint alike, is this session's
+        // one integrity answer: the reset proves a clean installation or proves nothing.
+        return outcome.IsSuccess && outcome.Value.RequireTruncated().IsSuccess
             ? Result.Success()
             : Result.Failure(IntegrityError());
 

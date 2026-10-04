@@ -92,6 +92,21 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Validation.InvalidProviderType, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Connection.Unreachable, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Saga.NotFound, StatusCodes.Status404NotFound)]
+    [InlineData(ErrorCodes.Lexicon.InvalidName, 400)]
+    [InlineData("Lexicon.CurationUnavailable", 503)]
+    [InlineData(ErrorCodes.Lexicon.InvalidFact, 400)]
+    [InlineData(ErrorCodes.Lexicon.InvalidScope, 400)]
+    [InlineData(ErrorCodes.Lexicon.InvalidCurationTarget, 400)]
+    [InlineData(ErrorCodes.Lexicon.InvalidReplacement, 400)]
+    [InlineData(ErrorCodes.Lexicon.NotFound, 404)]
+    [InlineData(ErrorCodes.Lexicon.ProtectedMutationRefused, 403)]
+    [InlineData(ErrorCodes.Lexicon.StaleCurationTarget, 409)]
+    [InlineData(ErrorCodes.Lexicon.RetiredMutationRefused, 409)]
+    [InlineData(ErrorCodes.Lexicon.CurationGenerationExhausted, 409)]
+    [InlineData(ErrorCodes.Lexicon.ArtifactRevisionExhausted, 409)]
+    [InlineData(ErrorCodes.Lexicon.CurationIntegrityFailed, 500)]
+    [InlineData(ErrorCodes.Lexicon.WriteFailed, 500)]
+    [InlineData(ErrorCodes.Lexicon.SearchFailed, 500)]
     [InlineData(ErrorCodes.Saga.NotEmpty, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Saga.SearchFailed, StatusCodes.Status500InternalServerError)]
     // The Saga curation refusals. StaleContent is 409 because the caller's view of the store moved, not
@@ -102,6 +117,26 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Saga.StaleContent, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Saga.AlreadyRetired, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Saga.EmbeddingUnavailable, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.MemoryReview.InvalidToken, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.MemoryReview.InvalidTokenFacts, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.MemoryReview.StaleObservation, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.MemoryReview.UnseenObservation, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.MemoryReview.RequestReuse, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.MemoryReview.IntegrityFailure, StatusCodes.Status500InternalServerError)]
+    // Selective erasure. A token that cannot be read is the request's fault; a lost key, a moved plan
+    // and the two Lexicon operator-management refusals are states the operator re-reads and decides
+    // on again; an erased subject is gone and a receipt proves it; an unreachable key or an
+    // unmigrated schema is worth retrying; and an erase that could not prove its own absence is a
+    // server fault that is never downgraded.
+    [InlineData(ErrorCodes.MemoryErasure.InvalidPreflight, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.MemoryErasure.KeyLost, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.MemoryErasure.StalePlan, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Lexicon.SuppressedNameRefused, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Lexicon.PinnedMutationRefused, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.MemoryErasure.SubjectErased, StatusCodes.Status410Gone)]
+    [InlineData(ErrorCodes.MemoryErasure.Unavailable, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.MemoryErasure.KeyUnavailable, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.MemoryErasure.ErasureIncomplete, StatusCodes.Status500InternalServerError)]
     // A malformed expected-content hash is a request-shape problem, and the curation service is the
     // caller that raises it. Unmapped, it reached the operator as a 500 saying Arcanum broke.
     [InlineData(ErrorCodes.Validation.InvalidFields, StatusCodes.Status400BadRequest)]
@@ -173,6 +208,18 @@ public sealed class ArcanumErrorMapperTests
     public void ResolveStatusCodeDefaultBadRequest_InferenceFailed_Returns500()
     {
         int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(ErrorCodes.ProvingGrounds.InferenceFailed);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, actual);
+    }
+
+    /// <summary>
+    /// An erase that could not prove its own absence is a server fault, not a malformed request, on
+    /// every route family, including the ones that downgrade unmapped codes to 400.
+    /// </summary>
+    [Fact]
+    public void ResolveStatusCodeDefaultBadRequest_ErasureIncomplete_Returns500()
+    {
+        int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(ErrorCodes.MemoryErasure.ErasureIncomplete);
 
         Assert.Equal(StatusCodes.Status500InternalServerError, actual);
     }

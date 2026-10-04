@@ -7,6 +7,8 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -50,6 +52,7 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         GrimoireFixture fixture,
         ArcanumDbContext db,
         SagaMemoryStore store,
+        WeaveIndexAvailability vectorAccelerator,
         IAnnalsStore annals)
     {
 
@@ -58,6 +61,8 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         _db = db;
 
         Store = store;
+
+        VectorAccelerator = vectorAccelerator;
 
         Annals = annals;
 
@@ -68,6 +73,26 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
     /// <summary>A live <see cref="SagaMemoryStore"/> over the temporary Grimoire.</summary>
     internal SagaMemoryStore Store { get; }
+
+    /// <summary>
+    /// The accelerator flag <see cref="Store"/> was built with, so a test can say whether the process
+    /// believes a vector accelerator is loaded.
+    /// </summary>
+    /// <remarks>
+    /// Only the flag. No schema file installs <c>saga_memory_embeddings_vec</c>, so a test that wants a
+    /// mirror creates one with <see cref="CreatePlainVectorMirrorAsync"/> or
+    /// <see cref="CreateLegacyVectorMirrorAsync"/>, and the two facts stay independent the way they are
+    /// in a real installation: a database can hold a mirror an earlier build filled while this process
+    /// has no accelerator at all.
+    /// </remarks>
+    internal WeaveIndexAvailability VectorAccelerator { get; }
+
+    /// <summary>The scoped context used by infrastructure services sharing this harness.</summary>
+    internal ArcanumDbContext Context => _db;
+
+    /// <summary>A separately admitted connection to this harness's same temporary Grimoire.</summary>
+    internal ArcanumDbContext CreateSiblingContext() =>
+        _fixture.CreateContext(((SqliteConnection)Connection).DataSource);
 
     /// <summary>A live <see cref="IAnnalsStore"/> reading the same temporary Grimoire.</summary>
     public IAnnalsStore Annals { get; }
@@ -82,7 +107,18 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// Builds a fresh temporary Grimoire with <c>Arcanum:Features:Annals</c> set to
     /// <paramref name="annalsEnabled"/>, skipping the calling test when SQLCipher is unavailable.
     /// </summary>
-    public static Task<SagaStoreHarness> CreateAsync(bool annalsEnabled)
+    /// <param name="erasureKeys">
+    /// The erasure key provider the store guards its inserts with. Left out, the store gets its own
+    /// isolated keyring over an empty in-memory credential store, which never reaches the real keychain.
+    /// </param>
+    /// <param name="labeledArtifactGuard">
+    /// Builds the labelled-artifact guard the store's deletes ask, from the harness's own context. Left
+    /// out, the store is built with none, as every other suite on this harness expects.
+    /// </param>
+    internal static Task<SagaStoreHarness> CreateAsync(
+        bool annalsEnabled,
+        IMemoryErasureKeyProvider? erasureKeys = null,
+        Func<ArcanumDbContext, ICovenantLabeledArtifactTransactionGuard>? labeledArtifactGuard = null)
     {
 
         // Must run before the fixture is constructed: GrimoireFixture's constructor silently no-ops
@@ -94,9 +130,11 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
         ArcanumDbContext db = fixture.CreateContext(fixture.CopyDatabase());
 
+        WeaveIndexAvailability vectorAccelerator = new();
+
         SagaMemoryStore store = new(
             db,
-            new WeaveIndexAvailability(),
+            vectorAccelerator,
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {
@@ -108,11 +146,54 @@ public sealed class SagaStoreHarness : IAsyncDisposable
                             Dimensions = Dimensions,
                         },
                     },
-                }));
+                }),
+            erasureKeys ?? MemoryErasureTestKeys.Isolated(),
+            labeledArtifactGuard?.Invoke(db));
 
-        return Task.FromResult(new SagaStoreHarness(fixture, db, store, new AnnalsStore(db)));
+        return Task.FromResult(new SagaStoreHarness(fixture, db, store, vectorAccelerator, new AnnalsStore(db)));
 
     }
+
+    /// <summary>
+    /// Creates <c>saga_memory_embeddings_vec</c> as the plain table a test stands in for an
+    /// accelerator's mirror.
+    /// </summary>
+    /// <remarks>
+    /// The same shape <c>SagaCurationEndpointTests</c> creates. This build ships no accelerator, so a
+    /// case about the two embedding tables agreeing cannot be written at all unless something stands the
+    /// mirror up first.
+    /// </remarks>
+    internal Task CreatePlainVectorMirrorAsync() =>
+        ExecuteAsync(
+            """
+            CREATE TABLE "saga_memory_embeddings_vec" ("MemoryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)
+            """);
+
+    /// <summary>
+    /// Creates <c>saga_memory_embeddings_vec</c> as a virtual table, standing in for a legacy
+    /// <c>vec0</c> mirror this runtime cannot open.
+    /// </summary>
+    /// <remarks>
+    /// The shipping runtime has no <c>vec0</c> module, so an FTS5 table takes its place. It records the
+    /// same <c>CREATE VIRTUAL TABLE</c> text in <c>sqlite_master</c>, and that text is all that
+    /// classifying a mirror reads.
+    /// </remarks>
+    internal Task CreateLegacyVectorMirrorAsync() =>
+        ExecuteAsync("CREATE VIRTUAL TABLE saga_memory_embeddings_vec USING fts5(MemoryId, Embedding)");
+
+    /// <summary>
+    /// Writes one mirror row directly, standing in for residue an earlier build left behind.
+    /// </summary>
+    /// <remarks>
+    /// Only for the rows no build this harness can compose would write: a stale row under a flag that is
+    /// off, or a row in a legacy virtual mirror. Every other mirror row reaches the table through the
+    /// store's own insert.
+    /// </remarks>
+    internal Task SeedVectorMirrorRowAsync(string memoryId) =>
+        ExecuteAsync(
+            "INSERT INTO saga_memory_embeddings_vec (MemoryId, Embedding) VALUES ($id, $embedding);",
+            ("$id", memoryId),
+            ("$embedding", EmbeddingBlobCodec.Encode(Embedding(99))));
 
     /// <summary>A deterministic <see cref="Dimensions"/>-length vector, distinct per <paramref name="seed"/>.</summary>
     public float[] Embedding(int seed = 0)

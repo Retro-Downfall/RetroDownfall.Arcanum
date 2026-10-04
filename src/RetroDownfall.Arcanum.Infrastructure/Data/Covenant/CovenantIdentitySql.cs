@@ -59,8 +59,15 @@ internal static class CovenantIdentitySql
     /// <remarks>
     /// Deliberately not <c>Guid.Parse(value).ToString("N")</c>. A staged archive is somebody else's
     /// database and may hold an identity this build cannot parse; normalising the text keeps such a
-    /// row one that matches nothing, rather than an exception that fails a whole protected-state
-    /// purge.
+    /// row one that matches only its own spelling, rather than a parse exception that fails a whole
+    /// protected-state purge.
+    ///
+    /// <para>The one spelling this cannot make safe is an identity with nothing left once normalised,
+    /// such as an empty or all-dash value. Its key is empty, and a predicate keyed by an empty string
+    /// matches every blank-keyed row rather than nothing, so a caller has to refuse it before it
+    /// binds the key: the staged protected-state purge fails closed with
+    /// <c>Covenant.ManualRecoveryRequired</c>, and the shared plan runner rejects an empty key
+    /// outright.</para>
     /// </remarks>
     internal static string Key(string value) =>
         value.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();

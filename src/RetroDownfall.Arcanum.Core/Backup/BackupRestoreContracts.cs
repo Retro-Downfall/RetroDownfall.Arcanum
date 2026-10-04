@@ -262,9 +262,52 @@ public sealed record BackupRestoreDisclosureExposure(
 }
 
 /// <summary>
+/// What a replace-installation restore found when it read this installation's erasure evidence.
+/// </summary>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupRestoreErasureEvidenceStatus>))]
+public enum BackupRestoreErasureEvidenceStatus
+{
+
+    /// <summary>This installation holds no erasure evidence, or provably none it could have committed.</summary>
+    None = 1,
+
+    /// <summary>
+    /// This installation holds erasure evidence and the key that recorded it, so archived items it
+    /// erased can be recognized.
+    /// </summary>
+    Present = 2,
+
+    /// <summary>
+    /// This installation's Grimoire or keychain could not prove what it erased, so the restore is blocked.
+    /// </summary>
+    Refused = 3,
+
+}
+
+/// <summary>
+/// The destination's erasure evidence as a restore plan reports it: a status and content-free counts.
+/// </summary>
+/// <remarks>
+/// Counts only, never a fingerprint or a key identifier, so a plan can be printed, logged, or handed to
+/// automation without becoming a way to test a guess about what was erased. A
+/// <see cref="BackupRestoreErasureEvidenceStatus.Refused"/> summary carries whatever counts the Grimoire
+/// yielded before the key refused them, or zeros when the Grimoire could not be read at all.
+/// </remarks>
+public sealed record BackupRestoreErasureEvidenceSummary(
+    BackupRestoreErasureEvidenceStatus Status,
+    long SagaFingerprints,
+    long LexiconFingerprints,
+    long CovenantFingerprints,
+    long Receipts);
+
+/// <summary>
 /// Everything a restore learned before it was allowed to mutate anything. <c>--dry-run</c> returns
 /// exactly this plan, so a rehearsal and a real restore agree on scope, capacity, and refusals.
 /// </summary>
+/// <param name="DestinationErasureEvidence">
+/// This installation's erasure evidence, for a replace-installation plan that held the maintenance lock;
+/// null for every other plan, which never reads it.
+/// </param>
 public sealed record BackupRestorePlan(
     DateTimeOffset GeneratedAt,
     string ArchivePath,
@@ -287,7 +330,58 @@ public sealed record BackupRestorePlan(
     string[] Warnings,
     BackupVerifyIssue[] Blockers,
     BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
-    BackupRestoreDisclosureExposure? DestinationDisclosure = null);
+    BackupRestoreDisclosureExposure? DestinationDisclosure = null,
+    BackupRestoreErasureEvidenceSummary? DestinationErasureEvidence = null);
+
+/// <summary>
+/// Whether the local scrub behind a restore's erasure application is proven, the way an erase's own
+/// local outcome is.
+/// </summary>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupRestoreErasureScrubStatus>))]
+public enum BackupRestoreErasureScrubStatus
+{
+
+    /// <summary>
+    /// Every full-text index read back secure delete, the staged write-ahead log was truncated, the
+    /// extracted archive database was removed, and the committed generation was proven free of every
+    /// erased item.
+    /// </summary>
+    Verified = 1,
+
+    /// <summary>Rows were removed or evidence joined, but one of those proofs did not hold.</summary>
+    ScrubPending = 2,
+
+    /// <summary>Nothing was purged, joined or dropped, so there is nothing to scrub.</summary>
+    NotApplicable = 3,
+
+}
+
+/// <summary>
+/// What a replace-installation restore did with this installation's erasure evidence, in counts only.
+/// </summary>
+/// <remarks>
+/// Counts and a status, never an identity, a fingerprint or a key identifier, so a result can be printed,
+/// logged or handed to automation without becoming a way to test a guess about what was erased.
+/// </remarks>
+/// <param name="SagaMemoriesRemoved">Archived Saga memories this installation erased, purged from staging.</param>
+/// <param name="LexiconEntriesRemoved">Archived Lexicon entries this installation erased, purged from staging.</param>
+/// <param name="CovenantEntriesRemoved">Archived Covenant entries this installation erased, purged from staging.</param>
+/// <param name="RetirementPairsRemoved">Retirement suppression rows the purged Saga memories carried.</param>
+/// <param name="FingerprintsJoined">This installation's fingerprints, now the restored generation's.</param>
+/// <param name="ReceiptsJoined">This installation's erasure receipts, now the restored generation's.</param>
+/// <param name="ArchiveRowsDropped">
+/// Archived fingerprints and receipts this installation does not hold: recorded under another key, or
+/// released here since. Their receipt subjects go with them and are not counted.
+/// </param>
+public sealed record BackupRestoreErasureApplication(
+    long SagaMemoriesRemoved,
+    long LexiconEntriesRemoved,
+    long CovenantEntriesRemoved,
+    long RetirementPairsRemoved,
+    long FingerprintsJoined,
+    long ReceiptsJoined,
+    long ArchiveRowsDropped,
+    BackupRestoreErasureScrubStatus Scrub);
 
 /// <summary>Post-commit reconciliation counts. Nothing here is allowed to silently skip a file.</summary>
 /// <param name="EmbeddingsToRebuild">
@@ -298,6 +392,10 @@ public sealed record BackupRestorePlan(
 /// restored Grimoire had that many fresh vectors when it has that many fewer than the archive
 /// carried.
 /// </param>
+/// <param name="ErasureApplication">
+/// What a replace-installation restore did with this installation's erasure evidence; null for every
+/// other restore, which never applies it.
+/// </param>
 public sealed record BackupRestoreReconciliation(
     long Attachments,
     long StaleAttachmentSources,
@@ -305,7 +403,8 @@ public sealed record BackupRestoreReconciliation(
     long BatchFiles,
     long EmbeddingsToRebuild,
     long PendingOperationsCleared,
-    string[] Issues);
+    string[] Issues,
+    BackupRestoreErasureApplication? ErasureApplication = null);
 
 public sealed record BackupRestoreResult(
     BackupRestoreStatus Status,

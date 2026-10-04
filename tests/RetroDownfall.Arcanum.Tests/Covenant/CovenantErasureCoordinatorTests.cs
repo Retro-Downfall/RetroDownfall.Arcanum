@@ -3796,6 +3796,13 @@ public sealed class CovenantErasureCoordinatorTests
             CancellationToken cancellationToken) =>
             Inner.AcquireCampaignExclusiveAsync(campaignId, owner, cancellationToken);
 
+        public ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+            CovenantOperationScope entryScope,
+            bool reclaimsKey,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            Inner.AcquireEntryErasureAsync(entryScope, reclaimsKey, owner, cancellationToken);
+
         public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
             ProtectedTransferScope scope,
             CovenantExclusiveRecoveryOwner owner,

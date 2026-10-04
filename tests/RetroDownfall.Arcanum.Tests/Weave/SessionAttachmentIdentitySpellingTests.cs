@@ -228,27 +228,23 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The attachment index purge removes a staged generation's chunks, which it can reach only by
-    /// asking <c>SessionAttachments</c> which attachments belong to the Session.
+    /// Abandoning an attachment's index removes a staged generation's chunks, which it reaches only by
+    /// the attachment's own canonical identity.
     /// </summary>
     /// <remarks>
-    /// This is what pins the split parameter, and a staged generation is the only state that can see the
-    /// difference. A published chunk carries the Session identity in its own column and is deleted by
-    /// the first arm of that <c>OR</c> whatever the second arm does; a staged one carries
-    /// <see cref="Guid.Empty"/> there until publication, so only the second arm reaches it - and that arm
-    /// compares a canonical <c>SessionAttachments.SessionId</c> while the first compares a chunk column
-    /// that stays minority-spelled. One parameter served both before this change, and because the two
-    /// predicates are joined by <c>OR</c> the failure was a silent under-delete rather than anything that
-    /// raised.
+    /// A staged generation is the state that shows the difference. A published chunk carries the Session
+    /// identity in its own column, but a staged one carries <see cref="Guid.Empty"/> there until
+    /// publication and so can be found only through its attachment: the delete compares the chunk's
+    /// <c>AttachmentId</c>, which is stored canonical, against the attachment's identity in that same
+    /// spelling. A delete that spelled it the other way would match nothing and leave the staged chunks,
+    /// and their vector rows, behind without raising.
     ///
-    /// <para><b>Why the purge is entered here rather than through <c>PurgeSessionAsync</c>.</b> That
-    /// caller also deletes the attachment rows, and <c>session_attachment_chunks.AttachmentId</c> carries
-    /// <c>ON DELETE CASCADE</c>, so the chunks disappear either way and the under-delete is invisible
-    /// from there. Entering at the index maintenance port is what isolates the predicate this case is
-    /// about; the cascade is a second mechanism, not a reason the first one may be wrong.</para>
+    /// <para>The attachment row stays: only the unpublished generation goes. <c>session_attachment_chunks.AttachmentId</c>
+    /// carries <c>ON DELETE CASCADE</c>, so deleting the attachment would remove the chunks whatever the
+    /// predicate was, which is why this enters at the index's own port rather than through a delete.</para>
     /// </remarks>
     [SkippableFact]
-    public async Task The_index_purge_removes_a_staged_generation_it_can_only_reach_through_its_attachment()
+    public async Task Abandoning_the_index_removes_a_staged_generation_it_can_only_reach_through_its_attachment()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -263,15 +259,14 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             Guid.Empty.ToString("D").ToLowerInvariant(),
             await ScalarStringAsync("SELECT SessionId FROM session_attachment_chunks LIMIT 1"));
 
-        await using (IDbContextTransaction transaction = await _db!.Database
-            .BeginTransactionAsync(CancellationToken.None))
-        {
-
-            await _index!.DeleteForSessionInAmbientTransactionAsync(sessionId, CancellationToken.None);
-
-            await transaction.CommitAsync(CancellationToken.None);
-
-        }
+        await _index!.MarkWithoutIndexAsync(
+            attachment.Id,
+            attachment.ContentSha256,
+            SessionAttachmentIndexStatus.Failed,
+            attempt: 1,
+            failureReason: "abandoned",
+            extractedAt: null,
+            CancellationToken.None);
 
         Assert.Equal(0, await ScalarIntAsync("SELECT COUNT(*) FROM session_attachment_chunks"));
 
@@ -463,7 +458,8 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         SagaMemoryStore memories = new(
             _db!,
             new WeaveIndexAvailability(),
-            new TestOptionsMonitor<ArcanumSettings>(_settings));
+            new TestOptionsMonitor<ArcanumSettings>(_settings),
+            MemoryErasureTestKeys.Isolated());
 
         _ = await memories.InsertAsync(
             Guid.NewGuid().ToString(),
@@ -506,7 +502,8 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         LexiconService lexicon = new(
             _db!,
             NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<ArcanumSettings>(_settings));
+            new TestOptionsMonitor<ArcanumSettings>(_settings),
+            MemoryErasureTestKeys.Isolated());
 
         Result<LexiconEntryDto> written = await lexicon.UpsertAsync(
             "Alpha",

@@ -11,7 +11,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </remarks>
 internal static class UtcInstantColumnInventory
 {
-    internal static IReadOnlyList<UtcInstantTable> Core { get; } =
+    // The version-9 sweep runs before version-11 columns exist. Its positional cursor also depends
+    // on this exact table order, so later inventories must extend a separate head projection.
+    internal static IReadOnlyList<UtcInstantTable> CoreVersionNine { get; } =
     [
         new("Apprentices", ["CreatedAt", "UpdatedAt"]),
         new("BatchLineCheckpoints", ["CompletedAt", "DispatchedAt"]),
@@ -85,6 +87,15 @@ internal static class UtcInstantColumnInventory
         new("tapestry_generations", ["CompletedAt", "StartedAt"]),
         new("tapestry_nodes", ["CreatedAt"]),
         new("workspace_file_chunks", ["FileLastWriteTime", "IndexedAt"]),
+    ];
+
+    internal static IReadOnlyList<UtcInstantTable> Core { get; } =
+    [
+        .. CoreVersionNine.Select(static table => table.TableName == "lexicon_entries"
+            ? new UtcInstantTable("lexicon_entries", ["PinnedAtUtc", "RetiredAtUtc", "UpdatedAt"])
+            : table)
+            .Append(new UtcInstantTable("lexicon_annal_fact_provenance", ["MaterializedAt"]))
+            .OrderBy(static table => table.TableName, StringComparer.Ordinal),
     ];
 
     internal static IReadOnlyList<UtcInstantTable> CovenantCanonical { get; } =

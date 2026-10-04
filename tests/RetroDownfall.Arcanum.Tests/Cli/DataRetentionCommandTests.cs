@@ -14,6 +14,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Api.Security;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Commands;
@@ -33,6 +35,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -41,6 +44,205 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class DataRetentionCommandTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Prune_dry_run_renders_Lexicon_pin_inventory(bool json)
+    {
+        string plan = JsonSerializer.Serialize(CreatePlan(), ArcanumJsonContext.Default.DataRetentionPlan);
+
+        plan = plan[..^1] + ",\"lexiconCuration\":{\"pinnedRows\":5,\"pinnedRowsExemptFromPlan\":3}}";
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"isSuccess\":true,\"data\":" + plan + "}", Encoding.UTF8, "application/json"),
+        });
+
+        CliTestResult result = RunCommand(handler, ["data", "prune", "--dry-run", json ? "--json" : "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            JsonElement inventory = document.RootElement.GetProperty("lexiconCuration");
+
+            Assert.Equal(5, inventory.GetProperty("pinnedRows").GetInt64());
+
+            Assert.Equal(3, inventory.GetProperty("pinnedRowsExemptFromPlan").GetInt64());
+        }
+        else
+        {
+            Assert.Contains("Lexicon pins: 5; exempt from this plan: 3", result.Output, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The bundled CLI resets an already-empty store through a real host and exits 0.
+    /// </summary>
+    /// <remarks>
+    /// The host is real so the answer is the server's own: an empty store previews no candidate, and the
+    /// reset it confirms must apply as a no-op rather than come back as a conflict. The in-process test
+    /// server cannot answer the loopback presence proof, so the CLI proves its key to the local responder
+    /// and the bridge to the host carries the test API key in place of the process capability that proof
+    /// would have issued. Every command request and response is the real one.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Reset_memory_on_an_empty_store_exits_zero()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpMessageHandler host = factory.Server.CreateHandler();
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(
+            services,
+            new ConfigurationManager());
+
+        services.RemoveAll<IHttpClientFactory>();
+
+        services.AddSingleton<IHttpClientFactory>(new HostHttpClientFactory(host));
+
+        services.RemoveAll<ISecretStore>();
+
+        services.AddSingleton<ISecretStore>(
+            new FakeSecretStore(ArcanumWebApplicationFactory.TestApiKey));
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            ArcanumWebApplicationFactory.TestApiKey);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["--yes", "data", "reset-memory", "--scope", "workspace"]);
+
+        Assert.True(result.ExitCode == 0, $"exit {result.ExitCode}: {result.Output}{result.Error}");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Status_renders_erasure_evidence_counts(bool json)
+    {
+        string status = JsonSerializer.Serialize(CreateStatus(), ArcanumJsonContext.Default.DataRetentionStatus);
+
+        status = status[..^1] + ",\"memoryErasure\":{\"fingerprints\":3,\"receipts\":3,\"receiptSubjects\":3}}";
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"isSuccess\":true,\"data\":" + status + "}", Encoding.UTF8, "application/json"),
+        });
+
+        CliTestResult result = RunCommand(handler, ["data", "status", json ? "--json" : "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            JsonElement inventory = document.RootElement.GetProperty("memoryErasure");
+
+            Assert.Equal(3, inventory.GetProperty("fingerprints").GetInt64());
+
+            Assert.Equal(3, inventory.GetProperty("receipts").GetInt64());
+
+            Assert.Equal(3, inventory.GetProperty("receiptSubjects").GetInt64());
+        }
+        else
+        {
+            Assert.Contains(
+                "Erasure evidence: 3 fingerprints, 3 receipts, 3 subjects; never aged out",
+                result.Output,
+                StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Prune_dry_run_renders_Saga_pin_inventory(bool json)
+    {
+        string plan = JsonSerializer.Serialize(CreatePlan(), ArcanumJsonContext.Default.DataRetentionPlan);
+
+        plan = plan[..^1]
+            + ",\"sagaCuration\":{\"pinnedRows\":4,\"pinnedRowsExemptFromPlan\":2}"
+            + ",\"lexiconCuration\":{\"pinnedRows\":5,\"pinnedRowsExemptFromPlan\":3}}";
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"isSuccess\":true,\"data\":" + plan + "}", Encoding.UTF8, "application/json"),
+        });
+
+        CliTestResult result = RunCommand(handler, ["data", "prune", "--dry-run", json ? "--json" : "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            JsonElement inventory = document.RootElement.GetProperty("sagaCuration");
+
+            Assert.Equal(4, inventory.GetProperty("pinnedRows").GetInt64());
+
+            Assert.Equal(2, inventory.GetProperty("pinnedRowsExemptFromPlan").GetInt64());
+        }
+        else
+        {
+            int saga = result.Output.IndexOf("Saga pins: 4; exempt from this plan: 2", StringComparison.Ordinal);
+
+            int lexicon = result.Output.IndexOf("Lexicon pins:", StringComparison.Ordinal);
+
+            Assert.True(saga >= 0, result.Output);
+
+            Assert.True(saga < lexicon, result.Output);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Prune_apply_renders_exact_newly_pinned_conflict(bool json)
+    {
+        DataRetentionPlan plan = CreatePlan();
+
+        const string candidate = "lexicon:11111111111111111111111111111111";
+
+        DataRetentionApplyResult applied = CreateApplyResult(plan.PlanId) with
+        {
+            RowsDeleted = 0,
+            Conflicts = [new(ErrorCodes.Data.PinnedAfterPlanning, candidate, "The Lexicon entry was pinned after planning and was preserved.")],
+        };
+
+        RecordingHandler handler = new(request => request.Path == "/api/data/prune/plan"
+            ? SuccessResponse(plan, ArcanumJsonContext.Default.ApiResponseDataRetentionPlan)
+            : SuccessResponse(applied, ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult));
+
+        CliTestResult result = RunCommand(handler, ["data", "prune", "--apply", "--yes", json ? "--json" : "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            JsonElement conflict = Assert.Single(document.RootElement.GetProperty("conflicts").EnumerateArray());
+
+            Assert.Equal("Data.PinnedAfterPlanning", conflict.GetProperty("code").GetString());
+
+            Assert.Equal(candidate, conflict.GetProperty("resourceId").GetString());
+        }
+        else
+        {
+            Assert.Contains($"Conflict {candidate}: Data.PinnedAfterPlanning", result.Output, StringComparison.Ordinal);
+        }
+    }
+
     [Fact]
 
     public void Data_help_exposes_retention_and_explicit_deletion_commands()
@@ -933,6 +1135,45 @@ public sealed class DataRetentionCommandTests
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
+    }
+
+    /// <summary>Hands the CLI clients that reach the in-process test host.</summary>
+    private sealed class HostHttpClientFactory(
+        HttpMessageHandler host) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) =>
+            new(new TestKeyBridge(host), disposeHandler: true)
+            {
+                BaseAddress = new Uri("http://localhost:5001/"),
+            };
+    }
+
+    /// <summary>
+    /// Carries the test API key to the in-process host in place of a process capability, which only a
+    /// loopback presence proof the test server cannot answer would have issued.
+    /// </summary>
+    private sealed class TestKeyBridge(HttpMessageHandler host) : DelegatingHandler(new NonDisposingHandler(host))
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            _ = request.Headers.Remove(ArcanumApiHeaders.ProcessCapability);
+
+            _ = request.Headers.TryAddWithoutValidation(
+                ArcanumApiHeaders.ApiKey,
+                ArcanumWebApplicationFactory.TestApiKey);
+
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    /// <summary>Lets each CLI client dispose its bridge without disposing the shared test server handler.</summary>
+    private sealed class NonDisposingHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 
     private sealed class RecordingConfirmationPrompt(

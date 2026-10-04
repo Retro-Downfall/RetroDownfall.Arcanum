@@ -117,6 +117,15 @@ public sealed class ErrorCodeCatalogContractTests
     [InlineData("Validation.RequestHeadersTooLarge")]
     [InlineData("Grimoire.MaintenanceUnavailable")]
     [InlineData("Grimoire.WorkDrainTimeout")]
+    [InlineData("MemoryErasure.Unavailable")]
+    [InlineData("MemoryErasure.KeyUnavailable")]
+    [InlineData("MemoryErasure.KeyLost")]
+    [InlineData("MemoryErasure.InvalidPreflight")]
+    [InlineData("MemoryErasure.StalePlan")]
+    [InlineData("MemoryErasure.SubjectErased")]
+    [InlineData("MemoryErasure.ErasureIncomplete")]
+    [InlineData("Lexicon.SuppressedNameRefused")]
+    [InlineData("Lexicon.PinnedMutationRefused")]
     public void Catalog_and_constant_table_both_carry_every_code_a_route_emits(string code)
     {
         Assert.Contains(code, DeclaredErrorCodes().Select(declared => declared.Value));

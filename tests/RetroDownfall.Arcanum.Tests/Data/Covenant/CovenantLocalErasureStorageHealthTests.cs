@@ -948,6 +948,45 @@ public sealed class CovenantLocalErasureStorageHealthTests
     }
 
     /// <summary>
+    /// The proof counts the curation tables too. An erasure that removed a key's epoch row and left a
+    /// pin or a mask recorded against it would leave that curation bound to epoch 0, which is what the
+    /// next key of that name reads, so a candidate that still holds one is refused rather than reopened.
+    /// </summary>
+    [Fact]
+    public async Task The_verified_reopen_refuses_a_family_that_still_holds_curation()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.ExecuteAsync(
+            """
+            INSERT INTO covenant_curation_versions (
+                CurationVersionId, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                CurationKindCode, Revision, PredecessorVersionId, MutationId,
+                RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, CreatedAtUtc)
+            VALUES ('11111111-2222-4333-8444-666666666666', 1, NULL, 'survivor', 1, 0, 1, 1, NULL,
+                    '11111111-2222-4333-8444-777777777777', zeroblob(32), zeroblob(32), zeroblob(32),
+                    '2026-02-01T00:00:00.0000000Z');
+
+            INSERT INTO covenant_curation_heads (
+                ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                IsPinned, IsMasked, CurrentVersionId, CurrentRevision, UpdatedAtUtc)
+            VALUES (1, NULL, 'survivor', 1, 0, 1, 0, '11111111-2222-4333-8444-666666666666', 1,
+                    '2026-02-01T00:00:00.0000000Z');
+            """,
+            Token);
+
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
+
+        Assert.True(reopened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
+
+        Assert.Contains("covenant_curation_heads", reopened.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
     /// The empty index is prepared by the same initializer a fresh install runs, and it is the
     /// read-back that proves the setting took rather than the statement that asked for it.
     /// </summary>

@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -151,7 +152,8 @@ public sealed class CovenantMutationConcurrencyTests
             CovenantMutationTransaction owned = new(connection, transaction);
 
             Result<IReadOnlyList<CovenantMutationReceipt>> receipts =
-                await new CovenantMutationKernel().ApplyBatchAsync(batch, owned, cancellationToken);
+                await new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated())
+                    .ApplyBatchAsync(batch, owned, CovenantAgentErasureGate.None, cancellationToken);
 
             if (receipts.IsSuccess)
             {

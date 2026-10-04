@@ -2116,6 +2116,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
             safetyBackups is null ? null : () => safetyBackups,
             TimeProvider.System,
             GrimoireSchemaTestInstaller.Create(),
+            new MemoryErasureKeyring(new InMemoryOsCredentialStore()),
             options ?? new BackupRestoreServiceOptions(),
             coordination);
 

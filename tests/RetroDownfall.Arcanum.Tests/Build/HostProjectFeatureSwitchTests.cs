@@ -231,6 +231,7 @@ public sealed class HostProjectFeatureSwitchTests
             "_ArcanumPreparedNativeAotPath",
             "_ArcanumRequiresLegacyMacOsLld",
             "_ArcanumRequiresPortableMacOsNativeAotBridge",
+            "_ArcanumResolvedNuGetPackageRoot",
             "_ArcanumVerifiedPortableNativeAotContents",
             "_ArcanumVerifiedPortableNativeAotPackage",
             "_ArcanumVerifiedPortableNativeAotRoot",
@@ -293,7 +294,7 @@ public sealed class HostProjectFeatureSwitchTests
                 element.Name.LocalName == "_ArcanumPortableMacOsNativeAotPackageRoot");
 
         Assert.Contains(
-            "$(NuGetPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64/$(ArcanumPortableMacOsNativeAotPackageVersion)",
+            "$([MSBuild]::EnsureTrailingSlash('$(_ArcanumResolvedNuGetPackageRoot)'))microsoft.netcore.app.runtime.nativeaot.osx-arm64/$(ArcanumPortableMacOsNativeAotPackageVersion)",
             packageRoot.Value,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -638,6 +639,184 @@ public sealed class HostProjectFeatureSwitchTests
     }
 
     [Fact]
+    public async Task MacOS_native_aot_restore_collects_the_portable_pack_for_plural_runtime_identifiers()
+    {
+        const string version = "10.0.12";
+        string temporaryRoot = Directory
+            .CreateTempSubdirectory("arcanum-nativeaot-restore-collection-")
+            .FullName;
+
+        try
+        {
+            string netCoreRoot = Path.Combine(temporaryRoot, "dotnet");
+            string bundledNativeRoot = Path.Combine(
+                netCoreRoot,
+                "packs",
+                "Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64",
+                version,
+                "runtimes",
+                "osx-arm64",
+                "native");
+
+            Directory.CreateDirectory(bundledNativeRoot);
+            File.WriteAllText(Path.Combine(bundledNativeRoot, "nonportable.txt"), string.Empty);
+
+            string testProject = Path.Combine(temporaryRoot, "PluralRuntimeRestore.proj");
+            XDocument project = new(
+                new XElement(
+                    "Project",
+                    new XElement(
+                        "PropertyGroup",
+                        new XElement("RuntimeIdentifiers", "osx-arm64"),
+                        new XElement("PublishAot", "true"),
+                        new XElement("NetCoreRoot", netCoreRoot + Path.DirectorySeparatorChar),
+                        new XElement("BundledNETCoreAppPackageVersion", version)),
+                    new XElement(
+                        "Import",
+                        new XAttribute("Project", Path.Combine(FindRepositoryRoot(), "Directory.Build.targets"))),
+                    new XElement("Target", new XAttribute("Name", "CollectPackageDownloads")),
+                    new XElement(
+                        "Target",
+                        new XAttribute("Name", "AssertPortablePackCollected"),
+                        new XAttribute("DependsOnTargets", "CollectPackageDownloads"),
+                        new XElement(
+                            "Error",
+                            new XAttribute(
+                                "Condition",
+                                "'@(PackageDownload)' != 'Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64'"),
+                            new XAttribute(
+                                "Text",
+                                "The restore graph omitted the portable macOS Native AOT package.")))));
+
+            project.Save(testProject);
+
+            global::System.Diagnostics.ProcessStartInfo start = new("dotnet")
+            {
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+
+            start.ArgumentList.Add("msbuild");
+            start.ArgumentList.Add(testProject);
+            start.ArgumentList.Add("-t:AssertPortablePackCollected");
+            start.ArgumentList.Add("-nodeReuse:false");
+            start.ArgumentList.Add("-v:minimal");
+            start.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1";
+
+            using global::System.Diagnostics.Process process = new() { StartInfo = start };
+
+            Assert.True(process.Start());
+
+            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
+            Task<string> standardError = process.StandardError.ReadToEndAsync();
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+
+            await process.WaitForExitAsync(timeout.Token);
+
+            string output = await standardOutput + await standardError;
+
+            Assert.True(process.ExitCode == 0, output);
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task MacOS_native_aot_verification_uses_the_project_owned_restore_cache()
+    {
+        const string version = "10.0.12";
+        string temporaryRoot = Directory
+            .CreateTempSubdirectory("arcanum-nativeaot-restore-cache-")
+            .FullName;
+
+        try
+        {
+            string netCoreRoot = Path.Combine(temporaryRoot, "dotnet");
+            string bundledNativeRoot = Path.Combine(
+                netCoreRoot,
+                "packs",
+                "Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64",
+                version,
+                "runtimes",
+                "osx-arm64",
+                "native");
+            string restorePackagesPath = Path.Combine(temporaryRoot, "project-packages");
+            string expectedPackageRoot = Path.Combine(
+                restorePackagesPath,
+                "microsoft.netcore.app.runtime.nativeaot.osx-arm64",
+                version) + Path.DirectorySeparatorChar;
+
+            Directory.CreateDirectory(bundledNativeRoot);
+            File.WriteAllText(Path.Combine(bundledNativeRoot, "nonportable.txt"), string.Empty);
+
+            string testProject = Path.Combine(temporaryRoot, "ProjectOwnedRestoreCache.proj");
+            XDocument project = new(
+                new XElement(
+                    "Project",
+                    new XElement(
+                        "PropertyGroup",
+                        new XElement("RuntimeIdentifier", "osx-arm64"),
+                        new XElement("PublishAot", "true"),
+                        new XElement("NetCoreRoot", netCoreRoot + Path.DirectorySeparatorChar),
+                        new XElement("RestorePackagesPath", restorePackagesPath),
+                        new XElement("BundledNETCoreAppPackageVersion", version)),
+                    new XElement(
+                        "Import",
+                        new XAttribute("Project", Path.Combine(FindRepositoryRoot(), "Directory.Build.targets"))),
+                    new XElement(
+                        "Target",
+                        new XAttribute("Name", "AssertProjectOwnedRestoreCache"),
+                        new XElement(
+                            "Error",
+                            new XAttribute(
+                                "Condition",
+                                $"'$(_ArcanumPortableMacOsNativeAotPackageRoot)' != '{expectedPackageRoot}'"),
+                            new XAttribute(
+                                "Text",
+                                "Native AOT verification ignored the project-owned restore cache.")))));
+
+            project.Save(testProject);
+
+            global::System.Diagnostics.ProcessStartInfo start = new("dotnet")
+            {
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+
+            start.ArgumentList.Add("msbuild");
+            start.ArgumentList.Add(testProject);
+            start.ArgumentList.Add("-t:AssertProjectOwnedRestoreCache");
+            start.ArgumentList.Add("-nodeReuse:false");
+            start.ArgumentList.Add("-v:minimal");
+            start.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1";
+
+            using global::System.Diagnostics.Process process = new() { StartInfo = start };
+
+            Assert.True(process.Start());
+
+            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
+            Task<string> standardError = process.StandardError.ReadToEndAsync();
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+
+            await process.WaitForExitAsync(timeout.Token);
+
+            string output = await standardOutput + await standardError;
+
+            Assert.True(process.ExitCode == 0, output);
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public Task MacOS_native_aot_hashes_the_package_bytes_instead_of_trusting_nugets_record() =>
         AssertTamperedPackageRejectedAsync(
             recordedHash:
@@ -723,7 +902,7 @@ public sealed class HostProjectFeatureSwitchTests
                         new XElement("RuntimeIdentifier", "osx-arm64"),
                         new XElement("PublishAot", "true"),
                         new XElement("NetCoreRoot", netCoreRoot + Path.DirectorySeparatorChar),
-                        new XElement("NuGetPackageRoot", Path.Combine(temporaryRoot, "packages") + Path.DirectorySeparatorChar),
+                        new XElement("NuGetPackageRoot", Path.Combine(temporaryRoot, "packages")),
                         new XElement("NativeIntermediateOutputPath", intermediateRoot + Path.DirectorySeparatorChar),
                         new XElement("BundledNETCoreAppPackageVersion", version)),
                     new XElement(

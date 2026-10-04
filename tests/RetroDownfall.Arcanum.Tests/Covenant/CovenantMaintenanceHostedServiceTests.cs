@@ -69,12 +69,14 @@ public sealed class CovenantMaintenanceHostedServiceTests
         services.AddScoped(_ => new CovenantOwnerCleanupCoordinator(
             CovenantOperationGateFixture.CreateGate(refusing),
             new UnreachableConnectionSource(),
-            new CovenantCleanupWorker()));
+            new CovenantCleanupWorker(),
+            DetachedAvailabilityRepublisher.Create()));
 
         services.AddScoped(_ => new CovenantSearchOutboxCoordinator(
             CovenantOperationGateFixture.CreateGate(refusing),
             new UnreachableConnectionSource(),
-            new CovenantSearchOutboxWorker()));
+            new CovenantSearchOutboxWorker(),
+            DetachedAvailabilityRepublisher.Create()));
 
         services.AddScoped(_ => new CovenantTurnReceiptCompactionCoordinator(
             CovenantOperationGateFixture.CreateGate(refusing),

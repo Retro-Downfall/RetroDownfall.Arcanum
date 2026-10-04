@@ -28,6 +28,8 @@ public sealed record AnnalClaimVersion(
     SagaMemoryScopeKind ScopeKind,
     Guid? CampaignId,
     ContentSensitivity Sensitivity,
+    AnnalContentHashFormat ContentHashFormat,
+    byte[]? ContentHash,
     DateTimeOffset ValidFromUtc,
     DateTimeOffset? ValidToUtc,
     DateTimeOffset RecordedAtUtc,

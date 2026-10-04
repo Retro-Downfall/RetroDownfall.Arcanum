@@ -93,11 +93,16 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         if (applied is null)
         {
-            // A projection with no published tuple is adoptable only while it is empty: an empty
-            // projection is trivially correct for sequence zero, so the worker can start from there
-            // instead of demanding a rebuild of nothing. Anything already projected under a tuple
-            // this dataset never published cannot be reconciled by a delta.
-            if (await ProjectionRowCountAsync(transaction, cancellationToken).ConfigureAwait(false) > 0)
+            // A projection with no published tuple is adoptable only while it is empty, and only while
+            // the outbox can still replay every head the canonical tier holds onto it, so the worker can
+            // start from there instead of demanding a rebuild of nothing. Anything already projected
+            // under a tuple this dataset never published cannot be reconciled by a delta, and neither can
+            // a head no pending delta names: a restore resets the sequence to zero and drains the
+            // outbox but keeps its heads, and adopting that projection would let search answer from an
+            // index missing every one of them.
+            if (await ProjectionRowCountAsync(transaction, cancellationToken).ConfigureAwait(false) > 0
+                || !await OutboxReplaysEveryHeadAsync(transaction, state.CanonicalSearchSequence, cancellationToken)
+                    .ConfigureAwait(false))
             {
                 return new CovenantOutboxSyncOutcome(0, 0, 0, 0, RebuildRequired: true);
             }
@@ -111,8 +116,18 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         if (pending.IsEmpty)
         {
             // Nothing to apply, but the tuple may still need adopting so eligibility can be reached
-            // on an installation that has simply never mutated.
-            if (state.AppliedDatasetGeneration != state.DatasetGeneration)
+            // on an installation that has simply never mutated. An adopted tuple that is current may
+            // still trail a Campaign delete that removed no head: owner cleanup spends no search
+            // sequence on it, so no delta will ever arrive to carry the watermark, and search would
+            // stay on the canonical fallback until an unrelated Covenant write. The stamp is the one
+            // every applied batch writes.
+            bool adopting = state.AppliedDatasetGeneration != state.DatasetGeneration;
+
+            bool watermarkBehind = !adopting
+                && applied.Value == state.CanonicalSearchSequence
+                && state.AppliedCampaignDeletionSequence < state.CoreCampaignDeletionSequence;
+
+            if (adopting || watermarkBehind)
             {
                 await PublishAppliedAsync(transaction, state.DatasetGeneration, applied.Value, cancellationToken)
                     .ConfigureAwait(false);
@@ -226,6 +241,47 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
+    /// <summary>
+    /// Whether replaying the outbox onto an empty projection would project every current head.
+    /// </summary>
+    /// <remarks>
+    /// Two shapes qualify. Sequence zero with no head is a dataset nothing was written to yet: a fresh
+    /// installation, or one a reset or an erasure has just emptied. Otherwise the outbox must hold at
+    /// least one delta, and every head must be named by a pending delta. Where the outbox starts does
+    /// not matter: replaying any suffix of it onto an empty projection is exact once every head is named,
+    /// because deltas leave the outbox only from its oldest end, all at once, or together with the head
+    /// they name when an entry is erased, so a head named by any pending delta is also named by its
+    /// latest one. An entry erasure removes the erased entry's own deltas wherever they sit, the oldest
+    /// included, so insisting that the outbox start at the dataset's first sequence would refuse a replay
+    /// that projects every head exactly. A head named by no delta was written somewhere the outbox never
+    /// saw, such as the installation a restore came from. An empty outbox beside a canonical sequence
+    /// above zero is refused too: adopting at zero could never reach that sequence.
+    /// </remarks>
+    private static async ValueTask<bool> OutboxReplaysEveryHeadAsync(
+        CovenantMutationTransaction transaction,
+        long canonicalSearchSequence,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = """
+            SELECT CASE
+                WHEN $canonical = 0 AND NOT EXISTS (SELECT 1 FROM covenant_heads) THEN 1
+                WHEN EXISTS (SELECT 1 FROM covenant_search_outbox)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM covenant_heads
+                        WHERE SearchRowId NOT IN (SELECT SearchRowId FROM covenant_search_outbox)) THEN 1
+                ELSE 0
+            END;
+            """;
+
+        _ = command.Parameters.AddWithValue("$canonical", canonicalSearchSequence);
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture) == 1;
+    }
+
     private static async ValueTask<AcceleratorState> ReadStateAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
@@ -233,10 +289,11 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
-            SELECT DatasetGeneration, CanonicalSearchSequence, AppliedDatasetGeneration, AppliedSearchSequence,
-                   AcceleratorEpoch
-            FROM covenant_state
-            WHERE StateKey = 1;
+            SELECT st.DatasetGeneration, st.CanonicalSearchSequence, st.AppliedDatasetGeneration,
+                   st.AppliedSearchSequence, st.AcceleratorEpoch, st.AppliedCampaignDeletionSequence,
+                   COALESCE((SELECT MAX(Sequence) FROM owner_deletion_events WHERE OwnerKindCode = 1), 0)
+            FROM covenant_state st
+            WHERE st.StateKey = 1;
             """;
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
@@ -249,7 +306,9 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
             reader.GetInt64(1),
             reader.IsDBNull(2) ? null : new Guid((byte[])reader.GetValue(2)),
             reader.IsDBNull(3) ? null : reader.GetInt64(3),
-            checked((ulong)reader.GetInt64(4)));
+            checked((ulong)reader.GetInt64(4)),
+            reader.GetInt64(5),
+            reader.GetInt64(6));
     }
 
     private static async ValueTask<ImmutableArray<OutboxRow>> ReadPendingAsync(
@@ -415,7 +474,9 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         long CanonicalSearchSequence,
         Guid? AppliedDatasetGeneration,
         long? AppliedSearchSequence,
-        ulong AcceleratorEpoch);
+        ulong AcceleratorEpoch,
+        long AppliedCampaignDeletionSequence,
+        long CoreCampaignDeletionSequence);
 
     private readonly record struct OutboxRow(
         long SearchSequence,

@@ -367,6 +367,8 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         builder.Services.AddScoped<ILexiconService>(static _ => throw new NotSupportedException());
 
+        builder.Services.AddScoped<ILexiconCurationService>(static _ => throw new NotSupportedException());
+
         builder.Services.AddScoped<ISagaMemoryStore>(static _ => throw new NotSupportedException());
 
         builder.Services.ConfigureHttpJsonOptions(static options =>
@@ -375,6 +377,8 @@ public sealed class ApiSurfaceContractTests : IDisposable
         await using WebApplication app = builder.Build();
 
         _ = app.MapGroup("/api").MapMemoryEndpoints();
+
+        _ = app.MapGroup("/api").MapLexiconCurationEndpoints();
 
         await app.StartAsync();
 
@@ -390,7 +394,7 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         await app.StopAsync();
 
-        Assert.Equal(10, memoryRoutes.Length);
+        Assert.Equal(25, memoryRoutes.Length);
 
         string[] unnamed =
         [

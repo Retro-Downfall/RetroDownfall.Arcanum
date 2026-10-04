@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
@@ -19,21 +20,35 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <c>AcquireOrdinary</c> — the ordinary lease every Covenant turn takes — always requires it. So
 /// without this step Covenant fails closed on its own hot path the instant the feature is enabled,
 /// and every staleness guard downstream is inert because the values it compares never move.</para>
-/// <para><c>GrimoireDatabaseBootstrapper</c> is the only caller, and deliberately the only one. The
-/// other writer of this tuple is <c>BackupCovenantRestoreReconciler</c>, which rewrites
-/// <c>DatasetGeneration</c> and nulls the applied pair — but it cannot leave a serving snapshot stale,
-/// because a restore and a host can never be running at once. <c>GrimoireDatabaseHostedService</c>
-/// takes <c>ArcanumMaintenanceLock</c> for the host's whole lifetime and fails startup without it,
-/// <c>BackupRestoreService</c> refuses with <c>backup.restore_maintenance_unavailable</c> when it
-/// cannot take the same lock, and <c>IBackupRestoreService</c> has no API route at all — it is reached
-/// only from the CLI's <c>BackupCommands</c>. The restore therefore runs in its own short-lived
-/// process against a snapshot nothing serves turns from, and the next <c>arcanum serve</c> republishes
-/// here before readiness. <c>CovenantFamilyReinitializeCoordinator</c> is unregistered in this release
-/// and constructed nowhere, so it writes no tuple to republish.</para>
-/// <para>Any future writer that changes the tuple <em>inside a serving host</em> has to republish
-/// through here rather than growing its own derivation: which rebuild states count as owed, and when
-/// the applied tuple counts as synchronized, are decided once in this file so two callers cannot drift
-/// apart on them.</para>
+/// <para>The callers, each after the transaction that wrote the tuple has committed:</para>
+/// <list type="bullet">
+/// <item><c>GrimoireDatabaseBootstrapper</c>, before readiness, with the transition
+/// <see cref="CovenantHealthTransition.Bootstrap"/>.</item>
+/// <item><c>GrimoireSchemaTransitionCoordinator</c>, after a background schema step converges, with
+/// <see cref="CovenantHealthTransition.SchemaEvolution"/>.</item>
+/// <item><c>CovenantRecoveryAuthorityBootstrapper</c>, before pre-readiness recovery takes its lease,
+/// reporting the accelerator unhealthy.</item>
+/// <item><see cref="CovenantAvailabilityRepublisher"/>, for every writer that changes the tuple inside a
+/// serving host: the outbox coordinator (<see cref="CovenantHealthTransition.AcceleratorSynchronization"/>),
+/// the owner-cleanup coordinator (<see cref="CovenantHealthTransition.OwnerCleanup"/>), the index rebuilder
+/// (<see cref="CovenantHealthTransition.AcceleratorRebuild"/>), and the operator mutation, review apply,
+/// turn commit and entry erasure (<see cref="CovenantHealthTransition.CanonicalMutation"/>).</item>
+/// </list>
+/// <para>Three writers deliberately do not call here. An installation-level reset or erasure stamps a new
+/// dataset under an exclusive lease and publishes its successor by reference through
+/// <c>CovenantAuthorityTransitionPublisher</c>, because the dataset generation can only change together
+/// with authority. <c>BackupCovenantRestoreReconciler</c> and <c>BackupRestoreErasureEvidenceApplier</c>
+/// rewrite a staged database in the CLI's own restore process: <c>GrimoireDatabaseHostedService</c> holds
+/// <c>ArcanumMaintenanceLock</c> for the host's lifetime, the restore refuses with
+/// <c>backup.restore_maintenance_unavailable</c> without that lock, and the next <c>arcanum serve</c>
+/// republishes here before readiness. A core Campaign delete appends the owner-deletion event that moves
+/// the core Campaign-deletion sequence, but it holds no Covenant gate lease, so a publication from it
+/// could land inside an exclusive transition's reference swap; the next maintenance pass republishes it
+/// instead. <c>CovenantFamilyReinitializeCoordinator</c> is unregistered in this release and constructed
+/// nowhere, so it writes no tuple to republish.</para>
+/// <para>Any new writer of the tuple inside a serving host republishes through here too, rather than
+/// growing its own derivation: which rebuild states count as owed, and when the applied tuple counts as
+/// synchronized, are decided once in this file so two callers cannot drift apart on them.</para>
 /// </remarks>
 internal static class CovenantPersistedAvailabilityPublisher
 {
@@ -203,5 +218,79 @@ internal static class CovenantPersistedAvailabilityPublisher
         long? AppliedCampaignDeletionSequence,
         ulong AcceleratorEpoch,
         CovenantFtsRebuildState RebuildState);
+
+}
+
+/// <summary>
+/// Republishes the persisted tuple after a writer inside a serving host commits a change to it.
+/// </summary>
+/// <remarks>
+/// <para>Every caller republishes after its own commit, on the connection that committed, and while it
+/// still holds the gate lease that protected the write. Reading inside the transaction would publish a
+/// position that a rollback could still undo. Holding the lease keeps the publication out of an
+/// exclusive transition: the gate drains every live lease before such a transition commits, and the
+/// transition then publishes its successor by reference against the snapshot it captured.</para>
+/// <para>Whether the accelerator is healthy is read from the published capability state, which
+/// bootstrap derived from the same installation result it handed to
+/// <see cref="CovenantPersistedAvailabilityPublisher.PublishAsync"/>. What counts as owed or
+/// synchronized is still decided only there.</para>
+/// <para>A failure is never the writer's failure, because its rows are already durable. It is logged
+/// without content and swallowed, and that includes a SQLite failure the publisher's own read absorbs
+/// and reports only as nothing published. The snapshot it left stale is corrected by the next maintenance pass,
+/// whose cleanup and outbox batches republish after every commit even when they apply nothing, or by
+/// bootstrap on restart. Two republications that race land in either order, and the same pass corrects
+/// the older one.</para>
+/// </remarks>
+internal sealed class CovenantAvailabilityRepublisher(
+    CovenantAvailability availability,
+    ILogger<CovenantAvailabilityRepublisher> logger)
+{
+
+    /// <summary>The fixed failure name for a state read the publisher absorbed.</summary>
+    private const string UnreadableState = "CovenantStateUnreadable";
+
+    internal async Task RepublishAsync(SqliteConnection connection, CovenantHealthTransition transition)
+    {
+
+        ArgumentNullException.ThrowIfNull(connection);
+
+        try
+        {
+
+            // Not the caller's token: a caller that stopped waiting has not undone the commit, and the
+            // whole cost is one read of a singleton row.
+            bool published = await CovenantPersistedAvailabilityPublisher.PublishAsync(
+                availability,
+                connection,
+                availability.Current.Accelerator is CovenantCapabilityState.Healthy,
+                transition,
+                CancellationToken.None).ConfigureAwait(false);
+
+            // The publisher's read absorbs a SQLite failure and reports it as nothing to publish. Every
+            // caller has just committed a Covenant write on a healthy canonical tier, whose state row
+            // therefore exists, so nothing to publish here means the read failed.
+            if (!published)
+            {
+
+                LogNotRepublished(transition, UnreadableState);
+
+            }
+
+        }
+        catch (Exception failure)
+        {
+
+            // The type names the failure; its message is not repeated, so nothing it carries is logged.
+            LogNotRepublished(transition, failure.GetType().Name);
+
+        }
+
+    }
+
+    private void LogNotRepublished(CovenantHealthTransition transition, string failure) =>
+        logger.LogWarning(
+            "Covenant availability was not republished after a committed {Transition} ({FailureType}); the next maintenance pass or a restart republishes it.",
+            transition,
+            failure);
 
 }

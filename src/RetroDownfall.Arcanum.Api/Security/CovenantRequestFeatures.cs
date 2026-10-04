@@ -58,6 +58,19 @@ public sealed record CovenantConditionalReadRequirementMetadata
 }
 
 /// <summary>
+/// Inventory marker for a route that may acquire a body-derived exact-scoped write lease for a
+/// protected target. Presence declares that branch; it issues no authority and has no middleware behavior.
+/// </summary>
+public sealed record CovenantConditionalExactWriteRequirementMetadata
+{
+    private CovenantConditionalExactWriteRequirementMetadata()
+    {
+    }
+
+    public static CovenantConditionalExactWriteRequirementMetadata Instance { get; } = new();
+}
+
+/// <summary>
 /// Parses the one legal wire value of <c>X-Arcanum-Context-Policy</c>.
 /// </summary>
 /// <remarks>

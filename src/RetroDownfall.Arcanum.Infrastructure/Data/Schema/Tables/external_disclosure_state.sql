@@ -1,10 +1,14 @@
 -- The installation-wide joined disclosure state, one row per destination class and revocability.
--- Subject aggregates join into it once, on terminal folding, using checked addition, Boolean OR,
--- timestamp maximum, and Bloom OR. Those operations only behave as a semilattice if the identity
+-- The live disclosure fold increments the matching bucket once per acknowledged receipt, in that
+-- receipt's own transaction, and restore staging joins into it; both use checked addition, Boolean
+-- OR, timestamp maximum, and Bloom OR. Those operations only behave as a semilattice if the identity
 -- element has exactly one encoding, which is what the shape check below pins down: an empty state
 -- that could also be written as a lower bound would make "nothing was ever disclosed" and "at least
 -- zero things were disclosed" indistinguishable, and a join would then quietly preserve the weaker
 -- claim forever.
+--
+-- Receipts in a subject's unfolded tail are not counted here yet, so readers use the effective read,
+-- which adds them as LowerBound.
 CREATE TABLE IF NOT EXISTS external_disclosure_state (
     -- CovenantEgressDestination, one through eight.
     DestinationCode INTEGER NOT NULL CHECK (DestinationCode IN (1, 2, 3, 4, 5, 6, 7, 8)),

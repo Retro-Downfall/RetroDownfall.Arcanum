@@ -19,15 +19,10 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Api.Tower;
 
 /// <summary>
-/// The five routes an operator reads their own Covenant through.
+/// The six routes an operator reads their own Covenant through.
 /// </summary>
 /// <remarks>
-/// Free-text inspection is not among them. <c>ICovenantManagementService.QueryAsync</c> still refuses
-/// with <c>Covenant.Unavailable</c> for any stale caller, but the route is not mapped: the
-/// accelerator-backed search behind it is unbuilt, and a mapped endpoint that can only refuse
-/// advertises a delivered surface that answers nothing.
-///
-/// <para>All five are <c>POST</c> with a typed body, including the ones that only read. Scope selections,
+/// <para>All six are <c>POST</c> with a typed body, including the ones that only read. Scope selections,
 /// Campaign identities, keys, free text, and cursors never enter a request URL, because a URL is the
 /// one part of a request that reliably reaches an access log — and every one of those values is
 /// either protected content or a direct pointer to it.</para>
@@ -64,6 +59,28 @@ internal static class CovenantInspectionEndpoints
                         cancellationToken)
                     .ConfigureAwait(false))
             .WithName("ListCovenantEntries")
+            .RequireCovenantReadAuthority();
+
+        apiGroup.MapPost(
+            "/memory/covenant/query",
+            static async Task<IResult> (
+                CovenantQueryRequest? request,
+                ICovenantManagementService? service,
+                ICovenantOperationGate? gate,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+                await ReadAsync(
+                        request,
+                        service,
+                        gate,
+                        httpContext,
+                        request?.Scope,
+                        request?.CampaignId,
+                        static (management, body, lease, token) => management.QueryAsync(body, lease, token),
+                        ArcanumJsonContext.Default.ApiResponseCovenantPageDto,
+                        cancellationToken)
+                    .ConfigureAwait(false))
+            .WithName("QueryCovenantEntries")
             .RequireCovenantReadAuthority();
 
         apiGroup.MapPost(

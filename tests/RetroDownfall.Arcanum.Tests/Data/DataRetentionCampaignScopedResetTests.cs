@@ -6,10 +6,13 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -19,9 +22,9 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// Resetting one Campaign's memories, and leaving every other Campaign's exactly where they were.
 /// </summary>
 /// <remarks>
-/// The rows are seeded through raw SQL rather than through the writers, because what is under test is
-/// the erasure predicate: which rows a reset selects, counts, deletes, and then reconciles. A writer in
-/// the loop would only add a second thing that could be wrong.
+/// Predicate-only fixtures seed rows through raw SQL to isolate which rows a reset selects, counts,
+/// deletes, and reconciles. Lifecycle fixtures use the production writers to prove that real pinned
+/// and retired entries and their Annals history follow the same ownership boundary.
 /// </remarks>
 public sealed partial class DataRetentionServiceTests
 {
@@ -29,6 +32,162 @@ public sealed partial class DataRetentionServiceTests
     private static readonly Guid ResetCampaignA = new("A0000000-0000-4000-8000-000000000A11");
 
     private static readonly Guid ResetCampaignB = new("B0000000-0000-4000-8000-000000000B22");
+
+    /// <summary>
+    /// A memory that arrives after an empty preview has been rebuilt for apply, and before the reset's
+    /// transaction counts the store, is refused rather than cleared unseen.
+    /// </summary>
+    /// <remarks>
+    /// The window is the one an empty preview's no-op leans on: the plan-identity check has already
+    /// passed with nothing in the store, so only the count inside the transaction can still see a row.
+    /// The memory is written by the store's own insert at the moment the reset's durable operation
+    /// starts, which is after the rebuild and before the transaction opens. The refusal is the
+    /// in-transaction one, <c>Data.Conflict</c>, which the reset route answers as 409.
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_empty_reset_refuses_a_memory_that_arrives_inside_its_apply_window()
+    {
+        RequireSqlCipher();
+
+        string? arrived = null;
+
+        HeartbeatCountingOperationStore operations = new(
+            new LongRunningOperationStore(_db!, TestOrdinaryConnectionFactory.For(_db!)))
+        {
+            AfterStartAsync = async cancellationToken =>
+            {
+                ISagaMemoryStore store = CreateSagaMemoryStore();
+
+                string id = Guid.NewGuid().ToString();
+
+                Assert.Equal(
+                    SagaMemoryWriteOutcome.Written,
+                    await store.InsertAsync(
+                        id,
+                        "arrived inside the apply window",
+                        DateTimeOffset.UtcNow,
+                        null,
+                        tags: null,
+                        source: "test",
+                        SagaEmbedding(),
+                        cancellationToken));
+
+                arrived = id;
+            },
+        };
+
+        IDataRetentionService service = CreateService(operationStore: operations);
+
+        DataRetentionRequest request = new(DataRetentionOperation.ResetMemory, MemoryScope: MemoryResetScope.Saga);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Assert.Empty(plan.CandidateIds);
+
+        Assert.Equal(0, plan.DerivedRecords);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(new DataRetentionApplyRequest(request, plan.PlanId));
+
+        Assert.True(result.IsFailure, "The reset cleared a memory its preview never showed.");
+
+        Assert.Equal(ErrorCodes.Data.Conflict, result.Error.Code);
+
+        Assert.NotNull(arrived);
+
+        Assert.Equal(1, await CountSagaAsync(arrived!));
+    }
+
+    [SkippableFact]
+    public async Task Campaign_reset_erases_retired_pinned_Lexicon_and_its_history_but_preserves_other_scopes()
+    {
+        RequireSqlCipher();
+
+        await SeedCampaignRowAsync(ResetCampaignA);
+
+        await SeedCampaignRowAsync(ResetCampaignB);
+
+        LexiconEntryDetail target = await SeedLifecycleLexiconAsync("owned", ResetCampaignA);
+
+        LexiconEntryDetail other = await SeedLifecycleLexiconAsync("other", ResetCampaignB);
+
+        LexiconEntryDetail global = await SeedLifecycleLexiconAsync("global", null);
+
+        await ApplyCampaignResetAsync(MemoryResetScope.Lexicon, ResetCampaignA);
+
+        Assert.Equal(0, await CountAsync("lexicon_entries", "Id", target.Entry.Id.ToString("N")));
+
+        Assert.Equal(0, await CountAnnalClaimsAsync(2, target.Entry.Id.ToString("N")));
+
+        Assert.Equal(0, await CountAsync("lexicon_fact_attachment_provenance", "EntryId", target.Entry.Id.ToString("N")));
+
+        foreach (AnnalClaimVersion version in target.AnnalHistory)
+        {
+            Assert.Equal(0, await CountAsync("annal_versions", "VersionId", version.VersionId));
+
+            Assert.Equal(0, await CountAsync("lexicon_annal_fact_provenance", "AnnalVersionId", version.VersionId));
+        }
+
+        await AssertLifecycleLexiconUnchangedAsync(other);
+
+        await AssertLifecycleLexiconUnchangedAsync(global);
+    }
+
+    private LexiconService CreateLifecycleLexiconService() => new(_db!,
+        new TestCapturingLogger<LexiconService>(), new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), MemoryErasureTestKeys.Isolated());
+
+    private async Task<LexiconEntryDetail> SeedLifecycleLexiconAsync(string name, Guid? campaign)
+    {
+        LexiconService lexicon = CreateLifecycleLexiconService();
+
+        AttachmentMemoryProvenance provenance = new(Guid.NewGuid(), Guid.NewGuid(), "source", 1,
+            "attachment-digest", DateTimeOffset.UtcNow, "WorkspaceFile", AttachmentSourceAvailability.Unavailable);
+
+        Result<LexiconEntryDto> written = await lexicon.UpsertAsync(name, "Concept", ["original fact"],
+            provenance, LexiconScope.ForResolvedCampaign(campaign));
+
+        Assert.True(written.IsSuccess, written.Error.Message);
+
+        LexiconCurationScope scope = new(campaign is null ? LexiconScopeKind.Global : LexiconScopeKind.Campaign, campaign);
+
+        var shown = await lexicon.ShowExactAsync(scope, name, null);
+
+        Assert.True(shown.IsSuccess, shown.Error.Message);
+
+        var pinned = await lexicon.PinAsync(shown.Value.Value.Target, null);
+
+        Assert.True(pinned.IsSuccess, pinned.Error.Message);
+
+        var retired = await lexicon.RetireAsync(pinned.Value.Entry.Target, null);
+
+        Assert.True(retired.IsSuccess, retired.Error.Message);
+
+        Assert.NotNull(retired.Value.Entry.Lifecycle.RetiredAtUtc);
+
+        Assert.NotNull(retired.Value.Entry.Lifecycle.PinnedAtUtc);
+
+        Assert.Equal(2, retired.Value.Entry.AnnalHistory.Length);
+
+        Assert.Single(retired.Value.Entry.HistoricalFactProvenance);
+
+        return retired.Value.Entry;
+    }
+
+    private async Task AssertLifecycleLexiconUnchangedAsync(LexiconEntryDetail expected)
+    {
+        var shown = await CreateLifecycleLexiconService().ShowExactAsync(expected.Scope, expected.Entry.Name, null);
+
+        Assert.True(shown.IsSuccess, shown.Error.Message);
+
+        LexiconEntryDetail actual = shown.Value.Value;
+
+        Assert.Equal(expected.Target, actual.Target);
+
+        Assert.Equal(expected.Entry.Facts, actual.Entry.Facts);
+
+        Assert.Equal(expected.AnnalHistory.Select(version => version.VersionId), actual.AnnalHistory.Select(version => version.VersionId));
+
+        Assert.Equal(expected.HistoricalFactProvenance, actual.HistoricalFactProvenance);
+    }
 
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_ForOneCampaign_LeavesEveryOtherCampaignsSagaMemoriesAlone()
@@ -394,7 +553,8 @@ public sealed partial class DataRetentionServiceTests
 
                     },
 
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
     /// <summary>A deterministic vector of the length the store is configured to accept.</summary>
     private static float[] SagaEmbedding()

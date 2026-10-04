@@ -3,11 +3,14 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -136,7 +139,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         string name = args.Name.Trim();
 
-        if (IsProtectedDaemonStateName(name))
+        if (LexiconDaemonStateNames.Is(name))
         {
             return ToolError(
                 "delete_lexicon cannot remove Unseen Servant daemon_state entries; clear them via daemon job removal or Lexicon admin tooling.");
@@ -150,10 +153,74 @@ internal sealed partial class ArcanumInternalToolServer
 
             // Deletion is aimed at the tier the turn writes to, so a Forbidden Art cast inside one
             // Campaign can never take the installation's entity of the same name with it.
-            Result<bool> result = await lexicon
+            LexiconScope lexiconScope = await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false);
+
+            // Retired and pinned entries are the operator's to manage, so they are refused before any
+            // purge can erase one. The agent-origin delete below decides again inside its transaction.
+            Result<LexiconAgentDeletionTarget?> target = await lexicon.FindAgentDeletionTargetAsync(
+                name, lexiconScope, cancellationToken).ConfigureAwait(false);
+
+            if (target.IsFailure)
+            {
+                return ToolError(target.Error.Message);
+            }
+
+            if (target.Value is { IsRetired: true })
+            {
+                return ToolError(LexiconAgentRefusals.RetiredDeletion);
+            }
+
+            if (target.Value is { IsPinned: true })
+            {
+                return ToolError(LexiconAgentRefusals.OperatorManaged);
+            }
+
+            bool purgedIdentity = false;
+
+            if (scope.ServiceProvider.GetService<ICovenantSensitiveArtifactPurger>() is { } purger)
+            {
+                Result<Guid?> identity = await lexicon.FindAllLifecycleIdentityForDeletionAsync(
+                    name, lexiconScope, cancellationToken).ConfigureAwait(false);
+
+                if (identity.IsFailure)
+                {
+                    return ToolError(identity.Error.Message);
+                }
+
+                if (identity.Value is { } artifactId)
+                {
+                    var purged = await purger.PurgeAsync([new(SensitiveArtifactKind.Lexicon, artifactId)], cancellationToken).ConfigureAwait(false);
+
+                    if (purged.IsFailure)
+                    {
+                        return ToolError(purged.Error.Message);
+                    }
+
+                    if (purged.Value.IsBlocked)
+                    {
+                        return ToolError("The protected Lexicon entry could not be erased and was left unchanged.");
+                    }
+
+                    purgedIdentity = purged.Value.WasPurged(artifactId);
+
+                    if (!purgedIdentity && !purged.Value.RequiresOrdinaryDelete(artifactId))
+                    {
+                        return ToolError("The Lexicon purge did not authorize ordinary deletion.");
+                    }
+                }
+            }
+
+            // A purged identity skips the agent-origin delete and its in-transaction lifecycle check, so on
+            // this branch the pre-check above is the only lifecycle guard. An agent cannot reach it: a tool
+            // call's scope never carries the sensitivity-purge authority the HTTP endpoint filter
+            // publishes, so the purger refuses a labelled target as Covenant.ForbiddenAuthority and hands
+            // an unlabelled one back to the ordinary delete below. Granting agents purge authority would
+            // need the lifecycle check moved into the purge's own transaction.
+            Result<bool> result = purgedIdentity ? Result<bool>.Success(true) : await lexicon
                 .DeleteByNameAsync(
                     name,
-                    await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false),
+                    lexiconScope,
+                    LexiconDeletionOrigin.Agent,
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -186,9 +253,6 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("An internal error occurred during tool execution.");
         }
     }
-
-    private static bool IsProtectedDaemonStateName(string name) =>
-        name.StartsWith("daemon_state:", StringComparison.OrdinalIgnoreCase);
 
     private async Task<McpToolsCallResultWire> ExecuteSearchArchivesAsync(
         JsonElement arguments,

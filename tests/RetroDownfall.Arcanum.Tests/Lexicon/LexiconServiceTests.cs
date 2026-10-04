@@ -41,6 +41,83 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
     private LexiconService? _service;
 
+    [SkippableFact]
+    public async Task Operational_exact_reads_exclude_retired_rows()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _service!.UpsertAsync("Retired entity", "Project", ["archivedneedle"], LexiconScope.Global);
+
+        await ExecuteFixtureSqlAsync("UPDATE lexicon_entries SET RetiredAtUtc = '2026-09-01T00:00:00.0000000Z' WHERE Name = 'Retired entity';");
+
+        Assert.Null((await _service.GetByNameAsync("Retired entity", LexiconScope.Global)).Value);
+
+        Assert.Null((await _service.GetByNameInScopeAsync("Retired entity", LexiconScope.Global)).Value);
+
+        Assert.Empty((await _service.MatchEntitiesAsync(["Retired entity"], 10, LexiconScope.Global)).Value);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Operational_search_excludes_retired_rows_even_with_stale_FTS_or_LIKE_fallback(bool forceLike)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _service!.UpsertAsync("Active entity", "Project", ["sharedneedle active"], LexiconScope.Global);
+
+        await _service.UpsertAsync("Retired entity", "Project", ["sharedneedle retired"], LexiconScope.Global);
+
+        await ExecuteFixtureSqlAsync("UPDATE lexicon_entries SET RetiredAtUtc = '2026-09-01T00:00:00.0000000Z' WHERE Name = 'Retired entity';");
+
+        await ExecuteFixtureSqlAsync(forceLike
+            ? "DROP TABLE lexicon_fts;"
+            : "INSERT INTO lexicon_fts(rowid, Name, Type, FactsText) SELECT rowid, Name, Type, FactsText FROM lexicon_entries WHERE Name = 'Retired entity';");
+
+        Result<IReadOnlyList<LexiconEntryDto>> result = await _service.MatchEntitiesAsync(["sharedneedle"], 10, LexiconScope.Global);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal("Active entity", Assert.Single(result.Value).Name);
+    }
+
+    private async Task ExecuteFixtureSqlAsync(string sql)
+    {
+        await _db!.Database.OpenConnectionAsync();
+
+        await using DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = sql;
+
+        await command.ExecuteNonQueryAsync();
+    }
+
+    [SkippableFact]
+    public async Task Every_operational_projection_preserves_stored_pin_and_generation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _service!.UpsertAsync("Pinned", "general", ["pinneedle"], LexiconScope.Global);
+
+        await ExecuteFixtureSqlAsync("UPDATE lexicon_entries SET PinnedAtUtc = '2026-09-01T00:00:00.0000000Z', CurationGeneration = 7;");
+
+        LexiconEntryDto[] entries =
+        [
+            (await _service.GetByNameAsync("Pinned", LexiconScope.Global)).Value!,
+            Assert.Single((await _service.MatchEntitiesAsync(["pinneedle"], 10, LexiconScope.Global)).Value),
+            (await _service.UpsertAsync("Pinned", "general", ["pinneedle"], LexiconScope.Global)).Value,
+        ];
+
+        Assert.All(entries, entry =>
+        {
+            Assert.Equal(7, entry.CurationGeneration);
+
+            Assert.Equal(DateTimeOffset.Parse("2026-09-01T00:00:00Z"), entry.PinnedAtUtc);
+
+            Assert.Equal(LexiconRetrievalEligibility.Eligible, entry.Eligibility);
+        });
+    }
+
     public LexiconServiceTests(GrimoireFixture fixture)
     {
 
@@ -58,7 +135,8 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         _service = new LexiconService(
             _db,
             NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
 
@@ -492,7 +570,7 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
     [SkippableFact]
 
-    public async Task ListAsync_ReturnsEveryEntityInStableNameOrder()
+    public async Task ListInspectionAsync_ReturnsEveryEntityInStableNameOrder()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -511,14 +589,14 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             LexiconScope.Global,
             CancellationToken.None);
 
-        Result<IReadOnlyList<LexiconEntryDto>> result = await _service
-            .ListAsync(CancellationToken.None);
+        var result = await _service
+            .ListInspectionAsync(null, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
         Assert.Equal(
             ["alpha", "Zebra"],
-            result.Value.Select(static entry => entry.Name).ToArray());
+            result.Value.Value.Select(static entry => entry.Name).ToArray());
 
     }
 
@@ -592,12 +670,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     }
 
     private static bool IsProvenanceWrite(string statement) =>
-        statement.Contains("lexicon_fact_attachment_provenance", StringComparison.Ordinal)
-        && (statement.Contains("DELETE", StringComparison.Ordinal)
-            || statement.Contains("INSERT", StringComparison.Ordinal));
+        statement.TrimStart().StartsWith("DELETE FROM lexicon_fact_attachment_provenance", StringComparison.Ordinal)
+        || statement.TrimStart().StartsWith("INSERT INTO lexicon_fact_attachment_provenance", StringComparison.Ordinal);
 
     [SkippableFact]
-    public async Task ListAsync_HydratesProvenanceForEveryEntityWithOneQuery()
+    public async Task ListInspectionAsync_HydratesProvenanceForEveryEntityWithOneQuery()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -606,13 +683,13 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         List<string> statements = CaptureStatements();
 
-        Result<IReadOnlyList<LexiconEntryDto>> result = await _service!.ListAsync(CancellationToken.None);
+        var result = await _service!.ListInspectionAsync(null, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
-        Assert.Equal(SeededEntityCount, result.Value.Count);
+        Assert.Equal(SeededEntityCount, result.Value.Value.Count);
 
-        AssertProvenanceMatchesFacts(result.Value);
+        AssertProvenanceMatchesFacts(result.Value.Value);
 
         Assert.Equal(1, CountProvenanceQueries(statements));
 

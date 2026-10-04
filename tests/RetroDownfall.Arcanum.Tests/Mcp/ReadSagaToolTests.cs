@@ -512,6 +512,12 @@ public sealed class ReadSagaToolTests
         public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");
 
+        public Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
+
+        public Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by read_saga.");
+
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken)
         {
 

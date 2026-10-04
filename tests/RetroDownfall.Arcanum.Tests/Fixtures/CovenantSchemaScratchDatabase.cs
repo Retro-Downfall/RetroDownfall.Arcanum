@@ -495,6 +495,38 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     }
 
     /// <summary>
+    /// Records <paramref name="version"/> as the committed Core version, over an installed
+    /// <c>grimoire_feature_schemas</c>.
+    /// </summary>
+    /// <remarks>
+    /// Only the Core version reader reads this row on a Covenant scratch catalog, so the fingerprints
+    /// are placeholders shaped to pass the table's length checks rather than a measurement of anything.
+    /// </remarks>
+    internal async Task RecordCoreSchemaVersionAsync(int version, CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO grimoire_feature_schemas (
+                FamilyCode, TransactionTierCode, SchemaVersion, SourceDefinitionFingerprint,
+                InstalledCatalogFingerprint, InstalledAtUtc, HealthCode, HealthDetailCode)
+            VALUES (0, 0, $version, $source, $installed, $installedAt, 0, NULL);
+            """;
+
+        _ = command.Parameters.AddWithValue("$version", version);
+
+        _ = command.Parameters.AddWithValue("$source", new string('0', 64));
+
+        _ = command.Parameters.AddWithValue("$installed", "sha256:" + new string('0', 64));
+
+        _ = command.Parameters.AddWithValue("$installedAt", "2026-08-20T00:00:00.0000000Z");
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    /// <summary>
     /// Opens a second initialized connection to the same scratch file.
     /// </summary>
     /// <remarks>

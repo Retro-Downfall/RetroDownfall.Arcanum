@@ -27,6 +27,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Core.Annals;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -402,7 +403,7 @@ internal sealed partial class DataRetentionService
             candidates,
             cancellationToken).ConfigureAwait(false);
 
-        await AddLexiconCandidatesAsync(
+        DataRetentionLexiconCurationInventory lexiconCuration = await AddLexiconCandidatesAsync(
             retention,
             limit,
             items,
@@ -470,6 +471,8 @@ internal sealed partial class DataRetentionService
         DataRetentionPlan plan = finalized with
         {
             SagaCuration = sagaCuration,
+
+            LexiconCuration = lexiconCuration,
         };
 
         IReadOnlyDictionary<string, DateTimeOffset> cutoffs =
@@ -2179,7 +2182,22 @@ internal sealed partial class DataRetentionService
             pinnedRowsExemptFromPlan);
     }
 
-    private async Task AddLexiconCandidatesAsync(
+    private async Task<DataRetentionLexiconCurationInventory> AddLexiconCandidatesAsync(
+        RetentionSettings retention,
+        int limit,
+        List<DataRetentionPlanItem> items,
+        List<string> candidates,
+        CancellationToken cancellationToken)
+    {
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+            () => AddLexiconCandidatesCoreAsync(connection, retention, limit, items, candidates, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<DataRetentionLexiconCurationInventory> AddLexiconCandidatesCoreAsync(
+        DbConnection connection,
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
@@ -2188,18 +2206,31 @@ internal sealed partial class DataRetentionService
     {
         RetentionRuleSettings rule = retention.LexiconEntries;
 
+        bool curation = await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken).ConfigureAwait(false) >= 11;
+
+        long pinnedRows = curation ? await CountTableAsync(
+            "lexicon_entries",
+            "PinnedAtUtc IS NOT NULL",
+            cancellationToken).ConfigureAwait(false) : 0;
+
         if (!rule.Enabled || candidates.Count >= limit)
         {
-            return;
+            return new DataRetentionLexiconCurationInventory(pinnedRows, 0);
         }
 
         DateTimeOffset cutoff = PrunePlanningTimestamp.AddDays(
             -ArcanumSettingClamps.RetentionRuleDays(rule.Days));
 
+        long pinnedRowsExemptFromPlan = curation ? await CountTableAsync(
+            "lexicon_entries",
+            "PinnedAtUtc IS NOT NULL AND julianday(UpdatedAt) <= julianday(@cutoff)",
+            cancellationToken,
+            ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false) : 0;
+
         string[] ids = await ReadStringIdsAsync(
             "lexicon_entries",
             "Id",
-            "julianday(UpdatedAt) <= julianday(@cutoff)",
+            "julianday(UpdatedAt) <= julianday(@cutoff)" + (curation ? " AND PinnedAtUtc IS NULL" : ""),
             "UpdatedAt, Id",
             limit - candidates.Count,
             cancellationToken,
@@ -2235,6 +2266,8 @@ internal sealed partial class DataRetentionService
                     0,
                     derived));
         }
+
+        return new DataRetentionLexiconCurationInventory(pinnedRows, pinnedRowsExemptFromPlan);
     }
 
     private void AddLogCandidates(
@@ -3429,7 +3462,7 @@ internal sealed partial class DataRetentionService
                         "Post-delete reconciliation found retained owned data for the current candidate.");
                 }
 
-                bool preserved = deleted.Rows == 0
+                bool preserved = deleted.PinnedAfterPlanning || deleted.Rows == 0
                     && deleted.Files == 0
                     && deleted.Derived == 0
                     && await CandidateStillExistsAsync(
@@ -3453,9 +3486,11 @@ internal sealed partial class DataRetentionService
                 {
                     appliedConflicts.Add(
                         new DataRetentionConflict(
-                            ErrorCodes.Data.PlanChanged,
+                            deleted.PinnedAfterPlanning ? ErrorCodes.Data.PinnedAfterPlanning : ErrorCodes.Data.PlanChanged,
                             candidate,
-                            "The retention candidate changed or became protected after planning; it was preserved."));
+                            deleted.PinnedAfterPlanning
+                                ? "The Lexicon entry was pinned after planning and was preserved."
+                                : "The retention candidate changed or became protected after planning; it was preserved."));
 
                     earliestSkippedIndex ??= index;
                 }
@@ -4204,9 +4239,9 @@ internal sealed partial class DataRetentionService
 
             // The Session delete refuses a labelled Entry outright, which is right for the route that
             // names one Session and wrong for a sweep that named this one among many. Nothing has
-            // been mutated when it refuses — the guard asks before the transaction opens — so the
-            // sweep leaves this Session alone and carries on, the way it does for any other candidate
-            // it may not take.
+            // been mutated when it refuses — the guard asks inside the transaction that would delete,
+            // before its first write, and the refusal rolls it back — so the sweep leaves this Session
+            // alone and carries on, the way it does for any other candidate it may not take.
             DataRetentionApplyResult result;
 
             try
@@ -5263,18 +5298,6 @@ internal sealed partial class DataRetentionService
             "Entries_fts",
             cancellationToken).ConfigureAwait(false);
 
-        // A sweep is not a targeted deletion: one protected member is a reason to leave that member
-        // where it is, exactly as a pin or an operator hold is, not to abandon every other candidate.
-        // Skipping keeps the label pointing at content that still exists, which is the invariant the
-        // raw delete broke (§10.20.2).
-        if ((await EnsureArtifactUnlabeledAsync(
-                SensitiveArtifactKind.AssistantEntry,
-                entryId,
-                cancellationToken).ConfigureAwait(false)).IsFailure)
-        {
-            return CandidateDeleteResult.Empty;
-        }
-
         await using DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
             cancellationToken).ConfigureAwait(false);
@@ -5285,6 +5308,22 @@ internal sealed partial class DataRetentionService
 
         try
         {
+            // A sweep is not a targeted deletion: one protected member is a reason to leave that member
+            // where it is, exactly as a pin or an operator hold is, not to abandon every other candidate.
+            // Skipping keeps the label pointing at content that still exists, which is the invariant the
+            // raw delete broke (§10.20.2). Asked first, inside the transaction that deletes, so no label
+            // can be committed between the answer and the delete.
+            if ((await EnsureArtifactUnlabeledAsync(
+                    SensitiveArtifactKind.AssistantEntry,
+                    entryId,
+                    connection,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false)).IsFailure)
+            {
+                // Nothing has been written, and disposing the transaction on the way out rolls it back.
+                return CandidateDeleteResult.Empty;
+            }
+
             string? boundarySessionId = await ScalarStringInTransactionAsync(
                 connection,
                 transaction,
@@ -5813,15 +5852,23 @@ internal sealed partial class DataRetentionService
     /// A candidate whose identity is not a <see cref="Guid"/> can carry no label at all: the label
     /// table keys every artifact by one, so there is no row such an identity could match. Answering
     /// false there is not a relaxation — it is the only answer the table can give.
+    ///
+    /// <para>Asked inside the transaction that deletes the candidate, so a label cannot be committed
+    /// between the answer and the delete. A label table that cannot be read answers "labelled", and
+    /// the sweep leaves the candidate where it is.</para>
     /// </remarks>
     private async ValueTask<bool> CandidateIsLabeledAsync(
         SensitiveArtifactKind kind,
         string candidateId,
+        DbConnection connection,
+        DbTransaction transaction,
         CancellationToken cancellationToken) =>
         Guid.TryParse(candidateId, out Guid artifactId)
         && (await EnsureArtifactUnlabeledAsync(
                 kind,
                 artifactId,
+                connection,
+                transaction,
                 cancellationToken).ConfigureAwait(false)).IsFailure;
 
     private async Task<CandidateDeleteResult> DeleteSagaCandidateAsync(
@@ -5839,14 +5886,6 @@ internal sealed partial class DataRetentionService
             "saga_memory_embeddings_vec",
             cancellationToken).ConfigureAwait(false);
 
-        if (await CandidateIsLabeledAsync(
-                SensitiveArtifactKind.Saga,
-                memoryId,
-                cancellationToken).ConfigureAwait(false))
-        {
-            return CandidateDeleteResult.Empty;
-        }
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -5856,6 +5895,17 @@ internal sealed partial class DataRetentionService
 
         try
         {
+            if (await CandidateIsLabeledAsync(
+                    SensitiveArtifactKind.Saga,
+                    memoryId,
+                    connection,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                // Nothing has been written, and disposing the transaction on the way out rolls it back.
+                return CandidateDeleteResult.Empty;
+            }
+
             if (vectorTableExists)
             {
                 derived += await ExecuteAsync(
@@ -5968,14 +6018,6 @@ internal sealed partial class DataRetentionService
         DateTimeOffset effectiveCutoff,
         CancellationToken cancellationToken)
     {
-        if (await CandidateIsLabeledAsync(
-                SensitiveArtifactKind.Lexicon,
-                entryId,
-                cancellationToken).ConfigureAwait(false))
-        {
-            return CandidateDeleteResult.Empty;
-        }
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -5987,12 +6029,25 @@ internal sealed partial class DataRetentionService
 
         long fts;
 
+        long claims;
+
         int provenance;
 
         int rows;
 
         try
         {
+            if (await CandidateIsLabeledAsync(
+                    SensitiveArtifactKind.Lexicon,
+                    entryId,
+                    connection,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                // Nothing has been written, and disposing the transaction on the way out rolls it back.
+                return CandidateDeleteResult.Empty;
+            }
+
             rowId = await ScalarStringInTransactionAsync(
             connection,
             transaction,
@@ -6017,6 +6072,14 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", entryId)).ConfigureAwait(false);
 
+            claims = await CountInTransactionAsync(
+                connection,
+                transaction,
+                "annal_claims",
+                "SubjectStoreCode = 2 AND SubjectId = @id",
+                cancellationToken,
+                ("@id", entryId)).ConfigureAwait(false);
+
             await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
                 connection,
                 transaction,
@@ -6024,13 +6087,16 @@ internal sealed partial class DataRetentionService
                 entryId,
                 cancellationToken).ConfigureAwait(false);
 
+            bool curation = await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) >= 11;
+
             rows = await ExecuteAsync(
                 connection,
                 transaction,
-                """
+                $"""
                 DELETE FROM lexicon_entries
                 WHERE Id = @id
                   AND julianday(UpdatedAt) <= julianday(@cutoff)
+                  {(curation ? "AND PinnedAtUtc IS NULL" : "")}
                 """,
                 cancellationToken,
                 ("@id", entryId),
@@ -6038,9 +6104,17 @@ internal sealed partial class DataRetentionService
 
             if (rows == 0)
             {
+                bool pinned = curation && await CountInTransactionAsync(
+                    connection,
+                    transaction,
+                    "lexicon_entries",
+                    "Id = @id AND PinnedAtUtc IS NOT NULL",
+                    cancellationToken,
+                    ("@id", entryId)).ConfigureAwait(false) > 0;
+
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
-                return CandidateDeleteResult.Empty;
+                return CandidateDeleteResult.Empty with { PinnedAfterPlanning = pinned };
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -6083,7 +6157,7 @@ internal sealed partial class DataRetentionService
             rows,
             0,
             0,
-            provenance + fts,
+            provenance + fts + claims,
             reconciled);
     }
 
@@ -6478,7 +6552,8 @@ internal sealed partial class DataRetentionService
         long Files,
         long Bytes,
         long Derived,
-        bool Reconciled)
+        bool Reconciled,
+        bool PinnedAfterPlanning = false)
     {
         public static CandidateDeleteResult Empty { get; } =
             new(0, 0, 0, 0, true);

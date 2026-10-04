@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Memory;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -86,6 +87,26 @@ public sealed record CliErrorPayload(
     string Error,
     int ExitCode);
 
+public sealed record MemoryReviewCancellationPayload(
+    MemoryReviewStore Store,
+    Guid RequestId,
+    MemoryReviewAction Action,
+    bool Cancelled);
+
+/// <summary>
+/// The one document a declined erasure-family operation writes under <c>--json</c>.
+/// </summary>
+/// <remarks>
+/// <paramref name="Operation"/> is <c>erase</c>, <c>release</c> or <c>reset-key</c>. The store and
+/// mutation identity are present when the declined operation had them, so a script can tell which
+/// prepared erase was turned down; nothing about the item itself is carried.
+/// </remarks>
+public sealed record MemoryErasureCancellationPayload(
+    string Operation,
+    MemoryReviewStore? Store,
+    Guid? MutationId,
+    bool Cancelled);
+
 public sealed record SessionShowPayload(
     Guid Id,
     Guid? CampaignId,
@@ -126,14 +147,16 @@ public sealed record CovenantEntryPayload(
     long ByteCost,
     CovenantEffectiveShadowState Shadow,
     CovenantEffectiveMaterialization Materialization,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    string? RenderedHash = null);
 
 /// <summary>One page of Covenant entries, with the cursor a follow-up call would send.</summary>
 public sealed record CovenantListPayload(
     CovenantEntryPayload[] Entries,
     string? NextCursor,
     bool Truncated,
-    CovenantSearchHealthDto Search);
+    CovenantSearchHealthDto Search,
+    CovenantPageTruncation? TruncationReason = null);
 
 /// <summary>
 /// One scoped key with both lanes, and its history when <c>--history</c> was asked for.
@@ -145,7 +168,9 @@ public sealed record CovenantShowPayload(
     CovenantEntryPayload? Confirmed,
     CovenantEntryPayload? Proposed,
     long KeyEpoch,
-    CovenantVersionDto[] History);
+    CovenantVersionDto[] History,
+    CovenantCurationStateDto? ConfirmedCuration = null,
+    CovenantCurationStateDto? ProposedCuration = null);
 
 /// <summary>
 /// The server-authoritative plan a mutation is confirmed against.
@@ -169,7 +194,8 @@ public sealed record CovenantMutationPlanPayload(
     long AffectedCampaignCount,
     bool ExamplesTruncated,
     bool AppliesToFutureCampaigns,
-    DateTimeOffset ExpiresAtUtc);
+    DateTimeOffset ExpiresAtUtc,
+    bool? ReleasesErasureFingerprint = false);
 
 /// <summary>The durable outcome of one committed Covenant mutation.</summary>
 public sealed record CovenantMutationResultPayload(
@@ -181,7 +207,8 @@ public sealed record CovenantMutationResultPayload(
     string Key,
     CovenantLane Lane,
     long? Revision,
-    bool Replayed);
+    bool Replayed,
+    bool? ReleasedErasureFingerprint = false);
 
 /// <summary>What <c>arcanum memory covenant doctor</c> found, and what it would do about it.</summary>
 public sealed record CovenantDoctorPayload(
@@ -1045,6 +1072,8 @@ internal static class CliFailureMapper
     WriteIndented = false)]
 [JsonSerializable(typeof(CliTextPayload))]
 [JsonSerializable(typeof(CliErrorPayload))]
+[JsonSerializable(typeof(MemoryReviewCancellationPayload))]
+[JsonSerializable(typeof(MemoryErasureCancellationPayload))]
 [JsonSerializable(typeof(CliContextStatusPayload))]
 [JsonSerializable(typeof(CliContextMutationResult))]
 [JsonSerializable(typeof(SessionShowPayload))]
@@ -1094,6 +1123,8 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(FullInstallationResetExternalRemediationAttestation))]
 
 [JsonSerializable(typeof(FullInstallationResetRequest))]
+
+[JsonSerializable(typeof(CovenantCurationStateDto))]
 
 [JsonSerializable(typeof(CovenantEntryPayload))]
 

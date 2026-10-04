@@ -285,14 +285,68 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
     }
 
+    public async ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+        CovenantOperationScope entryScope,
+        bool reclaimsKey,
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken)
+    {
+
+        if (owner.Operation != CovenantExclusiveOperation.CovenantEntryErasure)
+        {
+
+            return ForbiddenOperationShape();
+
+        }
+
+        if (!entryScope.IsInitialized)
+        {
+
+            return new Error(ErrorCodes.Covenant.InvalidScope, "An entry erasure requires the entry's validated scope.");
+
+        }
+
+        // A Campaign entry names its Campaign whichever slot it closes: an erase that reclaims the key
+        // still deletes that Campaign's rows, and a deleted Campaign has nothing left to erase.
+        if (entryScope.Kind == CovenantScope.Campaign)
+        {
+
+            Result campaignPresent = await RequireLiveCampaignAsync(
+                    entryScope.CampaignId!.Value,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (campaignPresent.IsFailure)
+            {
+
+                return campaignPresent.Error;
+
+            }
+
+        }
+
+        // Only a Campaign entry that keeps its key is confined to its Campaign. Every Campaign's turns
+        // read Global entries, and reclamation removes the key's curation in every scope, so either
+        // one closes the installation rather than the Global scope alone.
+        bool campaignOnly = entryScope.Kind == CovenantScope.Campaign && !reclaimsKey;
+
+        return await AcquireExclusiveCoreAsync(
+                campaignOnly ? ClosureSlot.Campaign : ClosureSlot.Installation,
+                CovenantLeaseKind.EntryErasure,
+                campaignOnly ? entryScope : null,
+                owner,
+                cancellationToken,
+                static registration => new CovenantEntryErasureLease(registration))
+            .ConfigureAwait(false);
+
+    }
+
     public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
 
-        if (owner.Operation is CovenantExclusiveOperation.CampaignPathMutation
-            or CovenantExclusiveOperation.CampaignDelete
-            or CovenantExclusiveOperation.ProtectedSessionTransfer)
+        if (!IsInstallationOperation(owner.Operation))
         {
 
             return ValueTask.FromResult<Result<CovenantExclusiveLease>>(ForbiddenOperationShape());
@@ -314,9 +368,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CancellationToken cancellationToken)
     {
 
-        if (owner.Operation is CovenantExclusiveOperation.CampaignPathMutation
-            or CovenantExclusiveOperation.CampaignDelete
-            or CovenantExclusiveOperation.ProtectedSessionTransfer)
+        if (!IsInstallationOperation(owner.Operation))
         {
 
             return ValueTask.FromResult<Result<CovenantExclusiveLease>>(ForbiddenOperationShape());
@@ -385,9 +437,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (owner.Operation is CovenantExclusiveOperation.CampaignPathMutation
-            or CovenantExclusiveOperation.CampaignDelete
-            or CovenantExclusiveOperation.ProtectedSessionTransfer)
+        if (!IsInstallationOperation(owner.Operation))
         {
 
             return ValueTask.FromResult<Result<CovenantExclusiveLease>>(ForbiddenOperationShape());
@@ -479,6 +529,22 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             ErrorCodes.Covenant.ForbiddenAuthority,
             "This exclusive Covenant operation code cannot be used with this acquisition shape.");
 
+    /// <summary>
+    /// The five operations an installation-wide exclusive lease may be acquired, resumed, or adopted
+    /// for.
+    /// </summary>
+    /// <remarks>
+    /// An allow-list rather than the complement of the scoped codes. A code added to the enum later is
+    /// then refused by every installation shape until someone decides it belongs here, instead of
+    /// inheriting installation-wide powers because nobody remembered to exclude it.
+    /// </remarks>
+    private static bool IsInstallationOperation(CovenantExclusiveOperation operation) =>
+        operation is CovenantExclusiveOperation.SchemaRepair
+            or CovenantExclusiveOperation.BackupRestore
+            or CovenantExclusiveOperation.CovenantFamilyReinitialize
+            or CovenantExclusiveOperation.CovenantReset
+            or CovenantExclusiveOperation.HealthyCatalogFactoryErasure;
+
     private static (ClosureSlot Slot, CovenantLeaseKind LeaseKind) ClassifyOwner(
         CovenantExclusiveRecoveryOwner owner,
         CovenantOperationScope? scope)
@@ -486,6 +552,12 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         switch (owner.Operation)
         {
+
+            case CovenantExclusiveOperation.CovenantEntryErasure:
+
+                throw new ArgumentException(
+                    "An entry erasure is one atomic transaction and never has a durable recovery owner.",
+                    nameof(owner));
 
             case CovenantExclusiveOperation.CampaignPathMutation:
             case CovenantExclusiveOperation.CampaignDelete:
@@ -517,6 +589,15 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                     CovenantLeaseKind.ProtectedTransfer);
 
             default:
+
+                if (!IsInstallationOperation(owner.Operation))
+                {
+
+                    throw new ArgumentOutOfRangeException(
+                        nameof(owner),
+                        "This exclusive operation code has no durable recovery classification.");
+
+                }
 
                 if (scope is not null)
                 {

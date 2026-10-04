@@ -78,6 +78,10 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Scope")));
 
+        // Never wrapped: "retired, pinned" split across two lines reads as two rows' states, and the
+        // content column is the one that can afford to give up width.
+        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("State"))).NoWrap());
+
         foreach (SagaMemoryDto memory in memories)
         {
 
@@ -95,7 +99,8 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
                 new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(memory.Source ?? "-"))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture)))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeScope(memory)))));
+                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeScope(memory)))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeState(memory)))));
 
         }
 
@@ -246,7 +251,11 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         }
 
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Saga memory '{id}' was forgotten.")));
+        AnsiConsole.MarkupLine(
+            themePalette.MutedMarkup(
+                Markup.Escape(
+                    $"Saga memory '{id}' was deleted. No suppression fingerprint was recorded, so extraction "
+                    + "can add identical content again; use 'arcanum memory saga erase' to erase and suppress.")));
 
         return 0;
 
@@ -328,6 +337,29 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             SagaMemoryScopeKind.LegacyUnresolved => "unresolved",
 
             _ => "unclassified",
+
+        };
+
+    /// <summary>
+    /// A memory's curation state, in one short cell: <c>active</c>, <c>retired</c>, <c>pinned</c>, or
+    /// <c>retired, pinned</c>.
+    /// </summary>
+    /// <remarks>
+    /// The listing reads memory rows, so a retired memory is listed beside live ones even though no turn
+    /// can recall it; this cell is what tells them apart. Retirement and a pin are independent, so a
+    /// memory carrying both says both.
+    /// </remarks>
+    internal static string DescribeState(SagaMemoryDto memory) =>
+        (memory.RetiredAtUtc, memory.PinnedAtUtc) switch
+        {
+
+            (null, null) => "active",
+
+            (not null, null) => "retired",
+
+            (null, not null) => "pinned",
+
+            _ => "retired, pinned",
 
         };
 

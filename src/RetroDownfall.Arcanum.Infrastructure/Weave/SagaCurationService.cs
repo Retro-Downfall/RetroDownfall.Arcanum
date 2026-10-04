@@ -18,7 +18,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal sealed class SagaCurationService(
     ISagaMemoryStore store,
     IWeaveService weave,
-    IAnnalsStore annals) : ISagaCurationService
+    IAnnalsStore annals,
+    IMemoryScopeResolver scopes) : ISagaCurationService
 {
 
     /// <summary><see cref="AnnalContentDigest.ForSagaMemory"/> is a SHA-256 binding: always 32 bytes.</summary>
@@ -200,7 +201,10 @@ internal sealed class SagaCurationService(
 
         }
 
-        return Result<SagaCurationResult>.Success(new SagaCurationResult(outcome.Kind, detail.Value));
+        // A correction that re-created erased content says what it did to that content's fingerprint;
+        // every other verb and outcome carries the store's own false.
+        return Result<SagaCurationResult>.Success(
+            new SagaCurationResult(outcome.Kind, detail.Value, outcome.ReleasedErasureFingerprint));
 
     }
 
@@ -208,7 +212,10 @@ internal sealed class SagaCurationService(
         string id, SagaMemoryCurationRow row, CancellationToken cancellationToken)
     {
 
-        SagaRetrievalEligibility eligibility = ClassifyEligibility(row);
+        // The gate retrieval itself reads, through the seam every memory surface resolves scope with:
+        // whether unresolved ownership withholds a memory depends on whether Campaign scoping is on.
+        SagaRetrievalEligibility eligibility = SagaRetrievalEligibilityClassifier.Classify(
+            row, scopes.IsCampaignScopingEnabled);
 
         AnnalClaimHead? claim = await annals
             .GetClaimAsync(AnnalSubjectStore.Saga, id, cancellationToken).ConfigureAwait(false);
@@ -222,44 +229,6 @@ internal sealed class SagaCurationService(
         string contentHash = Convert.ToHexString(AnnalContentDigest.ForSagaMemory(row.Memory.Content));
 
         return new SagaMemoryDetail(row.Memory, contentHash, row.Lifecycle, eligibility, claim, history);
-
-    }
-
-    /// <summary>
-    /// Retired first, then ownership, then whether an embedding survives, then eligible — in that
-    /// order because a retired memory has no embedding by construction, and reporting that as
-    /// <see cref="SagaRetrievalEligibility.EmbeddingMissing"/> would describe the wrong problem to an
-    /// operator trying to understand why a memory is not being recalled.
-    /// </summary>
-    internal static SagaRetrievalEligibility ClassifyEligibility(SagaMemoryCurationRow row)
-    {
-
-        if (row.Lifecycle.RetiredAtUtc is not null)
-        {
-
-            return SagaRetrievalEligibility.Retired;
-
-        }
-
-        // Unclassified (an upgrade has not reached this row yet) and LegacyUnresolved (the owning
-        // Session's binding never resolved, or the Session is gone) both mean the same thing to an
-        // operator: retrievable in no scope at all until someone resolves it. Global and Campaign are
-        // the only two scopes that supply real authority.
-        if (row.Memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved)
-        {
-
-            return SagaRetrievalEligibility.OwnershipUnresolved;
-
-        }
-
-        if (!row.HasEmbedding)
-        {
-
-            return SagaRetrievalEligibility.EmbeddingMissing;
-
-        }
-
-        return SagaRetrievalEligibility.Eligible;
 
     }
 

@@ -27,6 +27,8 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
 
     private readonly List<string> _acquisitions = [];
 
+    private readonly List<string> _refused = [];
+
     private readonly Lock _sync = new();
 
     private int _live;
@@ -46,6 +48,27 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
             {
 
                 return [.. _acquisitions];
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Every capability asked for and refused, in order. A refusal grants nothing, so it is never in
+    /// <see cref="Acquisitions"/>; this is how a suite proves an attempt was not even made.
+    /// </summary>
+    internal IReadOnlyList<string> RefusedAttempts
+    {
+
+        get
+        {
+
+            lock (_sync)
+            {
+
+                return [.. _refused];
 
             }
 
@@ -157,6 +180,13 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
         CancellationToken cancellationToken) =>
         Refuse<CovenantCampaignExclusiveLease>("campaign-exclusive");
 
+    public ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+        CovenantOperationScope entryScope,
+        bool reclaimsKey,
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        Refuse<CovenantEntryErasureLease>("entry-erasure");
+
     public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
         ProtectedTransferScope scope,
         CovenantExclusiveRecoveryOwner owner,
@@ -190,13 +220,24 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
         CancellationToken cancellationToken) =>
         Refuse<CovenantExclusiveLease>("resume-exclusive");
 
-    private static ValueTask<Result<T>> Refuse<T>(string capability)
-        where T : class =>
-        ValueTask.FromResult(
+    private ValueTask<Result<T>> Refuse<T>(string capability)
+        where T : class
+    {
+
+        lock (_sync)
+        {
+
+            _refused.Add(capability);
+
+        }
+
+        return ValueTask.FromResult(
             Result<T>.Failure(
                 new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     $"Issue #116 planning must not acquire a {capability} capability.")));
+
+    }
 
     private RecordingRegistration Register(
         string label,

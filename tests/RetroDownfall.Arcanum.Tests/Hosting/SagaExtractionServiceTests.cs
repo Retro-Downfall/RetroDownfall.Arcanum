@@ -1,5 +1,6 @@
 using System.Data.Common;
 
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -19,7 +21,9 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -300,6 +304,641 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.NotNull(watermark);
 
         Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
+
+    }
+
+    /// <summary>
+    /// An erased conclusion re-extracted from the same entries is neither written nor sent to the
+    /// embedding provider again, and the page still counts as reviewed.
+    /// </summary>
+    /// <remarks>
+    /// The first pass writes the memory through production; the case then records the fingerprint over
+    /// the scope that write derived, deletes the row as the erase will, and rolls the cursor back so the
+    /// second pass reviews the same entries.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Extraction_neither_rewrites_nor_re_embeds_an_erased_conclusion_and_still_advances_the_cursor()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        DateTimeOffset latestEntryCreatedAt = await CreateEntryAsync(sessionId, "I like dark mode.");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "The operator prefers dark mode.", "attachmentId": null }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
+            BuildScope(weave, intelligence, keyring);
+
+        await ExtractPassAsync(service, scopeFactory, sessionId, embeddings, settings);
+
+        Assert.Equal(1, weave.EmbedCallCount);
+
+        await EraseWrittenConclusionAsync(sessionId, key);
+
+        SagaExtractionOutcome outcome = await ExtractPassAsync(service, scopeFactory, sessionId, embeddings, settings);
+
+        Assert.Equal(SagaExtractionOutcome.Completed, outcome);
+
+        // The model reviewed the same entries a second time and drew the same conclusion.
+        Assert.Equal(2, intelligence.CallCount);
+
+        Assert.Equal(0, await CountMemoriesAsync());
+
+        // Withheld before the embedding call, so the erased text never reached the provider again.
+        Assert.Equal(1, weave.EmbedCallCount);
+
+        DateTimeOffset? watermark = await GetWatermarkAsync(sessionId);
+
+        Assert.NotNull(watermark);
+
+        Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
+
+    }
+
+    /// <summary>
+    /// Review Focus 5: a page whose candidates are partly erased still writes and embeds the others.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_page_mixing_erased_and_fresh_candidates_writes_and_embeds_only_the_fresh_one()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        DateTimeOffset latestEntryCreatedAt = await CreateEntryAsync(sessionId, "I like dark mode and I use tabs.");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new() { TextForCall = MixedPageForSecondCall };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
+            BuildScope(weave, intelligence, keyring);
+
+        await ExtractPassAsync(service, scopeFactory, sessionId, embeddings, settings);
+
+        await EraseWrittenConclusionAsync(sessionId, key);
+
+        SagaExtractionOutcome outcome = await ExtractPassAsync(service, scopeFactory, sessionId, embeddings, settings);
+
+        Assert.Equal(SagaExtractionOutcome.Completed, outcome);
+
+        // One embedding per pass: the first pass's conclusion, then only the fresh candidate.
+        Assert.Equal(2, weave.EmbedCallCount);
+
+        SagaMemoryDto written = Assert.Single(
+            await CreateStore().ListAsync(null, sessionId, MemoryScope.Installation, 10, 0, CancellationToken.None));
+
+        Assert.Equal("The operator uses tabs.", written.Content);
+
+        DateTimeOffset? watermark = await GetWatermarkAsync(sessionId);
+
+        Assert.NotNull(watermark);
+
+        Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
+
+    }
+
+    /// <summary>
+    /// A withheld candidate is a deliberate answer the page received, so it advances the cursor even
+    /// when every other candidate on the page failed to embed.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_erased_candidate_counts_as_page_progress_when_another_candidate_fails_to_embed()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        DateTimeOffset latestEntryCreatedAt = await CreateEntryAsync(sessionId, "I like dark mode and I use tabs.");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new() { TextForCall = MixedPageForSecondCall };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
+            BuildScope(weave, intelligence, keyring);
+
+        await ExtractPassAsync(service, scopeFactory, sessionId, embeddings, settings);
+
+        await EraseWrittenConclusionAsync(sessionId, key);
+
+        weave.EmbedShouldFail = true;
+
+        SagaExtractionOutcome outcome = await ExtractPassAsync(service, scopeFactory, sessionId, embeddings, settings);
+
+        Assert.Equal(SagaExtractionOutcome.Completed, outcome);
+
+        Assert.Equal(0, await CountMemoriesAsync());
+
+        DateTimeOffset? watermark = await GetWatermarkAsync(sessionId);
+
+        Assert.NotNull(watermark);
+
+        Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
+
+    }
+
+    /// <summary>
+    /// While Saga fingerprints exist and the key cannot be read, extraction cannot know what it may
+    /// write, so it defers the page before paying for a model call.
+    /// </summary>
+    [SkippableFact]
+    public async Task Extraction_defers_before_the_model_call_while_the_erasure_key_is_lost()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "I like dark mode.");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await SeedLostKeyEvidenceAsync(credentials);
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "The operator prefers dark mode.", "attachmentId": null }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
+            BuildScope(weave, intelligence, keyring);
+
+        SagaExtractionOutcome outcome = await ExtractPassAsync(service, scopeFactory, sessionId, embeddings, settings);
+
+        Assert.Equal(SagaExtractionOutcome.DeferredForErasureKey, outcome);
+
+        Assert.Equal(0, intelligence.CallCount);
+
+        Assert.Equal(0, weave.EmbedCallCount);
+
+        Assert.Equal(0, await CountMemoriesAsync());
+
+        Assert.Null(await GetWatermarkAsync(sessionId));
+
+    }
+
+    /// <summary>
+    /// A missing key is not a failing provider: the deferral waits on its own clock, never charges the
+    /// bounded retry ladder, keeps the pending work, and resumes once an operator restores the key.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_ErasureKeyDeferral_DoesNotClimbTheRetryLadderAndResumesOnceTheKeyReturns()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content that waits for the erasure key");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        string savedKey = await SeedLostKeyEvidenceAsync(credentials);
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new() { ExpectedCallCount = 1 };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence, keyring);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(10),
+            ErasureKeyDeferralDelayForTests = TimeSpan.FromMilliseconds(10),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: _seededSequence));
+
+            // One availability check per pass: more passes than the five-attempt ladder would allow.
+            using (CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10)))
+            {
+
+                while (weave.AvailabilityCheckCount < 6 && !deadline.IsCancellationRequested)
+                {
+
+                    await Task.Delay(TimeSpan.FromMilliseconds(10));
+
+                }
+
+            }
+
+            Assert.True(
+                weave.AvailabilityCheckCount >= 6,
+                $"Extraction stopped after {weave.AvailabilityCheckCount} passes while the erasure key was lost.");
+
+            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+
+            Assert.NotEmpty(service.PendingSegmentsForTests(sessionId));
+
+            Assert.Equal(0, intelligence.CallCount);
+
+            // The operator restores the key and asks again, which publishes it into the shared latch.
+            _ = credentials.Set(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount,
+                savedKey);
+
+            MemoryErasureKeyOpenResult reopened = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
+
+            using (reopened.Key)
+            {
+
+                Assert.Equal(MemoryErasureKeyState.Present, reopened.State);
+
+            }
+
+            await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(1, intelligence.CallCount);
+
+        }
+        finally
+        {
+
+            await hosted.StopAsync(CancellationToken.None);
+
+        }
+
+    }
+
+    /// <summary>
+    /// A key problem that first shows up at a page's pre-embed check refuses the page: the candidate is
+    /// neither sent to the embedding provider nor counted as withheld, so nothing is written and the
+    /// cursor holds.
+    /// </summary>
+    /// <remarks>
+    /// Treating either answer as "not withheld" would send text an operator may just have erased to the
+    /// provider; treating it as "withheld" would advance the cursor past every fresh candidate on the
+    /// page. See <see cref="ModelCallThatChangesErasureEvidenceAsync"/> for the two arrivals.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("evidence-appears", ErrorCodes.MemoryErasure.Unavailable)]
+    [InlineData("foreign-key", ErrorCodes.MemoryErasure.KeyLost)]
+    public async Task A_key_problem_met_at_the_pre_embed_check_refuses_the_page_without_embedding_or_moving_the_cursor(
+        string arrival,
+        string code)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "I like dark mode.");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        FakeIntelligenceProvider intelligence = await ModelCallThatChangesErasureEvidenceAsync(sessionId, arrival, key);
+
+        // Nothing is latched before the page runs, so the only key the page can carry into its checks is
+        // one its own preparation resolves - and over an empty store it resolves none.
+        Assert.Equal(MemoryErasureKeyState.Unresolved, keyring.Latch.State);
+
+        FakeWeaveService weave = new();
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
+            BuildScope(weave, intelligence, keyring);
+
+        MemoryErasureGuardException refused = await Assert.ThrowsAsync<MemoryErasureGuardException>(
+            () => ExtractPassAsync(service, scopeFactory, sessionId, embeddings, settings));
+
+        Assert.Equal(code, refused.Error.Code);
+
+        Assert.Equal(1, intelligence.CallCount);
+
+        Assert.Equal(0, weave.EmbedCallCount);
+
+        Assert.Equal(0, await CountMemoriesAsync());
+
+        Assert.Null(await GetExtractionCursorAsync(sessionId));
+
+    }
+
+    /// <summary>
+    /// The same refusal through the consumer loop: the page is one ordinary failed attempt on the retry
+    /// ladder, with its pending work kept and its cursor unmoved, never a completed page.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("evidence-appears")]
+    [InlineData("foreign-key")]
+    public async Task ExecuteAsync_KeyProblemMetAtThePreEmbedCheck_RetriesThePageWithTheCursorHeld(string arrival)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "I like dark mode.");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        FakeIntelligenceProvider intelligence = await ModelCallThatChangesErasureEvidenceAsync(sessionId, arrival, key);
+
+        FakeWeaveService weave = new();
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence, keyring);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            // Long enough that the retry never runs inside the case, so the state below is the one the
+            // failed attempt left.
+            RetryBaseDelayForTests = TimeSpan.FromMinutes(10),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: _seededSequence));
+
+            using (CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10)))
+            {
+
+                while (service.RetryAttemptForTests(sessionId) == 0 && !deadline.IsCancellationRequested)
+                {
+
+                    await Task.Delay(TimeSpan.FromMilliseconds(10));
+
+                }
+
+            }
+
+            Assert.Equal(1, service.RetryAttemptForTests(sessionId));
+
+            Assert.NotEmpty(service.PendingSegmentsForTests(sessionId));
+
+            Assert.Equal(1, intelligence.CallCount);
+
+            Assert.Equal(0, weave.EmbedCallCount);
+
+            Assert.Equal(0, await CountMemoriesAsync());
+
+            Assert.Null(await GetExtractionCursorAsync(sessionId));
+
+        }
+        finally
+        {
+
+            await hosted.StopAsync(CancellationToken.None);
+
+        }
+
+    }
+
+    private static string MixedPageForSecondCall(int callCount) =>
+        callCount == 1
+            ? """{ "memories": [{ "content": "The operator prefers dark mode.", "attachmentId": null }] }"""
+            : """{ "memories": [{ "content": "The operator prefers dark mode.", "attachmentId": null }, { "content": "The operator uses tabs.", "attachmentId": null }] }""";
+
+    private async Task<SagaExtractionOutcome> ExtractPassAsync(
+        SagaExtractionService service,
+        IServiceScopeFactory scopeFactory,
+        Guid sessionId,
+        EmbeddingSettings embeddings,
+        ArcanumSettings settings)
+    {
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        return await ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+    }
+
+    /// <summary>
+    /// Records the fingerprint of the one conclusion the first pass wrote, over the scope that write
+    /// derived, deletes the row, and rolls the cursor back so the next pass reviews the same entries.
+    /// </summary>
+    private async Task EraseWrittenConclusionAsync(Guid sessionId, MemoryErasureKey key)
+    {
+
+        SagaMemoryStore store = CreateStore();
+
+        SagaMemoryDto written = Assert.Single(
+            await store.ListAsync(null, sessionId, MemoryScope.Installation, 10, 0, CancellationToken.None));
+
+        Assert.Equal("The operator prefers dark mode.", written.Content);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            (SqliteConnection)_db!.Database.GetDbConnection(),
+            key,
+            MemoryErasureIdentity.ForSaga(written.ScopeKind, written.ScopeCampaignId, written.Content),
+            CancellationToken.None);
+
+        Assert.True(await store.DeleteAsync(written.Id, CancellationToken.None));
+
+        await store.SetWatermarkAsync(sessionId, DateTimeOffset.MinValue, CancellationToken.None);
+
+    }
+
+    /// <summary>
+    /// An extraction model that returns one conclusion and, while it is being called, lets erasure
+    /// evidence change underneath the page, committed from a sibling connection as another request's
+    /// write would be.
+    /// </summary>
+    /// <remarks>
+    /// <para><c>evidence-appears</c>: the store holds no Saga evidence when the page is prepared, so the
+    /// page carries no key into its checks, and the operator's first erasure - of the very conclusion the
+    /// model is about to return - commits during the call. The pre-embed check answers
+    /// <c>RetryWithKey</c>.</para>
+    ///
+    /// <para><c>foreign-key</c>: the page is prepared over this home's own evidence for other content, so
+    /// it carries <paramref name="key"/>; during the call a row recorded under a different key commits, as
+    /// a second home sharing the keychain account would write it. The pre-embed check answers
+    /// <c>KeyLost</c>.</para>
+    ///
+    /// <para>Either way the fingerprint names the conclusion in the scope production derives for the
+    /// Session, so an insert that was allowed to proceed would meet the evidence itself.</para>
+    /// </remarks>
+    private async Task<FakeIntelligenceProvider> ModelCallThatChangesErasureEvidenceAsync(
+        Guid sessionId,
+        string arrival,
+        MemoryErasureKey key)
+    {
+
+        const string Conclusion = "The operator prefers dark mode.";
+
+        (SagaMemoryScopeKind kind, string? campaignId) = await SagaMemoryScopeClassifier.ResolveForSessionAsync(
+            _db!.Database.GetDbConnection(),
+            null,
+            sessionId,
+            CancellationToken.None);
+
+        // The Sessions this suite creates are never bound, so the scope names no Campaign.
+        Assert.Null(campaignId);
+
+        MemoryErasureIdentity identity = MemoryErasureIdentity.ForSaga(kind, null, Conclusion);
+
+        switch (arrival)
+        {
+
+            case "evidence-appears":
+                break;
+
+            case "foreign-key":
+                await MemoryErasureTestKeys.SeedFingerprintAsync(
+                    (SqliteConnection)_db.Database.GetDbConnection(),
+                    key,
+                    MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "Something the operator erased earlier."),
+                    CancellationToken.None);
+
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(arrival), arrival, "Unknown evidence arrival.");
+
+        }
+
+        return new FakeIntelligenceProvider
+        {
+            NextText = """{ "memories": [{ "content": "The operator prefers dark mode.", "attachmentId": null }] }""",
+            BeforeResultAsync = async (callCount, cancellationToken) =>
+            {
+
+                if (callCount != 1)
+                {
+
+                    return;
+
+                }
+
+                await using ArcanumDbContext sibling = _fixture.CreateContext(_dbPath);
+
+                SqliteConnection connection = (SqliteConnection)sibling.Database.GetDbConnection();
+
+                if (arrival == "foreign-key")
+                {
+
+                    using MemoryErasureKey foreign = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+                    Assert.False(foreign.HasKeyId(key.KeyId));
+
+                    await MemoryErasureTestKeys.SeedFingerprintAsync(connection, foreign, identity, cancellationToken);
+
+                }
+                else
+                {
+
+                    await MemoryErasureTestKeys.SeedFingerprintAsync(connection, key, identity, cancellationToken);
+
+                }
+
+            },
+        };
+
+    }
+
+    /// <summary>
+    /// Records a Saga fingerprint under a key, then deletes the key from the credential store, and
+    /// returns the deleted value so a case can restore it.
+    /// </summary>
+    private async Task<string> SeedLostKeyEvidenceAsync(InMemoryOsCredentialStore credentials)
+    {
+
+        using (MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials))
+        {
+
+            await MemoryErasureTestKeys.SeedFingerprintAsync(
+                (SqliteConnection)_db!.Database.GetDbConnection(),
+                key,
+                MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "Something the operator erased."),
+                CancellationToken.None);
+
+        }
+
+        string saved = credentials
+            .TryGet(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount)
+            .Value!;
+
+        _ = credentials.Delete(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount);
+
+        return saved;
 
     }
 
@@ -1005,6 +1644,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         services.AddSingleton<ISagaMemoryStore, SagaMemoryStore>();
 
+        services.AddSingleton<IMemoryErasureKeyProvider>(MemoryErasureTestKeys.Isolated());
+
+        services.AddScoped<SagaErasureWriteGate>();
+
         services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(new TestOptionsMonitor<ArcanumSettings>(disabledSettings));
 
         services.AddSingleton(new WeaveIndexAvailability());
@@ -1014,8 +1657,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(disabledSettings),
-            attachmentIndex: null,
             covenantKernel: null,
+            availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(sp.GetRequiredService<ArcanumDbContext>()),
             FixtureLabeledArtifactGuard.For(sp.GetRequiredService<ArcanumDbContext>())));
 
@@ -4604,7 +5247,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                             Dimensions = TestDimensions,
                         },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
     private GrimoireRepository CreateRepository(ArcanumSettings settings) =>
         new(
@@ -4612,8 +5256,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
-            attachmentIndex: null,
             covenantKernel: null,
+            availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),
             FixtureLabeledArtifactGuard.For(_db!));
 
@@ -4644,7 +5288,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
     private (IServiceScopeFactory ScopeFactory, EmbeddingSettings Embeddings, ArcanumSettings Settings) BuildScope(
         FakeWeaveService weave,
-        FakeIntelligenceProvider intelligence)
+        FakeIntelligenceProvider intelligence,
+        IMemoryErasureKeyProvider? erasureKeys = null)
     {
 
         EmbeddingSettings embeddings = ArcanumRuntimeDefaults.Embeddings with
@@ -4689,6 +5334,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         services.AddSingleton<IArcanumIntelligenceProvider>(intelligence);
 
         services.AddSingleton<ISagaMemoryStore, SagaMemoryStore>();
+
+        // An isolated keyring unless the case supplies one, so no extraction reaches the real keychain.
+        services.AddSingleton<IMemoryErasureKeyProvider>(erasureKeys ?? MemoryErasureTestKeys.Isolated());
+
+        services.AddScoped<SagaErasureWriteGate>();
 
         services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(new TestOptionsMonitor<ArcanumSettings>(settings));
 

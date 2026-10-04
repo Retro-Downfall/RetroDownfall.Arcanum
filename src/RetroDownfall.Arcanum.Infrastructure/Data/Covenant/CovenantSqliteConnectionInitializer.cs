@@ -49,6 +49,8 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         "arcanum_managed_file_intent_mutation_authorized",
 
         "arcanum_restore_staging_managed_authority_sanitization_authorized",
+
+        "arcanum_covenant_entry_erasure_authorized",
     ];
 
     private static readonly ConditionalWeakTable<SqliteConnection, CovenantSqliteConnectionState> States = new();
@@ -205,6 +207,11 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         SqliteConnection connection,
         CovenantSqliteConnectionState state)
     {
+
+        connection.CreateFunction<string?, string?, bool>("arcanum_ordinal_contains",
+            static (value, query) => value is not null && query is not null
+                && value.Contains(query, StringComparison.OrdinalIgnoreCase),
+            isDeterministic: true);
 
         foreach (CovenantSqliteAuthorizationKind kind in Enum.GetValues<CovenantSqliteAuthorizationKind>())
         {

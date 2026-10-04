@@ -113,8 +113,11 @@ internal interface ISessionAttachmentIndexWriter
 
 internal sealed class SessionAttachmentIndexRepository(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability) : ISessionAttachmentIndexWriter, ISessionAttachmentIndexMaintenance
+    WeaveIndexAvailability availability) : ISessionAttachmentIndexWriter
 {
+    /// <summary>The accelerator's mirror of the chunk embeddings, which no schema file installs.</summary>
+    private const string VectorMirrorTable = "session_attachment_embeddings_vec";
+
     public async Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
         int expectedDimensions,
         int maxAttachments,
@@ -176,7 +179,14 @@ internal sealed class SessionAttachmentIndexRepository(
             _ = await orphanChunks.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        if (availability.IsVecAvailable)
+        // The mirror holds the embedding itself, so whether it is swept is a property of the database,
+        // not of whether this process loaded an accelerator: a plain mirror an earlier build filled is
+        // swept whatever the flag says, and a legacy vec0 mirror this runtime cannot open is skipped.
+        if (await SagaVectorMirror.ClassifyAsync(
+                connection,
+                transaction,
+                VectorMirrorTable,
+                cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable)
         {
             await using DbCommand orphanVec = connection.CreateCommand();
 
@@ -185,14 +195,7 @@ internal sealed class SessionAttachmentIndexRepository(
             orphanVec.CommandText =
                 "DELETE FROM session_attachment_embeddings_vec WHERE ChunkId NOT IN (SELECT ChunkId FROM session_attachment_chunks)";
 
-            try
-            {
-                _ = await orphanVec.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
-            {
-                availability.SetAvailable(false);
-            }
+            _ = await orphanVec.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         List<SessionAttachmentIndexRequest> requests = [];
@@ -935,89 +938,6 @@ internal sealed class SessionAttachmentIndexRepository(
             .ToArray();
     }
 
-    public async Task DeleteForSessionInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        if (db.Database.CurrentTransaction is null)
-        {
-            throw new InvalidOperationException("Attachment index purge requires an ambient transaction.");
-        }
-
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-        DbTransaction transaction = db.Database.CurrentTransaction.GetDbTransaction();
-
-        List<string> chunkIds = await GetChunkIdsForSessionAsync(
-            connection,
-            transaction,
-            sessionId,
-            cancellationToken).ConfigureAwait(false);
-
-        await DeleteVecRowsAsync(connection, transaction, chunkIds, cancellationToken).ConfigureAwait(false);
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        // Two parameters for one Session, because the two columns hold it in different spellings on
-        // purpose. A chunk's own SessionId is the tapestry's live scope-id set and stays as the indexer
-        // wrote it; SessionAttachments.SessionId is canonical. One parameter served both until this
-        // split, and because the two predicates are joined by OR the failure would have been a silent
-        // under-delete leaving orphaned chunks behind, not a loud one.
-        command.CommandText =
-            """
-            DELETE FROM session_attachment_chunks
-            WHERE SessionId = @chunkSessionId
-               OR AttachmentId IN (
-                   SELECT Id FROM SessionAttachments WHERE SessionId = @attachmentSessionId
-               )
-            """;
-
-        AddParameter(command, "@chunkSessionId", sessionId.ToString());
-
-        AddParameter(command, "@attachmentSessionId", sessionId.ToString().ToUpperInvariant());
-
-        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task DeleteAttachmentIndexAsync(
-        DbConnection connection,
-        DbTransaction transaction,
-        Guid attachmentId,
-        CancellationToken cancellationToken)
-    {
-        List<string> ids = [];
-
-        await using (DbCommand select = connection.CreateCommand())
-        {
-            select.Transaction = transaction;
-
-            select.CommandText = "SELECT ChunkId FROM session_attachment_chunks WHERE AttachmentId = @attachmentId";
-
-            AddParameter(select, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
-
-            await using DbDataReader reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                ids.Add(reader.GetString(0));
-            }
-        }
-
-        await DeleteVecRowsAsync(connection, transaction, ids, cancellationToken).ConfigureAwait(false);
-
-        await using DbCommand delete = connection.CreateCommand();
-
-        delete.Transaction = transaction;
-
-        delete.CommandText = "DELETE FROM session_attachment_chunks WHERE AttachmentId = @attachmentId";
-
-        AddParameter(delete, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
-
-        _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     private static async Task<string?> GetPublishedGenerationIdAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -1129,7 +1049,19 @@ internal sealed class SessionAttachmentIndexRepository(
         IReadOnlyList<string> chunkIds,
         CancellationToken cancellationToken)
     {
-        if (!availability.IsVecAvailable || chunkIds.Count == 0)
+        if (chunkIds.Count == 0)
+        {
+            return;
+        }
+
+        // Read from the catalog rather than the process flag, for the reason the orphan sweep above
+        // gives: a plain mirror is deleted from whatever the flag says, and a legacy vec0 mirror this
+        // runtime cannot open is skipped rather than failing the delete it rides on.
+        if (await SagaVectorMirror.ClassifyAsync(
+                connection,
+                transaction,
+                VectorMirrorTable,
+                cancellationToken).ConfigureAwait(false) is not SagaVectorMirrorKind.PlainTable)
         {
             return;
         }
@@ -1144,14 +1076,7 @@ internal sealed class SessionAttachmentIndexRepository(
             command,
             ")");
 
-        try
-        {
-            _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
-        {
-            availability.SetAvailable(false);
-        }
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task InsertChunkAsync(
@@ -1382,44 +1307,6 @@ internal sealed class SessionAttachmentIndexRepository(
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-    }
-
-    private static async Task<List<string>> GetChunkIdsForSessionAsync(
-        DbConnection connection,
-        DbTransaction transaction,
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        await using DbCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        // Split for the same reason the delete above it is, and it has to agree with that delete row for
-        // row: this is what collects the vector rows the delete is about to orphan.
-        command.CommandText =
-            """
-            SELECT ChunkId
-            FROM session_attachment_chunks
-            WHERE SessionId = @chunkSessionId
-               OR AttachmentId IN (
-                   SELECT Id FROM SessionAttachments WHERE SessionId = @attachmentSessionId
-               )
-            """;
-
-        AddParameter(command, "@chunkSessionId", sessionId.ToString());
-
-        AddParameter(command, "@attachmentSessionId", sessionId.ToString().ToUpperInvariant());
-
-        List<string> ids = [];
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            ids.Add(reader.GetString(0));
-        }
-
-        return ids;
     }
 
     private static SessionAttachmentIndexState ReadState(DbDataReader reader) => new(

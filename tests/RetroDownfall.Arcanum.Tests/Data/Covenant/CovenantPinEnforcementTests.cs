@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -25,6 +26,11 @@ public sealed class CovenantPinEnforcementTests
     private static CancellationToken Token => CancellationToken.None;
 
     private const string Key = "preference.builds";
+
+    /// <summary>
+    /// The pin refusal's text, shared with the erasure refusal so an agent cannot tell the two apart.
+    /// </summary>
+    private const string OperatorManaged = "This Covenant key is managed by the operator in this scope.";
 
     private static readonly Guid CampaignOne = CovenantOperationGateFixture.CampaignOne;
 
@@ -57,6 +63,8 @@ public sealed class CovenantPinEnforcementTests
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
+        Assert.Equal(OperatorManaged, refused.Error.Message);
+
     }
 
     [Fact]
@@ -85,6 +93,8 @@ public sealed class CovenantPinEnforcementTests
         Assert.True(refused.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+        Assert.Equal(OperatorManaged, refused.Error.Message);
 
     }
 
@@ -172,18 +182,196 @@ public sealed class CovenantPinEnforcementTests
 
     }
 
+    /// <summary>
+    /// A pin binds the key's binding epoch, which no ordinary write moves. Bound to the dependency
+    /// epoch instead, the operator's own next write to the other lane would silently lift it.
+    /// </summary>
+    [Theory]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    public async Task A_Proposed_pin_survives_the_operators_own_later_write(string verb)
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from the root.", Token);
+
+        await PinAsync(harness, CovenantScope.Campaign, CampaignOne, CovenantLane.Proposed);
+
+        if (verb == "correct")
+        {
+
+            await harness.CorrectAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from tools.", Token);
+
+        }
+        else
+        {
+
+            await harness.RetireAsync(CovenantScope.Campaign, CampaignOne, Key, 1, Token);
+
+        }
+
+        await AssertStillPinnedAgainstTheAgentAsync(harness, Key);
+
+    }
+
+    /// <summary>
+    /// The key epoch row is keyed by normalized key alone, so a Global write of the same key advances
+    /// the dependency epoch a Campaign pin would otherwise have been bound to.
+    /// </summary>
+    [Fact]
+    public async Task A_Campaign_pin_survives_a_Global_write_of_the_same_key()
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await PinAsync(harness, CovenantScope.Campaign, CampaignOne, CovenantLane.Proposed);
+
+        await harness.SetAsync(CovenantScope.Global, null, Key, "Build from the root.", Token);
+
+        await AssertStillPinnedAgainstTheAgentAsync(harness, Key);
+
+    }
+
+    /// <summary>
+    /// A pin recorded before the key has any head binds epoch 0, and the first head creates the key's
+    /// epoch row at binding epoch 0 too, so the pin is still the pin once there is something to pin.
+    /// </summary>
+    [Fact]
+    public async Task A_keyless_pin_survives_the_first_operator_set()
+    {
+
+        const string FreshKey = "fresh.key";
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await PinAsync(harness, CovenantScope.Campaign, CampaignOne, CovenantLane.Proposed, FreshKey);
+
+        // No epoch row exists yet, so the pin is recorded under the epoch a missing row reads as.
+        Assert.Equal(0, await ScalarAsync(harness, "SELECT COUNT(*) FROM covenant_key_epochs;"));
+
+        Assert.Equal(0, await ScalarAsync(harness, "SELECT KeyEpoch FROM covenant_curation_heads;"));
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, FreshKey, "Build from the root.", Token);
+
+        await AssertStillPinnedAgainstTheAgentAsync(harness, FreshKey);
+
+    }
+
+    /// <summary>
+    /// A key that existed before the binding epoch did carries a nonzero one: the key epoch it had at
+    /// the upgrade. Every read of a pin has to join on the key row's own value, because a read that
+    /// assumed zero would lift every pin an upgraded installation already held.
+    /// </summary>
+    [Fact]
+    public async Task A_pin_on_a_key_with_a_nonzero_binding_epoch_is_recorded_under_it_and_survives_a_later_write()
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SeedUpgradedKeyAsync(Key, epoch: 3, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from the root.", Token);
+
+        await PinAsync(harness, CovenantScope.Campaign, CampaignOne, CovenantLane.Proposed);
+
+        Assert.Equal(3, await ScalarAsync(harness, "SELECT KeyEpoch FROM covenant_curation_heads;"));
+
+        await harness.CorrectAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from tools.", Token);
+
+        Assert.Equal(
+            5,
+            await ScalarAsync(harness, $"SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';"));
+
+        Assert.Equal(
+            3,
+            await ScalarAsync(
+                harness,
+                $"SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';"));
+
+        await AssertStillPinnedAgainstTheAgentAsync(harness, Key);
+
+    }
+
+    [Fact]
+    public async Task A_Global_pin_is_still_reported_after_a_Campaign_writes_the_same_key()
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SetAsync(CovenantScope.Global, null, Key, "Build from the root.", Token);
+
+        await PinAsync(harness, CovenantScope.Global, null, CovenantLane.Confirmed);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from tools.", Token);
+
+        await using ICovenantSnapshotReadLease read =
+            (await harness.Gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantLaneHeadProbe> probe = await harness.Fixture.Store.ProbeLaneHeadAsync(
+            CanonicalCampaignContext.GlobalOnly,
+            CovenantLane.Confirmed,
+            Key,
+            read,
+            Token);
+
+        Assert.True(probe.IsSuccess, probe.IsFailure ? probe.Error.Message : string.Empty);
+
+        Assert.True(probe.Value.IsPinned);
+
+    }
+
+    /// <summary>
+    /// The two places a pin is enforced, asked in order: the staging probe that refuses a model early,
+    /// and the write authority no mutation gets past.
+    /// </summary>
+    private static async Task AssertStillPinnedAgainstTheAgentAsync(CovenantServiceHarness harness, string key)
+    {
+
+        CovenantLaneHeadProbe probe = await ProbeAsync(harness, CovenantLane.Proposed, key);
+
+        Assert.True(probe.IsPinned);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> refused = await ApplyAgentAsync(
+            harness,
+            CovenantMutationFixture.AgentPropose(
+                CampaignOne,
+                key,
+                "The model suggests building from tools.",
+                expectedRevision: 0,
+                probe.KeyEpoch));
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+        Assert.Equal(OperatorManaged, refused.Error.Message);
+
+    }
+
     private static async Task PinAsync(
         CovenantServiceHarness harness,
         CovenantScope scope,
         Guid? campaignId,
-        CovenantLane lane)
+        CovenantLane lane,
+        string key = Key)
     {
 
         Result<CovenantCurationResultDto> pinned = await harness.CurateAsync(
             CovenantCurationKind.Pin,
             scope,
             campaignId,
-            Key,
+            key,
             Token,
             lane: lane);
 
@@ -196,10 +384,14 @@ public sealed class CovenantPinEnforcementTests
         CovenantMutationIntent intent)
     {
 
+        CovenantMutationKernel kernel = new(new CovenantQuotaGuard(), harness.Fixture.ErasureKeys);
+
+        using CovenantAgentErasureGate erasureGate = kernel.CaptureErasureGate();
+
         await using SqliteTransaction transaction = (SqliteTransaction)await harness.Fixture.Connection
             .BeginTransactionAsync(IsolationLevel.Serializable, Token);
 
-        Result<IReadOnlyList<CovenantMutationReceipt>> applied = await new CovenantMutationKernel()
+        Result<IReadOnlyList<CovenantMutationReceipt>> applied = await kernel
             .ApplyBatchAsync(
                 new CovenantMutationBatch(
                     await harness.Fixture.ReadDatasetGenerationAsync(Token),
@@ -208,6 +400,7 @@ public sealed class CovenantPinEnforcementTests
                     CovenantMutationFixture.CommitTime,
                     [intent]),
                 new CovenantMutationTransaction(harness.Fixture.Connection, transaction),
+                erasureGate,
                 Token);
 
         await transaction.RollbackAsync(Token);
@@ -218,7 +411,8 @@ public sealed class CovenantPinEnforcementTests
 
     private static async Task<CovenantLaneHeadProbe> ProbeAsync(
         CovenantServiceHarness harness,
-        CovenantLane lane)
+        CovenantLane lane,
+        string key = Key)
     {
 
         await using ICovenantSnapshotReadLease read =
@@ -227,7 +421,7 @@ public sealed class CovenantPinEnforcementTests
         Result<CovenantLaneHeadProbe> probe = await harness.Fixture.Store.ProbeLaneHeadAsync(
             CovenantCanonicalFixture.CampaignContext(CampaignOne),
             lane,
-            Key,
+            key,
             read,
             Token);
 

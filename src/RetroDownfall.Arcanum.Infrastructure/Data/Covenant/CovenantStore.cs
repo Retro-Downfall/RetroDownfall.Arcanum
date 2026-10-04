@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 
@@ -21,8 +22,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <para>The turn load verifies every artifact it returns. A Confirmed artifact that fails is a
 /// structured failure, because the authoritative context must never be silently omitted; a Proposed
 /// one is quarantined, because review-only content is not worth failing a turn over.</para>
+///
+/// <para>The two staging reads, the lane-head probe and the retirement target, also classify the key
+/// against erasure evidence inside their own read, with the write authority's own mapping. They read
+/// the erasure key from the latch alone and never ask the credential store, because a staging handler
+/// calls them while the turn lease is held.</para>
 /// </remarks>
-internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICovenantStore
+internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemoryErasureKeyProvider erasureKeys)
+    : ICovenantStore
 {
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
@@ -232,6 +239,17 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             }
         }
 
+        // Inside the same read, so the answer describes the evidence the head was read beside.
+        using (CovenantAgentErasureGate gate = CovenantAgentErasureGate.FromLatch(erasureKeys))
+        {
+            probe = probe with
+            {
+                AgentErasure = await gate
+                    .ClassifyAsync(connection, transaction, scope.Kind, scope.CampaignId, normalizedKey, cancellationToken)
+                    .ConfigureAwait(false),
+            };
+        }
+
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return probe;
@@ -425,6 +443,32 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             }
         }
 
+        // Read inside the same transaction, before it ends, so the curation describes the snapshot the
+        // heads came from. A lane with no row at the binding epoch reads as never curated: a row at any
+        // other epoch is inert curation an upgrade left under an earlier epoch of the key.
+        CovenantCurationStateDto confirmedCuration = CovenantCurationStateDto.None;
+
+        CovenantCurationStateDto proposedCuration = CovenantCurationStateDto.None;
+
+        command.CommandText = CovenantStoreSql.DetailCuration(query.Scope.Kind == CovenantScope.Campaign);
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                CovenantCurationStateDto state = new(reader.GetInt32(1) == 1, reader.GetInt32(2) == 1, reader.GetInt64(3));
+
+                if ((CovenantLane)reader.GetInt32(0) == CovenantLane.Confirmed)
+                {
+                    confirmedCuration = state;
+                }
+                else
+                {
+                    proposedCuration = state;
+                }
+            }
+        }
+
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return new CovenantDetail(
@@ -435,7 +479,9 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             proposed,
             keyEpoch,
             datasetGeneration,
-            canonicalSequence);
+            canonicalSequence,
+            confirmedCuration,
+            proposedCuration);
     }
 
     public async ValueTask<Result<CovenantVersionPage>> ReadVersionPageAsync(
@@ -1219,6 +1265,18 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                     reader.GetInt64(6),
                     reader.GetInt32(7) == 1);
             }
+        }
+
+        if (target is not null)
+        {
+            using CovenantAgentErasureGate gate = CovenantAgentErasureGate.FromLatch(erasureKeys);
+
+            target = target with
+            {
+                AgentErasure = await gate
+                    .ClassifyAsync(connection, transaction, scope.Kind, scope.CampaignId, normalizedKey, cancellationToken)
+                    .ConfigureAwait(false),
+            };
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);

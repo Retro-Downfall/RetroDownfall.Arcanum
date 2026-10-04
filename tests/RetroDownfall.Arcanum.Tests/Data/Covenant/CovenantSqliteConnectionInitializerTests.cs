@@ -136,6 +136,52 @@ public sealed class CovenantSqliteConnectionInitializerTests : IDisposable
     }
 
     /// <summary>
+    /// Entry erasure is a code of its own rather than a borrowed one, so the canonical guards can admit
+    /// it without opening anything owner cleanup or family maintenance opens.
+    /// </summary>
+    [Fact]
+    public void Covenant_entry_erasure_is_code_twelve_with_its_own_function()
+    {
+
+        Assert.Equal(12, (int)CovenantSqliteAuthorizationKind.CovenantEntryErasure);
+
+        Assert.Equal(
+            "arcanum_covenant_entry_erasure_authorized",
+            CovenantSqliteConnectionInitializer.FunctionName(CovenantSqliteAuthorizationKind.CovenantEntryErasure));
+
+    }
+
+    [Fact]
+    public async Task Entry_erasure_authorization_opens_only_its_own_function()
+    {
+
+        await using SqliteConnection connection = await OpenAsync(CovenantSqliteConnectionMode.ReadWrite);
+
+        using (CovenantSqliteConnectionInitializer.Instance.Authorize(
+            connection,
+            CovenantSqliteAuthorizationKind.CovenantEntryErasure))
+        {
+
+            foreach (CovenantSqliteAuthorizationKind kind in Enum.GetValues<CovenantSqliteAuthorizationKind>())
+            {
+
+                string function = CovenantSqliteConnectionInitializer.FunctionName(kind);
+
+                Assert.Equal(
+                    kind == CovenantSqliteAuthorizationKind.CovenantEntryErasure ? "1" : "0",
+                    await ScalarAsync(connection, $"SELECT {function}();"));
+
+            }
+
+        }
+
+        Assert.Equal(
+            "0",
+            await ScalarAsync(connection, "SELECT arcanum_covenant_entry_erasure_authorized();"));
+
+    }
+
+    /// <summary>
     /// An inner scope closing must not revoke an outer one that is still open, or a nested helper
     /// would silently strip the privilege its caller is relying on.
     /// </summary>

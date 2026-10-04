@@ -1,11 +1,14 @@
 using System.Data.Common;
 using System.Globalization;
 
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Annals;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 
@@ -51,6 +54,52 @@ internal static class AnnalsClaimWriter
         DateTimeOffset recordedAt,
         Guid? sourceSessionId,
         CancellationToken cancellationToken)
+        => await AppendAssertCoreAsync(
+            connection, transaction, subjectStore, subjectId, origin, scopeKind, campaignId, sensitivity,
+            AnnalContentHashFormat.LegacyStoreDigest, contentHash, validFrom, recordedAt, sourceSessionId,
+            cancellationToken, legacySchema: subjectStore == AnnalSubjectStore.Saga).ConfigureAwait(false) is not null;
+
+    internal static async Task<string?> AppendAssertAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        AnnalSubjectStore subjectStore,
+        string subjectId,
+        AnnalOrigin origin,
+        SagaMemoryScopeKind scopeKind,
+        string? campaignId,
+        ContentSensitivity sensitivity,
+        AnnalContentHashFormat contentHashFormat,
+        byte[] contentHash,
+        DateTimeOffset validFrom,
+        DateTimeOffset recordedAt,
+        Guid? sourceSessionId,
+        CancellationToken cancellationToken,
+        bool legacySchema = false)
+    {
+        RequireTransaction(connection, transaction);
+
+        return await AppendAssertCoreAsync(
+            connection, transaction, subjectStore, subjectId, origin, scopeKind, campaignId, sensitivity,
+            contentHashFormat, contentHash, validFrom, recordedAt, sourceSessionId, cancellationToken,
+            legacySchema).ConfigureAwait(false);
+    }
+
+    private static async Task<string?> AppendAssertCoreAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        AnnalSubjectStore subjectStore,
+        string subjectId,
+        AnnalOrigin origin,
+        SagaMemoryScopeKind scopeKind,
+        string? campaignId,
+        ContentSensitivity sensitivity,
+        AnnalContentHashFormat contentHashFormat,
+        byte[] contentHash,
+        DateTimeOffset validFrom,
+        DateTimeOffset recordedAt,
+        Guid? sourceSessionId,
+        CancellationToken cancellationToken,
+        bool legacySchema = false)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
@@ -58,10 +107,12 @@ internal static class AnnalsClaimWriter
 
         ArgumentNullException.ThrowIfNull(contentHash);
 
-        if (await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken)
+        ValidateFormat(contentHashFormat, subjectStore, legacySchema);
+
+        if (await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken, legacySchema)
                 .ConfigureAwait(false) is not null)
         {
-            return false;
+            return null;
         }
 
         string claimId = Guid.NewGuid().ToString();
@@ -89,12 +140,14 @@ internal static class AnnalsClaimWriter
             scopeKind,
             campaignId,
             sensitivity,
+            contentHashFormat,
             contentHash,
             validFrom,
             recordedAt,
             predecessorVersionId: null,
             sourceSessionId,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            legacySchema).ConfigureAwait(false);
 
         await ExecuteAsync(
             connection,
@@ -111,7 +164,11 @@ internal static class AnnalsClaimWriter
             ("@operationCode", (int)AnnalOperation.Assert),
             ("@updatedAt", Format(recordedAt)));
 
-        return true;
+        await SnapshotLexiconProvenanceAsync(
+            connection, transaction, subjectStore, subjectId, versionId, contentHashFormat, cancellationToken)
+            .ConfigureAwait(false);
+
+        return versionId;
     }
 
     /// <summary>
@@ -139,6 +196,52 @@ internal static class AnnalsClaimWriter
         DateTimeOffset recordedAt,
         Guid? sourceSessionId,
         CancellationToken cancellationToken)
+        => await AppendCorrectionCoreAsync(
+            connection, transaction, subjectStore, subjectId, origin, scopeKind, campaignId, sensitivity,
+            AnnalContentHashFormat.LegacyStoreDigest, contentHash, validFrom, recordedAt, sourceSessionId,
+            cancellationToken, legacySchema: subjectStore == AnnalSubjectStore.Saga).ConfigureAwait(false) is not null;
+
+    internal static async Task<string?> AppendCorrectionAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        AnnalSubjectStore subjectStore,
+        string subjectId,
+        AnnalOrigin origin,
+        SagaMemoryScopeKind scopeKind,
+        string? campaignId,
+        ContentSensitivity sensitivity,
+        AnnalContentHashFormat contentHashFormat,
+        byte[] contentHash,
+        DateTimeOffset validFrom,
+        DateTimeOffset recordedAt,
+        Guid? sourceSessionId,
+        CancellationToken cancellationToken,
+        bool legacySchema = false)
+    {
+        RequireTransaction(connection, transaction);
+
+        return await AppendCorrectionCoreAsync(
+            connection, transaction, subjectStore, subjectId, origin, scopeKind, campaignId, sensitivity,
+            contentHashFormat, contentHash, validFrom, recordedAt, sourceSessionId, cancellationToken, legacySchema)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<string?> AppendCorrectionCoreAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        AnnalSubjectStore subjectStore,
+        string subjectId,
+        AnnalOrigin origin,
+        SagaMemoryScopeKind scopeKind,
+        string? campaignId,
+        ContentSensitivity sensitivity,
+        AnnalContentHashFormat contentHashFormat,
+        byte[] contentHash,
+        DateTimeOffset validFrom,
+        DateTimeOffset recordedAt,
+        Guid? sourceSessionId,
+        CancellationToken cancellationToken,
+        bool legacySchema = false)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
@@ -146,12 +249,14 @@ internal static class AnnalsClaimWriter
 
         ArgumentNullException.ThrowIfNull(contentHash);
 
-        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken)
+        ValidateFormat(contentHashFormat, subjectStore, legacySchema);
+
+        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken, legacySchema)
             .ConfigureAwait(false);
 
         if (head is null)
         {
-            return await AppendAssertAsync(
+            return await AppendAssertCoreAsync(
                 connection,
                 transaction,
                 subjectStore,
@@ -160,16 +265,19 @@ internal static class AnnalsClaimWriter
                 scopeKind,
                 campaignId,
                 sensitivity,
+                contentHashFormat,
                 contentHash,
                 validFrom,
                 recordedAt,
                 sourceSessionId,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                legacySchema).ConfigureAwait(false);
         }
 
-        if (head.ContentHash is byte[] current && current.AsSpan().SequenceEqual(contentHash))
+        if (head.ContentHashFormat == contentHashFormat
+            && head.ContentHash is byte[] current && current.AsSpan().SequenceEqual(contentHash))
         {
-            return false;
+            return null;
         }
 
         int revision = head.CurrentRevision + 1;
@@ -184,12 +292,14 @@ internal static class AnnalsClaimWriter
             scopeKind,
             campaignId,
             sensitivity,
+            contentHashFormat,
             contentHash,
             validFrom,
             recordedAt,
             head.CurrentVersionId,
             sourceSessionId,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            legacySchema).ConfigureAwait(false);
 
         await SupersedeAndAdvanceHeadAsync(
             connection,
@@ -201,7 +311,11 @@ internal static class AnnalsClaimWriter
             recordedAt,
             cancellationToken).ConfigureAwait(false);
 
-        return true;
+        await SnapshotLexiconProvenanceAsync(
+            connection, transaction, subjectStore, subjectId, versionId, contentHashFormat, cancellationToken)
+            .ConfigureAwait(false);
+
+        return versionId;
     }
 
     /// <summary>
@@ -244,7 +358,10 @@ internal static class AnnalsClaimWriter
 
         ArgumentException.ThrowIfNullOrEmpty(subjectId);
 
-        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken)
+        // Saga keeps the v3-compatible shape; v11 supplies the same legacy format through its default.
+        bool legacySchema = subjectStore == AnnalSubjectStore.Saga;
+
+        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken, legacySchema)
             .ConfigureAwait(false);
 
         if (head is null)
@@ -269,12 +386,14 @@ internal static class AnnalsClaimWriter
             scopeKind,
             campaignId,
             sensitivity,
+            AnnalContentHashFormat.LegacyStoreDigest,
             contentHash: null,
             validFrom,
             recordedAt,
             head.CurrentVersionId,
             sourceSessionId,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            legacySchema).ConfigureAwait(false);
 
         await SupersedeAndAdvanceHeadAsync(
             connection,
@@ -370,6 +489,12 @@ internal static class AnnalsClaimWriter
     {
         foreach (AnnalsErasureStep step in steps)
         {
+            if (step.RequiredFromCoreVersion is { } requiredVersion
+                && await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < requiredVersion)
+            {
+                continue;
+            }
+
             await ExecuteAsync(
                 connection,
                 transaction,
@@ -389,12 +514,14 @@ internal static class AnnalsClaimWriter
         SagaMemoryScopeKind scopeKind,
         string? campaignId,
         ContentSensitivity sensitivity,
+        AnnalContentHashFormat contentHashFormat,
         byte[]? contentHash,
         DateTimeOffset validFrom,
         DateTimeOffset recordedAt,
         string? predecessorVersionId,
         Guid? sourceSessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool legacySchema = false)
     {
         string versionId = Guid.NewGuid().ToString();
 
@@ -402,15 +529,15 @@ internal static class AnnalsClaimWriter
             connection,
             transaction,
             cancellationToken,
-            """
+            $"""
             INSERT INTO annal_versions (
                 VersionId, ClaimId, Revision, OperationCode, OriginCode, ScopeKindCode, CampaignId,
                 SensitivityCode, ContentHash, ValidFromUtc, ValidToUtc, RecordedAtUtc,
-                PredecessorVersionId, SourceSessionId)
+                PredecessorVersionId, SourceSessionId{(legacySchema ? "" : ", ContentHashFormatCode")})
             VALUES (
                 @versionId, @claimId, @revision, @operationCode, @originCode, @scopeKindCode, @campaignId,
                 @sensitivityCode, @contentHash, @validFrom, NULL, @recordedAt,
-                @predecessor, @sourceSessionId)
+                @predecessor, @sourceSessionId{(legacySchema ? "" : ", @contentHashFormat")})
             """,
             ("@versionId", versionId),
             ("@claimId", claimId),
@@ -421,6 +548,7 @@ internal static class AnnalsClaimWriter
             ("@campaignId", campaignId),
             ("@sensitivityCode", (int)sensitivity),
             ("@contentHash", contentHash),
+            ("@contentHashFormat", (int)contentHashFormat),
             ("@validFrom", Format(validFrom)),
             ("@recordedAt", Format(recordedAt)),
             ("@predecessor", predecessorVersionId),
@@ -491,16 +619,18 @@ internal static class AnnalsClaimWriter
         DbTransaction? transaction,
         AnnalSubjectStore subjectStore,
         string subjectId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool legacySchema = false)
     {
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
 
         command.CommandText =
-            """
+            $"""
             SELECT head.ClaimId, head.CurrentVersionId, head.CurrentRevision, head.CurrentOperationCode,
-                   version.Sequence, version.ContentHash
+                   version.Sequence, version.ContentHash,
+                   {(legacySchema ? "1" : "version.ContentHashFormatCode")} AS ContentHashFormatCode
             FROM annal_heads AS head
             JOIN annal_claims AS claim ON claim.ClaimId = head.ClaimId
             JOIN annal_versions AS version ON version.VersionId = head.CurrentVersionId
@@ -522,9 +652,10 @@ internal static class AnnalsClaimWriter
             reader.GetString(0),
             reader.GetString(1),
             reader.GetInt32(2),
-            (AnnalOperation)reader.GetInt32(3),
+            (AnnalOperation)AnnalsStore.ReadCode(reader, 3, 1, 3),
             reader.GetInt64(4),
-            reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5));
+            reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5),
+            (AnnalContentHashFormat)AnnalsStore.ReadCode(reader, 6, 1, 2));
     }
 
     private static async Task<long> ReadSequenceAsync(
@@ -581,6 +712,71 @@ internal static class AnnalsClaimWriter
     private static string Format(DateTimeOffset value) =>
         UtcInstantText.Format(value);
 
+    /// <summary>
+    /// Runs only for the version this append just inserted, before the caller commits its subject.
+    /// Facts are matched transiently to their array index; neither text nor per-fact hashes are copied.
+    /// </summary>
+    private static Task SnapshotLexiconProvenanceAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        AnnalSubjectStore subjectStore,
+        string subjectId,
+        string versionId,
+        AnnalContentHashFormat contentHashFormat,
+        CancellationToken cancellationToken)
+    {
+        if (subjectStore != AnnalSubjectStore.Lexicon
+            || contentHashFormat != AnnalContentHashFormat.LexiconStructuredSnapshot)
+        {
+            return Task.CompletedTask;
+        }
+
+        return ExecuteAsync(
+            connection,
+            transaction,
+            cancellationToken,
+            """
+            INSERT INTO lexicon_annal_fact_provenance (
+                AnnalVersionId, FactOrdinal, SessionId, AttachmentId, LogicalKey, AttachmentVersion,
+                AttachmentContentHash, MaterializedAt, SourceType)
+            SELECT @versionId, CAST(fact.key AS INTEGER), source.SessionId, source.AttachmentId,
+                   source.LogicalKey, source.Version, source.ContentHash, source.MaterializedAt, source.SourceType
+            FROM lexicon_entries AS entry
+            JOIN json_each(entry.FactsJson) AS fact
+            JOIN lexicon_fact_attachment_provenance AS source
+                ON source.EntryId = entry.Id AND source.Fact = fact.value
+            WHERE entry.Id = @subjectId
+            ORDER BY CAST(fact.key AS INTEGER)
+            """,
+            ("@versionId", versionId),
+            ("@subjectId", subjectId));
+    }
+
+    private static void RequireTransaction(DbConnection connection, DbTransaction? transaction)
+    {
+        if (connection is SqliteConnection sqlite
+            && sqlite.State == System.Data.ConnectionState.Open
+            && (transaction is null || ReferenceEquals(transaction.Connection, connection))
+            && SQLitePCL.raw.sqlite3_get_autocommit(sqlite.Handle) == 0)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("Annals appends require the subject owner's active transaction.");
+    }
+
+    private static void ValidateFormat(
+        AnnalContentHashFormat format,
+        AnnalSubjectStore store,
+        bool legacySchema = false)
+    {
+        if (format is not (AnnalContentHashFormat.LegacyStoreDigest or AnnalContentHashFormat.LexiconStructuredSnapshot)
+            || (format == AnnalContentHashFormat.LexiconStructuredSnapshot && (store != AnnalSubjectStore.Lexicon || legacySchema)))
+        {
+            throw new ArgumentOutOfRangeException(nameof(format));
+        }
+    }
+
     /// <summary>A claim's head joined to the version it points at, which is all any writer needs.</summary>
     private sealed record HeadRow(
         string ClaimId,
@@ -588,5 +784,6 @@ internal static class AnnalsClaimWriter
         int CurrentRevision,
         AnnalOperation CurrentOperation,
         long CurrentSequence,
-        byte[]? ContentHash);
+        byte[]? ContentHash,
+        AnnalContentHashFormat ContentHashFormat);
 }

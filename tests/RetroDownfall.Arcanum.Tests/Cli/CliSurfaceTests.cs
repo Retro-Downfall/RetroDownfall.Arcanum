@@ -14,6 +14,48 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </summary>
 public sealed class CliSurfaceTests
 {
+    [Theory]
+    [InlineData("show")]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("reinstate")]
+    [InlineData("pin")]
+    [InlineData("unpin")]
+    public void Lexicon_curation_exposes_exact_campaign_and_safe_authored_content_options(string verb)
+    {
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        Command memory = Assert.Single(root.Subcommands, command => command.Name == "memory");
+
+        Command lexicon = Assert.Single(memory.Subcommands, command => command.Name == "lexicon");
+
+        Command command = Assert.Single(lexicon.Subcommands, command => command.Name == verb);
+
+        Option<Guid?> campaign = Assert.IsType<Option<Guid?>>(Assert.Single(command.Options, option => option.Name == "--campaign"));
+
+        Assert.Contains("-C", campaign.Aliases);
+
+        Assert.Equal("name", Assert.Single(command.Arguments).Name);
+
+        if (verb == "correct")
+        {
+            Option file = Assert.Single(command.Options, option => option.Name == "--file");
+
+            Assert.True(file.Required);
+
+            Assert.Contains("-f", file.Aliases);
+        }
+
+        Assert.Empty(root.Parse(["memory", "lexicon", verb, "Operator", "--json", "--plain", "--yes", "--no-context",
+            .. verb == "correct" ? new[] { "--file", "correction.json" } : []]).Errors);
+    }
+
     [Fact]
     public void Surface_projects_the_live_tree_root()
     {
@@ -257,18 +299,28 @@ public sealed class CliSurfaceTests
     /// is read by someone rather than absorbed.
     /// </remarks>
     [Fact]
-    public void The_covenant_heading_states_the_number_of_verbs_the_tree_registers()
+    public void The_covenant_heading_states_the_direct_verbs_and_review_branch_the_tree_registers()
     {
-        int registered = Walk(BuildMap())
-            .Count(static command =>
-                command.Path.StartsWith("memory covenant ", StringComparison.Ordinal));
+        CliSurfaceCommand covenant = Assert.Single(
+            Walk(BuildMap()),
+            static command => command.Path == "memory covenant");
+
+        int directVerbs = covenant.Commands.Count(static command => command.Name != "review");
+
+        CliSurfaceCommand review = Assert.Single(
+            covenant.Commands,
+            static command => command.Name == "review");
 
         string reference = File.ReadAllText(CommandReferencePath());
 
-        Assert.Equal(9, registered);
+        Assert.Equal(12, directVerbs);
+
+        Assert.Equal(
+            ["apply", "list"],
+            review.Commands.Select(static command => command.Name).Order(StringComparer.Ordinal));
 
         Assert.Contains(
-            $"#### Dedicated Covenant management commands ({NumberWord(registered)} registered, the rest contract-frozen)",
+            $"#### Dedicated Covenant management commands ({NumberWord(directVerbs)} direct verbs plus review, the rest contract-frozen)",
             reference,
             StringComparison.Ordinal);
     }
@@ -328,6 +380,10 @@ public sealed class CliSurfaceTests
             9 => "nine",
 
             10 => "ten",
+
+            11 => "eleven",
+
+            12 => "twelve",
 
             _ => value.ToString(global::System.Globalization.CultureInfo.InvariantCulture),
         };

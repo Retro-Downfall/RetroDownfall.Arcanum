@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -40,6 +41,51 @@ public sealed class SagaCommandTests
 
         Assert.Equal("/api/saga", request.RequestUri!.AbsolutePath);
     }
+
+    /// <summary>
+    /// The listing reads memory rows, so a retired memory is listed beside live ones; the State column
+    /// is what keeps an operator from reading it as something a turn can recall.
+    /// </summary>
+    [Fact]
+    public void Saga_list_marks_retired_and_pinned_memories()
+    {
+        DateTimeOffset retiredAt = new(2026, 9, 20, 12, 34, 56, TimeSpan.Zero);
+
+        DateTimeOffset pinnedAt = new(2026, 9, 21, 1, 2, 3, TimeSpan.Zero);
+
+        SagaMemoryDto[] payload =
+        [
+            new("mem-actv", "a", DateTimeOffset.UnixEpoch, null, null, null),
+            new("mem-retd", "b", DateTimeOffset.UnixEpoch, null, null, null, RetiredAtUtc: retiredAt),
+            new("mem-pind", "c", DateTimeOffset.UnixEpoch, null, null, null, PinnedAtUtc: pinnedAt),
+            new("mem-both", "d", DateTimeOffset.UnixEpoch, null, null, null, RetiredAtUtc: retiredAt, PinnedAtUtc: pinnedAt),
+        ];
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaMemoryDto[]>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string[] lines = result.Output.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.Contains(lines, static line => line.Contains("State", StringComparison.Ordinal));
+
+        Assert.Equal("active", StateCell(lines, "mem-actv"));
+
+        Assert.Equal("retired", StateCell(lines, "mem-retd"));
+
+        Assert.Equal("pinned", StateCell(lines, "mem-pind"));
+
+        Assert.Equal("retired, pinned", StateCell(lines, "mem-both"));
+    }
+
+    /// <summary>The last cell of the one table row naming <paramref name="id"/>.</summary>
+    private static string StateCell(string[] lines, string id) =>
+        Assert.Single(lines, line => line.Contains(id, StringComparison.Ordinal))
+            .Split(['│', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[^1];
 
     [Fact]
     public void Saga_list_passes_query_session_limit_and_offset_options()
@@ -175,6 +221,14 @@ public sealed class SagaCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/saga/mem-1", request.RequestUri!.AbsolutePath);
+
+        // Spectre wraps long lines on the console the harness captures, so the sentence is read with
+        // its whitespace collapsed rather than at the column the wrap happened to choose.
+        string output = Regex.Replace(result.Output, @"\s+", " ");
+
+        Assert.Contains("was deleted. No suppression fingerprint was recorded", output, StringComparison.Ordinal);
+
+        Assert.Contains("arcanum memory saga erase", output, StringComparison.Ordinal);
     }
 
     /// <summary>

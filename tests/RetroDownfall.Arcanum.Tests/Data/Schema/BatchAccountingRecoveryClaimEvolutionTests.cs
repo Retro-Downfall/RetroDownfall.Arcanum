@@ -31,6 +31,7 @@ public sealed class BatchAccountingRecoveryClaimEvolutionTests
 
         GrimoireSchemaInstallResult evolved = await GrimoireSchemaTestInstaller.InstallAsync(
             evolvedConnection,
+            CoreSchemaVersionTenFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
@@ -53,6 +54,7 @@ public sealed class BatchAccountingRecoveryClaimEvolutionTests
 
         GrimoireSchemaInstallResult fresh = await GrimoireSchemaTestInstaller.InstallAsync(
             freshConnection,
+            CoreSchemaVersionTenFixture.ChainSet(),
             1536,
             CancellationToken.None);
 

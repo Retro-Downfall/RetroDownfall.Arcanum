@@ -1,12 +1,26 @@
+using System.Data;
+
 using System.Globalization;
 
 using System.Security.Cryptography;
 
 using System.Text;
 
+using Microsoft.CodeAnalysis;
+
+using Microsoft.CodeAnalysis.CSharp;
+
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
+using Microsoft.Data.Sqlite;
+
+using Microsoft.EntityFrameworkCore;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Operations;
 
@@ -14,11 +28,23 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Core.Weave;
+
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Secrets.Security;
+
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -532,6 +558,237 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken.None);
 
         Assert.Equal(LongRunningOperationState.Failed, recovered.State);
+
+    }
+
+    /// <summary>
+    /// A committed Saga reset is recovered as committed while erasure evidence stands, and the recovery
+    /// leaves that evidence exactly where it was.
+    /// </summary>
+    /// <remarks>
+    /// The twin of the interrupted reset above, with the Saga tables empty and only evidence rows
+    /// present. Fingerprints and receipts outlive every memory reset by design, so a residue list that
+    /// named them would read every committed Saga reset as unfinished for as long as anything had ever
+    /// been erased, and recover it as failed on every retry.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task MutationRecovery_ForACommittedSagaReset_IgnoresErasureEvidence()
+    {
+
+        RequireSqlCipher();
+
+        InMemoryOsCredentialStore credentials = new();
+
+        SqliteConnection connection = await SeedErasureEvidenceAsync(credentials);
+
+        // The Saga store's own tables, read from the residue list but never through an evidence name,
+        // so a residue list that wrongly named the evidence is caught by the recovery below rather than
+        // by this precondition.
+        foreach (string table in DataRetentionService.MemoryResetResidueTables(MemoryResetScope.Saga)
+            .Where(static table => table.StartsWith("saga_", StringComparison.Ordinal)))
+        {
+
+            if (await TableExistsInTestAsync(table))
+            {
+
+                Assert.Equal(0, await CountAllAsync(table));
+
+            }
+
+        }
+
+        MemoryErasureRetainedSnapshot before = await MemoryErasureRetainedEvidence.CaptureAsync(
+            connection,
+            credentials,
+            CancellationToken.None);
+
+        Assert.Equal((1, 1, 1), (before.Fingerprints.Count, before.Receipts.Count, before.Subjects.Count));
+
+        LongRunningOperationStore operations = new(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation operation = await SeedMemoryResetJournalAsync(
+            operations,
+            "committed-saga-reset-erasure-evidence-test",
+            ((int)MemoryResetScope.Saga).ToString(CultureInfo.InvariantCulture));
+
+        DataRetentionMutationRecoveryHandler handler = new(CreateService());
+
+        LongRunningOperationRecoveryResult recovered = await handler.RecoverAsync(
+            operation,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+
+        await MemoryErasureRetainedEvidence.AssertRetainedAsync(
+            before,
+            connection,
+            credentials,
+            CancellationToken.None);
+
+    }
+
+    /// <summary>
+    /// No reset residue list, no restore canonical list, and no retention source names an erasure
+    /// evidence table.
+    /// </summary>
+    /// <remarks>
+    /// Evidence survives every reset, restore staging is destination-authoritative over it, and the
+    /// retention service only reports it, through the evidence store's own inventory read. So the
+    /// residue lists and the canonical-content lists must never name it, and no string literal in the
+    /// retention service's sources names it either; the scan reports any it finds by the member that
+    /// holds it. A name assembled from parts is invisible to a scan of spellings, which is what the
+    /// compiled-string pin in <c>MemoryErasureEvidenceCompiledPinTests</c> reads instead.
+    /// </remarks>
+    [SkippableFact]
+
+    public void Reset_and_restore_lists_never_name_erasure_evidence()
+    {
+
+        RequireSqlCipher();
+
+        foreach (MemoryResetScope scope in Enum.GetValues<MemoryResetScope>())
+        {
+
+            Assert.DoesNotContain(
+                DataRetentionService.MemoryResetResidueTables(scope),
+                static table => table.StartsWith("memory_erasure_", StringComparison.Ordinal));
+
+        }
+
+        Assert.DoesNotContain(
+            BackupRestoreProtectedStateInspector.CanonicalContentTables,
+            static table => table.StartsWith("memory_erasure_", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            CovenantCanonicalContentTables.InDeletionOrder,
+            static table => table.StartsWith("memory_erasure_", StringComparison.Ordinal));
+
+        string data = Path.Combine(
+            NativeSqlCipherTestPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Infrastructure",
+            "Data");
+
+        string[] files = Directory.GetFiles(data, "DataRetentionService*.cs", SearchOption.TopDirectoryOnly);
+
+        Assert.True(files.Length >= 6, $"Found {files.Length} DataRetentionService source files.");
+
+        string[] owners =
+        [
+            .. files
+                .SelectMany(static file => CSharpSyntaxTree
+                    .ParseText(File.ReadAllText(file), new CSharpParseOptions(LanguageVersion.Preview), path: file)
+                    .GetCompilationUnitRoot()
+                    .DescendantTokens()
+                    .Where(static token => token.Kind() is SyntaxKind.StringLiteralToken
+                            or SyntaxKind.InterpolatedStringTextToken
+                            or SyntaxKind.SingleLineRawStringLiteralToken
+                            or SyntaxKind.MultiLineRawStringLiteralToken
+                            or SyntaxKind.Utf8StringLiteralToken
+                            or SyntaxKind.Utf8SingleLineRawStringLiteralToken
+                            or SyntaxKind.Utf8MultiLineRawStringLiteralToken
+                        && token.ValueText.Contains("memory_erasure_", StringComparison.Ordinal))
+                    .Select(static token => $"{Path.GetFileName(token.SyntaxTree!.FilePath)}{EnclosingMember(token)}"))
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Empty(owners);
+
+    }
+
+    /// <summary>The member a token sits in, through any local function or lambda, as <c>::Name</c>.</summary>
+    private static string EnclosingMember(SyntaxToken token)
+    {
+
+        foreach (SyntaxNode node in token.Parent!.AncestorsAndSelf())
+        {
+
+            switch (node)
+            {
+
+                case MethodDeclarationSyntax method:
+                    return "::" + method.Identifier.ValueText;
+
+                case PropertyDeclarationSyntax property:
+                    return "::" + property.Identifier.ValueText;
+
+                case FieldDeclarationSyntax field:
+                    return "::" + string.Join(",", field.Declaration.Variables.Select(static variable => variable.Identifier.ValueText));
+
+                case ConstructorDeclarationSyntax constructor:
+                    return "::.ctor " + constructor.Identifier.ValueText;
+
+                case BaseTypeDeclarationSyntax type:
+                    return "::type " + type.Identifier.ValueText;
+
+            }
+
+        }
+
+        return "::<file>";
+
+    }
+
+    /// <summary>
+    /// One erasure fingerprint and one receipt naming one subject, recorded through the evidence store's
+    /// own inserts under a key created in <paramref name="credentials"/>, as an erase records them.
+    /// </summary>
+    private async Task<SqliteConnection> SeedErasureEvidenceAsync(InMemoryOsCredentialStore credentials)
+    {
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+
+            await _db.Database.OpenConnectionAsync();
+
+        }
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            connection,
+            key,
+            MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "the operator prefers tabs"),
+            CancellationToken.None);
+
+        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
+        {
+
+            await MemoryErasureEvidence.InsertReceiptAsync(
+                connection,
+                transaction,
+                new MemoryErasureReceiptRow(
+                    Guid.NewGuid(),
+                    MemoryReviewStore.Saga,
+                    key.KeyId.ToArray(),
+                    RandomNumberGenerator.GetBytes(32),
+                    RandomNumberGenerator.GetBytes(32),
+                    ErasedItemCount: 1,
+                    RemovedRowCount: 1,
+                    RemovedLabelCount: 0,
+                    RemovedRetirementSuppressionCount: 0,
+                    Authorship: MemoryExternalEvidence.NotApplicable,
+                    Context: MemoryExternalEvidence.NotApplicable,
+                    Embedding: MemoryExternalEvidence.NotApplicable,
+                    Backup: MemoryExternalEvidence.NotApplicable,
+                    OtherExternal: MemoryExternalEvidence.NotApplicable,
+                    RetainedCopiesMask: 0,
+                    ScrubStateCode: 1,
+                    ScrubPendingReasonMask: 1),
+                [key.Subject(MemoryReviewStore.Saga, Guid.NewGuid().ToString("D"))],
+                CancellationToken.None);
+
+            await transaction.CommitAsync();
+
+        }
+
+        return connection;
 
     }
 

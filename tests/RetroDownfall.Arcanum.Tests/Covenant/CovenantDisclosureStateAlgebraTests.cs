@@ -186,6 +186,31 @@ public sealed class CovenantDisclosureStateAlgebraTests
         Assert.Equal((byte)0x80, joined.EvidenceBloom[^1]);
     }
 
+    [Fact]
+    public void WeakenToLowerBound_is_monotone_and_keeps_the_empty_state_exact()
+    {
+        CovenantDisclosureState empty = CovenantDisclosureState.Empty(
+            CovenantEgressDestination.Provider,
+            CovenantDisclosureRevocability.Nonrevocable);
+
+        CovenantDisclosureState weakenedEmpty = CovenantDisclosureStateAlgebra.WeakenToLowerBound(empty);
+
+        Assert.Equal(empty, weakenedEmpty);
+        Assert.Equal(CovenantDisclosureCountKind.Exact, weakenedEmpty.CountKind);
+
+        CovenantDisclosureState exact = State(CovenantDisclosureCountKind.Exact, true, 5, 300, [0x11, 0x22]);
+
+        CovenantDisclosureState weakened = CovenantDisclosureStateAlgebra.WeakenToLowerBound(exact);
+
+        Assert.Equal(CovenantDisclosureCountKind.LowerBound, weakened.CountKind);
+        Assert.Equal(
+            (exact.Destination, exact.Revocability, exact.EverOccurred, exact.Count, exact.MaximumTimestamp),
+            (weakened.Destination, weakened.Revocability, weakened.EverOccurred, weakened.Count, weakened.MaximumTimestamp));
+        Assert.Equal(exact.EvidenceBloom.ToArray(), weakened.EvidenceBloom.ToArray());
+        Assert.Equal(weakened, CovenantDisclosureStateAlgebra.WeakenToLowerBound(weakened));
+        Assert.Throws<ArgumentNullException>(() => CovenantDisclosureStateAlgebra.WeakenToLowerBound(null!));
+    }
+
     private static CovenantDisclosureState State(
         CovenantDisclosureCountKind countKind,
         bool everOccurred,

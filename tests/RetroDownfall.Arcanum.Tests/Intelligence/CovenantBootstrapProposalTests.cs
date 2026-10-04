@@ -298,7 +298,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             new CovenantContextProvider(
                 _availability,
                 OperationGate(),
-                new CovenantStore(new FixedCovenantConnectionSource(Connection())),
+                new CovenantStore(new FixedCovenantConnectionSource(Connection()), MemoryErasureTestKeys.Isolated()),
                 new CovenantLinker()),
             _journal,
             new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(Connection())),
@@ -360,8 +360,8 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
-            attachmentIndex: null,
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
+            DetachedAvailabilityRepublisher.Create(),
             FixtureOrdinaryConnectionFactory.For(_db!),
             FixtureLabeledArtifactGuard.For(_db!));
 

@@ -335,6 +335,25 @@ public sealed partial class MemoryCommands
 
         dispatcher.WritePayload(describe(result.Value.Outcome, id));
 
+        // Only a correction can release an erasure fingerprint, and only one that re-created erased
+        // content in the memory's own scope; every other verb reports false and prints nothing more.
+        switch (result.Value.ReleasedErasureFingerprint)
+        {
+
+            case true:
+
+                dispatcher.WritePayload("Released an erasure fingerprint for this content.");
+
+                break;
+
+            case null:
+
+                dispatcher.WritePayload("Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.");
+
+                break;
+
+        }
+
         return (int)CliExitCode.Success;
 
     }

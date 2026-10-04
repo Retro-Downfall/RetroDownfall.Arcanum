@@ -102,24 +102,40 @@ internal static class CliSurfaceExamples
         ["memory sources"] = ["arcanum memory sources"],
         ["memory explain"] = ["arcanum memory explain"],
         ["memory lexicon list"] = ["arcanum memory lexicon list"],
-        ["memory lexicon show"] = [$"arcanum memory lexicon show {SampleGuid}"],
+        ["memory lexicon show"] = ["arcanum memory lexicon show Operator", $"arcanum memory lexicon show Operator --campaign {SampleGuid}"],
+        ["memory lexicon correct"] = ["arcanum memory lexicon correct Operator --file correction.json", "arcanum memory lexicon correct Operator --file - --yes --json"],
+        ["memory lexicon retire"] = ["arcanum memory lexicon retire Operator"],
+        ["memory lexicon reinstate"] = ["arcanum memory lexicon reinstate Operator"],
+        ["memory lexicon pin"] = ["arcanum memory lexicon pin Operator"],
+        ["memory lexicon unpin"] = ["arcanum memory lexicon unpin Operator"],
+        ["memory lexicon erase"] = ["arcanum memory lexicon erase Operator"],
+        ["memory lexicon release"] = ["arcanum memory lexicon release Operator"],
         ["memory lexicon search"] = ["arcanum memory lexicon search \"ward policy\""],
         ["memory lexicon delete"] = [$"arcanum memory lexicon delete {SampleGuid}"],
+        ["memory lexicon review list"] = ["arcanum memory lexicon review list --limit 25"],
+        ["memory lexicon review apply"] = ["arcanum memory lexicon review apply --file lexicon-review.json"],
 
         // The Covenant. `set` shows the --file form because content never travels in an argument, and
         // `retire` shows the confirmation-bearing form rather than --yes.
         ["memory covenant list"] = ["arcanum memory covenant list"],
+        ["memory covenant search"] = ["arcanum memory covenant search \"build preferences\""],
         ["memory covenant show"] = ["arcanum memory covenant show preference.builds"],
         ["memory covenant set"] =
             ["arcanum memory covenant set preference.builds --file preference.txt --expected-revision 0"],
         ["memory covenant retire"] =
             ["arcanum memory covenant retire preference.builds --expected-revision 1"],
+        ["memory covenant erase"] =
+            ["arcanum memory covenant erase preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"],
+        ["memory covenant release"] =
+            ["arcanum memory covenant release preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"],
         ["memory covenant correct"] =
             ["arcanum memory covenant correct preference.builds --file corrected.txt --target-version 0195a0f0-0000-7000-8000-0000000000aa --target-hash 0000000000000000000000000000000000000000000000000000000000000000 --expected-revision 1"],
         ["memory covenant pin"] =
             ["arcanum memory covenant pin preference.builds"],
         ["memory covenant unpin"] =
             ["arcanum memory covenant unpin preference.builds --expected-revision 1"],
+        ["memory covenant review list"] = ["arcanum memory covenant review list --lane confirmed --limit 25"],
+        ["memory covenant review apply"] = ["arcanum memory covenant review apply --file covenant-review.json"],
         ["memory saga show"] = ["arcanum memory saga show mem-01j9x8"],
         ["memory saga correct"] =
             ["arcanum memory saga correct mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000 --file corrected.txt"],
@@ -129,6 +145,17 @@ internal static class CliSurfaceExamples
             ["arcanum memory saga reinstate mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000"],
         ["memory saga pin"] = ["arcanum memory saga pin mem-01j9x8"],
         ["memory saga unpin"] = ["arcanum memory saga unpin mem-01j9x8"],
+        ["memory saga erase"] = ["arcanum memory saga erase 7c9e6679-7425-40de-944b-e07fc1f90ae7"],
+        ["memory saga release"] =
+        [
+            "arcanum memory saga release --file erased.txt",
+            "arcanum memory saga release --file erased.txt --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77",
+        ],
+        ["memory erasure status"] = ["arcanum memory erasure status", "arcanum memory erasure status --json"],
+        ["memory erasure scrub"] = ["arcanum memory erasure scrub"],
+        ["memory erasure reset-key"] = ["arcanum memory erasure reset-key"],
+        ["memory saga review list"] = ["arcanum memory saga review list --limit 25"],
+        ["memory saga review apply"] = ["arcanum memory saga review apply --file saga-review.json"],
         ["memory covenant mask"] =
             ["arcanum memory covenant mask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"],
         ["memory covenant unmask"] =

@@ -22,13 +22,25 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// </summary>
 public sealed class EmbeddingsResetService(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability,
     IServiceProvider serviceProvider,
     ICovenantSensitiveArtifactPurger? purger = null)
 {
 
     private readonly IGrimoireOrdinaryConnectionFactory _connections =
         serviceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+    /// <summary>
+    /// The guard the truncating transaction asks, resolved from the scope the database context is in so
+    /// it reads through the same composition every other raw delete does.
+    /// </summary>
+    /// <remarks>
+    /// Required rather than optional, and resolved here for the reason the connection factory is: this
+    /// class is public and the guard's transaction forms are not, so the constructor cannot name it. A
+    /// composition that does not register it fails when the service is built, not by truncating without
+    /// asking.
+    /// </remarks>
+    private readonly ICovenantLabeledArtifactTransactionGuard _labeledArtifactGuard =
+        serviceProvider.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>();
 
     private static readonly IReadOnlyList<string> EntryTables =
     [
@@ -84,6 +96,38 @@ public sealed class EmbeddingsResetService(
     ];
 
     /// <summary>
+    /// The kinds of labelled artifact this scope truncates the rows of.
+    /// </summary>
+    /// <remarks>
+    /// Two of the tables this service clears carry labelled rows — Entry embeddings and Saga memories —
+    /// and every other table it clears is derived data no label names. The purge walk dispatches these
+    /// kinds before the truncation, and the truncating transaction asks the guard about the same ones, so
+    /// the two cannot disagree about which labels this reset is answerable for.
+    /// </remarks>
+    private static List<SensitiveArtifactKind> LabeledKinds(EmbeddingsResetScope scope)
+    {
+
+        List<SensitiveArtifactKind> kinds = [];
+
+        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Entry)
+        {
+
+            kinds.Add(SensitiveArtifactKind.Embedding);
+
+        }
+
+        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Saga)
+        {
+
+            kinds.Add(SensitiveArtifactKind.Saga);
+
+        }
+
+        return kinds;
+
+    }
+
+    /// <summary>
     /// Dispatches every labelled artifact this scope would otherwise truncate, in bounded pages.
     /// </summary>
     /// <remarks>
@@ -92,8 +136,15 @@ public sealed class EmbeddingsResetService(
     /// directly because that table <em>is</em> the answer to "which of these rows is protected" — asking
     /// the embedding tables instead would be a second opinion about it.
     ///
-    /// <para>A composition with no purger, or an installation whose label table is absent, purges
-    /// nothing and leaves the reset exactly as it was.</para>
+    /// <para>A composition with no purger purges nothing and leaves the reset exactly as it was. A label
+    /// table that cannot be read stops the reset instead, with <c>Covenant.Unavailable</c>: the table is a
+    /// Core object at every schema version, so a scan that fails is a Grimoire whose protection cannot be
+    /// checked, and the set-based truncation that follows would remove rows nothing had been asked
+    /// about. A row the scan read but could not parse is the same condition and gets the same answer,
+    /// because the artifact column has no format check and a label that cannot be dispatched is one the
+    /// truncation would remove unexamined. The walk's position is the last label identity read and it ends
+    /// only on a page that read no rows, so no row is stepped over without being either dispatched or
+    /// refused.</para>
     /// </remarks>
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeLabeledScopeAsync(
         EmbeddingsResetScope scope,
@@ -112,23 +163,7 @@ public sealed class EmbeddingsResetService(
 
         }
 
-        List<SensitiveArtifactKind> kinds = [];
-
-        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Entry)
-        {
-
-            kinds.Add(SensitiveArtifactKind.Embedding);
-
-        }
-
-        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Saga)
-        {
-
-            kinds.Add(SensitiveArtifactKind.Saga);
-
-        }
-
-        foreach (SensitiveArtifactKind kind in kinds)
+        foreach (SensitiveArtifactKind kind in LabeledKinds(scope))
         {
 
             Result<CovenantSensitivePurgeOutcome> purgedKind = await PurgeLabeledKindAsync(
@@ -177,6 +212,14 @@ public sealed class EmbeddingsResetService(
         {
 
             List<(Guid ArtifactId, string LabelId)> page = [];
+
+            // Counted apart from the page: a row that was read is a row the walk has examined, whether or
+            // not it parsed, and the walk's position and its end are decided by what was read.
+            int rowsRead = 0;
+
+            string lastLabelId = cursor;
+
+            bool unreadableRow = false;
 
             {
 
@@ -249,10 +292,20 @@ public sealed class EmbeddingsResetService(
                         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                         {
 
+                            rowsRead++;
+
+                            lastLabelId = reader.GetString(1);
+
                             if (Guid.TryParse(reader.GetString(0), out Guid artifactId))
                             {
 
-                                page.Add((artifactId, reader.GetString(1)));
+                                page.Add((artifactId, lastLabelId));
+
+                            }
+                            else
+                            {
+
+                                unreadableRow = true;
 
                             }
 
@@ -270,10 +323,17 @@ public sealed class EmbeddingsResetService(
                     catch (SqliteException)
                     {
 
-                        // No label table on this installation: there is nothing protected to dispatch and
-                        // the ordinary reset below is the whole operation.
-                        return Result<CovenantSensitivePurgeOutcome>.Success(
-                            new CovenantSensitivePurgeOutcome(results, progress));
+                        // Not "no label table, so nothing is protected": the table is a Core object at every
+                        // schema version, so this is a Grimoire whose protection cannot be checked. The
+                        // reset stops here, before the truncation that would remove whatever it never
+                        // examined. Artifacts an earlier kind's pages already purged stay purged, so the
+                        // message claims no more than that, and it names no artifact and carries no
+                        // provider detail.
+                        return Result<CovenantSensitivePurgeOutcome>.Failure(
+                            new Error(
+                                ErrorCodes.Covenant.Unavailable,
+                                "The sensitivity labels could not be read, so this embeddings reset was "
+                                    + "refused before its truncation ran."));
 
                     }
 
@@ -281,14 +341,31 @@ public sealed class EmbeddingsResetService(
 
             }
 
-            if (page.Count == 0)
+            if (unreadableRow)
+            {
+
+                // A label this walk cannot parse is a label it cannot dispatch, and dropping it let the
+                // truncation that follows remove the artifact it names. The column has no format check, so
+                // this is corruption or tampering, and the Grimoire's protection cannot be shown: the same
+                // condition, and the same answer, as a table that cannot be read. Refused before this page
+                // is dispatched, so nothing is purged on the strength of a page that was only partly
+                // understood; pages before it stay purged, and the message names no artifact.
+                return Result<CovenantSensitivePurgeOutcome>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.Unavailable,
+                        "A sensitivity label could not be read, so this embeddings reset was refused "
+                            + "before its truncation ran."));
+
+            }
+
+            if (rowsRead == 0)
             {
 
                 break;
 
             }
 
-            cursor = page[^1].LabelId;
+            cursor = lastLabelId;
 
             Result<CovenantSensitivePurgeOutcome> purged = await purger!
                 .PurgeAsync(
@@ -367,7 +444,9 @@ public sealed class EmbeddingsResetService(
         if (purged.IsFailure)
         {
 
-            throw new InvalidOperationException(purged.Error.Message);
+            // Typed so the route answers the walk's own refusal, not a blanket "erase it by hand": an
+            // unreadable label table is the Grimoire's condition to repair, and a stale label is a retry.
+            throw new LabeledArtifactRefusalException(purged.Error);
 
         }
 
@@ -388,6 +467,28 @@ public sealed class EmbeddingsResetService(
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+                // Asked here, in the transaction that deletes, for each kind it truncates. The walk above
+                // read the label table in an earlier read and dispatched the purger, and the statements
+                // below examine no identity at all, so a label committed between the two would be removed
+                // with its rows and leave a label naming nothing. The transaction already holds the write
+                // lock every label writer needs, so the answer and the truncation are one moment. A
+                // refusal throws before the first table is touched and the transaction rolls back.
+                foreach (SensitiveArtifactKind kind in LabeledKinds(scope))
+                {
+
+                    Result none = await _labeledArtifactGuard
+                        .EnsureNoneLabeledAsync(kind, connection, transaction, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (none.IsFailure)
+                    {
+
+                        throw new LabeledArtifactRefusalException(none.Error);
+
+                    }
+
+                }
 
                 foreach (string table in targets)
                 {
@@ -428,18 +529,24 @@ public sealed class EmbeddingsResetService(
 
     }
 
-    private async Task<int> DeleteFromTableAsync(
+    private static async Task<int> DeleteFromTableAsync(
         DbConnection connection,
         DbTransaction transaction,
         string table,
         CancellationToken cancellationToken)
     {
 
-        if (table.EndsWith("_vec", StringComparison.Ordinal)
-            && !availability.IsVecAvailable)
+        // Every vector mirror follows the rule every Saga write follows, read from the catalog rather
+        // than the process flag: a plain mirror an earlier build filled is emptied whatever the flag
+        // says, because its rows hold the embeddings of the content this reset removes, and a legacy
+        // vec0 mirror this runtime cannot open is skipped rather than failing the reset. A mirror that
+        // is not there counts zero rows.
+        if (table.EndsWith("_vec", StringComparison.Ordinal))
         {
 
-            return 0;
+            return checked((int)await SagaVectorMirror
+                .DeleteAllAsync(connection, transaction, table, cancellationToken)
+                .ConfigureAwait(false));
 
         }
 
@@ -449,20 +556,7 @@ public sealed class EmbeddingsResetService(
 
         cmd.CommandText = $"""DELETE FROM "{table}" """;
 
-        try
-        {
-
-            return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && table.EndsWith("_vec", StringComparison.Ordinal))
-        {
-
-            // The vec0 table may not exist if sqlite-vec became unavailable after schema creation.
-            // Treat as 0 rows deleted and continue with the remaining tables.
-            return 0;
-
-        }
+        return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

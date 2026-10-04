@@ -37,8 +37,9 @@ internal sealed partial class DataRetentionService
     /// Every Covenant-family table whose rows the inventory counts.
     /// </summary>
     /// <remarks>
-    /// The canonical and accelerator arms are read from
-    /// <see cref="BackupRestoreProtectedStateInspector"/> rather than restated. Two lists of Covenant
+    /// The canonical arm is <see cref="CovenantCanonicalContentTables.InDeletionOrder"/>, the list the
+    /// family erasure deletes through, and the accelerator arm is read from
+    /// <see cref="BackupRestoreProtectedStateInspector"/>. Neither is restated. Two lists of Covenant
     /// content tables would drift, and the one that drifted would be whichever a new tier forgot to
     /// update — which is exactly the tier a retention report would then fail to mention.
     ///
@@ -48,7 +49,7 @@ internal sealed partial class DataRetentionService
     /// </remarks>
     private static readonly string[] CovenantInventoryRowTables =
     [
-        .. BackupRestoreProtectedStateInspector.CanonicalContentTables,
+        .. CovenantCanonicalContentTables.InDeletionOrder,
 
         .. BackupRestoreProtectedStateInspector.AcceleratorContentTables,
 

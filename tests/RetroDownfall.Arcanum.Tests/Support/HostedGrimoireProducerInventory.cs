@@ -825,7 +825,7 @@ internal static class HostedGrimoireProducerInventory
         "System.Boolean.TryParse",
         "System.Buffers.Text.Base64.DecodeFromUtf8",
         "System.Buffers.Text.Base64.EncodeToUtf8",
-        "System.Buffers.Text.Base64Url.TryDecodeFromChars",
+        "System.Buffers.Text.Base64Url.DecodeFromChars",
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove",
         "System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue",
         "System.Collections.Generic.Dictionary`2.Remove",
@@ -1346,6 +1346,8 @@ internal static class HostedGrimoireProducerInventory
 
     internal static readonly IReadOnlySet<string> SchemaBackfillStrategies = new HashSet<string>(StringComparer.Ordinal)
     {
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.AnnalReviewEventBackfill",
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.CovenantReviewEventBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IdentitySpellingBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.MemoryAnnalsBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.SagaExtractionCursorBackfill",
@@ -44601,7 +44603,7 @@ internal static class HostedGrimoireProducerInventory
                 || type == "System.Data.Common.DbTransaction"
                     && definition.Name is "Dispose" or "DisposeAsync"
                 || type == "SQLitePCL.raw"
-                    && definition.Name == "sqlite3_errcode";
+                    && definition.Name is "sqlite3_errcode" or "sqlite3_get_autocommit";
         }
 
         private static bool IsReviewedDatabaseSupportMember(
@@ -44619,7 +44621,7 @@ internal static class HostedGrimoireProducerInventory
                 || type == "Microsoft.Data.Sqlite.SqliteDataReader"
                     && property.Name == "FieldCount"
                 || type == "Microsoft.Data.Sqlite.SqliteException"
-                    && property.Name == "SqliteErrorCode"
+                    && property.Name is "SqliteErrorCode" or "SqliteExtendedErrorCode"
                 || type == "Microsoft.Data.Sqlite.SqliteParameter"
                     && property.Name is "ParameterName" or "Value"
                 || type == "Microsoft.Data.Sqlite.SqliteTransaction"
@@ -44640,6 +44642,8 @@ internal static class HostedGrimoireProducerInventory
                     && property.Name == "FieldCount"
                 || type == "System.Data.Common.DbParameter"
                     && property.Name is "DbType" or "ParameterName" or "Value"
+                || type == "System.Data.Common.DbTransaction"
+                    && property.Name == "Connection"
                 || type == "SQLitePCL.sqlite3_backup"
                     && property.Name == "IsInvalid";
         }

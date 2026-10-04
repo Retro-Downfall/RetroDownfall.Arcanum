@@ -250,6 +250,40 @@ public sealed class CovenantProtectedResultTests
 
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Serialization_failure_or_cancellation_releases_the_protected_result_once(bool canceled)
+    {
+        DefaultHttpContext context = NewContext();
+
+        context.Response.Body = new FailingBody(canceled);
+
+        FakeLease lease = new();
+
+        Task writing = new CovenantProtectedJsonResult<CovenantStatusDto>(lease,
+            Result<CovenantStatusDto>.Success(Payload), ArcanumJsonContext.Default.ApiResponseCovenantStatusDto).ExecuteAsync(context);
+
+        if (canceled)
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(() => writing);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<IOException>(() => writing);
+        }
+
+        Assert.Equal(1, lease.Revalidations);
+
+        Assert.Equal(1, lease.Disposals);
+    }
+
+    private sealed class FailingBody(bool canceled) : MemoryStream
+    {
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            canceled ? ValueTask.FromException(new OperationCanceledException()) : ValueTask.FromException(new IOException("Injected failure."));
+    }
+
     private static string ReadBody(HttpContext context)
     {
 

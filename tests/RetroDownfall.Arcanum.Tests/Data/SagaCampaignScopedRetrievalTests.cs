@@ -72,7 +72,8 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
 
@@ -355,6 +356,26 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         string[] listedIds = [.. listed.Select(static memory => memory.Id).Order(StringComparer.Ordinal)];
 
         Assert.Equal(Ordered(fromRepository, fromInitializer), listedIds);
+
+    }
+
+    /// <summary>
+    /// The bulk-delete walk reaches a memory whatever scope owns it, including the ones no Campaign's
+    /// search admits, because erasure has to reach all of them.
+    /// </summary>
+    [Fact]
+    public async Task The_identity_walk_reaches_every_memory_whatever_its_scope()
+    {
+
+        SeededCorpus corpus = await SeedCorpusAsync();
+
+        SagaMemoryPosition[] walked = await _store!.ListPositionsAfterAsync(null, 50, CancellationToken.None);
+
+        string[] walkedIds = [.. walked.Select(static position => position.Id).Order(StringComparer.Ordinal)];
+
+        Assert.Equal(
+            Ordered(corpus.GlobalId, corpus.CampaignAId, corpus.CampaignBId, corpus.UnresolvedId),
+            walkedIds);
 
     }
 

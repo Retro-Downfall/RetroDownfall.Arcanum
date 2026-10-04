@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -584,12 +585,188 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A new embedding removes the mirror row an earlier build wrote for the entry while the vector
+    /// accelerator flag is off, rather than leaving a row that describes a vector the entry no longer has.
+    /// </summary>
+    /// <remarks>
+    /// The mirror holds the embedding itself, so a stale row is the old embedding left behind, reachable
+    /// by the next build that loads an accelerator. The row is seeded because no build this suite
+    /// composes writes one with the flag off.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RunTickAsync_RemovesTheStalePlainMirrorRowOfAnEntryItEmbedsWhileTheFlagIsOff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "the entry whose mirror row went stale");
+
+        await CreateEntryAsync(sessionId, "an entry whose embedding is already mirrored");
+
+        await ExecuteAsync(
+            """CREATE TABLE "entry_embeddings_vec" ("EntryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)""");
+
+        await ExecuteAsync(
+            """INSERT INTO "entry_embeddings_vec" ("EntryId", "Embedding") SELECT "Id", X'0000803F' FROM "Entries" """);
+
+        // The second entry is already embedded, so the tick leaves it and its mirror row alone.
+        await ExecuteAsync(
+            """
+            INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
+            SELECT "Id", X'0000803F', 1 FROM "Entries" WHERE "Content" LIKE 'an entry whose%'
+            """);
+
+        Assert.Equal(2, await CountMirrorRowsAsync());
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(2, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, await CountMirrorRowsAsync());
+
+    }
+
+    /// <summary>
+    /// A legacy virtual mirror this runtime cannot open is left alone, and the embedding is still written.
+    /// </summary>
+    /// <remarks>
+    /// An FTS5 virtual table stands in for the <c>vec0</c> mirror, because it records the same
+    /// <c>CREATE VIRTUAL TABLE</c> text, which is all that classifying a mirror reads. The stand-in can be
+    /// deleted from, so its row still being there is what shows no statement reached it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RunTickAsync_LeavesALegacyVirtualMirrorAloneWhileTheFlagIsOff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "the entry whose mirror row went stale");
+
+        await ExecuteAsync("""CREATE VIRTUAL TABLE "entry_embeddings_vec" USING fts5("EntryId", "Embedding")""");
+
+        await ExecuteAsync(
+            """INSERT INTO "entry_embeddings_vec" ("EntryId", "Embedding") SELECT "Id", X'0000803F' FROM "Entries" """);
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, await CountMirrorRowsAsync());
+
+    }
+
+    /// <summary>
+    /// With the accelerator flag on, the mirror row is written with the embedding, whatever the mirror held.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTickAsync_RewritesTheMirrorRowWithTheEmbeddingWhileTheFlagIsOn()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "the entry whose mirror row went stale");
+
+        await ExecuteAsync(
+            """CREATE TABLE "entry_embeddings_vec" ("EntryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)""");
+
+        await ExecuteAsync(
+            """INSERT INTO "entry_embeddings_vec" ("EntryId", "Embedding") SELECT "Id", X'00' FROM "Entries" """);
+
+        WeaveIndexAvailability accelerator = new();
+
+        accelerator.SetAvailable(true);
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(
+            weave,
+            out EmbeddingSettings embeddings,
+            vectorAccelerator: accelerator);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, await CountMirrorRowsAsync());
+
+        Assert.Equal(
+            await ScalarAsync("""SELECT "Embedding" FROM "entry_embeddings" """),
+            await ScalarAsync("""SELECT "Embedding" FROM "entry_embeddings_vec" """));
+
+    }
+
+    /// <summary>
+    /// The embedding and the removal of its stale mirror row commit together: when the mirror row cannot be
+    /// removed, the embedding is rolled back with it and the tick throws.
+    /// </summary>
+    /// <remarks>
+    /// This is the property that keeps a stale mirror row from outliving the embedding that replaced it. If
+    /// the removal were a separate step, the embedding would already be committed when the removal failed;
+    /// the entry would then hold an <c>entry_embeddings</c> row, never be selected for embedding again, and
+    /// its stale mirror row would stay forever. The trade is deliberate and has one consequence worth naming:
+    /// because nothing is committed, the entry has no embedding after the failed tick, so the next tick
+    /// fetches it again and re-embeds it, which is a second provider call for the same text, repeated every
+    /// tick until the mirror row can be removed. The trigger stands in for any refusal of that delete.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RunTickAsync_RollsTheEmbeddingBackWhenTheStaleMirrorRowCannotBeRemoved()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "the entry whose stale mirror row cannot be removed");
+
+        await ExecuteAsync(
+            """CREATE TABLE "entry_embeddings_vec" ("EntryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)""");
+
+        await ExecuteAsync(
+            """INSERT INTO "entry_embeddings_vec" ("EntryId", "Embedding") SELECT "Id", X'0000803F' FROM "Entries" """);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER "entry_embeddings_vec_refuse_delete" BEFORE DELETE ON "entry_embeddings_vec"
+            BEGIN
+                SELECT RAISE(ABORT, 'the mirror row cannot be removed');
+            END
+            """);
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        _ = await Assert.ThrowsAsync<SqliteException>(
+            () => service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.Equal(0, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, await CountMirrorRowsAsync());
+
+    }
+
     private EntryWeavingService CreateService(
         FakeWeaveService weave,
         out EmbeddingSettings embeddings,
         IGrimoireConnectionAdmissionGate? gate = null,
         ObservingScopeFactory? scopeFactory = null,
-        ILogger<EntryWeavingService>? logger = null)
+        ILogger<EntryWeavingService>? logger = null,
+        WeaveIndexAvailability? vectorAccelerator = null)
     {
 
         embeddings = ArcanumRuntimeDefaults.Embeddings;
@@ -612,7 +789,7 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
                 },
             }),
             weave,
-            new WeaveIndexAvailability(),
+            vectorAccelerator ?? new WeaveIndexAvailability(),
             scopeFactory ?? BuildScopeFactory(),
             gate ?? OpenGate(),
             logger ?? NullLogger<EntryWeavingService>.Instance);
@@ -763,6 +940,31 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         return entry.Id;
 
     }
+
+    private async Task<int> CountMirrorRowsAsync() =>
+        Convert.ToInt32(await ScalarAsync("""SELECT COUNT(*) FROM "entry_embeddings_vec";"""));
+
+    private async Task<object?> ScalarAsync(string sql)
+    {
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+
+            await connection.OpenAsync();
+
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = sql;
+
+        return await cmd.ExecuteScalarAsync();
+
+    }
+
+    private async Task ExecuteAsync(string sql) => _ = await ScalarAsync(sql);
 
     private async Task<int> CountEntryEmbeddingsAsync()
     {

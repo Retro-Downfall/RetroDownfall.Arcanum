@@ -2,6 +2,11 @@
 -- space is closed at eight destinations by two revocabilities, so a subject can never hold more than
 -- sixteen aggregate rows no matter how many receipts folded into it. That bound is what lets
 -- compaction reclaim an unbounded tail without an unbounded index.
+--
+-- No live path writes this table, and nothing joins it into external_disclosure_state, because the
+-- live disclosure fold already counted each receipt there. A later compaction that folds detail into
+-- this table must therefore not join it into external_disclosure_state again, or every receipt it
+-- folded would be counted twice.
 CREATE TABLE IF NOT EXISTS disclosure_subject_aggregates (
     OriginInstallationId TEXT NOT NULL CHECK (length(OriginInstallationId) > 0),
     -- CovenantDisclosureSubjectKind: Turn = 1, Operation = 2.

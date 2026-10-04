@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -22,6 +23,9 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 /// </summary>
 public sealed class CovenantMutationToolTests
 {
+
+    /// <summary>The refusal a pinned lane and an erased key share.</summary>
+    private const string OperatorManaged = "This Covenant key is managed by the operator in this scope.";
 
     [Fact]
     public async Task Neither_tool_is_advertised_while_the_feature_is_off()
@@ -234,6 +238,84 @@ public sealed class CovenantMutationToolTests
         McpToolsCallResultWire result = await session.CallProposeAsync("retired.key", "please remember this again");
 
         Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, Failure(result).Code);
+        Assert.Equal(0, session.Collector.StagedCount);
+    }
+
+    /// <summary>
+    /// A pinned Proposed lane is refused at staging, where refusing costs the model a tool call,
+    /// rather than at publication, where it would cost the operator the turn's answer.
+    /// </summary>
+    [Fact]
+    public async Task A_proposal_against_a_pinned_lane_is_refused_before_staging()
+    {
+        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
+
+        session.HeadProbe.SetPresent("pinned.key", revision: 2, pinned: true);
+
+        session.RegisterProposalCapability();
+
+        McpToolsCallResultWire result = await session.CallProposeAsync("pinned.key", "a preference");
+
+        Assert.True(result.IsError);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, Failure(result).Code);
+        Assert.Equal(OperatorManaged, Failure(result).Message);
+        Assert.Equal(0, session.Collector.StagedCount);
+    }
+
+    /// <summary>
+    /// An erased key and a pinned one get the same refusal, code and text, so the tool result cannot
+    /// tell the model which of the two it met.
+    /// </summary>
+    [Fact]
+    public async Task A_proposal_of_a_withheld_key_is_refused_exactly_like_a_pinned_one()
+    {
+        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
+
+        session.HeadProbe.SetPresent("pinned.key", revision: 2, pinned: true);
+
+        session.HeadProbe.SetPresent("erased.key", revision: 2, agentErasure: CovenantAgentErasureState.Withheld);
+
+        session.RegisterProposalCapability(toolCallId: "call-1");
+
+        McpToolsCallResultWire pinned = await session.CallProposeAsync("pinned.key", "a preference");
+
+        session.RegisterProposalCapability(toolCallId: "call-2");
+
+        McpToolsCallResultWire withheld = await session.CallProposeAsync("erased.key", "a preference");
+
+        Assert.True(withheld.IsError);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, Failure(withheld).Code);
+        Assert.Equal((Failure(pinned).Code, Failure(pinned).Message), (Failure(withheld).Code, Failure(withheld).Message));
+        Assert.Equal(Assert.Single(pinned.Content).Text, Assert.Single(withheld.Content).Text);
+        Assert.Equal(0, session.Collector.StagedCount);
+    }
+
+    /// <summary>
+    /// While the store holds Covenant evidence the latched key cannot verify, publication would refuse
+    /// every agent write, so staging refuses first and the turn keeps its answer.
+    /// </summary>
+    [Theory]
+    [InlineData(CovenantAgentErasureState.KeyUnavailable, ErrorCodes.MemoryErasure.KeyUnavailable)]
+    [InlineData(CovenantAgentErasureState.KeyLost, ErrorCodes.MemoryErasure.KeyLost)]
+    public async Task A_proposal_while_Covenant_evidence_is_unverifiable_is_refused_before_staging(
+        CovenantAgentErasureState state,
+        string code)
+    {
+        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
+
+        session.HeadProbe.SetPresent("unverified.key", revision: 2, agentErasure: state);
+
+        session.RegisterProposalCapability();
+
+        McpToolsCallResultWire result = await session.CallProposeAsync("unverified.key", "a preference");
+
+        Assert.True(result.IsError);
+        Assert.Equal(code, Failure(result).Code);
+        Assert.Equal(
+            code == ErrorCodes.MemoryErasure.KeyLost
+                ? MemoryErasureGuard.KeyLostError.Message
+                : MemoryErasureGuard.KeyUnavailableError.Message,
+            Failure(result).Message);
         Assert.Equal(0, session.Collector.StagedCount);
     }
 

@@ -278,7 +278,7 @@ public sealed class CanonicalPersistenceEvolutionTests
         GrimoireSchemaVersionChainSet target =
             tier is GrimoireSchemaTransactionTier.Core
                 ? CoreSchemaVersionNineFixture.ChainSet()
-                : GrimoireSchemaVersionChains.Default;
+                : CovenantCanonicalSchemaVersionFourFixture.ChainSet();
 
         GrimoireSchemaInstallResult staged = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,

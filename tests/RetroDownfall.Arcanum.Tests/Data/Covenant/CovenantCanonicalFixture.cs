@@ -4,8 +4,12 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -25,19 +29,42 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
     private readonly CovenantSchemaScratchDatabase _database;
 
-    private CovenantCanonicalFixture(CovenantSchemaScratchDatabase database) => _database = database;
+    private CovenantCanonicalFixture(CovenantSchemaScratchDatabase database)
+    {
+
+        _database = database;
+
+        Credentials = new CountingOsCredentialStore(new InMemoryOsCredentialStore());
+
+        ErasureKeys = MemoryErasureTestKeys.Isolated(Credentials);
+
+    }
 
     internal SqliteConnection Connection => _database.Connection;
+
+    /// <summary>The credential store behind <see cref="ErasureKeys"/>, counting every call made into it.</summary>
+    internal CountingOsCredentialStore Credentials { get; }
+
+    /// <summary>
+    /// The erasure keyring the store reads, with its own fresh latch, as a new process's is.
+    /// </summary>
+    internal MemoryErasureKeyring ErasureKeys { get; }
 
     internal Task<SqliteConnection> OpenAdditionalConnectionAsync(CancellationToken cancellationToken) =>
         _database.OpenAdditionalConnectionAsync(cancellationToken);
 
     internal CovenantStore Store { get; private set; } = null!;
 
+    /// <param name="withErasureEvidence">
+    /// Also installs the Core metadata table and the erasure fingerprint table, and records the head
+    /// Core version, so the catalog can hold erasure evidence the way an installed Grimoire can.
+    /// Without it the catalog has neither, which every Covenant chokepoint must read as no evidence.
+    /// </param>
     internal static async Task<CovenantCanonicalFixture> CreateAsync(
         CancellationToken cancellationToken,
         bool withAccelerator = false,
-        IReadOnlyList<string>? coreObjects = null)
+        IReadOnlyList<string>? coreObjects = null,
+        bool withErasureEvidence = false)
     {
 
         CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(cancellationToken);
@@ -64,13 +91,30 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
             }
 
-            fixture.Store = new CovenantStore(new FixedCovenantConnectionSource(database.Connection));
+            if (withErasureEvidence)
+            {
+
+                await database.InstallCoreObjectsAsync(
+                    ["grimoire_feature_schemas", "memory_erasure_fingerprints"],
+                    cancellationToken);
+
+                await database.RecordCoreSchemaVersionAsync(
+                    GrimoireSchemaVersionChains.CoreSchemaVersion,
+                    cancellationToken);
+
+            }
+
+            fixture.Store = new CovenantStore(
+                new FixedCovenantConnectionSource(database.Connection),
+                fixture.ErasureKeys);
 
             return fixture;
 
         }
         catch
         {
+
+            fixture.ErasureKeys.Dispose();
 
             await database.DisposeAsync();
 
@@ -283,7 +327,14 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
     }
 
-    public ValueTask DisposeAsync() => _database.DisposeAsync();
+    public ValueTask DisposeAsync()
+    {
+
+        ErasureKeys.Dispose();
+
+        return _database.DisposeAsync();
+
+    }
 
     private static string Iso(DateTimeOffset value) =>
         value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);

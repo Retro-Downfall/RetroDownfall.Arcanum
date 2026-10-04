@@ -4,7 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -160,10 +160,12 @@ internal static class CovenantAuthorityStateJoiner
 /// the Core algebra.
 /// </summary>
 /// <remarks>
-/// This type owns reads and writes only. The merge itself is
-/// <see cref="CovenantDisclosureStateAlgebra.JoinRestore"/>, because the join has to be a semilattice
-/// — commutative, associative, idempotent — and a second implementation living next to the storage
-/// would drift from the one the rest of the system reasons about.
+/// This type owns the order of reads and writes only, and both go through
+/// <see cref="ExternalDisclosureStateStore"/>, the one encoding of a bucket the live disclosure fold
+/// also writes. The merge itself is <see cref="CovenantDisclosureStateAlgebra.JoinRestore"/>, because
+/// the join has to be a semilattice — commutative, associative, idempotent — and a second
+/// implementation living next to the storage would drift from the one the rest of the system reasons
+/// about.
 ///
 /// <para>A joined bucket becomes a lower bound. Two installations' counts cannot be added without
 /// double-counting the effects they share, and the journal is allowed to overstate but never to
@@ -189,7 +191,7 @@ internal static class CovenantDisclosureStateJoiner
 
         foreach (CovenantDisclosureState destination in destinationBuckets)
         {
-            CovenantDisclosureState? archived = await ReadBucketAsync(
+            CovenantDisclosureState? archived = await ExternalDisclosureStateStore.ReadAsync(
                 staged,
                 transaction,
                 destination.Destination,
@@ -200,135 +202,13 @@ internal static class CovenantDisclosureStateJoiner
                 ? destination
                 : CovenantDisclosureStateAlgebra.JoinRestore(destination, archived);
 
-            await WriteBucketAsync(staged, transaction, result, timeProvider, cancellationToken)
+            await ExternalDisclosureStateStore
+                .WriteAsync(staged, transaction, result, timeProvider.GetUtcNow(), cancellationToken)
                 .ConfigureAwait(false);
 
             joined++;
         }
 
         return joined;
-    }
-
-    internal static async Task<List<CovenantDisclosureState>> ReadAllAsync(
-        SqliteConnection connection,
-        SqliteTransaction? transaction,
-        CancellationToken cancellationToken)
-    {
-        List<CovenantDisclosureState> buckets = [];
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        command.CommandText = """
-            SELECT DestinationCode, RevocabilityCode, CountKindCode, EverOccurred, JoinedCount,
-                   MaxDisclosedAtUtcTicks, EvidenceBloom
-            FROM external_disclosure_state;
-            """;
-
-        await using SqliteDataReader reader =
-            await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            buckets.Add(Materialize(reader));
-        }
-
-        return buckets;
-    }
-
-    private static async Task<CovenantDisclosureState?> ReadBucketAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CovenantEgressDestination destination,
-        CovenantDisclosureRevocability revocability,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        command.CommandText = """
-            SELECT DestinationCode, RevocabilityCode, CountKindCode, EverOccurred, JoinedCount,
-                   MaxDisclosedAtUtcTicks, EvidenceBloom
-            FROM external_disclosure_state
-            WHERE DestinationCode = $destination AND RevocabilityCode = $revocability;
-            """;
-
-        _ = command.Parameters.AddWithValue("$destination", (int)destination);
-
-        _ = command.Parameters.AddWithValue("$revocability", (int)revocability);
-
-        await using SqliteDataReader reader =
-            await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? Materialize(reader)
-            : null;
-    }
-
-    private static async Task WriteBucketAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CovenantDisclosureState state,
-        TimeProvider timeProvider,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        command.CommandText = """
-            INSERT INTO external_disclosure_state (
-                DestinationCode, RevocabilityCode, CountKindCode, EverOccurred, JoinedCount,
-                MaxDisclosedAtUtcTicks, EvidenceBloom, UpdatedAtUtc)
-            VALUES ($destination, $revocability, $countKind, $everOccurred, $count,
-                    $maximum, $bloom, $now)
-            ON CONFLICT (DestinationCode, RevocabilityCode) DO UPDATE SET
-                CountKindCode = excluded.CountKindCode,
-                EverOccurred = excluded.EverOccurred,
-                JoinedCount = excluded.JoinedCount,
-                MaxDisclosedAtUtcTicks = excluded.MaxDisclosedAtUtcTicks,
-                EvidenceBloom = excluded.EvidenceBloom,
-                UpdatedAtUtc = excluded.UpdatedAtUtc;
-            """;
-
-        _ = command.Parameters.AddWithValue("$destination", (int)state.Destination);
-
-        _ = command.Parameters.AddWithValue("$revocability", (int)state.Revocability);
-
-        _ = command.Parameters.AddWithValue("$countKind", (int)state.CountKind);
-
-        _ = command.Parameters.AddWithValue("$everOccurred", state.EverOccurred ? 1 : 0);
-
-        _ = command.Parameters.AddWithValue("$count", checked((long)state.Count));
-
-        _ = command.Parameters.AddWithValue("$maximum", state.MaximumTimestamp);
-
-        _ = command.Parameters.AddWithValue("$bloom", state.EvidenceBloom.ToArray());
-
-        _ = command.Parameters.AddWithValue(
-            "$now",
-            UtcInstantText.Format(timeProvider.GetUtcNow()));
-
-        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static CovenantDisclosureState Materialize(SqliteDataReader reader)
-    {
-        using System.IO.Stream stream = reader.GetStream(6);
-
-        using System.IO.MemoryStream buffer = new();
-
-        stream.CopyTo(buffer);
-
-        return new CovenantDisclosureState(
-            (CovenantEgressDestination)reader.GetInt32(0),
-            (CovenantDisclosureRevocability)reader.GetInt32(1),
-            (CovenantDisclosureCountKind)reader.GetInt32(2),
-            reader.GetInt32(3) != 0,
-            checked((ulong)reader.GetInt64(4)),
-            reader.GetInt64(5),
-            buffer.ToArray());
     }
 }
