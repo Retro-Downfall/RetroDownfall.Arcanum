@@ -43,7 +43,7 @@ Run everything from the repo root. The warning gates require ripgrep, the native
 - **Long-running work:** use `ILongRunningOperationCoordinator`; add exactly one descriptor to `LongRunningOperationRecoveryRegistry` **and** an idempotent registered recovery handler (contract tests enforce both); store only minimum encrypted checkpoint state — never a live Task/token/process/DI object.
 
 ## Exit codes & CLI automation contract
-`0` success · `1` generic error · `2` invalid command line/config/confirmation · `3` network error · `130` cancellation. Every direct command supports `--json` (one JSON doc on stdout, diagnostics on stderr), `--plain`, `--yes`, `--no-context`.
+`0` success · `1` generic error · `2` invalid command line/config/confirmation · `3` network error · `130` cancellation. Every direct command supports `--json` (one JSON doc on stdout, diagnostics on stderr; a verb with no typed payload emits `{ "output", "exitCode" }`, see the Command Reference Output section), `--plain`, `--yes`, `--no-context`.
 
 ## Local dev run
 ```bash

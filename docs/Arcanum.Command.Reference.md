@@ -18,7 +18,7 @@ Options marked repeatable may be supplied more than once. System.CommandLine res
 
 | Option | Meaning |
 |---|---|
-| `--output-format <text\|json>` | Select the output shape. `json` makes non-streaming commands emit one JSON payload; watch streams emit one source event per line as NDJSON. Diagnostics and progress remain on stderr. |
+| `--output-format <text\|json>` | Select the output shape. `json` makes non-streaming commands emit one JSON payload, typed where the verb has one and otherwise the text envelope described in [Typed and text `--json` payloads](#typed-and-text---json-payloads); watch streams emit one source event per line as NDJSON. Diagnostics and progress remain on stderr. |
 | `--json` | Shorthand for `--output-format json`. Combining it with `--output-format text` is a contradiction and exits `2`. |
 | `--plain` | Disable ANSI color, styling, and terminal animations without changing persisted configuration. |
 | `--yes` | Automatically approve commands that otherwise require confirmation, including overwrites and explicit deletion flows. It is the only automatic confirmation switch; it does not change unrelated mutations. |
@@ -89,6 +89,30 @@ Command-specific refinements:
 - `operation reconcile` returns `2` when all recoverable pages were processed but one or more operations still require operator repair; otherwise it returns `0`.
 - `backup create` returns `1` for an incomplete result and never labels it complete or publishes an archive; `backup verify` returns `1` when authentication, structure, checksums, or database verification fail. Typed backup-plan validation returns `2`. Commands that consume a passphrase also return `2` for invalid or conflicting passphrase-source options; `backup create --dry-run` does not consume or semantically validate those source options.
 - `preset list` still returns `0` when definitions can be listed but effective-state inspection is unavailable; that diagnostic stays on stderr and state is shown as unavailable. Unknown presets, missing prerequisites, invalid complete candidates, stale configuration, failed apply/reset, or failed rollback return `2`; a `Connection.*` service failure returns `3`.
+
+### Typed and text `--json` payloads
+
+Every direct command answers `--json` with exactly one JSON document, but only a verb with a typed payload (for example `session show`, `memory covenant list`, `budget`, `conclave status`, and `doctor`) puts fields in it. A verb with no typed payload prints its normal text, which the CLI captures at the process boundary, strips of ANSI sequences, and returns as `{ "output": "<text>", "exitCode": <n> }`. That document is valid and stable, but `output` is the table or sentence a person would read, not a listing a script can index. For typed data from those verbs, call the HTTP API instead ([Arcanum.API.md](Arcanum.API.md)).
+
+The families below emit the text envelope for every verb except the typed ones named beside them. The table is not exhaustive: verbs outside it may emit the envelope too, so rely on a typed shape only where a verb documents one.
+
+| Command family | Typed `--json` verbs |
+|---|---|
+| `arcanum ward` | none |
+| `arcanum model`, `arcanum provider` | none |
+| `arcanum operation` | none |
+| `arcanum daemon` | none |
+| `arcanum saga` | none |
+| `arcanum data encryption` | none |
+| `arcanum look` | none |
+| `arcanum apprentice` | none |
+| `arcanum trial` | none |
+| `arcanum tool` | none |
+| `arcanum mcp` | none |
+| `arcanum prompt` | none |
+| `arcanum campaign` | `campaign prompts`, `campaign sessions` |
+| `arcanum spell` | `spell validate` |
+| `arcanum workspace` | `workspace read` |
 
 ## Handler-validated required values
 
