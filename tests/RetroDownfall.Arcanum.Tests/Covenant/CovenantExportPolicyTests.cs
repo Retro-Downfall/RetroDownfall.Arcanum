@@ -353,6 +353,56 @@ public sealed class CovenantExportPolicyTests
     }
 
     /// <summary>
+    /// R-178: the two ledger tables are core tables the schema installer always creates, so one that is
+    /// missing is a damaged installation, not a clean one. Answering "zero rows" would let a plaintext
+    /// export through on exactly the evidence the policy could not read; it refuses and says the
+    /// installation needs recovery instead.
+    /// </summary>
+    [Theory]
+    [InlineData("artifact_sensitivity", true)]
+    [InlineData("artifact_sensitivity", false)]
+    [InlineData("session_sensitivity_state", true)]
+    [InlineData("session_sensitivity_state", false)]
+    public async Task A_missing_label_table_refuses_instead_of_allowing(string table, bool leased)
+    {
+        await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync(featureEnabled: leased);
+
+        await fixture.DropTableAsync(table);
+
+        Result<CovenantSessionExportSensitivity> decision = leased
+            ? await fixture.Policy.InspectSessionAsync(Session, fixture.InstallationLease, CancellationToken.None)
+            : await fixture.Policy.InspectSessionWithoutLeaseAsync(Session, CancellationToken.None);
+
+        Assert.True(decision.IsFailure, "A missing ledger table was read as a clean Session.");
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, decision.Error.Code);
+
+        // Content-free: the refusal names no table, Session, or Campaign.
+        Assert.DoesNotContain(table, decision.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-178: the Campaign inventory reads the label ledger and the canonical entries, and a missing
+    /// table in either is the same damaged installation rather than an empty one.
+    /// </summary>
+    [Theory]
+    [InlineData("artifact_sensitivity")]
+    [InlineData("covenant_entries")]
+    public async Task A_missing_inventory_table_refuses_instead_of_reporting_zero(string table)
+    {
+        await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
+
+        await fixture.DropTableAsync(table);
+
+        Result<CovenantCampaignExportExclusions> exclusions = await fixture.Policy
+            .InventoryCampaignExclusionsAsync(Campaign, fixture.InstallationLease, CancellationToken.None);
+
+        Assert.True(exclusions.IsFailure, "A missing table was reported as a count of zero.");
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, exclusions.Error.Code);
+    }
+
+    /// <summary>
     /// With the feature on the arm takes exactly one lease, and the caller owns it.
     /// </summary>
     [Fact]
@@ -568,6 +618,9 @@ public sealed class CovenantExportPolicyTests
 
         internal Task DeleteLabelsAsync() =>
             _database.ExecuteAsync("DELETE FROM artifact_sensitivity;", CancellationToken.None);
+
+        internal Task DropTableAsync(string table) =>
+            _database.ExecuteAsync($"DROP TABLE {table};", CancellationToken.None);
 
         internal Task InsertGlobalCovenantEntryAsync(string key) =>
             InsertCovenantEntryAsync(scopeCode: 1, campaignId: null, key);
