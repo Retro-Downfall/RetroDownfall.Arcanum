@@ -176,6 +176,12 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.True(seen.CanResolveAttachment);
 
+        // The inject-once tracker and the provider round are the turn's own, not an empty default:
+        // without the tracker an attachment could be injected on every round.
+        Assert.True(seen.RepeatedInjectionRefused);
+
+        Assert.Equal(1, seen.ProviderRound);
+
         Assert.NotNull(reservations.LastRequest);
 
         Assert.NotNull(seen.BudgetReservationId);
@@ -467,6 +473,8 @@ public sealed partial class WizardIntelligenceProviderTests
         ContextMaterializationLedger? Ledger,
         bool HasMaterializedAttachmentContent,
         bool CanResolveAttachment,
+        bool RepeatedInjectionRefused,
+        int ProviderRound,
         Guid? BudgetReservationId,
         CovenantToolStagingContext? CovenantStaging)
     {
@@ -476,8 +484,22 @@ public sealed partial class WizardIntelligenceProviderTests
                 ContextMaterializationLedgerAmbient.Ledger,
                 AttachmentMemoryGateAmbient.HasMaterializedAttachmentContent,
                 AttachmentMemoryGateAmbient.TryResolve(attachmentId, out _),
+                ProbeRepeatedInjectionRefused(),
+                ContextMaterializationLedgerAmbient.ProviderRound,
                 DelegatedSpendAttribution.BudgetReservationId,
                 CovenantToolStagingAmbient.Current);
+
+        /// <summary>
+        /// Whether the inject-once tracker is the turn's: with no tracker ambient every injection is
+        /// allowed, so only a live tracker refuses the second of two identical marks.
+        /// </summary>
+        private static bool ProbeRepeatedInjectionRefused()
+        {
+            const string probeKey = "r-008-inject-once-probe";
+
+            return SessionAttachmentTurnBudget.TryMarkInjected(probeKey, 1)
+                && !SessionAttachmentTurnBudget.TryMarkInjected(probeKey, 1);
+        }
     }
 
     /// <summary>

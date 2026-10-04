@@ -271,7 +271,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         await using CovenantToolCall toolCall = await CovenantToolCall.CreateAsync(registry, _availability);
 
-        ModelToolCallChatClient chat = new(ProposedKey, ProposedContent);
+        ModelToolCallChatClient chat = ProposalCall(ProposedKey, ProposedContent);
 
         bool sawStagingAtToolTime = false;
 
@@ -327,6 +327,160 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
         Assert.Contains(ProposedContent, later.PlanContent.CampaignProposed, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// R-008: a model's <c>retire_covenant</c> call, dispatched by the turn loop, reaches the effect.
+    /// </summary>
+    /// <remarks>
+    /// Retirement does not go through the binder alone. The tool pipeline first reads the staging
+    /// ambient itself, resolves the exact target through the turn's head probe, discloses the egress,
+    /// and only then pushes the preflight-bearing staging the binder mints from. With the ambient lost
+    /// at the ToolCall frame it stopped at its first check — "This turn carries no Covenant staging
+    /// capability" — which no test noticed because every retirement test called the pipeline directly
+    /// with staging already published on the test's own flow.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_retirement_made_through_a_model_tool_call_is_disclosed_staged_and_committed(bool streaming)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync();
+
+        Guid sessionId = await SeedUntaintedSessionAsync();
+
+        CovenantDispatchGate gate = Gate();
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        await using CovenantToolCall toolCall = await CovenantToolCall.CreateAsync(registry, _availability);
+
+        // The first turn gives the second something to retire: a committed Campaign proposal.
+        AIFunction proposeTool = AIFunctionFactory.Create(
+            async (string key, string content) =>
+                (await toolCall.ProposeThroughTransportAsync(key, content).ConfigureAwait(false)).IsError
+                    ? "refused"
+                    : "staged",
+            CovenantToolNames.ProposeCovenant,
+            "records a Campaign proposal");
+
+        Result<PromptTurnResult> proposed = await Wizard(
+                ProposalCall(ProposedKey, ProposedContent),
+                gate,
+                registry,
+                [proposeTool])
+            .ExecutePromptAsync(TurnRequest(sessionId, "always lead with the failing assertion"), Invocation(), CancellationToken.None);
+
+        Assert.True(proposed.IsSuccess, proposed.IsFailure ? $"{proposed.Error.Code}: {proposed.Error.Message}" : null);
+
+        int toolDisclosuresBefore = _journal.ToolUseCount;
+
+        bool sawPreflightAtToolTime = false;
+
+        McpToolsCallResultWire? toolResult = null;
+
+        AIFunction retireTool = AIFunctionFactory.Create(
+            async (string key, string lane) =>
+            {
+                // Present only once the pipeline's retirement path has read the turn's staging,
+                // resolved the target, and disclosed: it pushes the preflight for this one dispatch.
+                sawPreflightAtToolTime = CovenantToolStagingAmbient.Current?.RetirementPreflight is not null;
+
+                toolResult = await toolCall.RetireThroughTransportAsync(key, lane).ConfigureAwait(false);
+
+                return toolResult.IsError ? "refused" : "staged";
+            },
+            CovenantToolNames.RetireCovenant,
+            "retires a standing preference");
+
+        ModelToolCallChatClient chat = new(
+            new FunctionCallContent(
+                "call-retire",
+                CovenantToolNames.RetireCovenant,
+                new Dictionary<string, object?>
+                {
+                    ["key"] = ProposedKey,
+                    ["lane"] = nameof(CovenantLane.Proposed),
+                }),
+            "Retired.");
+
+        WizardIntelligenceProvider wizard = Wizard(chat, gate, registry, [retireTool]);
+
+        PingRequest request = TurnRequest(sessionId, "stop leading with the failing assertion");
+
+        List<IntelligenceEvent> events = [];
+
+        if (streaming)
+        {
+            await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, Invocation(), CancellationToken.None))
+            {
+                events.Add(evt);
+            }
+
+            Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+        }
+        else
+        {
+            Result<PromptTurnResult> retired = await wizard.ExecutePromptAsync(request, Invocation(), CancellationToken.None);
+
+            Assert.True(retired.IsSuccess, retired.IsFailure ? $"{retired.Error.Code}: {retired.Error.Message}" : null);
+        }
+
+        Assert.True(sawPreflightAtToolTime, "the retirement was denied before its effect");
+
+        Assert.NotNull(toolResult);
+
+        Assert.False(toolResult!.IsError, toolResult.IsError ? DescribeFailure(toolResult) : null);
+
+        CovenantMutationStagedResultWire staged = JsonSerializer.Deserialize(
+            toolResult.StructuredContent!.Value,
+            McpJsonSerializerContext.Default.CovenantMutationStagedResultWire)!;
+
+        Assert.Equal(nameof(CovenantOperation.Retire), staged.Operation);
+
+        Assert.Equal(nameof(CovenantLane.Proposed), staged.Lane);
+
+        // Disclosure precedes the effect: exactly one tool-use receipt for the one retirement.
+        Assert.Equal(toolDisclosuresBefore + 1, _journal.ToolUseCount);
+
+        Assert.True(await _db!.Entries
+            .AsNoTracking()
+            .AnyAsync(
+                entry => entry.SessionId == sessionId
+                    && entry.Role == MessageRole.Assistant
+                    && entry.Content == "Retired.",
+                CancellationToken.None));
+
+        // Committed with the reply: a later turn's plan no longer carries the retired proposal.
+        await using CovenantTurnScope later = await gate.BeginTurnAsync(
+            Invocation(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(ProposedContent, later.PlanContent.CampaignProposed, StringComparison.Ordinal);
+    }
+
+    private static PingRequest TurnRequest(Guid sessionId, string prompt) =>
+        new(
+            Prompt: prompt,
+            Model: ModelName,
+            WorkingDirectory: string.Empty,
+            SessionId: sessionId,
+            SkipSpellRouting: true);
+
+    private static ModelToolCallChatClient ProposalCall(string key, string content) =>
+        new(
+            new FunctionCallContent(
+                "call-propose",
+                CovenantToolNames.ProposeCovenant,
+                new Dictionary<string, object?>
+                {
+                    ["key"] = key,
+                    ["content"] = content,
+                }),
+            "Noted — I will lead with the failing assertion.");
+
     private static string? DescribeFailure(McpToolsCallResultWire result) =>
         result.StructuredContent is { } structured
             ? JsonSerializer.Deserialize(
@@ -358,6 +512,8 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             repository,
             repository,
             tools,
+            new CovenantToolEgressGuard(_journal),
+            _authority,
             provider);
     }
 
@@ -677,9 +833,9 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A scripted model that asks for <c>propose_covenant</c> as a tool call, then answers.
+    /// A scripted model that asks for one tool call, then answers, in either response mode.
     /// </summary>
-    private sealed class ModelToolCallChatClient(string key, string content) : IChatClient
+    private sealed class ModelToolCallChatClient(FunctionCallContent call, string reply) : IChatClient
     {
         private int _calls;
 
@@ -694,33 +850,23 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<MeAiChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            int call = Interlocked.Increment(ref _calls);
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, NextContents())));
 
-            MeAiChatMessage reply = call == 1
-                ? new MeAiChatMessage(
-                    ChatRole.Assistant,
-                    [
-                        new FunctionCallContent(
-                            "call-propose",
-                            CovenantToolNames.ProposeCovenant,
-                            new Dictionary<string, object?>
-                            {
-                                ["key"] = key,
-                                ["content"] = content,
-                            }),
-                    ])
-                : new MeAiChatMessage(ChatRole.Assistant, "Noted — I will lead with the failing assertion.");
-
-            return Task.FromResult(new ChatResponse(reply));
-        }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<MeAiChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+
+            yield return new ChatResponseUpdate(ChatRole.Assistant, NextContents());
+        }
+
+        private List<AIContent> NextContents() =>
+            Interlocked.Increment(ref _calls) == 1
+                ? [call]
+                : [new TextContent(reply)];
     }
 
     /// <summary>
@@ -868,13 +1014,24 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
         /// production binder: it reads the staging ambient of the flow it is called from, and that is
         /// the whole question when the caller is a tool the turn loop dispatched.
         /// </summary>
-        public async Task<McpToolsCallResultWire> ProposeThroughTransportAsync(string key, string content)
+        public Task<McpToolsCallResultWire> ProposeThroughTransportAsync(string key, string content) =>
+            CallThroughTransportAsync(
+                CovenantToolNames.ProposeCovenant,
+                JsonSerializer.SerializeToElement(
+                    new ProposeCovenantParams(key, content),
+                    McpJsonSerializerContext.Default.ProposeCovenantParams));
+
+        /// <summary>Sends <c>retire_covenant</c> the same way.</summary>
+        public Task<McpToolsCallResultWire> RetireThroughTransportAsync(string key, string lane) =>
+            CallThroughTransportAsync(
+                CovenantToolNames.RetireCovenant,
+                JsonSerializer.SerializeToElement(
+                    new RetireCovenantParams(key, lane),
+                    McpJsonSerializerContext.Default.RetireCovenantParams));
+
+        private async Task<McpToolsCallResultWire> CallThroughTransportAsync(string toolName, JsonElement arguments)
         {
             int id = Interlocked.Increment(ref _nextId);
-
-            JsonElement arguments = JsonSerializer.SerializeToElement(
-                new ProposeCovenantParams(key, content),
-                McpJsonSerializerContext.Default.ProposeCovenantParams);
 
             JsonRpcRequest request = new()
             {
@@ -882,7 +1039,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                 Params = JsonSerializer.SerializeToElement(
                     new McpToolsCallParams
                     {
-                        Name = CovenantToolNames.ProposeCovenant,
+                        Name = toolName,
                         Arguments = arguments,
                     },
                     McpJsonSerializerContext.Default.McpToolsCallParams),
@@ -944,7 +1101,12 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         public int Count => (int)Interlocked.Read(ref _acknowledged);
 
+        /// <summary>Receipts for a tool's own egress, as a retirement commits before its effect.</summary>
+        public int ToolUseCount => (int)Interlocked.Read(ref _toolUses);
+
         private long _acknowledged;
+
+        private long _toolUses;
 
         public ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
             CovenantDisclosureDraft draft,
@@ -953,6 +1115,11 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             CancellationToken cancellationToken)
         {
             _ = Interlocked.Increment(ref _acknowledged);
+
+            if (category == CovenantDisclosureEffectCategory.McpToolUse)
+            {
+                _ = Interlocked.Increment(ref _toolUses);
+            }
 
             return ValueTask.FromResult(Result<CovenantDisclosureReceipt>.Success(
                 new CovenantDisclosureReceipt(draft, ++_sequence)));

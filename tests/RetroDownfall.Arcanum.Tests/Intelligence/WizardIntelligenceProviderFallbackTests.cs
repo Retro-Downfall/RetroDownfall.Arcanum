@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
@@ -1087,6 +1088,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             covenantToolCapabilities: null,
             turnCommitter: null,
             mcpTools: null,
+            covenantEgressGuard: null,
+            covenantAuthority: null,
             providers);
 
     /// <summary>
@@ -1126,6 +1129,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             covenantToolCapabilities,
             turnCommitter,
             mcpTools: null,
+            covenantEgressGuard: null,
+            covenantAuthority: null,
             providers);
 
     /// <summary>
@@ -1143,6 +1148,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IGrimoireRepository grimoire,
         IGrimoireTurnCommitter? turnCommitter,
         IReadOnlyList<AITool> mcpTools,
+        CovenantToolEgressGuard? covenantEgressGuard,
+        ICovenantAuthoritySnapshotProvider? covenantAuthority,
         params ProviderSettings[] providers) =>
         CreateWizard(
             factory,
@@ -1154,6 +1161,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             covenantToolCapabilities,
             turnCommitter,
             mcpTools,
+            covenantEgressGuard,
+            covenantAuthority,
             providers);
 
     private static WizardIntelligenceProvider CreateWizard(
@@ -1175,7 +1184,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         bool withHealthTracker,
         FakeGrimoireRepository grimoire,
         params ProviderSettings[] providers) =>
-        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, null, null, null, providers);
+        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, null, null, null, null, null, providers);
 
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
@@ -1187,6 +1196,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         CovenantToolCapabilityRegistry? covenantToolCapabilities,
         IGrimoireTurnCommitter? turnCommitter,
         IReadOnlyList<AITool>? mcpTools,
+        CovenantToolEgressGuard? covenantEgressGuard,
+        ICovenantAuthoritySnapshotProvider? covenantAuthority,
         params ProviderSettings[] providers)
     {
         ArcanumSettings settings = new()
@@ -1226,7 +1237,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 ward,
                 sanctumGuard,
                 new NoOpSessionAttachmentStore(),
-                NullLogger<ToolExecutionPipeline>.Instance),
+                NullLogger<ToolExecutionPipeline>.Instance,
+                covenantEgressGuard: covenantEgressGuard,
+                covenantAuthority: covenantAuthority),
             new GrimoireTurnWriter(
                 grimoire,
                 grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
