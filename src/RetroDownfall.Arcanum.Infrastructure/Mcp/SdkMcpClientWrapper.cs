@@ -133,13 +133,31 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
             initialization.CancelAfter(_initializationTimeout);
 
-            _sdkClient = await SdkMcpClient
-                .CreateAsync(
-                    _clientTransport,
-                    _clientOptions,
-                    _loggerFactory,
-                    initialization.Token)
-                .ConfigureAwait(false);
+            try
+            {
+                _sdkClient = await SdkMcpClient
+                    .CreateAsync(
+                        _clientTransport,
+                        _clientOptions,
+                        _loggerFactory,
+                        initialization.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (initialization.IsCancellationRequested
+                    && !cancellationToken.IsCancellationRequested)
+            {
+                // Only this wrapper's own handshake deadline fired; the caller did not cancel. Report
+                // it as the start failure it is, so the connection manager records a failed start and
+                // schedules its restart backoff instead of treating a hung server as an aborted start
+                // that would also abort the rest of global initialization. _initialized stays false and
+                // the transport may be half-started; the caller disposes this wrapper after the failure.
+                // The cancellation is deliberately not attached as the inner exception: the manager
+                // reports the base exception's message, and a bare "A task was canceled." would hide
+                // why the start failed.
+                throw new TimeoutException(
+                    $"The MCP server did not complete the initialize handshake within {_initializationTimeout.TotalSeconds:0.###} seconds.");
+            }
 
             _initialized = true;
 

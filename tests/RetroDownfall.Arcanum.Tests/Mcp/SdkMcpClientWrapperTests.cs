@@ -188,6 +188,91 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         Assert.InRange(server.PagesServed, 1, 256);
     }
 
+    [Fact]
+    public async Task InitializeAsync_throws_TimeoutException_when_server_never_answers_initialize()
+    {
+        Channel<string> toServer = Channel.CreateUnbounded<string>();
+
+        Channel<string> fromServer = Channel.CreateUnbounded<string>();
+
+        using CancellationTokenSource serverLifetime = new();
+
+        // A wedged server: it reads whatever the client sends and never writes a byte back.
+        _ = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await foreach (string _ in toServer.Reader.ReadAllAsync(serverLifetime.Token))
+                    {
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            },
+            CancellationToken.None);
+
+        ChannelClientTransport clientTransport = new(
+            toServer.Writer,
+            fromServer.Reader,
+            maxJsonRpcLineBytes: 2_097_152);
+
+        await using SdkMcpClientWrapper client = new(
+            clientTransport,
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+            },
+            initializationTimeout: TimeSpan.FromMilliseconds(200),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
+
+        // The wrapper's own handshake deadline expiring is a start failure, not a caller cancellation:
+        // surfacing it as OperationCanceledException made the manager treat a hung server as an
+        // aborted start and skip the restart backoff.
+        TimeoutException timeout = await Assert.ThrowsAsync<TimeoutException>(
+            () => client.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Contains("initialize", timeout.Message, StringComparison.OrdinalIgnoreCase);
+
+        await serverLifetime.CancelAsync();
+    }
+
+    [Fact]
+    public async Task InitializeAsync_still_propagates_caller_cancellation_as_cancellation()
+    {
+        Channel<string> toServer = Channel.CreateUnbounded<string>();
+
+        Channel<string> fromServer = Channel.CreateUnbounded<string>();
+
+        ChannelClientTransport clientTransport = new(
+            toServer.Writer,
+            fromServer.Reader,
+            maxJsonRpcLineBytes: 2_097_152);
+
+        await using SdkMcpClientWrapper client = new(
+            clientTransport,
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+            },
+            initializationTimeout: TimeSpan.FromSeconds(30),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
+
+        using CancellationTokenSource caller = new();
+
+        Task initialization = client.InitializeAsync(caller.Token);
+
+        await caller.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => initialization.WaitAsync(TimeSpan.FromSeconds(30)));
+    }
+
     private async Task<SdkMcpClientWrapper> CreatePagingClientAsync(
         PagingToolsListServer server,
         int maxToolsTotalBytes,
@@ -431,7 +516,6 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>

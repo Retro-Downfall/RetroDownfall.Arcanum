@@ -107,11 +107,18 @@ public sealed partial class McpConnectionManager
         return McpServerTransport.Stdio;
     }
 
+    /// <summary>
+    /// Test seam: replaces the code-owned handshake interval (60 s by default, 1 s minimum) so a hung
+    /// server can be exercised without waiting a minute. Never set in production.
+    /// </summary>
+    internal TimeSpan? InitializationTimeoutForTests { get; set; }
+
     private TimeSpan GetClampedMcpInitializationTimeout()
     {
-        return TimeSpan.FromSeconds(
-            ArcanumSettingClamps.McpInitializationTimeoutSeconds(
-                ArcanumRuntimeDefaults.Mcp.InitializationTimeoutSeconds));
+        return InitializationTimeoutForTests
+            ?? TimeSpan.FromSeconds(
+                ArcanumSettingClamps.McpInitializationTimeoutSeconds(
+                    ArcanumRuntimeDefaults.Mcp.InitializationTimeoutSeconds));
     }
 
     private int GetClampedMcpMaxToolsTotalBytes()
