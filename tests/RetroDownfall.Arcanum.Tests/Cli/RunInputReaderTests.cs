@@ -157,6 +157,62 @@ public sealed class RunInputReaderTests
         }
     }
 
+    /// <summary>
+    /// <c>-p</c> promises that a scripted invocation cannot stall on a terminal it happens to be
+    /// attached to. A wrapper that allocates a pty and omits the prompt words must get the empty-input
+    /// refusal, not a "Prompt:" line and a read that never returns; a structured run is as
+    /// non-interactive as a headless one.
+    /// </summary>
+    [Theory]
+
+    [InlineData(true, false)]
+
+    [InlineData(false, true)]
+
+    public async Task ReadAsync_does_not_prompt_when_print_is_set_on_a_true_tty(bool print, bool json)
+    {
+        TextReader originalInput = Console.In;
+
+        StringReader interactiveInput = new("must remain unread\n");
+
+        StringWriter diagnostics = new();
+
+        try
+        {
+            Console.SetIn(interactiveInput);
+
+            RunInputReader reader = CreateReader(
+                Console.In,
+                diagnostics,
+                inputRedirected: false);
+
+            using IDisposable invocation = CliInvocationContext.Push(
+                new CliInvocationOptions(Json: json, Plain: false, Yes: false, Print: print));
+
+            RunInputReadResult result = await reader.ReadAsync(
+                null,
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+
+            Assert.Equal(string.Empty, result.Instruction);
+
+            Assert.Null(result.PipedContent);
+
+            Assert.False(result.InputRedirected);
+
+            Assert.False(result.Prompted);
+
+            Assert.Equal("must remain unread", await interactiveInput.ReadLineAsync());
+
+            Assert.Equal(string.Empty, diagnostics.ToString());
+        }
+        finally
+        {
+            Console.SetIn(originalInput);
+        }
+    }
+
     [Fact]
 
     public async Task ReadAsync_skips_prompt_for_true_tty_when_explicit_file_context_exists()

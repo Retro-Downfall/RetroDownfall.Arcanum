@@ -23,7 +23,7 @@ Options marked repeatable may be supplied more than once. System.CommandLine res
 | `--plain` | Disable ANSI color, styling, and terminal animations without changing persisted configuration. |
 | `--yes` | Automatically approve commands that otherwise require confirmation, including overwrites and explicit deletion flows. It is the only automatic confirmation switch; it does not change unrelated mutations. |
 | `--no-context` | Ignore saved `cli-context.json` defaults for this invocation. Independent current-directory Campaign/Workspace detection still applies. |
-| `-p`, `--print` | Headless mode. A real terminal behaves like a redirected one: no interactive picker opens, no prompt blocks, and no color is emitted. Use it so a scripted invocation cannot stall on a terminal it happens to be attached to. |
+| `-p`, `--print` | Headless mode. A real terminal behaves like a redirected one: no interactive picker opens, no prompt blocks, and no color is emitted. `arcanum run -p` with no instruction, no `--with` context and no redirected input never prints `Prompt:` or reads the terminal: it exits `2` at once, and a `--json` run does the same. Use it so a scripted invocation cannot stall on a terminal it happens to be attached to. |
 | `-v`, `--verbose` | Emit additional operator diagnostics on stderr. It never changes payload content or the exit code. |
 | `-?`, `-h`, `--help` | Show help for the current command path and exit without running it. |
 | `--version` | Show the CLI version. This option is available at the root command. |
