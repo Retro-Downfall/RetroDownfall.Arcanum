@@ -68,6 +68,22 @@ public sealed class CovenantErasureEndpointTests
 
     private static CancellationToken Token => CancellationToken.None;
 
+    /// <summary>Polls until the condition holds, failing if the awaited drain never starts.</summary>
+    private static async Task WaitForDrainAsync(Func<bool> condition)
+    {
+        for (int attempt = 0; attempt < 1000; attempt++)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10, Token);
+        }
+
+        Assert.Fail("The awaited drain never started.");
+    }
+
     /// <summary>
     /// The drain is real: the erase waits for the Campaign turn that holds the entry's scope, and once it
     /// has gone a later turn that proposes the same key in that Campaign is refused at staging with the
@@ -102,7 +118,9 @@ public sealed class CovenantErasureEndpointTests
             "/api/memory/covenant/erase",
             JsonContent.Create(Apply(prepare, preflight.PreflightToken), ArcanumJsonContext.Default.CovenantEraseRequest));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(500));
+        // The gate revokes a covered turn the moment the erase starts draining it, so the turn's own
+        // revocation is the proof that the drain began; only then is "not completed" a statement about it.
+        await WaitForDrainAsync(() => turn.Revocation.IsCancellationRequested);
 
         // Draining the covered turn.
         Assert.False(erase.IsCompleted);
