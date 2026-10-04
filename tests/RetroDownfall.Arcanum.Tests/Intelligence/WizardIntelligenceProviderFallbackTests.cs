@@ -233,6 +233,105 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// R-051: the first candidate loads the Session thread before it begins the turn, so the second
+    /// candidate, reloading after that begin, would see the turn's own user <c>Entry</c> and append the
+    /// prompt again. The run's thread snapshot lives in the seed and every candidate reuses it.
+    /// </summary>
+    [Fact]
+    public async Task ExecutePromptAsync_fallback_sends_prompt_once_to_second_candidate_for_existing_session()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        ProviderSettings providerB = MakeProvider("provider-b");
+        ScriptingChatClient chatA = new();
+        chatA.EnqueueException(new HttpRequestException("connection refused during buffered inference"));
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueText("answer from B");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        Guid sessionId = Guid.Parse("05100000-0000-0000-0000-000000000051");
+        Session existing = new() { Id = sessionId };
+        existing.Entries.Add(new Entry
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            Role = MessageRole.User,
+            Content = "earlier question",
+            CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
+        });
+        existing.Entries.Add(new Entry
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            Role = MessageRole.Assistant,
+            Content = "earlier answer",
+            CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+        });
+        FakeGrimoireRepository grimoire = new() { ExistingSession = existing };
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            CreateTracker(healthFailureThreshold: 1),
+            withHealthTracker: true,
+            grimoire,
+            providerA,
+            providerB);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { SessionId = sessionId },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
+        _ = Assert.Single(grimoire.BeginCalls);
+
+        IReadOnlyList<MeAiChatMessage> sentToB = Assert.Single(chatB.SentMessages);
+        _ = Assert.Single(sentToB, static message => message.Role == ChatRole.User && message.Text == "hello");
+        Assert.Equal(
+            ["earlier question", "earlier answer", "hello"],
+            sentToB
+                .Where(static message => message.Role != ChatRole.System)
+                .Select(static message => message.Text));
+    }
+
+    /// <summary>
+    /// R-052: a provider timeout surfaces as an <see cref="OperationCanceledException"/> while the
+    /// caller's token is still live. Treating it as caller cancellation finalized the seeded turn and
+    /// handed the next candidate a dead handle; it is a connectivity failure, so the turn defers to
+    /// the next candidate untouched and that candidate's answer is the one finalized.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_timeout_on_primary_defers_turn_to_next_candidate()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        ProviderSettings providerB = MakeProvider("provider-b");
+        ScriptingChatClient chatA = new();
+        chatA.EnqueueStreamException(new TaskCanceledException("t", new TimeoutException()));
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueStreamTokens("answer ", "from B");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        FakeGrimoireRepository grimoire = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            CreateTracker(healthFailureThreshold: 1),
+            withHealthTracker: true,
+            grimoire,
+            providerA,
+            providerB);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, BaseRequest());
+
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Error);
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+        _ = Assert.Single(grimoire.BeginCalls);
+        Assert.Empty(grimoire.DiscardedAssistantEntryIds);
+        Assert.Equal("answer from B", Assert.Single(grimoire.FinalizedContents));
+    }
+
+    /// <summary>
     /// Deferring the turn to the next candidate assumes a next candidate actually reaches inference.
     /// The per-candidate reasoning gate runs at the top of the loop and returns outright, so a
     /// heterogeneous candidate list can defer on A and then never run B — leaving the seeded Session
@@ -1604,6 +1703,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public int DisposeCount { get; private set; }
 
+        /// <summary>The messages each provider call was sent, in call order.</summary>
+        public List<IReadOnlyList<MeAiChatMessage>> SentMessages { get; } = [];
+
         public void EnqueueText(string text) =>
             _buffered.Enqueue(_ => Task.FromResult(new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, text))));
 
@@ -1642,6 +1744,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         {
             BufferedCallCount++;
 
+            SentMessages.Add(messages.ToList());
+
             if (_buffered.Count == 0)
             {
                 throw new InvalidOperationException("No scripted buffered response remaining.");
@@ -1656,6 +1760,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             CancellationToken cancellationToken = default)
         {
             StreamingCallCount++;
+
+            SentMessages.Add(messages.ToList());
 
             if (_streaming.Count == 0)
             {
@@ -1723,8 +1829,18 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
     private sealed class FakeGrimoireRepository : IGrimoireRepository, ISessionTurnBeginStore
     {
+        /// <summary>
+        /// An existing Session the request continues. A begin against it appends the user
+        /// <c>Entry</c> and the empty assistant <c>Entry</c> the real repository writes, and every
+        /// read returns a fresh snapshot, as a query would.
+        /// </summary>
+        public Session? ExistingSession { get; init; }
+
         public Task<Session?> GetSessionAsync(Guid id, CancellationToken cancellationToken = default) =>
-            Task.FromResult<Session?>(null);
+            Task.FromResult(
+                ExistingSession is { } existing && existing.Id == id
+                    ? new Session { Id = existing.Id, Entries = existing.Entries.ToList() }
+                    : null);
 
         public Task<Session?> GetSessionHeaderAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Session?>(null);
@@ -1745,7 +1861,30 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         {
             BeginCalls.Add((sessionId, prompt));
 
-            return Task.FromResult((sessionId ?? Guid.NewGuid(), Guid.NewGuid()));
+            Guid assistantEntryId = Guid.NewGuid();
+
+            if (ExistingSession is { } existing && existing.Id == sessionId)
+            {
+                existing.Entries.Add(new Entry
+                {
+                    Id = Guid.NewGuid(),
+                    SessionId = existing.Id,
+                    Role = MessageRole.User,
+                    Content = prompt,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+
+                existing.Entries.Add(new Entry
+                {
+                    Id = assistantEntryId,
+                    SessionId = existing.Id,
+                    Role = MessageRole.Assistant,
+                    Content = string.Empty,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+            }
+
+            return Task.FromResult((sessionId ?? Guid.NewGuid(), assistantEntryId));
         }
 
         public ValueTask<Result<Guid>> CreateBoundSessionAsync(
@@ -1775,8 +1914,14 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                     new SessionTurnInputPreflight(sessionId, campaign.Binding, 0, 0)));
         }
 
-        public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+        public List<string> FinalizedContents { get; } = [];
+
+        public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default)
+        {
+            FinalizedContents.Add(fullContent);
+
+            return Task.CompletedTask;
+        }
 
         public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default)
         {

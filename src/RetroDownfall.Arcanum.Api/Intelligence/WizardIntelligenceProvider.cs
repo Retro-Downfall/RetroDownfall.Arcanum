@@ -1683,9 +1683,28 @@ public sealed partial class WizardIntelligenceProvider(
                 yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
             }
 
-        Session? thread = await inferenceContextBuilder
-            .LoadThreadAsync(request, inferenceToken)
-            .ConfigureAwait(false);
+        // One thread snapshot for the whole run (DESIGN §10.7.2), taken before any candidate begins
+        // the turn. A later candidate reloading it would read the turn's own user Entry, and with
+        // the prompt appended again the fallback provider would be sent it twice.
+        Session? thread;
+
+        if (seed is { ThreadLoaded: true })
+        {
+            thread = seed.Thread;
+        }
+        else
+        {
+            thread = await inferenceContextBuilder
+                .LoadThreadAsync(request, inferenceToken)
+                .ConfigureAwait(false);
+
+            if (seed is not null)
+            {
+                seed.Thread = thread;
+
+                seed.ThreadLoaded = true;
+            }
+        }
 
         bool attachmentsEnabled = settings.Value.ResolveAttachments().Enabled;
 
@@ -1703,7 +1722,9 @@ public sealed partial class WizardIntelligenceProvider(
         // A retried candidate inherits the turn the run already opened (DESIGN §10.7.2). Beginning
         // it again would insert a second user Entry — and, for a session-less request, a second
         // orphaned Session — because interrupted-turn cleanup only discards the empty assistant row.
-        if (seed?.Turn is { } seededTurn)
+        // A handle some exit path already finalized is dead: its assistant row is resolved and its
+        // Session lease released, so it is never adopted, and this candidate begins its own turn.
+        if (seed?.Turn is { IsFinalized: false } seededTurn)
         {
             grimoireTurn = seededTurn;
 
@@ -3158,8 +3179,14 @@ public sealed partial class WizardIntelligenceProvider(
                         {
                             hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
                         }
-                        catch (OperationCanceledException)
+                        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                         {
+                            // Filtered on the caller's token, as ModelCallExecutor's buffered path
+                            // is: a provider timeout surfaces as a cancellation while the caller is
+                            // still listening, and it belongs in the generic catch below, which
+                            // classifies it as connectivity so the turn defers to the next
+                            // candidate instead of being finalized on the way out.
+                            //
                             // A client disconnect must not make a round that already
                             // streamed real provider bytes look like it spent nothing — that
                             // both loses the spend from budget accounting and returns the
@@ -8110,6 +8137,15 @@ public sealed partial class WizardIntelligenceProvider(
         /// <see langword="null"/> until then; a stateless request seeds an empty handle.
         /// </summary>
         public GrimoireTurnWriter.TurnHandle? Turn { get; set; }
+
+        /// <summary>
+        /// The Session thread as the first candidate loaded it, before any candidate began the turn.
+        /// Every later candidate, and the compression decision each makes, reads this snapshot rather
+        /// than a reload that would already contain the turn's own user <c>Entry</c>.
+        /// </summary>
+        public Session? Thread { get; set; }
+
+        public bool ThreadLoaded { get; set; }
 
         public bool QueryEmbeddingResolved { get; set; }
 
