@@ -73,6 +73,10 @@ internal sealed class SubagentRunner(
 
             using IDisposable isolation = SubagentExecutionAmbient.EnterChild(tracker);
 
+            // This runs inside the parent's delegate_task call, where the parent turn's accounting is
+            // ambient. The child is billed under its own run and reservation, never the parent's.
+            using IDisposable accountingIsolation = TurnAccountingAmbient.Suspend();
+
             PingRequest childRequest = BuildIsolatedRequest(request);
 
             // The lease is taken at the coordinator's 15-minute maximum, and a delegated child on

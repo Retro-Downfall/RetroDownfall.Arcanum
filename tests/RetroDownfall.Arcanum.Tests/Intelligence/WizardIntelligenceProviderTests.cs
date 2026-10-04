@@ -9574,7 +9574,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         FixtureOrdinaryConnectionFactory? ordinaryConnections = null,
         IModelTokenEstimator? modelTokenEstimator = null,
         IHumanPromptRegistry? humanPrompts = null,
-        SessionTurnConcurrencyGate? sessionTurnGate = null)
+        SessionTurnConcurrencyGate? sessionTurnGate = null,
+        CovenantDispatchGate? covenantDispatch = null,
+        CovenantToolCapabilityRegistry? covenantToolCapabilities = null)
     {
         settings ??= DefaultSettings();
 
@@ -9683,7 +9685,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             webResearchProviderCatalog: new WebResearchProviderCatalog([]),
             sessionAttachmentRetrieval: sessionAttachmentRetrieval,
             serviceProvider: ordinaryProvider,
-            modelTokenEstimator: modelTokenEstimator);
+            modelTokenEstimator: modelTokenEstimator,
+            covenantDispatch: covenantDispatch,
+            covenantToolCapabilities: covenantToolCapabilities);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>

@@ -4,11 +4,15 @@ using Microsoft.Extensions.Logging;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
+using RetroDownfall.Arcanum.Api.Intelligence;
+
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
 
@@ -396,6 +400,57 @@ public sealed class SubagentRunnerTests
         Assert.Equal(1, operations.CompleteCalls);
         Assert.Equal(1, operations.FailCalls);
         Assert.Equal(SubagentFailureCodes.ChildFailed, operations.FailureCode);
+    }
+
+    /// <summary>
+    /// R-008: the child turn starts inside the parent's <c>delegate_task</c> call, where the parent
+    /// turn's accounting is now re-established. The child must not see it: a child that adopted the
+    /// parent's handle would settle the parent's run and reservation when it completed.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_HidesTheParentTurnsAccountingFromTheChildAndRestoresItAfter()
+    {
+        TurnAccountingHandle parent = (await TurnAccountingHandle.BeginAsync(
+                turnRunWriter: null,
+                budgetReservations: null,
+                new PricingSettings(),
+                "test-model",
+                sessionId: null,
+                surface: "test",
+                purpose: "chat",
+                requestId: "parent",
+                CancellationToken.None))
+            .Value;
+
+        bool childSawAccounting = true;
+
+        CapturingTurnFacade facade = new(
+            Result<PromptTurnResult>.Success(
+                new PromptTurnResult(
+                    "child summary",
+                    new ChatCompletionUsage(10, 5, 15))))
+        {
+            OnExecute = () => childSawAccounting = TurnAccountingAmbient.Current is not null,
+        };
+        SubagentRunner runner = new(
+            new Lazy<ITurnExecutionFacade>(() => facade),
+            new FakeOperationCoordinator(),
+            new CapturingTelemetry(),
+            TimeProvider.System,
+            NullLogger<SubagentRunner>.Instance);
+
+        using (TurnAccountingAmbient.Push(parent, writer: null))
+        {
+            SubagentRunResult result = await runner.RunAsync(
+                new SubagentRunRequest("child task", "test-model", [], MaxTokens: 1_000, MaxCostUsd: null),
+                CancellationToken.None);
+
+            Assert.True(result.Success);
+
+            Assert.Same(parent, TurnAccountingAmbient.Current);
+        }
+
+        Assert.False(childSawAccounting);
     }
 
     private sealed class CapturingTurnFacade(

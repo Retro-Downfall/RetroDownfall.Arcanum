@@ -1618,6 +1618,12 @@ public sealed partial class WizardIntelligenceProvider(
         // belongs to this turn's plan.
         IDisposable? streamCovenantStaging = null;
 
+        // R-008: every ambient a tool call reads, captured as the turn creates it. This method is an
+        // async iterator, so an AsyncLocal it writes is gone after its next yield return; the set is
+        // re-applied inside ProcessWithLiveWardsAsync before each tool call, and the turn's own
+        // bookkeeping and cleanup go through these captured objects rather than ambient reads.
+        TurnAmbientSet streamTurnAmbients = new();
+
         try
         {
             string targetModel = lease.ResolvedModel;
@@ -1802,7 +1808,7 @@ public sealed partial class WizardIntelligenceProvider(
             yield break;
         }
 
-        SessionAttachmentTurnBudget.BeginTurn();
+        streamTurnAmbients.AttachmentBudgetTurn = SessionAttachmentTurnBudget.BeginTurn();
 
         AttachmentsSettings streamAttachmentSettings = settings.Value.ResolveAttachments();
 
@@ -1822,7 +1828,7 @@ public sealed partial class WizardIntelligenceProvider(
                 ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedTokens(
                     streamRetrievalSettings.MaxRetrievedTokens)));
 
-        ContextMaterializationLedgerAmbient.Begin(streamMaterializationLedger);
+        streamTurnAmbients.MaterializationTurn = ContextMaterializationLedgerAmbient.Begin(streamMaterializationLedger);
 
         List<AIContent> acceptedAppendedContext = [];
 
@@ -2054,7 +2060,9 @@ public sealed partial class WizardIntelligenceProvider(
         {
             SessionAttachmentTurnBudget.EndTurn();
 
-            ContextMaterializationLedgerAmbient.End();
+            ContextMaterializationLedgerAmbient.End(streamTurnAmbients.MaterializationTurn);
+
+            streamTurnAmbients.MaterializationTurn = null;
 
             if (!streaming)
             {
@@ -2084,6 +2092,10 @@ public sealed partial class WizardIntelligenceProvider(
             TurnAccountingAmbient.Publish(streamAccountingLocal, turnRunWriter);
             publishedStreamAmbient = true;
         }
+
+        streamTurnAmbients.SetAccounting(
+            streamAccountingLocal,
+            publishedStreamAmbient ? turnRunWriter : previousAmbientWriter);
 
         List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
             streamContextRequest,
@@ -2448,9 +2460,11 @@ public sealed partial class WizardIntelligenceProvider(
             // not survive a `yield return` — only an `await` does. The very next yield (the
             // ToolCall frame, before any tool executes) would silently discard this assignment,
             // so every tool invocation would observe HumanPromptLiveEmitterAmbient.Current as
-            // null regardless. It is instead (re-)established inside ProcessWithLiveWardsAsync,
-            // a plain non-yielding local function invoked with zero intervening yields after each
-            // tool call's own ToolCall frame — see the comment there.
+            // null regardless. It is captured on the turn's ambient set instead and (re-)established
+            // inside ProcessWithLiveWardsAsync, a plain non-yielding local function invoked with
+            // zero intervening yields after each tool call's own ToolCall frame — see the comment
+            // there. R-008 extended the same treatment to every other per-turn ambient.
+            streamTurnAmbients.HumanPromptEmitter = liveHumanPromptEmitter;
         }
 
         List<AITool> streamToolSet = request.DisableAllTools
@@ -2916,7 +2930,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     ChatResponse? bufferedRoundResponse = null;
 
-                    ContextMaterializationLedgerAmbient.SetProviderRound(streamToolRoundCount);
+                    streamTurnAmbients.SetProviderRound(streamToolRoundCount);
 
                     ReconcileSuppressedSemanticContext();
 
@@ -3012,7 +3026,7 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         streamCovenantStaging?.Dispose();
 
-                        streamCovenantStaging = CovenantToolStagingAmbient.Push(new CovenantToolStagingContext(
+                        CovenantToolStagingContext stagingContext = new(
                             stagingScope.Collector,
                             stagingCampaign,
                             streamAdmitted.Receipt,
@@ -3020,7 +3034,13 @@ public sealed partial class WizardIntelligenceProvider(
                             stagingScope.HeadProbe,
                             invocationContext.CanStageCovenantMutation,
                             covenantToolCapabilities,
-                            inferenceToken));
+                            inferenceToken);
+
+                        // Pushed for the provider call in this segment, and captured for the tool calls
+                        // that run after this round's ToolCall frames, where the push is already gone.
+                        streamCovenantStaging = CovenantToolStagingAmbient.Push(stagingContext);
+
+                        streamTurnAmbients.CovenantStaging = stagingContext;
                     }
 
                     ModelCallPurpose streamPurpose = streamToolRoundCount == 0
@@ -3456,13 +3476,13 @@ public sealed partial class WizardIntelligenceProvider(
 
                 streamToolRoundCount++;
 
-                ContextMaterializationLedgerAmbient.SetProviderRound(streamToolRoundCount);
+                streamTurnAmbients.SetProviderRound(streamToolRoundCount);
 
                 int toolCallIndex = 0;
 
-                Guid? streamAmbientSessionId = grimoireTurn.SessionId ?? request.SessionId;
-
-                SessionAttachmentToolAmbient.CurrentSessionId = streamAmbientSessionId;
+                // Published to each tool call by streamTurnAmbients.Apply(), not here: a write here
+                // would not survive this round's first ToolCall frame.
+                streamTurnAmbients.SessionId = grimoireTurn.SessionId ?? request.SessionId;
 
                 try
                 {
@@ -3575,10 +3595,12 @@ public sealed partial class WizardIntelligenceProvider(
                                 // whole attempt) because each preceding ToolCall/ToolResult/ward
                                 // frame's own yield return already discarded whatever the previous
                                 // call established.
-                                if (liveHumanPromptEmitter is { } humanPromptEmitter)
-                                {
-                                    HumanPromptLiveEmitterAmbient.Current = humanPromptEmitter;
-                                }
+                                //
+                                // R-008: the whole per-turn set, not only the emitter — session id,
+                                // ledger and provider round, inject-once tracker, attachment promotion
+                                // state, accounting and its writer, and Covenant staging — applied
+                                // together because they bound each other.
+                                streamTurnAmbients.Apply();
 
                                 try
                                 {
@@ -3786,7 +3808,8 @@ public sealed partial class WizardIntelligenceProvider(
                 }
                 finally
                 {
-                    SessionAttachmentToolAmbient.CurrentSessionId = null;
+                    // The session binding is a tool-loop ambient only.
+                    streamTurnAmbients.SessionId = null;
                 }
 
                 if (toolLoopProgressDetector.ObserveCompletedRound(
@@ -4210,12 +4233,15 @@ public sealed partial class WizardIntelligenceProvider(
             // before any ancillary cancellable await, while the same-Session gate is still held, or a
             // later turn could enqueue a wider frontier first and classify these entries under its
             // provenance.
-            attachmentProvenance = AttachmentMemoryGateAmbient.Snapshot();
+            //
+            // Read from the turn's captured attachment state: this segment runs after the turn's
+            // yields, where the ambient no longer holds it.
+            attachmentProvenance = streamTurnAmbients.AttachmentMemory?.Snapshot() ?? [];
 
             TryEnqueueSagaExtraction(
                 grimoireTurn.SessionId,
                 attachmentProvenance,
-                AttachmentMemoryGateAmbient.HasUnprovenancedAttachmentContent,
+                streamTurnAmbients.AttachmentMemory?.HasUnprovenancedAttachmentContent == true,
                 grimoireTurn.SagaExtractionAfterSequenceExclusive,
                 grimoireTurn.SagaExtractionThroughSequence);
         }
@@ -4295,7 +4321,9 @@ public sealed partial class WizardIntelligenceProvider(
 
             SessionAttachmentTurnBudget.EndTurn();
 
-            ContextMaterializationLedgerAmbient.End();
+            // The captured turn, not an ambient read: disposing it is what removes the turn's
+            // per-Session attachment state, which would otherwise outlive the turn.
+            ContextMaterializationLedgerAmbient.End(streamTurnAmbients.MaterializationTurn);
 
             if (publishedStreamAmbient)
             {

@@ -23,57 +23,44 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private async Task<McpToolsCallResultWire> ExecuteReadSagaAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-
         ReadSagaParams? args;
 
         try
         {
-
             args = JsonSerializer.Deserialize(arguments, _json.ReadSagaParams);
-
         }
         catch (JsonException ex)
         {
-
             _logger?.LogError(ex, "read_saga argument deserialization failed.");
 
             return ToolError("Invalid arguments for read_saga.");
-
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Query))
         {
-
             return ToolError("read_saga requires a non-empty 'query'.");
-
         }
 
         string query = args.Query.Trim();
 
         try
         {
-
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             IWeaveService weaveService = scope.ServiceProvider.GetRequiredService<IWeaveService>();
 
             if (!weaveService.IsAvailable)
             {
-
                 return ToolError("The embedding provider is unavailable; Saga cannot be searched right now.");
-
             }
 
             Result<Embedding<float>> embedResult = await weaveService.EmbedAsync(query, cancellationToken).ConfigureAwait(false);
 
             if (embedResult.IsFailure)
             {
-
                 return ToolError("Failed to embed the query for Saga search; see server logs for detail.");
-
             }
 
             IOptionsMonitor<ArcanumSettings> options = scope.ServiceProvider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
@@ -89,10 +76,13 @@ internal sealed partial class ArcanumInternalToolServer
             // The turn's own scope, from the Session the host bound to this call - never a Campaign the
             // model could name. read_saga is read-only precisely so the model cannot steer its memory;
             // letting it steer which Campaign's memory it reads would give that back.
-            MemoryScope memoryScope = await scope.ServiceProvider
-                .GetRequiredService<IMemoryScopeResolver>()
-                .ResolveForSessionAsync(SessionAttachmentToolAmbient.CurrentSessionId, cancellationToken)
-                .ConfigureAwait(false);
+            if (await ResolveToolMemoryScopeAsync(
+                        scope.ServiceProvider.GetRequiredService<IMemoryScopeResolver>(),
+                        cancellationToken)
+                    .ConfigureAwait(false) is not { } memoryScope)
+            {
+                return ToolError(UnresolvedMemoryScopeMessage);
+            }
 
             Result<DivinationResult[]> searchResult = memoryScope.IsEnforced
                 ? await divinationService
@@ -119,20 +109,16 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (searchResult.IsFailure)
             {
-
                 return ToolError("Saga search failed; see server logs for detail.");
-
             }
 
             if (searchResult.Value.Length == 0)
             {
-
                 return new McpToolsCallResultWire
                 {
                     Content = [new McpToolContentTextWire { Text = "No Saga memories matched that query." }],
                     IsError = false,
                 };
-
             }
 
             ISagaMemoryStore store = scope.ServiceProvider.GetRequiredService<ISagaMemoryStore>();
@@ -145,12 +131,9 @@ internal sealed partial class ArcanumInternalToolServer
 
             foreach (DivinationResult hit in searchResult.Value)
             {
-
                 if (!byId.TryGetValue(hit.Id, out SagaMemoryDto? memory))
                 {
-
                     continue;
-
                 }
 
                 sb.Append("- ");
@@ -166,7 +149,6 @@ internal sealed partial class ArcanumInternalToolServer
                 sb.Append(memory.CreatedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
                 sb.AppendLine(")");
-
             }
 
             string text = sb.Length == 0 ? "No Saga memories matched that query." : sb.ToString().TrimEnd();
@@ -176,23 +158,16 @@ internal sealed partial class ArcanumInternalToolServer
                 Content = [new McpToolContentTextWire { Text = text }],
                 IsError = false,
             };
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             _logger?.LogError(ex, "read_saga failed for query {Query}.", query);
 
             return ToolError("An internal error occurred during tool execution.");
-
         }
-
     }
-
 }

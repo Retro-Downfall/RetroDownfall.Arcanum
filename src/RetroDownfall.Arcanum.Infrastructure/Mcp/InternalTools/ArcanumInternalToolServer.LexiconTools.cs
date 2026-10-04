@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private async Task<McpToolsCallResultWire> ExecuteScribeLexiconAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         ScribeLexiconParams? args;
@@ -49,23 +48,17 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (!string.IsNullOrWhiteSpace(args.AttachmentId))
         {
-
             if (!Guid.TryParse(args.AttachmentId, out Guid attachmentId)
                 || !AttachmentMemoryGateAmbient.TryResolve(attachmentId, out provenance))
             {
-
                 return ToolError(
                     "scribe_lexicon attachment_id must identify attachment content materialized in the current turn.");
-
             }
-
         }
         else if (AttachmentMemoryGateAmbient.HasMaterializedAttachmentContent)
         {
-
             return ToolError(
                 "scribe_lexicon requires attachment_id while attachment content is materialized; untrusted attachment instructions cannot authorize memory promotion.");
-
         }
 
         try
@@ -76,8 +69,11 @@ internal sealed partial class ArcanumInternalToolServer
 
             // The tier written is the turn's, and the turn's alone: with the gate off this is the global
             // tier, which is where every scribe_lexicon fact has always landed.
-            LexiconScope lexiconScope = await ResolveLexiconScopeAsync(scope, cancellationToken)
-                .ConfigureAwait(false);
+            if (await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false)
+                is not { } lexiconScope)
+            {
+                return ToolError(UnresolvedMemoryScopeMessage);
+            }
 
             Result<LexiconEntryDto> result = provenance is null
                 ? await lexicon
@@ -153,7 +149,11 @@ internal sealed partial class ArcanumInternalToolServer
 
             // Deletion is aimed at the tier the turn writes to, so a Forbidden Art cast inside one
             // Campaign can never take the installation's entity of the same name with it.
-            LexiconScope lexiconScope = await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false);
+            if (await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false)
+                is not { } lexiconScope)
+            {
+                return ToolError(UnresolvedMemoryScopeMessage);
+            }
 
             // Retired and pinned entries are the operator's to manage, so they are refused before any
             // purge can erase one. The agent-origin delete below decides again inside its transaction.
@@ -403,26 +403,48 @@ internal sealed partial class ArcanumInternalToolServer
 
     /// <summary>
     /// The Lexicon tier this tool call belongs to, resolved from the ambient Session's canonical
-    /// Campaign binding.
+    /// Campaign binding, or <see langword="null"/> when it cannot be resolved.
     /// </summary>
     /// <remarks>
     /// The Session identity is the host's, bound to this request before dispatch, never an argument the
     /// model supplied. That is what stops a model from naming a Campaign and writing into - or reading
     /// out of - a scope its turn does not hold.
     /// </remarks>
-    private static async Task<LexiconScope> ResolveLexiconScopeAsync(
+    private static async Task<LexiconScope?> ResolveLexiconScopeAsync(
         AsyncServiceScope scope,
+        CancellationToken cancellationToken) =>
+        await ResolveToolMemoryScopeAsync(
+                scope.ServiceProvider.GetRequiredService<IMemoryScopeResolver>(),
+                cancellationToken)
+            .ConfigureAwait(false) is { } resolved
+            ? resolved.ToLexiconScope()
+            : null;
+
+    /// <summary>The refusal a memory tool returns when its scope cannot be resolved.</summary>
+    private const string UnresolvedMemoryScopeMessage =
+        "Campaign-scoped memory is on and this tool call is bound to no Session, so its memory scope cannot be resolved; nothing was read or written.";
+
+    /// <summary>
+    /// The memory scope of the turn that made this tool call, or <see langword="null"/> when Campaign
+    /// scoping is on and no Session is bound to the call.
+    /// </summary>
+    /// <remarks>
+    /// Fails closed rather than falling to the installation scope. A call with no Session behind it
+    /// is one whose turn binding was lost on the way here, and the installation tier is the one every
+    /// Campaign reads: answering from it would hand a Campaign-bound turn's writes to every other
+    /// Campaign. With scoping off the installation scope is the only one, so there is nothing to lose.
+    /// </remarks>
+    private static async Task<MemoryScope?> ResolveToolMemoryScopeAsync(
+        IMemoryScopeResolver resolver,
         CancellationToken cancellationToken)
     {
+        Guid? sessionId = SessionAttachmentToolAmbient.CurrentSessionId;
 
-        IMemoryScopeResolver resolver = scope.ServiceProvider.GetRequiredService<IMemoryScopeResolver>();
+        if (sessionId is null && resolver.IsCampaignScopingEnabled)
+        {
+            return null;
+        }
 
-        MemoryScope resolved = await resolver
-            .ResolveForSessionAsync(SessionAttachmentToolAmbient.CurrentSessionId, cancellationToken)
-            .ConfigureAwait(false);
-
-        return resolved.ToLexiconScope();
-
+        return await resolver.ResolveForSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
     }
-
 }

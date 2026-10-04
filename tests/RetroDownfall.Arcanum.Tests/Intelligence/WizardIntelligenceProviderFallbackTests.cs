@@ -1086,6 +1086,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             auditLogger,
             covenantToolCapabilities: null,
             turnCommitter: null,
+            mcpTools: null,
             providers);
 
     /// <summary>
@@ -1124,6 +1125,35 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             auditLogger: null,
             covenantToolCapabilities,
             turnCommitter,
+            mcpTools: null,
+            providers);
+
+    /// <summary>
+    /// The staging composition again, with tools the model can call through the turn's own tool loop.
+    /// </summary>
+    /// <remarks>
+    /// A tool reached this way runs where a production tool call runs: after the turn's ToolCall frame,
+    /// in the iterator segment that follows it. A tool a scripted client calls from inside its own
+    /// provider call runs before that frame instead, and cannot show what a model's tool call sees.
+    /// </remarks>
+    internal static WizardIntelligenceProvider CreateCovenantStagingWizardWithTools(
+        IChatClientFactory factory,
+        CovenantDispatchGate covenantDispatch,
+        CovenantToolCapabilityRegistry covenantToolCapabilities,
+        IGrimoireRepository grimoire,
+        IGrimoireTurnCommitter? turnCommitter,
+        IReadOnlyList<AITool> mcpTools,
+        params ProviderSettings[] providers) =>
+        CreateWizard(
+            factory,
+            healthTracker: null,
+            withHealthTracker: false,
+            grimoire,
+            covenantDispatch,
+            auditLogger: null,
+            covenantToolCapabilities,
+            turnCommitter,
+            mcpTools,
             providers);
 
     private static WizardIntelligenceProvider CreateWizard(
@@ -1145,7 +1175,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         bool withHealthTracker,
         FakeGrimoireRepository grimoire,
         params ProviderSettings[] providers) =>
-        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, null, null, providers);
+        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, null, null, null, providers);
 
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
@@ -1156,6 +1186,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         FakeInferenceAuditLogger? auditLogger,
         CovenantToolCapabilityRegistry? covenantToolCapabilities,
         IGrimoireTurnCommitter? turnCommitter,
+        IReadOnlyList<AITool>? mcpTools,
         params ProviderSettings[] providers)
     {
         ArcanumSettings settings = new()
@@ -1169,7 +1200,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         FakeWard ward = new();
 
-        FakeMcpConnectionManager mcp = new();
+        FakeMcpConnectionManager mcp = new(mcpTools ?? []);
 
         FakeCampaignRepository campaignRepository = new();
 
@@ -1844,7 +1875,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
     }
 
-    private sealed class FakeMcpConnectionManager : IMcpConnectionManager
+    private sealed class FakeMcpConnectionManager(IReadOnlyList<AITool>? tools = null) : IMcpConnectionManager
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
@@ -1866,7 +1897,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             Task.FromResult(Array.Empty<McpServerInfo>());
 
         public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<AITool>>([]);
+            Task.FromResult<IReadOnlyList<AITool>>(tools ?? []);
 
         public Task<AIFunction?> GetToolAsync(
             string serverName,

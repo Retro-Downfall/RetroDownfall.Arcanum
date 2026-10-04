@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 internal static class TurnAccountingAmbient
 {
-
     private static readonly AsyncLocal<TurnAccountingHandle?> CurrentLocal = new();
 
     private static readonly AsyncLocal<ITurnRunWriter?> WriterLocal = new();
@@ -43,6 +42,21 @@ internal static class TurnAccountingAmbient
         return scope;
     }
 
+    /// <summary>
+    /// Hides the current turn's accounting from work that must account for itself, then restores it.
+    /// </summary>
+    /// <remarks>
+    /// A delegated child turn begins its own run and reservation. Seeing the parent's handle it would
+    /// adopt it instead, and on completion settle the parent's run and reservation while the parent is
+    /// still mid-turn.
+    /// </remarks>
+    public static IDisposable Suspend()
+    {
+        RestorationScope scope = new(Current, Writer);
+        Clear();
+        return scope;
+    }
+
     public static void Clear()
     {
         Current = null;
@@ -73,5 +87,4 @@ internal static class TurnAccountingAmbient
             Publish(previousHandle, previousWriter);
         }
     }
-
 }
