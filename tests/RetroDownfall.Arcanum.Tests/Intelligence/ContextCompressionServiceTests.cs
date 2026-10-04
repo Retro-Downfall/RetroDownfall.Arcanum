@@ -679,11 +679,6 @@ public sealed class ContextCompressionServiceTests
             CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
-        public Task<int> PurgeSessionAsync(
-            Guid sessionId,
-            CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
         public Task<Session?> GetSessionHeaderAsync(
             Guid id,
             CancellationToken cancellationToken = default) =>

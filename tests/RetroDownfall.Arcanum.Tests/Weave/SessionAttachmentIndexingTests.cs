@@ -2,6 +2,8 @@ using System.Text;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.EntityFrameworkCore.Storage;
+
 using Microsoft.Extensions.AI;
 
 using Microsoft.Extensions.Logging.Abstractions;
@@ -265,70 +267,20 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     }
 
-    [SkippableFact]
-
-    public async Task PurgeSessionAsync_RemovesAttachmentChunksEmbeddingsAndState()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        GrimoireRepository repository = new(
-            _db!,
-            _attachments!,
-            NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(_settings),
-            _index,
-            covenantKernel: null,
-            availabilityRepublisher: null,
-            FixtureOrdinaryConnectionFactory.For(_db!),
-            FixtureLabeledArtifactGuard.For(_db!));
-
-        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
-            sessionId: null,
-            prompt: "index then purge",
-            model: "test-model",
-            cancellationToken: CancellationToken.None);
-
-        SessionAttachmentRecord attachment = await PersistAsync(
-            sessionId,
-            "notes",
-            "notes.txt",
-            "text/plain",
-            "purge me");
-
-        _ = await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
-            new(attachment.Id, sessionId),
-            CancellationToken.None);
-
-        Assert.NotEmpty(await _index!.GetChunksForAttachmentAsync(
-            attachment.Id,
-            CancellationToken.None));
-
-        Assert.Equal(1, await repository.PurgeSessionAsync(sessionId, CancellationToken.None));
-
-        Assert.Empty(await _index.GetChunksForAttachmentAsync(
-            attachment.Id,
-            CancellationToken.None));
-
-        Assert.Empty(await _index.GetStatusesAsync(
-            [attachment.Id],
-            CancellationToken.None));
-
-    }
-
     /// <summary>
-    /// Deleting a session empties its rows from a plain vector mirror whatever the accelerator flag
-    /// says, and leaves another session's rows alone.
+    /// The index's purge of a session empties its rows from a plain vector mirror whatever the
+    /// accelerator flag says, and leaves another session's rows alone.
     /// </summary>
     /// <remarks>
     /// The mirror holds the embedding itself, so a row left behind is attachment content left behind. A
-    /// build with no accelerator would otherwise skip a mirror an earlier build filled. The repository's
-    /// flag is off here, which is the shipping runtime, and the rows are seeded because no production
-    /// path of this build writes them.
+    /// build with no accelerator would otherwise skip a mirror an earlier build filled. The flag is off
+    /// here, which is the shipping runtime, and the rows are seeded because no production path of this
+    /// build writes them. Entered at the index's own port, which is where the mirror is handled; the
+    /// repository no longer deletes a whole session.
     /// </remarks>
     [SkippableFact]
 
-    public async Task PurgeSessionAsync_EmptiesItsPlainVectorMirrorRowsWhileTheFlagIsOff()
+    public async Task DeleteForSessionInAmbientTransactionAsync_EmptiesItsPlainVectorMirrorRowsWhileTheFlagIsOff()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -369,7 +321,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         await SeedVectorMirrorRowAsync("another-sessions-chunk");
 
-        Assert.Equal(1, await repository.PurgeSessionAsync(sessionId, CancellationToken.None));
+        await PurgeIndexForSessionAsync(sessionId);
 
         Assert.Equal(
             0,
@@ -458,8 +410,8 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped, and the session delete still
-    /// succeeds.
+    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped, and the index's purge of a
+    /// session still succeeds.
     /// </summary>
     /// <remarks>
     /// An FTS5 virtual table stands in for it, because it records the same <c>CREATE VIRTUAL TABLE</c>
@@ -468,7 +420,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
     /// </remarks>
     [SkippableFact]
 
-    public async Task PurgeSessionAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
+    public async Task DeleteForSessionInAmbientTransactionAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -501,11 +453,24 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         await SeedVectorMirrorRowAsync(chunkId);
 
-        Assert.Equal(1, await repository.PurgeSessionAsync(sessionId, CancellationToken.None));
+        await PurgeIndexForSessionAsync(sessionId);
 
         Assert.Empty(await _index.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
 
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM session_attachment_embeddings_vec;"));
+
+    }
+
+    /// <summary>Runs the attachment index's purge of one session in a transaction, as its caller did.</summary>
+    private async Task PurgeIndexForSessionAsync(Guid sessionId)
+    {
+
+        await using IDbContextTransaction transaction = await _db!.Database
+            .BeginTransactionAsync(CancellationToken.None);
+
+        await _index!.DeleteForSessionInAmbientTransactionAsync(sessionId, CancellationToken.None);
+
+        await transaction.CommitAsync(CancellationToken.None);
 
     }
 
@@ -515,7 +480,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             _attachments!,
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(_settings),
-            _index,
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),

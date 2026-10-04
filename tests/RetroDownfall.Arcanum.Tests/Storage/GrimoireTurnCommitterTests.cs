@@ -466,7 +466,6 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot(new ArcanumSettings()),
-            attachmentIndex: null,
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),

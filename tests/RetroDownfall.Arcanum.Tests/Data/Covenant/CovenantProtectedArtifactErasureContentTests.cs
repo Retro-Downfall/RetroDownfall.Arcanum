@@ -370,7 +370,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                     new NoOpSessionAttachmentStore(),
                     NullLogger<GrimoireRepository>.Instance,
                     new TestOptionsSnapshot<ArcanumSettings>(settings),
-                    attachmentIndex: null,
                     covenantKernel: null,
                     availabilityRepublisher: null,
                     sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),

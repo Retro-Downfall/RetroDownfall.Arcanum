@@ -1016,10 +1016,6 @@ public sealed class LoremasterTests
             string modelUsed,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public Task<int> PurgeSessionAsync(
-            Guid sessionId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
         public Task<Session?> GetSessionAsync(
             Guid id,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();

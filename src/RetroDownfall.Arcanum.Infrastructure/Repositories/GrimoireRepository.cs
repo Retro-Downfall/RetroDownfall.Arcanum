@@ -34,8 +34,6 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
     private readonly IOptionsSnapshot<ArcanumSettings> _arcOptions;
 
-    private readonly ISessionAttachmentIndexMaintenance? _attachmentIndex;
-
     /// <summary>
     /// The Covenant publisher, absent in hosts that compose no Covenant tier.
     /// </summary>
@@ -98,7 +96,6 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         ISessionAttachmentStore attachments,
         ILogger<GrimoireRepository> logger,
         IOptionsSnapshot<ArcanumSettings> arcOptions,
-        ISessionAttachmentIndexMaintenance? attachmentIndex,
         CovenantMutationKernel? covenantKernel,
         CovenantAvailabilityRepublisher? availabilityRepublisher,
         IGrimoireOrdinaryConnectionFactory connections,
@@ -115,8 +112,6 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         _logger = logger;
 
         _arcOptions = arcOptions;
-
-        _attachmentIndex = attachmentIndex;
 
         _covenantKernel = covenantKernel;
 
@@ -551,178 +546,6 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
-    }
-
-    public async Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
-    {
-        using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
-
-        using IDisposable attachmentGate = await _attachments
-            .AcquireSessionGateAsync(sessionId, cancellationToken)
-            .ConfigureAwait(false);
-
-        await using var tx = await _db.Database
-            .BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (_attachmentIndex is not null)
-        {
-            await _attachmentIndex.DeleteForSessionInAmbientTransactionAsync(
-                sessionId,
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        await SqliteBusyRetry.ExecuteAsync(
-            () => _attachments.DeleteRowsForSessionInAmbientTransactionAsync(sessionId, cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-
-        await DeleteEntryEmbeddingsForSessionInAmbientTransactionAsync(
-            sessionId,
-            cancellationToken).ConfigureAwait(false);
-
-        await SqliteBusyRetry.ExecuteAsync(
-            () => ExecuteNonQueryAsync(
-                """
-                DELETE FROM "Entries"
-                WHERE "SessionId" = $sessionId;
-                """,
-                command => GrimoireEntitySql.AddParameter(
-                    command,
-                    "$sessionId",
-                    GrimoireEntitySql.Format(sessionId)),
-                cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-
-        int removed = await DeleteSessionRowInAmbientTransactionAsync(
-            sessionId,
-            cancellationToken).ConfigureAwait(false);
-
-        await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!_attachments.TryDeleteSessionDirectory(sessionId))
-        {
-            _logger.LogWarning(
-                "Purged session {SessionId} from Grimoire but attachment directory cleanup failed; reconcile will retry.",
-                sessionId);
-        }
-
-        return removed;
-    }
-
-    /// <summary>
-    /// Removes the Session row itself, under the retention authorization its cascade requires.
-    /// </summary>
-    /// <remarks>
-    /// The Session owns its row in the turn capacity ledger, and that row leaves only through an
-    /// authorized retention or capacity transaction. Its delete guard begins denied on every
-    /// connection, including a pooled one handed back out, so the parent delete has to hold the
-    /// scope itself. The scope covers the delete alone and is released before the caller commits,
-    /// so nothing later in this transaction inherits it.
-    /// </remarks>
-    private async Task<int> DeleteSessionRowInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
-                    _db,
-                    """
-                    DELETE FROM "Sessions"
-                    WHERE "Id" = $sessionId;
-                    """,
-                    cancellationToken).ConfigureAwait(false);
-
-                GrimoireEntitySql.AddParameter(
-                    command,
-                    "$sessionId",
-                    GrimoireEntitySql.Format(sessionId));
-
-                using CovenantSqliteAuthorizationScope retention =
-                    CovenantSqliteConnectionInitializer.Instance.Authorize(
-                        command.Connection!,
-                        CovenantSqliteAuthorizationKind.SessionRetention);
-
-                return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            },
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task DeleteEntryEmbeddingsForSessionInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        IDbContextTransaction? ambient = _db.Database.CurrentTransaction;
-
-        if (ambient is null)
-        {
-            throw new InvalidOperationException("Entry embedding purge requires an ambient transaction.");
-        }
-
-        foreach (string table in new[] { "entry_embeddings_vec", "entry_embeddings" })
-        {
-            if (!await EmbeddingTableIsDeletableAsync(table, ambient, cancellationToken).ConfigureAwait(false))
-            {
-                continue;
-            }
-
-            await using SqliteCommand delete = await GrimoireSqlCommandFactory.CreateAsync(
-                _db,
-                $"""
-                DELETE FROM "{table}"
-                WHERE lower(replace("EntryId", '-', '')) IN (
-                    SELECT lower(replace(CAST("Id" AS TEXT), '-', ''))
-                    FROM "Entries"
-                    WHERE lower(replace(CAST("SessionId" AS TEXT), '-', '')) = @sessionId
-                )
-                """,
-                cancellationToken).ConfigureAwait(false);
-
-            GrimoireEntitySql.AddParameter(delete, "@sessionId", sessionId.ToString("N"));
-
-            _ = await SqliteBusyRetry.ExecuteAsync(
-                () => delete.ExecuteNonQueryAsync(cancellationToken),
-                cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
-    /// Whether an entry embedding table is there to delete the session's rows from.
-    /// </summary>
-    /// <remarks>
-    /// The vector mirror is classified from its definition rather than probed for existence, because a
-    /// legacy <c>vec0</c> virtual table also has a row in <c>sqlite_master</c> and this runtime has no
-    /// module to open it with: a delete against it would fail the whole session purge. A legacy mirror
-    /// is skipped, and a plain one is emptied of the session's rows.
-    /// </remarks>
-    private async Task<bool> EmbeddingTableIsDeletableAsync(
-        string table,
-        IDbContextTransaction ambient,
-        CancellationToken cancellationToken)
-    {
-        if (SagaVectorMirror.IsMirrorName(table))
-        {
-            // The connection is the one the ambient transaction is on, so it is read from the transaction
-            // rather than acquired again.
-            System.Data.Common.DbTransaction transaction = ambient.GetDbTransaction();
-
-            return await SagaVectorMirror.ClassifyAsync(
-                transaction.Connection
-                    ?? throw new InvalidOperationException("The ambient entry-embedding transaction has no connection."),
-                transaction,
-                table,
-                cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
-        }
-
-        await using SqliteCommand exists = await GrimoireSqlCommandFactory.CreateAsync(
-            _db,
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = $table LIMIT 1;",
-            cancellationToken).ConfigureAwait(false);
-
-        GrimoireEntitySql.AddParameter(exists, "$table", table);
-
-        return await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
     }
 
     public async Task<Session?> GetSessionAsync(

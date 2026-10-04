@@ -360,7 +360,6 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
-            attachmentIndex: null,
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             DetachedAvailabilityRepublisher.Create(),
             FixtureOrdinaryConnectionFactory.For(_db!),

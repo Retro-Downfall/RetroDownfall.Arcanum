@@ -241,8 +241,8 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     /// predicates are joined by <c>OR</c> the failure was a silent under-delete rather than anything that
     /// raised.
     ///
-    /// <para><b>Why the purge is entered here rather than through <c>PurgeSessionAsync</c>.</b> That
-    /// caller also deletes the attachment rows, and <c>session_attachment_chunks.AttachmentId</c> carries
+    /// <para><b>Why the purge is entered here rather than through a delete of the whole Session.</b> That
+    /// also deletes the attachment rows, and <c>session_attachment_chunks.AttachmentId</c> carries
     /// <c>ON DELETE CASCADE</c>, so the chunks disappear either way and the under-delete is invisible
     /// from there. Entering at the index maintenance port is what isolates the predicate this case is
     /// about; the cascade is a second mechanism, not a reason the first one may be wrong.</para>
