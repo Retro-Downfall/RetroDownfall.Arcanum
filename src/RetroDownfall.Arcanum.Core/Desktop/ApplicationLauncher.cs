@@ -4,32 +4,20 @@ using System.Text;
 
 namespace RetroDownfall.Arcanum.Core.Desktop;
 
-/// <summary>Starts application processes directly and converts start failures to safe results.</summary>
+/// <summary>
+/// Starts application processes directly. A start failure propagates to <see cref="ApplicationLauncher"/>,
+/// which is the one place that converts it to a safe result and records only the exception type.
+/// </summary>
 public sealed class ApplicationProcessStarter : IApplicationProcessStarter
 {
-
     public bool TryStart(ProcessStartInfo startInfo)
     {
-
         ArgumentNullException.ThrowIfNull(startInfo);
 
-        try
-        {
+        using Process? process = Process.Start(startInfo);
 
-            using Process? process = Process.Start(startInfo);
-
-            return process is not null;
-
-        }
-        catch
-        {
-
-            return false;
-
-        }
-
+        return process is not null;
     }
-
 }
 
 /// <summary>
@@ -37,7 +25,6 @@ public sealed class ApplicationProcessStarter : IApplicationProcessStarter
 /// </summary>
 public sealed class ApplicationLauncher : IApplicationLauncher
 {
-
     private readonly IApplicationDiscoveryService _discovery;
 
     private readonly IApplicationProcessStarter _processStarter;
@@ -46,81 +33,68 @@ public sealed class ApplicationLauncher : IApplicationLauncher
         IApplicationDiscoveryService discovery,
         IApplicationProcessStarter processStarter)
     {
-
         _discovery = discovery;
 
         _processStarter = processStarter;
-
     }
 
     public ApplicationLaunchResult TryLaunch(ApplicationLaunchRequest request)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         if (request.DeepLink is { } deepLink
             && deepLink.TargetApplication != request.Application)
         {
-
             return Failure(
                 request,
                 [],
                 "The deep-link target does not match the requested application.");
-
         }
 
         string? deepLinkPayload;
 
         try
         {
-
             deepLinkPayload = request.DeepLink is null
                 ? null
                 : ApplicationDeepLinkCodec.Encode(request.DeepLink);
-
         }
-        catch
+        catch (Exception exception)
         {
-
             return Failure(
                 request,
                 [],
-                "The deep-link payload could not be encoded.");
-
+                $"The deep-link payload could not be encoded ({exception.GetType().Name}).");
         }
 
         IReadOnlyList<ApplicationDiscoveryCandidate> candidates;
 
         try
         {
-
             candidates = _discovery.Discover(request.Application);
-
         }
-        catch
+        catch (Exception exception)
         {
-
+            // The type name only: exception message text can carry paths and secrets.
             return Failure(
                 request,
                 [],
-                "Application discovery failed.");
-
+                $"Application discovery failed ({exception.GetType().Name}).");
         }
 
         List<ApplicationDiscoveryCandidate> triedCandidates = [];
 
         bool foundExistingCandidate = false;
 
+        string? startFailureType = null;
+
         foreach (ApplicationDiscoveryCandidate candidate in candidates)
         {
-
             triedCandidates.Add(candidate);
 
             if (!candidate.Exists)
             {
-
                 continue;
-
             }
 
             foundExistingCandidate = true;
@@ -131,20 +105,17 @@ public sealed class ApplicationLauncher : IApplicationLauncher
 
             try
             {
-
                 started = _processStarter.TryStart(startInfo);
-
             }
-            catch
+            catch (Exception exception)
             {
-
                 started = false;
 
+                startFailureType = exception.GetType().Name;
             }
 
             if (started)
             {
-
                 return new ApplicationLaunchResult(
                     ApplicationLaunchStatus.Started,
                     triedCandidates.ToArray(),
@@ -152,9 +123,7 @@ public sealed class ApplicationLauncher : IApplicationLauncher
                     $"Started {GetDisplayName(request.Application)}.",
                     DevelopmentFallbackCommand: null,
                     request.CliFallbackCommand);
-
             }
-
         }
 
         ApplicationLaunchStatus status = foundExistingCandidate
@@ -172,29 +141,25 @@ public sealed class ApplicationLauncher : IApplicationLauncher
             BuildFailureMessage(
                 request.Application,
                 status,
-                triedCandidates),
+                triedCandidates,
+                startFailureType),
             developmentFallback,
             request.CliFallbackCommand);
-
     }
 
     private static ProcessStartInfo CreateStartInfo(
         ApplicationDiscoveryCandidate candidate,
         string? deepLinkPayload)
     {
-
         ProcessStartInfo startInfo = new()
         {
-
             UseShellExecute = false,
 
             CreateNoWindow = true,
-
         };
 
         switch (candidate.Kind)
         {
-
             case ApplicationCandidateKind.Executable:
 
                 startInfo.FileName = candidate.LaunchPath;
@@ -211,9 +176,7 @@ public sealed class ApplicationLauncher : IApplicationLauncher
 
                 if (deepLinkPayload is not null)
                 {
-
                     startInfo.ArgumentList.Add("--args");
-
                 }
 
                 break;
@@ -236,27 +199,22 @@ public sealed class ApplicationLauncher : IApplicationLauncher
 
                 throw new InvalidOperationException(
                     "The application discovery candidate kind is unknown.");
-
         }
 
         if (deepLinkPayload is not null)
         {
-
             startInfo.ArgumentList.Add(ApplicationDeepLinkCodec.ArgumentName);
 
             startInfo.ArgumentList.Add(deepLinkPayload);
-
         }
 
         return startInfo;
-
     }
 
     private static string? CreateDevelopmentFallback(
         IReadOnlyList<ApplicationDiscoveryCandidate> candidates,
         string? deepLinkPayload)
     {
-
         ApplicationDiscoveryCandidate? project = candidates.FirstOrDefault(
             candidate =>
                 candidate.Kind == ApplicationCandidateKind.DevelopmentProject
@@ -264,9 +222,7 @@ public sealed class ApplicationLauncher : IApplicationLauncher
 
         if (project?.ProjectRelativePath is not { } projectRelativePath)
         {
-
             return null;
-
         }
 
         StringBuilder command = new();
@@ -277,7 +233,6 @@ public sealed class ApplicationLauncher : IApplicationLauncher
 
         if (deepLinkPayload is not null)
         {
-
             command.Append(" -- ");
 
             command.Append(ApplicationDeepLinkCodec.ArgumentName);
@@ -287,22 +242,22 @@ public sealed class ApplicationLauncher : IApplicationLauncher
             command.Append(
                 CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(
                     deepLinkPayload));
-
         }
 
         return command.ToString();
-
     }
 
     private static string BuildFailureMessage(
         DesktopApplication application,
         ApplicationLaunchStatus status,
-        IReadOnlyList<ApplicationDiscoveryCandidate> candidates)
+        IReadOnlyList<ApplicationDiscoveryCandidate> candidates,
+        string? startFailureType)
     {
-
         string outcome = status == ApplicationLaunchStatus.Unavailable
             ? "was not found"
-            : "could not be started";
+            : startFailureType is null
+                ? "could not be started"
+                : $"could not be started ({startFailureType})";
 
         string locations = candidates.Count == 0
             ? "none"
@@ -311,7 +266,6 @@ public sealed class ApplicationLauncher : IApplicationLauncher
                 candidates.Select(candidate => candidate.DisplayPath));
 
         return $"{GetDisplayName(application)} {outcome}. Discovery locations tried: {locations}.";
-
     }
 
     private static ApplicationLaunchResult Failure(
@@ -329,7 +283,6 @@ public sealed class ApplicationLauncher : IApplicationLauncher
     private static string GetDisplayName(DesktopApplication application) =>
         application switch
         {
-
             DesktopApplication.CommandCenter => "Command Center",
 
             DesktopApplication.TheForge => "The Forge",
@@ -337,7 +290,5 @@ public sealed class ApplicationLauncher : IApplicationLauncher
             DesktopApplication.Compendium => "Compendium",
 
             _ => "Application",
-
         };
-
 }

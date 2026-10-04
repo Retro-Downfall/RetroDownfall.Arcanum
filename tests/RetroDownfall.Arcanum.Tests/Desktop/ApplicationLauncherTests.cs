@@ -10,7 +10,6 @@ namespace RetroDownfall.Arcanum.Tests.Desktop;
 
 public sealed class ApplicationLauncherTests
 {
-
     private const string TheForgeProject =
         "src/RetroDownfall.TheForge.Ux/RetroDownfall.TheForge.Ux.csproj";
 
@@ -20,7 +19,6 @@ public sealed class ApplicationLauncherTests
     public static TheoryData<DesktopApplication, string, string, string> DesktopApplicationCases =>
         new()
         {
-
             {
                 DesktopApplication.TheForge,
                 "RetroDownfall.TheForge.Ux",
@@ -34,14 +32,12 @@ public sealed class ApplicationLauncherTests
                 "Compendium.app",
                 CompendiumProject
             },
-
         };
 
     [Fact]
 
     public void Try_launch_uses_argument_list_without_a_shell()
     {
-
         ApplicationDiscoveryCandidate candidate = new(
             ApplicationCandidateKind.Executable,
             "/opt/arcanum/RetroDownfall.TheForge.Ux",
@@ -93,14 +89,56 @@ public sealed class ApplicationLauncherTests
             startInfo.ArgumentList.ToArray());
 
         Assert.Equal(deepLink, ApplicationDeepLinkCodec.Decode(startInfo.ArgumentList[1]));
+    }
 
+    [Fact]
+
+    public void Start_failure_message_names_the_exception_type()
+    {
+        ApplicationDiscoveryCandidate candidate = new(
+            ApplicationCandidateKind.Executable,
+            "/opt/arcanum/RetroDownfall.TheForge.Ux",
+            "/opt/arcanum/RetroDownfall.TheForge.Ux",
+            Exists: true);
+
+        IApplicationLauncher launcher = new ApplicationLauncher(
+            new StubDiscoveryService([candidate]),
+            new ThrowingProcessStarter(
+                new InvalidOperationException("secret path /home/someone/.config/key")));
+
+        ApplicationLaunchResult result = launcher.TryLaunch(
+            new ApplicationLaunchRequest(DesktopApplication.TheForge, DeepLink: null, "arcanum center"));
+
+        Assert.Equal(ApplicationLaunchStatus.Failed, result.Status);
+
+        Assert.Contains(nameof(InvalidOperationException), result.Message, StringComparison.Ordinal);
+
+        // The type only: exception message text can carry paths and secrets.
+        Assert.DoesNotContain("secret path", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+
+    public void Discovery_failure_message_names_the_exception_type()
+    {
+        IApplicationLauncher launcher = new ApplicationLauncher(
+            new ThrowingDiscoveryService(new UnauthorizedAccessException("denied /private/path")),
+            new RecordingProcessStarter());
+
+        ApplicationLaunchResult result = launcher.TryLaunch(
+            new ApplicationLaunchRequest(DesktopApplication.TheForge, DeepLink: null, "arcanum center"));
+
+        Assert.Equal(ApplicationLaunchStatus.Failed, result.Status);
+
+        Assert.Contains(nameof(UnauthorizedAccessException), result.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("/private/path", result.Message, StringComparison.Ordinal);
     }
 
     [Fact]
 
     public void Try_launch_application_bundle_uses_direct_macos_open_executable()
     {
-
         const string bundlePath = "/Applications/The Forge.app";
 
         ApplicationDiscoveryCandidate candidate = new(
@@ -142,14 +180,12 @@ public sealed class ApplicationLauncherTests
                 ApplicationDeepLinkCodec.Encode(deepLink),
             ],
             startInfo.ArgumentList.ToArray());
-
     }
 
     [Fact]
 
     public void Try_launch_continues_after_a_candidate_fails_to_start()
     {
-
         ApplicationDiscoveryCandidate installedCandidate = new(
             ApplicationCandidateKind.Executable,
             "/Applications/Arcanum/RetroDownfall.TheForge.Ux",
@@ -206,14 +242,12 @@ public sealed class ApplicationLauncherTests
                 ApplicationDeepLinkCodec.Encode(deepLink),
             ],
             developmentStart.ArgumentList.ToArray());
-
     }
 
     [Fact]
 
     public void Try_launch_unavailable_reports_every_candidate_and_safe_fallbacks()
     {
-
         ApplicationDiscoveryCandidate installedCandidate = new(
             ApplicationCandidateKind.Executable,
             "/Applications/The Forge.app/Contents/MacOS/RetroDownfall.TheForge.Ux",
@@ -286,7 +320,6 @@ public sealed class ApplicationLauncherTests
             developmentCandidate.DisplayPath,
             result.Message,
             StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -299,7 +332,6 @@ public sealed class ApplicationLauncherTests
         string applicationBundle,
         string projectRelativePath)
     {
-
         ApplicationDiscoveryEnvironment environment = CreateDiscoveryEnvironment();
 
         IApplicationDiscoveryService discovery = new MacOsApplicationDiscoveryService(environment);
@@ -321,7 +353,6 @@ public sealed class ApplicationLauncherTests
         AssertDevelopmentCandidate(candidates, projectRelativePath);
 
         AssertSafeDisplayPaths(candidates);
-
     }
 
     [Theory]
@@ -334,7 +365,6 @@ public sealed class ApplicationLauncherTests
         string applicationBundle,
         string projectRelativePath)
     {
-
         _ = applicationBundle;
 
         ApplicationDiscoveryEnvironment environment = CreateDiscoveryEnvironment();
@@ -353,7 +383,6 @@ public sealed class ApplicationLauncherTests
         AssertDevelopmentCandidate(candidates, projectRelativePath);
 
         AssertSafeDisplayPaths(candidates);
-
     }
 
     [Theory]
@@ -373,7 +402,6 @@ public sealed class ApplicationLauncherTests
         string packageDirectory,
         string executableName)
     {
-
         ApplicationDiscoveryEnvironment environment = CreateDiscoveryEnvironment();
 
         IApplicationDiscoveryService discovery = new WindowsApplicationDiscoveryService(environment);
@@ -395,7 +423,6 @@ public sealed class ApplicationLauncherTests
                     candidate.LaunchPath,
                     expectedPath,
                     StringComparison.Ordinal));
-
     }
 
     [Theory]
@@ -408,7 +435,6 @@ public sealed class ApplicationLauncherTests
         string applicationBundle,
         string projectRelativePath)
     {
-
         _ = applicationBundle;
 
         ApplicationDiscoveryEnvironment environment = CreateDiscoveryEnvironment();
@@ -427,7 +453,6 @@ public sealed class ApplicationLauncherTests
         AssertDevelopmentCandidate(candidates, projectRelativePath);
 
         AssertSafeDisplayPaths(candidates);
-
     }
 
     [Theory]
@@ -467,7 +492,6 @@ public sealed class ApplicationLauncherTests
         string otherPackageDirectory,
         string executableName)
     {
-
         ApplicationDiscoveryEnvironment environment = CreateDiscoveryEnvironment(
             processArchitecture);
 
@@ -496,7 +520,6 @@ public sealed class ApplicationLauncherTests
             candidate => candidate.LaunchPath.Contains(
                 otherPackageDirectory,
                 StringComparison.Ordinal));
-
     }
 
     [Theory]
@@ -525,7 +548,6 @@ public sealed class ApplicationLauncherTests
         string packageDirectory,
         string executableName)
     {
-
         CompendiumLaunchPlatform platform = (CompendiumLaunchPlatform)platformValue;
 
         string baseDirectory = Path.Combine(
@@ -549,11 +571,9 @@ public sealed class ApplicationLauncherTests
             path => string.Equals(path, packagedExecutable, StringComparison.Ordinal),
             startInfo =>
             {
-
                 started = startInfo;
 
                 return true;
-
             },
             platform,
             processArchitecture);
@@ -567,7 +587,6 @@ public sealed class ApplicationLauncherTests
         Assert.NotNull(started);
 
         Assert.Equal(packagedExecutable, started!.FileName);
-
     }
 
     private static ApplicationDeepLink CreateSessionDeepLink() =>
@@ -588,15 +607,12 @@ public sealed class ApplicationLauncherTests
             RepositoryRoot: "/work/arcanum",
             PathExists: _ => true)
         {
-
             ProcessArchitecture = processArchitecture,
-
         };
 
     private static string ArchitectureSuffix(Architecture architecture) =>
         architecture switch
         {
-
             Architecture.X64 => "x64",
 
             Architecture.Arm64 => "arm64",
@@ -605,14 +621,12 @@ public sealed class ApplicationLauncherTests
                 nameof(architecture),
                 architecture,
                 "The test architecture is unsupported."),
-
         };
 
     private static void AssertDevelopmentCandidate(
         IReadOnlyList<ApplicationDiscoveryCandidate> candidates,
         string projectRelativePath)
     {
-
         ApplicationDiscoveryCandidate candidate = Assert.Single(
             candidates,
             candidate =>
@@ -628,20 +642,17 @@ public sealed class ApplicationLauncherTests
             "/work/arcanum",
             candidate.DisplayPath,
             StringComparison.Ordinal);
-
     }
 
     private static void AssertSafeDisplayPaths(
         IReadOnlyList<ApplicationDiscoveryCandidate> candidates)
     {
-
         Assert.NotEmpty(candidates);
 
         Assert.All(
             candidates,
             candidate =>
             {
-
                 Assert.False(string.IsNullOrWhiteSpace(candidate.DisplayPath));
 
                 Assert.DoesNotContain(
@@ -653,9 +664,7 @@ public sealed class ApplicationLauncherTests
                     "credential",
                     candidate.DisplayPath,
                     StringComparison.OrdinalIgnoreCase);
-
             });
-
     }
 
     private static string NormalizePath(string path) =>
@@ -663,45 +672,46 @@ public sealed class ApplicationLauncherTests
 
     private sealed class StubDiscoveryService : IApplicationDiscoveryService
     {
-
         private readonly IReadOnlyList<ApplicationDiscoveryCandidate> _candidates;
 
         public StubDiscoveryService(IReadOnlyList<ApplicationDiscoveryCandidate> candidates)
         {
-
             _candidates = candidates;
-
         }
 
         public IReadOnlyList<ApplicationDiscoveryCandidate> Discover(
             DesktopApplication application) =>
             _candidates;
+    }
 
+    private sealed class ThrowingDiscoveryService(Exception exception) : IApplicationDiscoveryService
+    {
+        public IReadOnlyList<ApplicationDiscoveryCandidate> Discover(
+            DesktopApplication application) =>
+            throw exception;
+    }
+
+    private sealed class ThrowingProcessStarter(Exception exception) : IApplicationProcessStarter
+    {
+        public bool TryStart(ProcessStartInfo startInfo) => throw exception;
     }
 
     private sealed class RecordingProcessStarter : IApplicationProcessStarter
     {
-
         private readonly Queue<bool> _outcomes;
 
         public RecordingProcessStarter(params bool[] outcomes)
         {
-
             _outcomes = new Queue<bool>(outcomes);
-
         }
 
         public List<ProcessStartInfo> StartInfos { get; } = [];
 
         public bool TryStart(ProcessStartInfo startInfo)
         {
-
             StartInfos.Add(startInfo);
 
             return _outcomes.Count > 0 && _outcomes.Dequeue();
-
         }
-
     }
-
 }
