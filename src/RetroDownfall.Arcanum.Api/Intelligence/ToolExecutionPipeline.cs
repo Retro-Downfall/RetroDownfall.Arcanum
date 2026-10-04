@@ -75,7 +75,6 @@ public sealed class ToolExecutionPipeline(
     CovenantToolEgressGuard? covenantEgressGuard = null,
     ICovenantAuthoritySnapshotProvider? covenantAuthority = null)
 {
-
     /// <summary>
     /// Synthesized tool result text when an unexpected (infrastructure-fault) exception is tolerated
     /// rather than failing the whole turn under the code-owned tolerant mode policy. The model sees
@@ -91,7 +90,6 @@ public sealed class ToolExecutionPipeline(
 
     public sealed class TurnContext
     {
-
         public Campaign? Campaign { get; init; }
 
         public string? CampaignId { get; init; }
@@ -127,7 +125,6 @@ public sealed class ToolExecutionPipeline(
         /// dependencies). The Sanctum preflight validates every candidate root, not just the active spell's.
         /// </summary>
         public IReadOnlyList<string> SpellScriptRoots { get; init; } = [];
-
     }
 
     public sealed record WardedToolExecutionResult(
@@ -150,28 +147,22 @@ public sealed class ToolExecutionPipeline(
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
     {
-
         return CollectFunctionCalls(response)
             .Where(static c => !c.InformationalOnly)
             .ToList();
-
     }
 
     private static readonly ConditionalWeakTable<FunctionCallContent, string> _fallbackCallIds = new();
 
     public string ResolveCallId(FunctionCallContent fcc)
     {
-
         if (!string.IsNullOrEmpty(fcc.CallId))
         {
-
             return fcc.CallId;
-
         }
 
         if (!_fallbackCallIds.TryGetValue(fcc, out string? fallbackId))
         {
-
             fallbackId = Guid.NewGuid().ToString("N");
 
             _fallbackCallIds.Add(fcc, fallbackId);
@@ -180,33 +171,26 @@ public sealed class ToolExecutionPipeline(
                 "Provider returned a tool call with an empty id for tool '{ToolName}'; assigning fallback id {FallbackId}.",
                 fcc.Name,
                 fallbackId);
-
         }
 
         return fallbackId;
-
     }
 
     public static string SerializeToolArgumentsForGrimoire(FunctionCallContent fcc)
     {
-
         if (fcc.Arguments is null || fcc.Arguments.Count == 0)
         {
-
             return string.Empty;
-
         }
 
         ArrayBufferWriter<byte> buffer = new(256);
 
         using (Utf8JsonWriter writer = new(buffer))
         {
-
             writer.WriteStartObject();
 
             foreach (KeyValuePair<string, object?> pair in fcc.Arguments)
             {
-
                 if (string.Equals(
                         pair.Key,
                         SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName,
@@ -218,22 +202,17 @@ public sealed class ToolExecutionPipeline(
                 writer.WritePropertyName(pair.Key);
 
                 WriteArgumentValue(writer, pair.Value);
-
             }
 
             writer.WriteEndObject();
-
         }
 
         return Encoding.UTF8.GetString(buffer.WrittenSpan);
-
     }
 
     public static string FormatToolCallEventData(FunctionCallContent fcc, string argsSnapshot)
     {
-
         return string.IsNullOrEmpty(argsSnapshot) ? fcc.Name ?? string.Empty : $"{fcc.Name}: {argsSnapshot}";
-
     }
 
     /// <summary>
@@ -265,7 +244,6 @@ public sealed class ToolExecutionPipeline(
             1,
             new KeyValuePair<string, object?>("tool_name", toolName),
             new KeyValuePair<string, object?>("outcome", outcome));
-
     }
 
     /// <summary>
@@ -279,7 +257,6 @@ public sealed class ToolExecutionPipeline(
             1,
             new KeyValuePair<string, object?>("tool_name", toolName),
             new KeyValuePair<string, object?>("origin", WardResolutionOrigins.ToMetricLabel(origin)));
-
     }
 
     public static void AppendToolExchangeToMessages(
@@ -289,7 +266,6 @@ public sealed class ToolExecutionPipeline(
         string resultText,
         IReadOnlyList<TextReasoningContent>? reasoningContents = null)
     {
-
         FunctionCallContent normalizedCall = string.IsNullOrEmpty(fcc.CallId)
             ? new FunctionCallContent(callId, fcc.Name, fcc.Arguments)
             : fcc;
@@ -309,7 +285,6 @@ public sealed class ToolExecutionPipeline(
 
         chatMessages.Add(
             new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText)]));
-
     }
 
     public async Task<ProcessedToolCall> ProcessSingleToolCallAsync(
@@ -327,7 +302,6 @@ public sealed class ToolExecutionPipeline(
         int toolRoundOrdinal = 0,
         int callOrdinal = 0)
     {
-
         string argsSnapshot =
             argumentsSnapshot ?? SerializeToolArgumentsForGrimoire(fcc);
 
@@ -426,10 +400,8 @@ public sealed class ToolExecutionPipeline(
 
         if (suppressInvocationFailures)
         {
-
             try
             {
-
                 wardedExecution = await ExecuteToolCallWithAuditAsync(
                     fcc,
                     chatOptions,
@@ -446,13 +418,13 @@ public sealed class ToolExecutionPipeline(
                 RecordToolInvocationMetric(
                     metricToolName,
                     ResolveInvocationOutcome(isRegisteredTool, wardedExecution.Denied));
-
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
+                // Only the caller's cancellation propagates. A cancellation the caller did not ask
+                // for — a tool's own timeout surfacing as TaskCanceledException — is a tool failure
+                // and falls through to the tolerated-failure arm below, as ModelCallExecutor does.
                 throw;
-
             }
             catch (Exception) when (
                 applyPatchContext?.RequiresTurnFailure == true
@@ -463,18 +435,15 @@ public sealed class ToolExecutionPipeline(
             }
             catch (HumanPromptTimeoutException ex)
             {
-
                 wardedExecution = new WardedToolExecutionResult(
                     ex.Message,
                     BufferedWardEventsOrEmpty(wardEvents),
                     Failed: true);
 
                 RecordToolInvocationMetric(metricToolName, "error");
-
             }
             catch (Exception ex)
             {
-
                 logger.LogError(
                     "Tool {ToolName} failed during inference (tolerated by mode policy); exception type {ExceptionType}, call {ToolCallId}.",
                     toolName,
@@ -487,19 +456,15 @@ public sealed class ToolExecutionPipeline(
                     Failed: true);
 
                 RecordToolInvocationMetric(metricToolName, "error");
-
             }
-
         }
         else
         {
-
             // Unlike the streaming branch above, the buffered path does not suppress invocation
             // failures — an exception here still propagates to the caller unchanged. This try/catch
             // exists solely to record the "error" outcome symmetrically before rethrowing.
             try
             {
-
                 wardedExecution = await ExecuteToolCallWithAuditAsync(
                     fcc,
                     chatOptions,
@@ -516,23 +481,17 @@ public sealed class ToolExecutionPipeline(
                 RecordToolInvocationMetric(
                     metricToolName,
                     ResolveInvocationOutcome(isRegisteredTool, wardedExecution.Denied));
-
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (Exception)
             {
-
                 RecordToolInvocationMetric(metricToolName, "error");
 
                 throw;
-
             }
-
         }
 
         IReadOnlyList<AIContent>? additionalContext = null;
@@ -548,10 +507,8 @@ public sealed class ToolExecutionPipeline(
             && SessionAttachmentToolAmbient.CurrentSessionId is { } ambientSessionId
             && SessionAttachmentToolInjection.TryParseAttachArguments(fcc.Arguments, out string logicalName, out int? version))
         {
-
             try
             {
-
                 additionalContext = await SessionAttachmentToolInjection
                     .TryBuildContentsAsync(
                         sessionAttachmentStore,
@@ -562,20 +519,15 @@ public sealed class ToolExecutionPipeline(
                         request.Model,
                         cancellationToken)
                     .ConfigureAwait(false);
-
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (Exception ex)
             {
-
                 if (suppressInvocationFailures)
                 {
-
                     logger.LogError(
                         "attach_session_file post-process failed during inference (tolerated by mode policy); exception type {ExceptionType}, call {ToolCallId}.",
                         ex.GetType().FullName,
@@ -591,15 +543,12 @@ public sealed class ToolExecutionPipeline(
                         wardedExecution.WardEvents,
                         Failed: true,
                         AdditionalContextContents: null);
-
                 }
 
                 RecordToolInvocationMetric(metricToolName, "error");
 
                 throw;
-
             }
-
         }
         else if (executedSuccessfully
             && string.Equals(toolName, "refresh_session_file", StringComparison.Ordinal))
@@ -616,7 +565,7 @@ public sealed class ToolExecutionPipeline(
                 additionalContext = refresh.AdditionalContext;
                 attachmentRefresh = refresh.Event;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
@@ -654,7 +603,6 @@ public sealed class ToolExecutionPipeline(
             applyPatchContext?.ReceiptHandled == true,
             wardedExecution.Denied,
             attachmentRefresh);
-
     }
 
     private sealed record RefreshPostProcess(
@@ -686,7 +634,6 @@ public sealed class ToolExecutionPipeline(
         }
 
         return await ProcessRefreshSessionFileCoreAsync(
-
                 sessionId,
 
                 attachmentId,
@@ -702,11 +649,9 @@ public sealed class ToolExecutionPipeline(
                 cancellationToken)
 
             .ConfigureAwait(false);
-
     }
 
     public async Task<Result<AttachmentRefreshEvent>> RefreshSessionAttachmentAsync(
-
         Guid sessionId,
 
         Guid attachmentId,
@@ -716,33 +661,24 @@ public sealed class ToolExecutionPipeline(
         CancellationToken cancellationToken = default)
 
     {
-
         if (sessionId == Guid.Empty || attachmentId == Guid.Empty)
 
         {
-
             return Result<AttachmentRefreshEvent>.Failure(
-
                 new Error(ErrorCodes.Attachment.InvalidRequest, "A session and attachment are required."));
-
         }
 
         if (!settings.Value.ResolveAttachments().Enabled)
 
         {
-
             return Result<AttachmentRefreshEvent>.Failure(
-
                 new Error(
-
                     ErrorCodes.Attachment.Disabled,
 
                     "Session attachments are disabled."));
-
         }
 
         PingRequest request = new(
-
             Prompt: string.Empty,
 
             Model: settings.Value.DefaultModel,
@@ -754,15 +690,12 @@ public sealed class ToolExecutionPipeline(
         TurnContext context = new()
 
         {
-
             CampaignId = campaignId?.ToString("D", CultureInfo.InvariantCulture),
 
             SanctumMode = SanctumMode.Strict,
-
         };
 
         RefreshPostProcess refreshed = await ProcessRefreshSessionFileCoreAsync(
-
                 sessionId,
 
                 attachmentId,
@@ -782,25 +715,19 @@ public sealed class ToolExecutionPipeline(
         if (refreshed.Event is { } detail)
 
         {
-
             return Result<AttachmentRefreshEvent>.Success(detail);
-
         }
 
         RefreshSessionFileResultWire? failure = JsonSerializer.Deserialize(
-
             refreshed.ResultText,
 
             McpJsonSerializerContext.Default.RefreshSessionFileResultWire);
 
         return Result<AttachmentRefreshEvent>.Failure(
-
             new Error(
-
                 MapAttachmentRefreshErrorCode(failure?.ErrorCode),
 
                 failure?.Message ?? "The tracked attachment could not be refreshed."));
-
     }
 
     private static string MapAttachmentRefreshErrorCode(string? errorCode) =>
@@ -808,7 +735,6 @@ public sealed class ToolExecutionPipeline(
         errorCode switch
 
         {
-
             "attachment_not_visible" => ErrorCodes.Attachment.NotFound,
 
             "source_unavailable" => ErrorCodes.Attachment.SourceUnavailable,
@@ -820,11 +746,9 @@ public sealed class ToolExecutionPipeline(
             "ambiguous_logical_key" => ErrorCodes.Attachment.InvalidRequest,
 
             _ => ErrorCodes.Attachment.InvalidReference,
-
         };
 
     private async Task<RefreshPostProcess> ProcessRefreshSessionFileCoreAsync(
-
         Guid sessionId,
 
         Guid? attachmentId,
@@ -840,7 +764,6 @@ public sealed class ToolExecutionPipeline(
         CancellationToken cancellationToken)
 
     {
-
         IAttachmentSourceResolver sourceResolver = attachmentSourceResolver
 
             ?? throw new InvalidOperationException("No attachment source resolver is available.");
@@ -990,7 +913,6 @@ public sealed class ToolExecutionPipeline(
             ? await SessionAttachmentToolInjection
 
                 .TryBuildRefreshedContentsAsync(
-
                     sessionAttachmentStore,
 
                     persisted.Record,
@@ -1122,50 +1044,36 @@ public sealed class ToolExecutionPipeline(
 
     private static List<FunctionCallContent> CollectFunctionCalls(ChatResponse response)
     {
-
         var results = new List<FunctionCallContent>();
 
         foreach (MeAiChatMessage message in response.Messages)
         {
-
             AppendFunctionCallsFromContents(message.Contents, results);
-
         }
 
         return results;
-
     }
 
     private static void AppendFunctionCallsFromContents(IList<AIContent>? contents, List<FunctionCallContent> sink)
     {
-
         if (contents is null)
         {
-
             return;
-
         }
 
         foreach (AIContent item in contents)
         {
-
             if (item is FunctionCallContent fcc)
             {
-
                 sink.Add(fcc);
-
             }
-
         }
-
     }
 
     private static void WriteArgumentValue(Utf8JsonWriter writer, object? value)
     {
-
         switch (value)
         {
-
             case null:
                 writer.WriteNullValue();
                 break;
@@ -1247,11 +1155,9 @@ public sealed class ToolExecutionPipeline(
 
                 foreach (KeyValuePair<string, object?> kv in dict)
                 {
-
                     writer.WritePropertyName(kv.Key);
 
                     WriteArgumentValue(writer, kv.Value);
-
                 }
 
                 writer.WriteEndObject();
@@ -1262,9 +1168,7 @@ public sealed class ToolExecutionPipeline(
 
                 foreach (object? item in enumerable)
                 {
-
                     WriteArgumentValue(writer, item);
-
                 }
 
                 writer.WriteEndArray();
@@ -1273,35 +1177,25 @@ public sealed class ToolExecutionPipeline(
             default:
                 writer.WriteStringValue(value.ToString());
                 break;
-
         }
-
     }
 
     private static AIFunction? ResolveRegisteredFunction(ChatOptions chatOptions, string? functionName)
     {
-
         if (string.IsNullOrEmpty(functionName) || chatOptions.Tools is null)
         {
-
             return null;
-
         }
 
         foreach (AITool tool in chatOptions.Tools)
         {
-
             if (tool is AIFunction fn && string.Equals(fn.Name, functionName, StringComparison.Ordinal))
             {
-
                 return fn;
-
             }
-
         }
 
         return null;
-
     }
 
     private static async Task<object?> InvokeToolCallAsync(
@@ -1309,14 +1203,11 @@ public sealed class ToolExecutionPipeline(
         ChatOptions chatOptions,
         CancellationToken cancellationToken)
     {
-
         AIFunction? func = ResolveRegisteredFunction(chatOptions, fcc.Name);
 
         if (func is null)
         {
-
             return $"No local tool registered for '{fcc.Name}'.";
-
         }
 
         AIFunctionArguments args = fcc.Arguments is { Count: > 0 }
@@ -1328,7 +1219,6 @@ public sealed class ToolExecutionPipeline(
             .ConfigureAwait(false);
 
         return output;
-
     }
 
     /// <summary>
@@ -1348,7 +1238,6 @@ public sealed class ToolExecutionPipeline(
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
         Func<ToolExecutionEvent, ValueTask>? observer = null)
     {
-
         string toolName = fcc.Name ?? string.Empty;
 
         await RecordUngatedWardResolutionAsync(
@@ -1362,7 +1251,6 @@ public sealed class ToolExecutionPipeline(
 
         if (string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal))
         {
-
             return await ExecuteCovenantRetirementAsync(
                     fcc,
                     chatOptions,
@@ -1372,7 +1260,6 @@ public sealed class ToolExecutionPipeline(
                     BufferedWardEventsOrEmpty(wardEvents),
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (string.Equals(toolName, "ask_human", StringComparison.Ordinal) && observer is not null)
@@ -1396,7 +1283,6 @@ public sealed class ToolExecutionPipeline(
             directResult,
             BufferedWardEventsOrEmpty(wardEvents),
             directDenied);
-
     }
 
     private async Task RecordUngatedWardResolutionAsync(
@@ -1416,13 +1302,11 @@ public sealed class ToolExecutionPipeline(
         if (!string.IsNullOrWhiteSpace(argsSnapshot)
             || !string.IsNullOrEmpty(disclosure))
         {
-
             using JsonDocument recordArgsDocument = BuildWardArgumentsDocument(
                 argsSnapshot,
                 disclosure);
 
             recordWardArguments = recordArgsDocument.RootElement.Clone();
-
         }
 
         IntelligenceEvent recordWardedEvent = new(
@@ -1515,18 +1399,15 @@ public sealed class ToolExecutionPipeline(
         IReadOnlyList<IntelligenceEvent> wardEvents,
         CancellationToken cancellationToken)
     {
-
         string toolName = fcc.Name ?? string.Empty;
 
         if (CovenantToolStagingAmbient.Current is not { } staging
             || turnContext.Invocation is not { } invocation
             || covenantEgressGuard is null)
         {
-
             return CovenantRetirementDenied(
                 "This turn carries no Covenant staging capability, so it cannot retire a standing preference.",
                 wardEvents);
-
         }
 
         Result<ProviderToolCallClassification> classified = CovenantToolClassifier.ClassifyCovenantTool(
@@ -1535,9 +1416,7 @@ public sealed class ToolExecutionPipeline(
 
         if (classified.IsFailure)
         {
-
             return CovenantRetirementDenied(classified.Error.Message, wardEvents);
-
         }
 
         CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(
@@ -1546,20 +1425,16 @@ public sealed class ToolExecutionPipeline(
 
         if (decision.IsDenied)
         {
-
             return CovenantRetirementDenied(
                 "This turn may not stage a Covenant mutation.",
                 wardEvents);
-
         }
 
         if (!TryReadRetirementTarget(argsSnapshot, out string normalizedKey, out CovenantLane lane))
         {
-
             return CovenantRetirementDenied(
                 "A Covenant retirement names one preference key and a lane of Confirmed or Proposed.",
                 wardEvents);
-
         }
 
         Result<CovenantRetirementPreflight> resolved = await staging.HeadProbe
@@ -1568,9 +1443,7 @@ public sealed class ToolExecutionPipeline(
 
         if (resolved.IsFailure)
         {
-
             return CovenantRetirementDenied(resolved.Error.Message, wardEvents);
-
         }
 
         CovenantRetirementPreflight preflight = resolved.Value;
@@ -1578,11 +1451,9 @@ public sealed class ToolExecutionPipeline(
         if (!string.Equals(preflight.NormalizedKey, normalizedKey, StringComparison.Ordinal)
             || preflight.Lane != lane)
         {
-
             return CovenantRetirementDenied(
                 "The resolved Covenant retirement target did not match the requested key and lane.",
                 wardEvents);
-
         }
 
         CovenantToolCapabilityNonce nonce = CovenantToolCapabilityNonce.Create();
@@ -1611,7 +1482,6 @@ public sealed class ToolExecutionPipeline(
                 attempt,
                 async (_, effectToken) =>
                 {
-
                     using IDisposable scope = CovenantToolStagingAmbient.Push(staging with
                     {
                         RetirementPreflight = preflight,
@@ -1629,7 +1499,6 @@ public sealed class ToolExecutionPipeline(
 
                     return Result<WardedToolExecutionResult>.Success(
                         new WardedToolExecutionResult(text, wardEvents, denied));
-
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1637,7 +1506,6 @@ public sealed class ToolExecutionPipeline(
         return disclosed.IsFailure
             ? CovenantRetirementDenied(disclosed.Error.Message, wardEvents)
             : disclosed.Value;
-
     }
 
     private Guid ResolveInstallationIdentity() =>
@@ -1653,14 +1521,12 @@ public sealed class ToolExecutionPipeline(
         out string normalizedKey,
         out CovenantLane lane)
     {
-
         normalizedKey = string.Empty;
 
         lane = CovenantLane.Confirmed;
 
         try
         {
-
             using JsonDocument parsed = JsonDocument.Parse(
                 string.IsNullOrWhiteSpace(argsSnapshot) ? "{}" : argsSnapshot);
 
@@ -1672,23 +1538,17 @@ public sealed class ToolExecutionPipeline(
                 || !Enum.TryParse(laneElement.GetString(), ignoreCase: false, out lane)
                 || lane is not (CovenantLane.Confirmed or CovenantLane.Proposed))
             {
-
                 return false;
-
             }
 
             normalizedKey = new CovenantKey(rawKey.Trim()).Value;
 
             return true;
-
         }
         catch (Exception failure) when (failure is JsonException or ArgumentException)
         {
-
             return false;
-
         }
-
     }
 
     private static WardedToolExecutionResult CovenantRetirementDenied(
@@ -1704,7 +1564,6 @@ public sealed class ToolExecutionPipeline(
         string argsSnapshot,
         CancellationToken cancellationToken)
     {
-
         SanctumEnforcementOutcome outcome = await EnforceSanctumAsync(
             fcc,
             turnContext,
@@ -1714,9 +1573,7 @@ public sealed class ToolExecutionPipeline(
 
         if (!outcome.Result.Allowed && outcome.Enabled && outcome.Mode == SanctumMode.Strict)
         {
-
             return (SanctumDenialMessage(outcome.Result), true);
-
         }
 
         // Sanctum cleared the initial URL above; the ward keeps every redirect hop under the same policy.
@@ -1749,7 +1606,6 @@ public sealed class ToolExecutionPipeline(
         }
 
         return (rawResult?.ToString() ?? string.Empty, false);
-
     }
 
     private sealed class GrimoirePendingReceiptSink(
@@ -1801,7 +1657,6 @@ public sealed class ToolExecutionPipeline(
         object? rawResult,
         IToolResultMaterializer materializer)
     {
-
         ArgumentNullException.ThrowIfNull(materializer);
 
         if (rawResult is TrustedStructuredToolResult
@@ -1850,7 +1705,6 @@ public sealed class ToolExecutionPipeline(
         }
 
         return materializer.Materialize(toolName, rawText).TextForModel;
-
     }
 
     private static string? TryMaterializeStructured<T>(
@@ -1889,21 +1743,16 @@ public sealed class ToolExecutionPipeline(
         string argsSnapshot,
         CancellationToken cancellationToken)
     {
-
         SanctumResult allowed = new() { Allowed = true };
 
         if (turnContext.Campaign is null)
         {
-
             return new SanctumEnforcementOutcome(allowed, SanctumMode.Strict, false);
-
         }
 
         if (!turnContext.SanctumEnabled)
         {
-
             return new SanctumEnforcementOutcome(allowed, turnContext.SanctumMode, false);
-
         }
 
         string campaignId = turnContext.CampaignId!;
@@ -1916,9 +1765,7 @@ public sealed class ToolExecutionPipeline(
 
         if (!toolResult.Allowed)
         {
-
             return new SanctumEnforcementOutcome(toolResult, turnContext.SanctumMode, true);
-
         }
 
         using JsonDocument? argsDocument = TryParseToolArgumentsDocument(argsSnapshot);
@@ -1938,13 +1785,10 @@ public sealed class ToolExecutionPipeline(
 
         if (pathOrNetworkResult is not null)
         {
-
             return new SanctumEnforcementOutcome(pathOrNetworkResult, turnContext.SanctumMode, true);
-
         }
 
         return new SanctumEnforcementOutcome(allowed, turnContext.SanctumMode, true);
-
     }
 
     /// <summary>
@@ -1955,12 +1799,9 @@ public sealed class ToolExecutionPipeline(
     /// </summary>
     private IDisposable? BeginSanctumEgressWard(FunctionCallContent fcc, TurnContext turnContext)
     {
-
         if (turnContext.Campaign is null || !turnContext.SanctumEnabled)
         {
-
             return null;
-
         }
 
         string toolName = fcc.Name ?? string.Empty;
@@ -1968,24 +1809,19 @@ public sealed class ToolExecutionPipeline(
         if (!string.Equals(toolName, "read_url", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(toolName, "browse_web", StringComparison.OrdinalIgnoreCase))
         {
-
             return null;
-
         }
 
         string campaignId = turnContext.CampaignId!;
 
         return SanctumEgressWardAmbient.Begin(async (Uri target, CancellationToken token) =>
         {
-
             SanctumResult result = await sanctumGuard
                 .ValidateNetworkAsync(campaignId, target.AbsoluteUri, toolName, token)
                 .ConfigureAwait(false);
 
             return result.Allowed;
-
         });
-
     }
 
     private async Task<SanctumResult?> ValidateToolPathsAndNetworkAsync(
@@ -1997,33 +1833,26 @@ public sealed class ToolExecutionPipeline(
         JsonElement argsRoot,
         CancellationToken cancellationToken)
     {
-
         switch (toolName.ToLowerInvariant())
         {
-
             case "execute_command":
             {
-
                 string cwd = workspaceRoot;
 
                 if (TryGetJsonStringProperty(argsRoot, "workingDirectory", out string? relativeCwd)
                     && !string.IsNullOrWhiteSpace(relativeCwd))
                 {
-
                     if (!TryResolvePathUnderWorkspace(workspaceRoot, relativeCwd, out string? resolvedCwd))
                     {
-
                         return await sanctumGuard.ValidatePathAsync(
                             campaignId,
                             relativeCwd,
                             "working directory",
                             toolName,
                             cancellationToken).ConfigureAwait(false);
-
                     }
 
                     cwd = resolvedCwd;
-
                 }
 
                 SanctumResult cwdResult = await sanctumGuard
@@ -2032,24 +1861,18 @@ public sealed class ToolExecutionPipeline(
 
                 if (!cwdResult.Allowed)
                 {
-
                     return cwdResult;
-
                 }
 
                 break;
-
             }
 
             case ToolRiskClassifier.SearchWorkspaceToolName:
             {
-
                 if (!TryGetJsonStringProperty(argsRoot, "root", out string? relativeRoot)
                     || string.IsNullOrWhiteSpace(relativeRoot))
                 {
-
                     break;
-
                 }
 
                 if (!TryResolveSearchRootUnderWorkspace(
@@ -2057,14 +1880,12 @@ public sealed class ToolExecutionPipeline(
                         relativeRoot,
                         out string? absoluteRoot))
                 {
-
                     return await sanctumGuard.ValidatePathAsync(
                         campaignId,
                         relativeRoot,
                         "search root",
                         toolName,
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 SanctumResult rootResult = await sanctumGuard
@@ -2078,18 +1899,14 @@ public sealed class ToolExecutionPipeline(
 
                 if (!rootResult.Allowed)
                 {
-
                     return rootResult;
-
                 }
 
                 break;
-
             }
 
             case ToolRiskClassifier.ApplyPatchToolName:
             {
-
                 WorkspacePatchSettings patchSettings =
                     settings.Value.ResolveCodingTools().Patch;
 
@@ -2155,25 +1972,20 @@ public sealed class ToolExecutionPipeline(
             case "replace_text_block":
             case "read_file_chunk":
             {
-
                 if (!TryGetJsonStringProperty(argsRoot, "relativePath", out string? relativePath)
                     || string.IsNullOrWhiteSpace(relativePath))
                 {
-
                     break;
-
                 }
 
                 if (!TryResolvePathUnderWorkspace(workspaceRoot, relativePath, out string? absolutePath))
                 {
-
                     return await sanctumGuard.ValidatePathAsync(
                         campaignId,
                         relativePath,
                         "file path",
                         toolName,
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 SanctumResult pathResult = await sanctumGuard
@@ -2182,35 +1994,27 @@ public sealed class ToolExecutionPipeline(
 
                 if (!pathResult.Allowed)
                 {
-
                     return pathResult;
-
                 }
 
                 break;
-
             }
 
             case "run_spell_script":
             {
-
                 // W3.5: validate the script path under EVERY candidate root the tool will resolve
                 // against (active spell + Arcane Resonance dependencies), not just the active spell's
                 // scripts root — a script that exists only under a resonant dependency was previously
                 // executed without Sanctum pre-validating its path.
                 if (spellScriptRoots.Count == 0)
                 {
-
                     break;
-
                 }
 
                 if (!TryGetJsonStringProperty(argsRoot, "script_name", out string? scriptName)
                     || string.IsNullOrWhiteSpace(scriptName))
                 {
-
                     break;
-
                 }
 
                 scriptName = scriptName.Trim();
@@ -2219,7 +2023,6 @@ public sealed class ToolExecutionPipeline(
 
                 foreach (string scriptsRoot in spellScriptRoots)
                 {
-
                     string candidate = Path.GetFullPath(Path.Combine(scriptsRoot, scriptName));
 
                     SanctumResult scriptResult = await sanctumGuard
@@ -2228,16 +2031,12 @@ public sealed class ToolExecutionPipeline(
 
                     if (!scriptResult.Allowed)
                     {
-
                         return scriptResult;
-
                     }
 
                     if (!isPlainFileName)
                     {
-
                         continue;
-
                     }
 
                     SanctumResult scriptsRootResult = await sanctumGuard
@@ -2246,27 +2045,20 @@ public sealed class ToolExecutionPipeline(
 
                     if (!scriptsRootResult.Allowed)
                     {
-
                         return scriptsRootResult;
-
                     }
-
                 }
 
                 break;
-
             }
 
             case "browse_web":
             case "read_url":
             {
-
                 if (!TryGetJsonStringProperty(argsRoot, "url", out string? targetUrl)
                     || string.IsNullOrWhiteSpace(targetUrl))
                 {
-
                     break;
-
                 }
 
                 SanctumResult networkResult = await sanctumGuard
@@ -2275,19 +2067,14 @@ public sealed class ToolExecutionPipeline(
 
                 if (!networkResult.Allowed)
                 {
-
                     return networkResult;
-
                 }
 
                 break;
-
             }
-
         }
 
         return null;
-
     }
 
     /// <summary>
@@ -2300,7 +2087,6 @@ public sealed class ToolExecutionPipeline(
         CancellationToken cancellationToken,
         [NotNullWhen(true)] out UnifiedDiffManifest? manifest)
     {
-
         manifest = null;
 
         if (arguments.ValueKind != JsonValueKind.Object
@@ -2324,7 +2110,6 @@ public sealed class ToolExecutionPipeline(
         manifest = parsed.Manifest;
 
         return parsed.Success && manifest is not null;
-
     }
 
     /// <summary>
@@ -2336,22 +2121,18 @@ public sealed class ToolExecutionPipeline(
         string relativeRoot,
         out string absolutePath)
     {
-
         absolutePath = string.Empty;
 
         try
         {
-
             string root = Path.GetFullPath(workspaceRoot.Trim());
             string trimmed = relativeRoot.Trim();
 
             if (trimmed is "." or "./" or @".\")
             {
-
                 absolutePath = root;
 
                 return true;
-
             }
 
             if (!WorkspaceRelativePath.TryResolve(
@@ -2364,25 +2145,19 @@ public sealed class ToolExecutionPipeline(
                     resolved,
                     out string? finalPath))
             {
-
                 return false;
-
             }
 
             absolutePath = finalPath ?? resolved;
 
             return true;
-
         }
         catch (Exception)
         {
-
             absolutePath = string.Empty;
 
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -2392,12 +2167,10 @@ public sealed class ToolExecutionPipeline(
     /// </summary>
     internal static bool TryResolvePathUnderWorkspace(string workspaceRoot, string relativePath, out string absolutePath)
     {
-
         absolutePath = string.Empty;
 
         try
         {
-
             string root = Path.GetFullPath(workspaceRoot.Trim());
 
             absolutePath = Path.IsPathRooted(relativePath)
@@ -2414,61 +2187,47 @@ public sealed class ToolExecutionPipeline(
             absolutePath = resolved ?? absolutePath;
 
             return true;
-
         }
         catch (Exception)
         {
-
             absolutePath = string.Empty;
 
             return false;
-
         }
-
     }
 
     private static bool TryGetJsonStringProperty(JsonElement root, string propertyName, out string? value)
     {
-
         value = null;
 
         if (root.ValueKind != JsonValueKind.Object)
         {
-
             return false;
-
         }
 
         if (!root.TryGetProperty(propertyName, out JsonElement property))
         {
-
             return false;
-
         }
 
         if (property.ValueKind != JsonValueKind.String)
         {
-
             return false;
-
         }
 
         value = property.GetString();
 
         return true;
-
     }
 
     private static string SanctumDenialMessage(SanctumResult result)
     {
-
         string breachType = result.Breach?.BreachType ?? "PolicyViolation";
 
         string reason = result.DenyReason ?? "This operation is not permitted in the current Sanctum.";
 
         return $"The Sanctum Guard has blocked this action: {breachType} — {reason}.\n"
             + "The Dungeon Master must update the Sanctum config to allow this operation.";
-
     }
 
     private static async Task EmitWardEventAsync(
@@ -2479,11 +2238,9 @@ public sealed class ToolExecutionPipeline(
     {
         if (liveWardEmit is not null)
         {
-
             await liveWardEmit(wardEvent, cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         (buffered ?? throw new InvalidOperationException(
@@ -2497,50 +2254,38 @@ public sealed class ToolExecutionPipeline(
 
     private static JsonDocument? TryParseToolArgumentsDocument(string argsSnapshot)
     {
-
         if (string.IsNullOrWhiteSpace(argsSnapshot))
         {
-
             return null;
-
         }
 
         try
         {
-
             return JsonDocument.Parse(argsSnapshot);
-
         }
         catch (JsonException)
         {
-
             string encoded = JsonSerializer.Serialize(argsSnapshot, ArcanumJsonContext.Default.String);
 
             return JsonDocument.Parse($"{{\"raw\":{encoded}}}");
-
         }
-
     }
 
     internal static JsonDocument BuildWardArgumentsDocument(
         string argsSnapshot,
         string disclosure)
     {
-
         if (string.IsNullOrWhiteSpace(argsSnapshot)
             && string.IsNullOrWhiteSpace(disclosure))
         {
-
             throw new ArgumentException(
                 "Ward arguments require tool arguments or a risk disclosure.");
-
         }
 
         JsonDocument? original = TryParseToolArgumentsDocument(argsSnapshot);
 
         if (string.IsNullOrEmpty(disclosure))
         {
-
             return original ?? throw new InvalidOperationException(
                 "Non-empty Ward arguments must produce a JSON document.");
         }
@@ -2549,31 +2294,24 @@ public sealed class ToolExecutionPipeline(
 
         using (Utf8JsonWriter writer = new(stream))
         {
-
             writer.WriteStartObject();
 
             if (original?.RootElement.ValueKind == JsonValueKind.Object)
             {
-
                 foreach (JsonProperty property in original.RootElement
                              .EnumerateObject())
                 {
-
                     if (!string.Equals(
                             property.Name,
                             "_arcanumRiskDisclosure",
                             StringComparison.Ordinal))
                     {
-
                         property.WriteTo(writer);
                     }
-
                 }
-
             }
             else if (original is not null)
             {
-
                 writer.WritePropertyName("arguments");
                 original.RootElement.WriteTo(writer);
             }
@@ -2587,5 +2325,4 @@ public sealed class ToolExecutionPipeline(
         original?.Dispose();
         return JsonDocument.Parse(stream.ToArray());
     }
-
 }

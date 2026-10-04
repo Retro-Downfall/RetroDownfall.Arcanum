@@ -31,6 +31,12 @@ internal sealed class TurnAccountingHandle
 
     private readonly TurnAccountingHandle? _accountingOwner;
 
+    /// <summary>
+    /// How long a turn's reservation stays outstanding without renewal. Admission sets it and every
+    /// pre-call <see cref="EnsureReservationForContextAsync"/> renews it from that moment.
+    /// </summary>
+    internal static readonly TimeSpan ReservationLifetime = TimeSpan.FromHours(1);
+
     private TurnAccountingHandle(
         ITurnBudget budget,
         Guid? runId,
@@ -69,6 +75,23 @@ internal sealed class TurnAccountingHandle
             lock (root._costGate)
             {
                 return root._accumulatedCostUsd;
+            }
+        }
+    }
+
+    /// <summary>
+    /// True once the run this handle ledgers against has frozen its completion: its status and its
+    /// reservation disposition are decided, and nothing recorded from here on is part of either.
+    /// </summary>
+    public bool IsSettled
+    {
+        get
+        {
+            TurnAccountingHandle root = AccountingRoot;
+
+            lock (root._costGate)
+            {
+                return root._completionSnapshotFrozen;
             }
         }
     }
@@ -138,6 +161,7 @@ internal sealed class TurnAccountingHandle
     public async Task<Result> EnsureReservationForContextAsync(
         IBudgetReservationService? budgetReservations,
         PricingSettings pricing,
+        BudgetSettings? budget,
         string? model,
         ContextTokenBreakdown breakdown,
         CancellationToken cancellationToken)
@@ -160,33 +184,99 @@ internal sealed class TurnAccountingHandle
         await root._reservationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            bool raise;
+
             lock (root._costGate)
             {
-                if (reservedUsd <= root._reservationHighWaterUsd)
-                {
-                    return Result.Success();
-                }
+                raise = reservedUsd > root._reservationHighWaterUsd;
             }
 
-            Result adjusted = await budgetReservations
-                .AdjustAsync(reservationId, reservedUsd, cancellationToken)
-                .ConfigureAwait(false);
-            if (adjusted.IsSuccess)
+            Result admitted;
+
+            if (raise)
             {
-                lock (root._costGate)
+                // A raise rechecks committed + outstanding spend atomically inside the service.
+                admitted = await budgetReservations
+                    .AdjustAsync(reservationId, reservedUsd, cancellationToken)
+                    .ConfigureAwait(false);
+                if (admitted.IsSuccess)
                 {
-                    root._reservationHighWaterUsd = Math.Max(
-                        root._reservationHighWaterUsd,
-                        reservedUsd);
+                    lock (root._costGate)
+                    {
+                        root._reservationHighWaterUsd = Math.Max(
+                            root._reservationHighWaterUsd,
+                            reservedUsd);
+                    }
                 }
             }
+            else
+            {
+                // The estimate plateaued, so nothing is raised — but the spend earlier rounds
+                // committed still counts, and without this check N rounds could each spend what one
+                // admission was sized for.
+                admitted = await CheckAccumulatedSpendAsync(budgetReservations, budget, cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
-            return adjusted;
+            if (admitted.IsFailure)
+            {
+                return admitted;
+            }
+
+            await budgetReservations
+                .ExtendExpiryAsync(
+                    reservationId,
+                    DateTimeOffset.UtcNow.Add(ReservationLifetime),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return Result.Success();
         }
         finally
         {
             root._reservationGate.Release();
         }
+    }
+
+    /// <summary>
+    /// The plateau-round budget check: today's committed spend plus outstanding reservations, this
+    /// turn's own included, against the daily limit.
+    /// </summary>
+    /// <remarks>
+    /// A cheap read on the same non-immediate path <see cref="BudgetMonitor"/> takes, rather than a
+    /// write transaction per round. Committed spend already holds every earlier round of this turn and
+    /// the outstanding reservation is sized for the next call alone, so this checks accumulated actual
+    /// spend and never multiplies an estimate by a call count.
+    /// </remarks>
+    private static async Task<Result> CheckAccumulatedSpendAsync(
+        IBudgetReservationService budgetReservations,
+        BudgetSettings? budget,
+        CancellationToken cancellationToken)
+    {
+        if (budget is not { Enabled: true } || budget.DailyLimitUsd <= 0m)
+        {
+            return Result.Success();
+        }
+
+        decimal dailyLimit = ArcanumSettingClamps.BudgetDailyLimitUsd(budget.DailyLimitUsd);
+
+        decimal committed = await budgetReservations
+            .GetTodayCommittedSpendAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        decimal outstanding = await budgetReservations
+            .GetTodayOutstandingReservationsAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        decimal spend = SaturatingCostAdd(committed, outstanding);
+
+        return spend > dailyLimit
+            ? Result.Failure(new Error(
+                ErrorCodes.Budget.Exceeded,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Daily budget limit of ${dailyLimit:0.00} USD would be exceeded (committed+reserved: ${spend:0.00} USD).")))
+            : Result.Success();
     }
 
     public async Task CompleteAsync(
@@ -324,7 +414,7 @@ internal sealed class TurnAccountingHandle
                     new BudgetReservationRequest(
                         runId,
                         reservedUsd,
-                        ExpiresAt: DateTimeOffset.UtcNow.AddHours(1),
+                        ExpiresAt: DateTimeOffset.UtcNow.Add(ReservationLifetime),
                         period),
                     cancellationToken)
                 .ConfigureAwait(false);

@@ -59,6 +59,91 @@ public sealed class TurnAccountingHandleTests
         }
     }
 
+    /// <summary>
+    /// A delegated child hides the parent turn's accounting while it runs and gets it back after.
+    /// Observed in one synchronous flow, because an <c>AsyncLocal</c> written inside an awaited async
+    /// method never flows back to its caller and so cannot prove a restoration from outside.
+    /// </summary>
+    [Fact]
+    public async Task AmbientSuspend_HidesTheHandleAndWriterThenRestoresThem()
+    {
+        TurnAccountingAmbient.Clear();
+        RecordingTurnRunWriter writer = new();
+        TurnAccountingHandle parent = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            budgetReservations: null,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "suspend",
+            requestId: "suspend",
+            cancellationToken: CancellationToken.None)).Value;
+
+        try
+        {
+            using (TurnAccountingAmbient.Push(parent, writer))
+            {
+                using (TurnAccountingAmbient.Suspend())
+                {
+                    Assert.Null(TurnAccountingAmbient.Current);
+                    Assert.Null(TurnAccountingAmbient.Writer);
+                }
+
+                Assert.Same(parent, TurnAccountingAmbient.Current);
+                Assert.Same(writer, TurnAccountingAmbient.Writer);
+            }
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
+    /// <summary>
+    /// A tool task abandoned past the grace keeps running in a flow that still holds the turn's
+    /// accounting. Once that run has settled (its status written and its reservation reconciled or
+    /// released), nested work there must not ledger against it: it no longer sees the settled turn's
+    /// handle or writer, and accounts for itself instead.
+    /// </summary>
+    [Fact]
+    public async Task Ambient_HidesTheHandleAndWriterOfARunThatHasSettled()
+    {
+        TurnAccountingAmbient.Clear();
+        RecordingTurnRunWriter writer = new();
+        TurnAccountingHandle turn = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            budgetReservations: null,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "settled",
+            requestId: "settled",
+            cancellationToken: CancellationToken.None)).Value;
+        TurnAccountingHandle nested = turn.CreateNestedOperationHandle();
+
+        try
+        {
+            TurnAccountingAmbient.Publish(nested, writer);
+
+            Assert.Same(nested, TurnAccountingAmbient.Current);
+
+            await turn.CompleteAsync(
+                writer,
+                budgetReservations: null,
+                InferenceRunStatus.Completed,
+                CancellationToken.None);
+
+            Assert.Null(TurnAccountingAmbient.Current);
+            Assert.Null(TurnAccountingAmbient.Writer);
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
     [Fact]
     public async Task BeginAsync_ReservesTypedOutputAndReasoningHeadroom()
     {
@@ -196,12 +281,14 @@ public sealed class TurnAccountingHandleTests
         Result adjusted = await handle.EnsureReservationForContextAsync(
             reservations,
             pricing,
+            budget: null,
             "reasoner",
             breakdown,
             CancellationToken.None);
         Result repeated = await handle.EnsureReservationForContextAsync(
             reservations,
             pricing,
+            budget: null,
             "reasoner",
             breakdown,
             CancellationToken.None);
@@ -216,6 +303,92 @@ public sealed class TurnAccountingHandleTests
             expectedPerCall,
             reservations.AdjustedUsd);
         Assert.Equal(1, reservations.AdjustCount);
+    }
+
+    /// <summary>
+    /// R-053: once the pre-call estimate stops growing the reservation is never raised again, and the
+    /// raise was the only place the daily limit was rechecked. Spend the earlier rounds already
+    /// committed must still be compared with the limit before the next provider call.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_FailsWhenAccumulatedSpendExceedsDailyLimitEvenIfEstimateDidNotGrow()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new()
+        {
+            CommittedSpend = () => writer.RecordedCostUsd,
+        };
+        PricingSettings pricing = ReasonerPricing();
+        BudgetSettings budget = new() { Enabled = true, DailyLimitUsd = 1.00m };
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        ContextTokenBreakdown breakdown = ReasonerContextBreakdown();
+
+        Result first = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            budget,
+            "reasoner",
+            breakdown,
+            CancellationToken.None);
+
+        // 95,000 input tokens at 10 USD per million: 0.95 USD of actual spend for the first round.
+        await handle.RecordChatUsageAsync(
+            writer,
+            "provider",
+            "reasoner",
+            promptTokens: 95_000,
+            completionTokens: 0,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            pricing.DefaultPricing,
+            CancellationToken.None);
+
+        Result second = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            budget,
+            "reasoner",
+            breakdown,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+        Assert.True(second.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, second.Error.Code);
+
+        // The estimate did not grow, so the refusal came from the accumulated-spend check, not a raise.
+        Assert.Equal(1, reservations.AdjustCount);
+    }
+
+    /// <summary>
+    /// R-053: the reservation was admitted with a fixed one-hour lifetime and never renewed, so a
+    /// turn running past it could end holding an expired reservation that reconciliation skips.
+    /// Every pre-call admission now moves the expiry forward, whether or not it raised the amount.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_RenewsTheReservationExpiryEveryRound()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        ContextTokenBreakdown breakdown = ReasonerContextBreakdown();
+        DateTimeOffset admittedUntil = reservations.LastRequest!.ExpiresAt;
+
+        for (int round = 0; round < 2; round++)
+        {
+            Result admitted = await handle.EnsureReservationForContextAsync(
+                reservations,
+                pricing,
+                new BudgetSettings { Enabled = true, DailyLimitUsd = 100m },
+                "reasoner",
+                breakdown,
+                CancellationToken.None);
+
+            Assert.True(admitted.IsSuccess);
+        }
+
+        Assert.Equal(2, reservations.ExtendedExpiries.Count);
+        Assert.All(reservations.ExtendedExpiries, expiry => Assert.True(expiry >= admittedUntil));
     }
 
     [Fact]
@@ -679,6 +852,76 @@ public sealed class TurnAccountingHandleTests
         Assert.Equal(decimal.MaxValue, handle.AccumulatedCostUsd);
     }
 
+    private static PricingSettings ReasonerPricing() =>
+        new()
+        {
+            DefaultPricing = new ModelPricingEntry
+            {
+                InputPer1M = 10m,
+                OutputPer1M = 20m,
+                ReasoningPer1M = 80m,
+            },
+        };
+
+    private static async Task<TurnAccountingHandle> BeginReasonerTurnAsync(
+        RecordingTurnRunWriter writer,
+        RecordingBudgetReservationService reservations,
+        PricingSettings pricing) =>
+        (await TurnAccountingHandle.BeginAsync(
+            writer,
+            reservations,
+            pricing,
+            "reasoner",
+            sessionId: null,
+            surface: "test",
+            purpose: "chat",
+            requestId: "context-reservation",
+            cancellationToken: CancellationToken.None,
+            maxOutputTokens: 1_000,
+            reasoningBudgetTokens: 600)).Value;
+
+    private static ContextTokenBreakdown ReasonerContextBreakdown() =>
+        new()
+        {
+            Provider = "provider",
+            Model = "reasoner",
+            Profile = new ResolvedModelTokenizationProfile
+            {
+                ProfileId = "test",
+                Type = ModelTokenizationProfileType.UnknownFallback,
+                TokenizerId = "o200k_base",
+                SafetyMarginPercent = 15,
+                PerMessageOverheadTokens = 4,
+                PerToolOverheadTokens = 8,
+                ProviderFramingTokens = 3,
+                StopTokenOverheadTokens = 1,
+                UnknownImageReserveTokens = 2048,
+                Confidence = 0.5,
+            },
+            Components =
+            [
+                new ContextTokenComponent(
+                    ContextTokenSource.ReservedAnswer,
+                    new TokenEstimate(
+                        1_000,
+                        TokenEstimateClassification.Reserved,
+                        "test")),
+                new ContextTokenComponent(
+                    ContextTokenSource.ReservedReasoning,
+                    new TokenEstimate(
+                        600,
+                        TokenEstimateClassification.Reserved,
+                        "test")),
+            ],
+            InputTokens = 5_000,
+            ReservedTokens = 1_600,
+            ReservedAnswerTokens = 1_000,
+            ReservedReasoningTokens = 600,
+            TotalTokens = 6_600,
+            OverallClassification = TokenEstimateClassification.Estimated,
+            SafetyMarginTokens = 500,
+        };
+
     private sealed class RecordingTurnRunWriter : ITurnRunWriter
     {
         public Guid RunId { get; } = Guid.NewGuid();
@@ -694,6 +937,9 @@ public sealed class TurnAccountingHandleTests
         public Exception? RecordException { get; init; }
 
         public int CompleteFailuresRemaining { get; set; }
+
+        /// <summary>The summed actual cost of every operation recorded so far.</summary>
+        public decimal RecordedCostUsd { get; private set; }
 
         public Task<Guid> StartRunAsync(
             InferenceRunStart start,
@@ -733,6 +979,7 @@ public sealed class TurnAccountingHandleTests
             }
 
             LastOperation = operation;
+            RecordedCostUsd += operation.ActualCostUsd;
             return Task.FromResult(Guid.NewGuid());
         }
     }
@@ -761,6 +1008,14 @@ public sealed class TurnAccountingHandleTests
 
         public TaskCompletionSource? AllowReconciliation { get; init; }
 
+        /// <summary>Today's committed spend, as the ledger behind the writer would report it.</summary>
+        public Func<decimal>? CommittedSpend { get; init; }
+
+        /// <summary>The single reservation's current amount: reserved, then raised by each adjust.</summary>
+        public decimal OutstandingUsd { get; private set; }
+
+        public List<DateTimeOffset> ExtendedExpiries { get; } = [];
+
         public Task<Result<BudgetReservation>> ReserveAsync(
             BudgetReservationRequest request,
             CancellationToken cancellationToken = default)
@@ -771,6 +1026,8 @@ public sealed class TurnAccountingHandleTests
             {
                 return Task.FromException<Result<BudgetReservation>>(ReserveException);
             }
+
+            OutstandingUsd = request.ReservedUsd;
 
             return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
                 Guid.NewGuid(),
@@ -814,6 +1071,7 @@ public sealed class TurnAccountingHandleTests
         {
             AdjustedUsd = reservedUsd;
             AdjustCount++;
+            OutstandingUsd = Math.Max(OutstandingUsd, reservedUsd);
             return Task.FromResult(Result.Success());
         }
 
@@ -827,11 +1085,21 @@ public sealed class TurnAccountingHandleTests
 
         public Task<decimal> GetTodayCommittedSpendAsync(
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
+            Task.FromResult(CommittedSpend?.Invoke() ?? 0m);
 
         public Task<decimal> GetTodayOutstandingReservationsAsync(
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
+            Task.FromResult(OutstandingUsd);
+
+        public Task ExtendExpiryAsync(
+            Guid reservationId,
+            DateTimeOffset expiresAt,
+            CancellationToken cancellationToken = default)
+        {
+            ExtendedExpiries.Add(expiresAt);
+
+            return Task.CompletedTask;
+        }
 
         public Task<int> SweepExpiredAsync(
             DateTimeOffset utcNow,

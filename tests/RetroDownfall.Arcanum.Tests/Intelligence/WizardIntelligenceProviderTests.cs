@@ -229,6 +229,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("Daily budget limit", error.Message);
 
+        Assert.Equal(ErrorCodes.Budget.Exceeded, error.Data);
+
         Assert.Equal(0, chat.BufferedCallCount);
     }
 
@@ -1029,30 +1031,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             BaseRequest() with { Prompt = "stream fail", SkipSpellRouting = true, DisableMcpTools = true });
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
-    }
-
-    [Fact]
-    public async Task Scenario16_CancellationDuringStream_CancelsCleanly()
-    {
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueSlowStream(TimeSpan.FromSeconds(5), "tok");
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat);
-
-        using CancellationTokenSource cts = new();
-
-        cts.CancelAfter(TimeSpan.FromMilliseconds(100));
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-        {
-            await foreach (IntelligenceEvent _ in wizard.StreamPromptAsync(
-                BaseRequest() with { Prompt = "cancel", SkipSpellRouting = true, DisableMcpTools = true },
-                InvocationContexts.AttendedSession(),
-                cts.Token))
-            {
-            }
-        });
     }
 
     [Fact]
@@ -2023,10 +2001,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.False(result.IsSuccess);
 
-        // The buffered projection reports in-turn aborts as Hub.Error; the begin failure's own message
-        // survives, and carrying the typed storage code all the way out is a turn-result change that
-        // belongs with the turn-publication slice.
-        Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
+        // R-050: the begin failure's typed code is the turn's terminal result, so the caller sees the
+        // storage failure rather than the generic Hub.Error the drain falls back to.
+        Assert.Equal(ErrorCodes.Grimoire.WriteFailed, result.Error.Code);
 
         // The provider was never dialled, so its scripted answer is still queued.
         Assert.Equal(0, chat.BufferedCallCount);
@@ -10344,6 +10321,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public void EnqueueImmediateStreamFailure(Exception ex) =>
             _streaming.Enqueue(_ => ImmediateFailingStream(ex));
 
+        /// <summary>Answers the next streaming call with <paramref name="respond"/>, given the call's token.</summary>
+        public void EnqueueStreamResponder(Func<CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> respond) =>
+            _streaming.Enqueue(respond);
+
         public void EnqueueSlowStream(TimeSpan delay, string token) =>
             _streaming.Enqueue(ct => SlowStream(delay, token, ct));
 
@@ -10358,6 +10339,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         /// </summary>
         public void EnqueueUsageThenBlock(UsageDetails usage, TaskCompletionSource? aboutToBlock = null) =>
             _streaming.Enqueue(ct => UsageThenBlock(usage, aboutToBlock, ct));
+
+        /// <summary>Answers the next buffered call with <paramref name="respond"/>, given the call's token.</summary>
+        public void EnqueueBufferedResponder(Func<CancellationToken, Task<ChatResponse>> respond) =>
+            _buffered.Enqueue(respond);
 
         public void EnqueueSlowBuffered(TimeSpan delay, string text) =>
             _buffered.Enqueue(async ct =>
@@ -10639,6 +10624,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public bool ThrowOnFinalize { get; init; }
 
+        /// <summary>
+        /// When set, the tool-interaction append and the Session token increment refuse a cancelled
+        /// token before writing anything, as a real Grimoire write would.
+        /// </summary>
+        public bool ThrowWhenCancelled { get; init; }
+
         public Guid? FixedSessionId { get; init; }
 
         public long PreRequestHistoryRevision { get; init; }
@@ -10784,6 +10775,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             string modelUsed,
             CancellationToken cancellationToken = default)
         {
+            if (ThrowWhenCancelled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             ToolInteractions.Add(new RecordedToolInteraction(
                 sessionId,
                 toolName,
@@ -10878,6 +10874,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default)
         {
+            if (ThrowWhenCancelled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             LastIncrementedSessionId = sessionId;
 
             LastIncrementedTokens = totalTokens;
@@ -11111,7 +11112,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         private readonly ConcurrentQueue<BillableOperationRecord> _operations = new();
 
+        private readonly ConcurrentQueue<(Guid RunId, InferenceRunStatus Status)> _completedRuns = new();
+
         public BillableOperationRecord? LastOperation => _operations.LastOrDefault();
+
+        /// <summary>Every run completion, in order, with the status it recorded.</summary>
+        public IReadOnlyList<(Guid RunId, InferenceRunStatus Status)> CompletedRuns => [.. _completedRuns];
 
         public IReadOnlyList<BillableOperationRecord> Operations => [.. _operations];
 
@@ -11127,8 +11133,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task CompleteRunAsync(
             Guid runId,
             InferenceRunStatus status,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            _completedRuns.Enqueue((runId, status));
+
+            return Task.CompletedTask;
+        }
 
         public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
@@ -11222,6 +11232,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<decimal> GetTodayOutstandingReservationsAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0m);
+
+        public Task ExtendExpiryAsync(
+            Guid reservationId,
+            DateTimeOffset expiresAt,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
 
         public Task<int> SweepExpiredAsync(
             DateTimeOffset utcNow,

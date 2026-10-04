@@ -504,6 +504,8 @@ public sealed partial class WizardIntelligenceProvider(
                     yield break;
 
                 case IntelligenceEventType.Error:
+                    // Every error frame is built by ErrorFrame and carries its typed code; Hub.Error
+                    // is only the backstop for a frame that arrives without one.
                     yield return new RunFailed(
                         correlation,
                         new Error(frame.Data ?? ErrorCodes.Hub.Error, frame.Message),
@@ -972,7 +974,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (guardrailsInput.IsFailure)
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, guardrailsInput.Error.Message);
+            yield return ErrorFrame(guardrailsInput.Error);
 
             yield break;
         }
@@ -983,17 +985,14 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (streamPreflight.IsFailure)
         {
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                streamPreflight.Error.Message,
-                streamPreflight.Error.Code);
+            yield return ErrorFrame(streamPreflight.Error);
 
             yield break;
         }
 
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, "Prompt is required.");
+            yield return ErrorFrame(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
 
             yield break;
         }
@@ -1002,7 +1001,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (streamBudgetGate.IsFailure)
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamBudgetGate.Error.Message);
+            yield return ErrorFrame(streamBudgetGate.Error);
 
             yield break;
         }
@@ -1039,7 +1038,7 @@ public sealed partial class WizardIntelligenceProvider(
                     "Hub model resolution failed; exception type {ExceptionType}.",
                     resolveFailure.GetType().FullName);
 
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicModelResolutionFailureMessage);
+                yield return ErrorFrame(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
 
                 yield break;
             }
@@ -1056,10 +1055,7 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 singleLease.Dispose();
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    capabilityValidation.Error.Message,
-                    capabilityValidation.Error.Code);
+                yield return ErrorFrame(capabilityValidation.Error);
 
                 yield break;
             }
@@ -1122,9 +1118,7 @@ public sealed partial class WizardIntelligenceProvider(
                     "Streaming inference threw after start; exception type {ExceptionType}.",
                     singleMoveFailure.GetType().FullName);
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    PublicInferenceFailureMessage);
+                yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
             }
 
             yield break;
@@ -1137,7 +1131,7 @@ public sealed partial class WizardIntelligenceProvider(
         {
             logger.LogWarning("Hub model resolution failed for requested model {RequestedModel}.", request.Model);
 
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicModelResolutionFailureMessage);
+            yield return ErrorFrame(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
 
             yield break;
         }
@@ -1161,10 +1155,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (capabilityValidation.IsFailure)
                 {
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        capabilityValidation.Error.Message,
-                        capabilityValidation.Error.Code);
+                    yield return ErrorFrame(capabilityValidation.Error);
 
                     yield break;
                 }
@@ -1211,9 +1202,9 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure));
+                    yield return ErrorFrame(new Error(
+                        ErrorCodes.Hub.Error,
+                        BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure)));
 
                     yield break;
                 }
@@ -1286,9 +1277,9 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
+                    yield return ErrorFrame(new Error(
+                        ErrorCodes.Hub.Error,
+                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)));
 
                     yield break;
                 }
@@ -1378,9 +1369,9 @@ public sealed partial class WizardIntelligenceProvider(
                         yield return buffered;
                     }
 
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
+                    yield return ErrorFrame(new Error(
+                        ErrorCodes.Hub.Error,
+                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)));
 
                     yield break;
                 }
@@ -1476,9 +1467,7 @@ public sealed partial class WizardIntelligenceProvider(
                         candidateProvider.Name,
                         midStreamFailure.GetType().FullName);
 
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        PublicInferenceFailureMessage);
+                    yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
                 }
 
                 if (classification.IsConnectivityFailure && !providerMarkedFailed)
@@ -1550,6 +1539,20 @@ public sealed partial class WizardIntelligenceProvider(
         && streamedLength == 0;
 
     /// <summary>
+    /// The one shape of an <c>error</c> frame for a typed failure: the message, with the failure's
+    /// code in <c>Data</c>.
+    /// </summary>
+    /// <remarks>
+    /// The streaming projection reads the code from <c>Data</c> and falls back to <c>Hub.Error</c>
+    /// when it is absent, so a frame built from a typed <see cref="Error"/> without it reports a
+    /// budget refusal, a busy Session, or a guardrail block as a generic failure that a client cannot
+    /// back off from or retry correctly. <c>Data</c> doubles as the payload of other frame types,
+    /// which is why the code is set here and only here.
+    /// </remarks>
+    private static IntelligenceEvent ErrorFrame(Error error) =>
+        new(IntelligenceEventType.Error, error.Message, error.Code);
+
+    /// <summary>
     /// Frames a candidate can emit before it has committed anything. <c>Context</c> belongs here:
     /// <c>ModelCallExecutor</c> yields the token-accounting frame before the provider socket is
     /// dialled at all, so every streaming turn emits one ahead of a connectivity error. Leaving it
@@ -1599,7 +1602,10 @@ public sealed partial class WizardIntelligenceProvider(
 
         TurnAccountingHandle? streamAccounting = null;
 
-        InferenceRunStatus streamAccountingStatus = InferenceRunStatus.Abandoned;
+        // Failed until the turn earns better: only the success path sets Completed, and the finally
+        // records Abandoned only when the caller cancelled. Starting at Abandoned made every failure
+        // exit that did not overwrite it read as if the caller had walked away.
+        InferenceRunStatus streamAccountingStatus = InferenceRunStatus.Failed;
 
         bool publishedStreamAmbient = false;
 
@@ -1669,10 +1675,7 @@ public sealed partial class WizardIntelligenceProvider(
                         clientToolAvailability.Error);
                 }
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    clientToolAvailability.Error.Message,
-                    clientToolAvailability.Error.Code);
+                yield return ErrorFrame(clientToolAvailability.Error);
 
                 yield break;
             }
@@ -1683,9 +1686,28 @@ public sealed partial class WizardIntelligenceProvider(
                 yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
             }
 
-        Session? thread = await inferenceContextBuilder
-            .LoadThreadAsync(request, inferenceToken)
-            .ConfigureAwait(false);
+        // One thread snapshot for the whole run (DESIGN §10.7.2), taken before any candidate begins
+        // the turn. A later candidate reloading it would read the turn's own user Entry, and with
+        // the prompt appended again the fallback provider would be sent it twice.
+        Session? thread;
+
+        if (seed is { ThreadLoaded: true })
+        {
+            thread = seed.Thread;
+        }
+        else
+        {
+            thread = await inferenceContextBuilder
+                .LoadThreadAsync(request, inferenceToken)
+                .ConfigureAwait(false);
+
+            if (seed is not null)
+            {
+                seed.Thread = thread;
+
+                seed.ThreadLoaded = true;
+            }
+        }
 
         bool attachmentsEnabled = settings.Value.ResolveAttachments().Enabled;
 
@@ -1703,7 +1725,9 @@ public sealed partial class WizardIntelligenceProvider(
         // A retried candidate inherits the turn the run already opened (DESIGN §10.7.2). Beginning
         // it again would insert a second user Entry — and, for a session-less request, a second
         // orphaned Session — because interrupted-turn cleanup only discards the empty assistant row.
-        if (seed?.Turn is { } seededTurn)
+        // A handle some exit path already finalized is dead: its assistant row is resolved and its
+        // Session lease released, so it is never adopted, and this candidate begins its own turn.
+        if (seed?.Turn is { IsFinalized: false } seededTurn)
         {
             grimoireTurn = seededTurn;
 
@@ -1724,8 +1748,12 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 // Fail before prompt construction, tool advertisement, or provider dispatch. A turn
                 // whose Session or Campaign binding could not be honoured has no answer to give, and
-                // continuing would produce one nothing durable is attached to (§10.12).
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, begun.Error.Message);
+                // continuing would produce one nothing durable is attached to (§10.12). The typed
+                // begin failure is the terminal result: without it the drain reports the generic
+                // Hub.Error, and a client racing two turns on one Session never sees its 409.
+                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(begun.Error);
+
+                yield return ErrorFrame(begun.Error);
 
                 yield break;
             }
@@ -1752,7 +1780,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (begun.IsFailure)
             {
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, begun.Error.Message);
+                yield return ErrorFrame(begun.Error);
 
                 yield break;
             }
@@ -1796,9 +1824,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming)
             {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    streamAttachmentPrep.ErrorMessage);
+                yield return ErrorFrame(
+                    new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
             }
 
             await grimoireTurnWriter
@@ -2071,9 +2098,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming)
             {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    streamAccountingBegin.Error.Message);
+                yield return ErrorFrame(streamAccountingBegin.Error);
             }
 
             await grimoireTurnWriter
@@ -2148,9 +2173,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (streaming)
                 {
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        streamRoutedSpell.Error.Message);
+                    yield return ErrorFrame(streamRoutedSpell.Error);
                 }
 
                 yield break;
@@ -2366,7 +2389,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (lateBegun.IsFailure)
             {
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, lateBegun.Error.Message);
+                yield return ErrorFrame(lateBegun.Error);
 
                 yield break;
             }
@@ -2416,9 +2439,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            promoteError);
+                        yield return ErrorFrame(new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
                     }
 
                     await grimoireTurnWriter
@@ -2508,10 +2529,7 @@ public sealed partial class WizardIntelligenceProvider(
                     CancellationToken.None)
                 .ConfigureAwait(false);
 
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                effectiveClientTools.Error.Message,
-                effectiveClientTools.Error.Code);
+            yield return ErrorFrame(effectiveClientTools.Error);
 
             yield break;
         }
@@ -2551,10 +2569,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            referenceError.Message,
-                            referenceError.Code);
+                        yield return ErrorFrame(referenceError);
                     }
 
                     await grimoireTurnWriter
@@ -2708,10 +2723,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            boundaryError.Message,
-                            boundaryError.Code);
+                        yield return ErrorFrame(boundaryError);
                     }
 
                     await grimoireTurnWriter
@@ -2949,6 +2961,7 @@ public sealed partial class WizardIntelligenceProvider(
                             .EnsureReservationForContextAsync(
                                 budgetReservationService,
                                 settings.Value.ResolvePricing(),
+                                settings.Value.ResolveBudget(),
                                 targetModel,
                                 callBreakdown,
                                 inferenceToken)
@@ -3041,6 +3054,18 @@ public sealed partial class WizardIntelligenceProvider(
                         streamCovenantStaging = CovenantToolStagingAmbient.Push(stagingContext);
 
                         streamTurnAmbients.CovenantStaging = stagingContext;
+                    }
+                    else
+                    {
+                        // A round that earned no admission receipt has nothing to stage under. The
+                        // captured set outlives the round, so without this the previous round's
+                        // receipt would ride into this round's tool calls and authorize staging
+                        // against a dispatch it does not describe.
+                        streamCovenantStaging?.Dispose();
+
+                        streamCovenantStaging = null;
+
+                        streamTurnAmbients.CovenantStaging = null;
                     }
 
                     ModelCallPurpose streamPurpose = streamToolRoundCount == 0
@@ -3170,8 +3195,14 @@ public sealed partial class WizardIntelligenceProvider(
                         {
                             hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
                         }
-                        catch (OperationCanceledException)
+                        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                         {
+                            // Filtered on the caller's token, as ModelCallExecutor's buffered path
+                            // is: a provider timeout surfaces as a cancellation while the caller is
+                            // still listening, and it belongs in the generic catch below, which
+                            // classifies it as connectivity so the turn defers to the next
+                            // candidate instead of being finalized on the way out.
+                            //
                             // A client disconnect must not make a round that already
                             // streamed real provider bytes look like it spent nothing — that
                             // both loses the spend from budget accounting and returns the
@@ -3527,13 +3558,15 @@ public sealed partial class WizardIntelligenceProvider(
                                             denied.ResultText,
                                             toolCallIndex == 0 ? rawRoundReasoning : null);
 
+                                        // The model has been told it was denied; recording that
+                                        // is bookkeeping and outlives the caller's token.
                                         await grimoireTurnWriter.TryAppendToolInteractionAsync(
                                             grimoireTurn.SessionId,
                                             denied.ToolName,
                                             denied.ArgsSnapshot,
                                             denied.ResultText,
                                             targetModel,
-                                            inferenceToken)
+                                            CancellationToken.None)
                                             .ConfigureAwait(false);
                                     }
                                     else
@@ -3705,13 +3738,16 @@ public sealed partial class WizardIntelligenceProvider(
 
                             if (!processed.ReceiptHandled)
                             {
+                                // The tool has returned, so its effect has happened: recording it
+                                // runs on CancellationToken.None, or a client that disconnects now
+                                // leaves an effect with no durable record of the call behind it.
                                 await grimoireTurnWriter.TryAppendToolInteractionAsync(
                                     grimoireTurn.SessionId,
                                     processed.ToolName,
                                     processed.ArgsSnapshot,
                                     processed.ResultText,
                                     targetModel,
-                                    inferenceToken)
+                                    CancellationToken.None)
                                     .ConfigureAwait(false);
                             }
 
@@ -3870,10 +3906,7 @@ public sealed partial class WizardIntelligenceProvider(
                         covenantScope?.StagedCommit()).ConfigureAwait(false);
                 }
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    inferenceTypedError?.Message ?? inferenceError,
-                    inferenceTypedError?.Code);
+                yield return ErrorFrame(inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError));
 
                 yield break;
             }
@@ -3962,6 +3995,7 @@ public sealed partial class WizardIntelligenceProvider(
                                 .EnsureReservationForContextAsync(
                                     budgetReservationService,
                                     settings.Value.ResolvePricing(),
+                                    settings.Value.ResolveBudget(),
                                     targetModel,
                                     retryContextBreakdown,
                                     ct)
@@ -4067,10 +4101,7 @@ public sealed partial class WizardIntelligenceProvider(
                     }
                     else
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            validationResult.Error.Message,
-                            validationResult.Error.Code);
+                        yield return ErrorFrame(validationResult.Error);
                     }
 
                     yield break;
@@ -4105,11 +4136,10 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         if (structuredOutput.StrictMode)
                         {
-                            yield return new IntelligenceEvent(
-                                IntelligenceEventType.Error,
+                            yield return ErrorFrame(new Error(
+                                ErrorCodes.StructuredOutput.ValidationFailed,
                                 "Streamed response failed JSON schema validation after generation: "
-                                    + string.Join("; ", streamValidation.Errors),
-                                ErrorCodes.StructuredOutput.ValidationFailed);
+                                    + string.Join("; ", streamValidation.Errors)));
 
                             yield break;
                         }
@@ -4121,10 +4151,9 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     if (structuredOutput.StrictMode)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message,
-                            ErrorCodes.StructuredOutput.SchemaInvalid);
+                        yield return ErrorFrame(new Error(
+                            ErrorCodes.StructuredOutput.SchemaInvalid,
+                            "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message));
 
                         yield break;
                     }
@@ -4160,10 +4189,7 @@ public sealed partial class WizardIntelligenceProvider(
                 .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
                 .ConfigureAwait(false);
 
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                guardrailsStreamOutput.Error.Message,
-                guardrailsStreamOutput.Error.Code);
+            yield return ErrorFrame(guardrailsStreamOutput.Error);
 
             yield break;
         }
@@ -4218,12 +4244,15 @@ public sealed partial class WizardIntelligenceProvider(
                     new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
             }
 
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                GrimoireTurnWriter.PublicFinalizeFailureMessage);
+            yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
 
             yield break;
         }
+
+        // The answer is durable from here, so the run completed whatever happens to the caller
+        // next. Finalize itself stays cancellable: it is one atomic write, and a cancellation that
+        // lands before it commits leaves the row in flight for the stream-exit cleanup to resolve.
+        streamAccountingStatus = InferenceRunStatus.Completed;
 
         IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance = [];
 
@@ -4250,6 +4279,7 @@ public sealed partial class WizardIntelligenceProvider(
             grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
         }
 
+        // Post-finalize bookkeeping for an answer that already exists: not the caller's to cancel.
         await TryIncrementSessionTokensAsync(
                 grimoireTurn.SessionId,
                 streamAccumulatedUsage,
@@ -4257,13 +4287,13 @@ public sealed partial class WizardIntelligenceProvider(
                 streamAccountingLocal.RunId.HasValue
                     ? streamAccountingLocal.AccumulatedCostUsd
                     : null,
-                inferenceToken)
+                CancellationToken.None)
             .ConfigureAwait(false);
 
         await TryRecordAttachmentConsultationsAsync(
             grimoireTurn.AssistantEntryId,
             attachmentProvenance,
-            inferenceToken).ConfigureAwait(false);
+            CancellationToken.None).ConfigureAwait(false);
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
 
@@ -4284,8 +4314,6 @@ public sealed partial class WizardIntelligenceProvider(
                 [.. contextBreakdownsByCall.Values],
                 CancellationToken.None).ConfigureAwait(false);
         }
-
-        streamAccountingStatus = InferenceRunStatus.Completed;
 
         if (!streaming)
         {
@@ -4332,12 +4360,18 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streamAccounting is not null && streamAccounting.OwnsLifecycle)
             {
+                InferenceRunStatus completionStatus =
+                    streamAccountingStatus != InferenceRunStatus.Completed
+                    && (callerToken.IsCancellationRequested || inferenceToken.IsCancellationRequested)
+                        ? InferenceRunStatus.Abandoned
+                        : streamAccountingStatus;
+
                 try
                 {
                     await streamAccounting.CompleteAsync(
                             turnRunWriter,
                             budgetReservationService,
-                            streamAccountingStatus,
+                            completionStatus,
                             CancellationToken.None)
                         .ConfigureAwait(false);
                 }
@@ -4549,11 +4583,17 @@ public sealed partial class WizardIntelligenceProvider(
 
         while (true)
         {
-            // Checked first on every iteration: once the caller's token is cancelled, a
-            // WaitToReadAsync built from it below resolves instantly (already-cancelled), so
-            // without this the loop would busy-spin allocating a List and 2-3 Tasks per pass for
-            // the rest of the tool call instead of unwinding through the per-call finally.
-            cancellationToken.ThrowIfCancellationRequested();
+            // Checked first on every iteration while the tool runs: once the caller's token is
+            // cancelled, a WaitToReadAsync built from it below resolves instantly
+            // (already-cancelled), so without this the loop would busy-spin allocating a List and
+            // 2-3 Tasks per pass for the rest of the tool call instead of unwinding through the
+            // per-call finally. A tool that has already returned is past that point: its effect
+            // happened, the drain below cannot spin (the ward writer completes before the tool
+            // task does), and throwing here would skip recording the call.
+            if (!processTask.IsCompleted)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
 
             while (wards.TryRead(out IntelligenceEvent? ward) && ward is not null)
             {
@@ -4702,13 +4742,14 @@ public sealed partial class WizardIntelligenceProvider(
             denied.ResultText,
             reasoningContents);
 
+        // Bookkeeping for a denial the model has already been handed: not the caller's to cancel.
         await grimoireTurnWriter.TryAppendToolInteractionAsync(
             grimoireTurn.SessionId,
             denied.ToolName,
             denied.ArgsSnapshot,
             denied.ResultText,
             targetModel,
-            cancellationToken)
+            CancellationToken.None)
             .ConfigureAwait(false);
 
         // Do not emit ToolCall — no waiter was registered, so clients must not try to answer.
@@ -8135,6 +8176,15 @@ public sealed partial class WizardIntelligenceProvider(
         /// <see langword="null"/> until then; a stateless request seeds an empty handle.
         /// </summary>
         public GrimoireTurnWriter.TurnHandle? Turn { get; set; }
+
+        /// <summary>
+        /// The Session thread as the first candidate loaded it, before any candidate began the turn.
+        /// Every later candidate, and the compression decision each makes, reads this snapshot rather
+        /// than a reload that would already contain the turn's own user <c>Entry</c>.
+        /// </summary>
+        public Session? Thread { get; set; }
+
+        public bool ThreadLoaded { get; set; }
 
         public bool QueryEmbeddingResolved { get; set; }
 

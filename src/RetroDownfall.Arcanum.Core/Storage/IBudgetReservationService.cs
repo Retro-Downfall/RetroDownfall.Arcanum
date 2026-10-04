@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// </summary>
 public interface IBudgetReservationService
 {
-
     /// <summary>
     /// Estimates and reserves cost for a turn. Fails with <c>Budget.Exceeded</c> when today's
     /// committed spend + outstanding reservations + this estimate would exceed the daily limit.
@@ -26,6 +25,16 @@ public interface IBudgetReservationService
         decimal reservedUsd,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Moves a still-<see cref="BudgetReservationStatus.Reserved"/> reservation's expiry forward to
+    /// <paramref name="expiresAt"/>. Never shortens it, and never touches a settled reservation.
+    /// </summary>
+    /// <remarks>
+    /// An owning turn renews before every provider call, so a turn that runs past the lifetime it was
+    /// admitted with still reconciles a reservation that is <c>Reserved</c> rather than expired.
+    /// </remarks>
+    Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default);
+
     Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default);
 
     Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default);
@@ -37,7 +46,6 @@ public interface IBudgetReservationService
     Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default);
 
     Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default);
-
 }
 
 public sealed record BudgetReservationRequest(
@@ -58,7 +66,6 @@ public sealed record BudgetReservation(
 
 public enum BudgetReservationStatus
 {
-
     Reserved = 0,
 
     Reconciled = 1,
@@ -66,5 +73,4 @@ public enum BudgetReservationStatus
     Released = 2,
 
     Expired = 3,
-
 }
