@@ -1971,6 +1971,7 @@ public sealed class ToolExecutionPipeline(
             case "write_file":
             case "replace_text_block":
             case "read_file_chunk":
+            case "list_directory":
             {
                 if (!TryGetJsonStringProperty(argsRoot, "relativePath", out string? relativePath)
                     || string.IsNullOrWhiteSpace(relativePath))
@@ -1978,18 +1979,22 @@ public sealed class ToolExecutionPipeline(
                     break;
                 }
 
+                string pathOperation = string.Equals(toolName, "list_directory", StringComparison.OrdinalIgnoreCase)
+                    ? "directory path"
+                    : "file path";
+
                 if (!TryResolvePathUnderWorkspace(workspaceRoot, relativePath, out string? absolutePath))
                 {
                     return await sanctumGuard.ValidatePathAsync(
                         campaignId,
                         relativePath,
-                        "file path",
+                        pathOperation,
                         toolName,
                         cancellationToken).ConfigureAwait(false);
                 }
 
                 SanctumResult pathResult = await sanctumGuard
-                    .ValidatePathAsync(campaignId, absolutePath, "file path", toolName, cancellationToken)
+                    .ValidatePathAsync(campaignId, absolutePath, pathOperation, toolName, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (!pathResult.Allowed)
