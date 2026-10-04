@@ -146,7 +146,7 @@ public sealed class AskCommand(
                     return 1;
                 }
 
-                ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(fullPath, maxImageBytes, allowedMimeTypes);
+                ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(fullPath, maxImageBytes, allowedMimeTypes, cancellationToken);
 
                 if (staged.Error is not null)
                 {
