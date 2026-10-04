@@ -5,50 +5,38 @@ namespace RetroDownfall.Arcanum.Core.Desktop;
 /// <summary>Creates the platform discovery implementation used by the current process.</summary>
 public static class ApplicationDiscoveryServiceFactory
 {
-
     public static IApplicationDiscoveryService CreateDefault()
     {
-
         ApplicationDiscoveryEnvironment environment =
             ApplicationDiscoveryEnvironment.CreateDefault();
 
         if (OperatingSystem.IsMacOS())
         {
-
             return new MacOsApplicationDiscoveryService(environment);
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return new WindowsApplicationDiscoveryService(environment);
-
         }
 
         return new LinuxApplicationDiscoveryService(environment);
-
     }
-
 }
 
 /// <summary>Discovers executable, app-bundle, and project candidates on macOS.</summary>
 public sealed class MacOsApplicationDiscoveryService : IApplicationDiscoveryService
 {
-
     private readonly ApplicationDiscoveryEnvironment _environment;
 
     public MacOsApplicationDiscoveryService(ApplicationDiscoveryEnvironment environment)
     {
-
         _environment = environment;
-
     }
 
     public IReadOnlyList<ApplicationDiscoveryCandidate> Discover(
         DesktopApplication application)
     {
-
         ApplicationDescriptor descriptor = ApplicationDescriptor.For(application);
 
         List<ApplicationDiscoveryCandidate> candidates = [];
@@ -85,28 +73,22 @@ public sealed class MacOsApplicationDiscoveryService : IApplicationDiscoveryServ
             descriptor);
 
         return candidates;
-
     }
-
 }
 
 /// <summary>Discovers executable and project candidates on Windows.</summary>
 public sealed class WindowsApplicationDiscoveryService : IApplicationDiscoveryService
 {
-
     private readonly ApplicationDiscoveryEnvironment _environment;
 
     public WindowsApplicationDiscoveryService(ApplicationDiscoveryEnvironment environment)
     {
-
         _environment = environment;
-
     }
 
     public IReadOnlyList<ApplicationDiscoveryCandidate> Discover(
         DesktopApplication application)
     {
-
         ApplicationDescriptor descriptor = ApplicationDescriptor.For(application);
 
         List<ApplicationDiscoveryCandidate> candidates = [];
@@ -142,28 +124,22 @@ public sealed class WindowsApplicationDiscoveryService : IApplicationDiscoverySe
             descriptor);
 
         return candidates;
-
     }
-
 }
 
 /// <summary>Discovers executable and project candidates on Linux.</summary>
 public sealed class LinuxApplicationDiscoveryService : IApplicationDiscoveryService
 {
-
     private readonly ApplicationDiscoveryEnvironment _environment;
 
     public LinuxApplicationDiscoveryService(ApplicationDiscoveryEnvironment environment)
     {
-
         _environment = environment;
-
     }
 
     public IReadOnlyList<ApplicationDiscoveryCandidate> Discover(
         DesktopApplication application)
     {
-
         ApplicationDescriptor descriptor = ApplicationDescriptor.For(application);
 
         List<ApplicationDiscoveryCandidate> candidates = [];
@@ -179,14 +155,12 @@ public sealed class LinuxApplicationDiscoveryService : IApplicationDiscoveryServ
 
         if (architectureSuffix is not null)
         {
-
             ApplicationDiscoveryCandidateBuilder.AddPortableSiblingCandidate(
                 candidates,
                 _environment,
                 descriptor,
                 platformSuffix: $"linux-{architectureSuffix}",
                 executableSuffix: string.Empty);
-
         }
 
         string userExecutable = Path.Combine(
@@ -221,21 +195,17 @@ public sealed class LinuxApplicationDiscoveryService : IApplicationDiscoveryServ
             descriptor);
 
         return candidates;
-
     }
 
     private static string? LinuxArchitectureSuffix(Architecture architecture) =>
         architecture switch
         {
-
             Architecture.X64 => "x64",
 
             Architecture.Arm64 => "arm64",
 
             _ => null,
-
         };
-
 }
 
 internal sealed record ApplicationDescriptor(
@@ -245,11 +215,9 @@ internal sealed record ApplicationDescriptor(
     string PortableProductName,
     string ProjectRelativePath)
 {
-
     public static ApplicationDescriptor For(DesktopApplication application) =>
         application switch
         {
-
             DesktopApplication.CommandCenter => new ApplicationDescriptor(
                 "arcanum",
                 "Arcanum.app",
@@ -275,21 +243,17 @@ internal sealed record ApplicationDescriptor(
                 nameof(application),
                 application,
                 "Unknown desktop application."),
-
         };
-
 }
 
 internal static class ApplicationDiscoveryCandidateBuilder
 {
-
     public static void AddExecutableCandidates(
         List<ApplicationDiscoveryCandidate> candidates,
         ApplicationDiscoveryEnvironment environment,
         ApplicationDescriptor descriptor,
         string executableSuffix)
     {
-
         string executableName = $"{descriptor.AssemblyName}{executableSuffix}";
 
         string baseExecutable = Path.Combine(
@@ -316,7 +280,6 @@ internal static class ApplicationDiscoveryCandidateBuilder
             ApplicationCandidateKind.Executable,
             siblingExecutable,
             siblingExecutable);
-
     }
 
     public static void AddDevelopmentCandidate(
@@ -324,10 +287,24 @@ internal static class ApplicationDiscoveryCandidateBuilder
         ApplicationDiscoveryEnvironment environment,
         ApplicationDescriptor descriptor)
     {
-
         string projectPath = Path.Combine(
             environment.RepositoryRoot,
             descriptor.ProjectRelativePath);
+
+        if (!environment.AllowDevelopmentProject)
+        {
+            // Kept so the display-only repository-relative fallback is still printed, but marked
+            // absent so the launcher never executes a project this image was not opted into (R-009).
+            candidates.Add(
+                new ApplicationDiscoveryCandidate(
+                    ApplicationCandidateKind.DevelopmentProject,
+                    projectPath,
+                    descriptor.ProjectRelativePath,
+                    Exists: false,
+                    descriptor.ProjectRelativePath));
+
+            return;
+        }
 
         Add(
             candidates,
@@ -336,7 +313,6 @@ internal static class ApplicationDiscoveryCandidateBuilder
             projectPath,
             descriptor.ProjectRelativePath,
             descriptor.ProjectRelativePath);
-
     }
 
     public static void AddPortableSiblingCandidate(
@@ -346,7 +322,6 @@ internal static class ApplicationDiscoveryCandidateBuilder
         string platformSuffix,
         string executableSuffix)
     {
-
         string executableName = $"{descriptor.AssemblyName}{executableSuffix}";
 
         string portableExecutable = Path.GetFullPath(
@@ -362,7 +337,6 @@ internal static class ApplicationDiscoveryCandidateBuilder
             ApplicationCandidateKind.Executable,
             portableExecutable,
             portableExecutable);
-
     }
 
     public static void Add(
@@ -373,20 +347,15 @@ internal static class ApplicationDiscoveryCandidateBuilder
         string displayPath,
         string? projectRelativePath = null)
     {
-
         bool exists;
 
         try
         {
-
             exists = environment.PathExists(launchPath);
-
         }
         catch
         {
-
             exists = false;
-
         }
 
         candidates.Add(
@@ -396,7 +365,5 @@ internal static class ApplicationDiscoveryCandidateBuilder
                 displayPath,
                 exists,
                 projectRelativePath));
-
     }
-
 }
