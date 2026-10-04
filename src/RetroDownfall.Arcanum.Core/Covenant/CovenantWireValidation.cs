@@ -110,16 +110,17 @@ internal static class CovenantWireValidation
     /// <summary>Validates a lowercase hexadecimal digest on the wire, before anything tries to read it.</summary>
     internal static Result ValidateDigestText(string? value, string subject)
     {
+        // A digest is a body field, not a scope: a malformed one is a malformed body.
         if (value is not { Length: 64 })
         {
-            return InvalidScope($"The {subject} must be a 64-character hexadecimal digest.");
+            return InvalidBody($"The {subject} must be a 64-character hexadecimal digest.");
         }
 
         foreach (char character in value)
         {
             if (character is not ((>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F')))
             {
-                return InvalidScope($"The {subject} must be a 64-character hexadecimal digest.");
+                return InvalidBody($"The {subject} must be a 64-character hexadecimal digest.");
             }
         }
 
