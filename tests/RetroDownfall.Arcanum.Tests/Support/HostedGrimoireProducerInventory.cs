@@ -776,6 +776,8 @@ internal static class HostedGrimoireProducerInventory
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.fstat"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.lstat"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.stat"] = HostedProducerSiteKind.FileSystemRead,
+        ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.ProcPidFdInfo"] = HostedProducerSiteKind.FileSystemRead,
+        ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFinalPathNameByHandle"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.GetEffectiveUserIdNative"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.WriteAsync"] = (HostedProducerSiteKind)5,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync"] = (HostedProducerSiteKind)5,

@@ -27044,6 +27044,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.fstat", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.lstat", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.stat", 4)]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.ProcPidFdInfo", 4)]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFinalPathNameByHandle", 4)]
     [InlineData("RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.WriteAsync", 5)]
     [InlineData("RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync", 5)]
     [InlineData("RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.CompleteAsync", 5)]
