@@ -833,6 +833,78 @@ public sealed class ArcanumApiClientTests
         Assert.Contains("lost before the stream completed", events[1].Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The error body of a non-success stream response is read through the same transport as the
+    /// stream itself, so a host that drops while answering <c>500</c> must produce the shared
+    /// disconnect copy, not an exception that escapes the iterator as "An unexpected CLI error".
+    /// </summary>
+    [Fact]
+    public async Task AskStreamAsync_yields_disconnect_error_when_error_body_read_throws_IOException()
+    {
+        ArcanumApiClient client = CreateClient(
+            new FaultingErrorBodyHandler(),
+            apiKey: "test-key");
+
+        List<IntelligenceEvent> events = [];
+
+        await foreach (IntelligenceEvent evt in client.AskStreamAsync(new PingRequest("hello"), CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        IntelligenceEvent only = Assert.Single(events);
+
+        Assert.Equal(IntelligenceEventType.Error, only.Type);
+
+        Assert.Equal(ArcanumApiClient.StreamDisconnectMessage, only.Message);
+    }
+
+    [Fact]
+    public async Task StreamApprenticeChronicleAsync_yields_disconnect_error_when_error_body_read_throws_IOException()
+    {
+        ArcanumApiClient client = CreateClient(
+            new FaultingErrorBodyHandler(),
+            apiKey: "test-key");
+
+        List<ChronicleFrame> frames = [];
+
+        await foreach (ChronicleFrame frame in client.StreamApprenticeChronicleAsync(Guid.NewGuid(), CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        ChronicleFrame only = Assert.Single(frames);
+
+        Assert.Equal("error", only.Type);
+
+        Assert.Equal(ArcanumApiClient.StreamDisconnectMessage, only.Message);
+    }
+
+    [Fact]
+    public async Task ResearchWebAsync_yields_a_disconnect_error_frame_when_error_body_read_throws_IOException()
+    {
+        ArcanumApiClient client = CreateClient(
+            new FaultingErrorBodyHandler(),
+            apiKey: "test-key");
+
+        List<WebResearchStreamFrame> frames = [];
+
+        await foreach (WebResearchStreamFrame frame in client.ResearchWebAsync(
+            new WebResearchWorkflowRequest { Question = "why" },
+            CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        WebResearchStreamFrame only = Assert.Single(frames);
+
+        Assert.Equal(WebResearchStreamFrameType.Error, only.Type);
+
+        Assert.Equal(ErrorCodes.Connection.Unreachable, only.Code);
+
+        Assert.Equal(ArcanumApiClient.StreamDisconnectMessage, only.Message);
+    }
+
     [Fact]
     public async Task AskStreamAsync_yields_reasoning_skips_unknown_type_and_continues()
     {
@@ -1478,6 +1550,52 @@ public sealed class ArcanumApiClientTests
 
             return await _responder(request, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private sealed class FaultingErrorBodyHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StreamContent(new FaultingResponseStream()),
+            });
+    }
+
+    private sealed class FaultingResponseStream : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("Simulated disconnect while the error body was being read.");
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            throw new IOException("Simulated disconnect while the error body was being read.");
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class DisconnectingStreamHandler(byte[] firstLineBytes) : HttpMessageHandler

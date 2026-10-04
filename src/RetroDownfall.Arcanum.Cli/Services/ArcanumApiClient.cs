@@ -73,6 +73,37 @@ public sealed partial class ArcanumApiClient(
         };
     }
 
+    /// <summary>
+    /// Reads the body of a non-success stream response. The body travels over the same connection as
+    /// the stream would have, so a host that drops while answering must surface as the shared transport
+    /// copy a stream read failure gets, never as an exception that escapes the async iterator. The
+    /// caller yields <c>Failure</c> as its terminal error frame; a null <c>Bytes</c> with no failure
+    /// means the body was over the buffering cap.
+    /// </summary>
+    private static async Task<(byte[]? Bytes, string? Failure)> TryReadStreamErrorBodyAsync(
+        HttpContent content,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            byte[]? bytes = await TryReadCappedContentAsync(content, MaxResponseBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            return (bytes, null);
+        }
+        catch (Exception exception)
+        {
+            string? failure = TryMapStreamReadFailure(exception, cancellationToken);
+
+            if (failure is null)
+            {
+                throw;
+            }
+
+            return (null, failure);
+        }
+    }
+
     private static T? TryDeserialize<T>(byte[] bytes, JsonTypeInfo<T> typeInfo) where T : class
     {
         if (bytes.Length == 0)
@@ -2058,8 +2089,15 @@ public sealed partial class ArcanumApiClient(
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
+                (byte[]? responseBytes, string? bodyReadError) = await TryReadStreamErrorBodyAsync(response.Content, cancellationToken)
                     .ConfigureAwait(false);
+
+                if (bodyReadError is not null)
+                {
+                    yield return new IntelligenceEvent(IntelligenceEventType.Error, bodyReadError);
+
+                    yield break;
+                }
 
                 ApiResponse<string>? envelope = responseBytes is null
                     ? null
@@ -3595,8 +3633,15 @@ public sealed partial class ArcanumApiClient(
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
+                (byte[]? responseBytes, string? bodyReadError) = await TryReadStreamErrorBodyAsync(response.Content, cancellationToken)
                     .ConfigureAwait(false);
+
+                if (bodyReadError is not null)
+                {
+                    yield return new ChronicleFrame("error", null, bodyReadError);
+
+                    yield break;
+                }
 
                 ApiResponse<string>? envelope = responseBytes is null
                     ? null
@@ -4004,11 +4049,22 @@ public sealed partial class ArcanumApiClient(
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[]? responseBytes = await TryReadCappedContentAsync(
+                (byte[]? responseBytes, string? bodyReadError) = await TryReadStreamErrorBodyAsync(
                         response.Content,
-                        MaxResponseBytes,
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                if (bodyReadError is not null)
+                {
+                    yield return ResearchError(
+                        new Error(
+                            bodyReadError == StreamTimeoutMessage
+                                ? ErrorCodes.Connection.Timeout
+                                : ErrorCodes.Connection.Unreachable,
+                            bodyReadError));
+
+                    yield break;
+                }
 
                 ApiResponse<string>? envelope = responseBytes is null
                     ? null
