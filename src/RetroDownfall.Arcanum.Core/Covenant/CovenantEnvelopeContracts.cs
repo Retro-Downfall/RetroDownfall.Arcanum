@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public enum CovenantEnvelopePurpose : byte
 {
-
     /// <summary>An opaque pagination cursor over a Covenant read.</summary>
     Cursor = 1,
 
@@ -36,7 +35,6 @@ public enum CovenantEnvelopePurpose : byte
 
     /// <summary>A prepared resolution of a legacy-unresolved Session's immutable binding.</summary>
     SessionCampaignBinding = 6,
-
 }
 
 /// <summary>
@@ -50,7 +48,6 @@ public enum CovenantEnvelopePurpose : byte
 /// </remarks>
 public enum CovenantEnvelopeDecodeFailure : byte
 {
-
     /// <summary>Malformed, out of bounds, or failed authentication. Deliberately undifferentiated.</summary>
     Invalid = 1,
 
@@ -59,7 +56,6 @@ public enum CovenantEnvelopeDecodeFailure : byte
 
     /// <summary>Authenticated, but issued for a different purpose than this route accepts.</summary>
     PurposeMismatch = 3,
-
 }
 
 /// <summary>
@@ -99,7 +95,6 @@ public sealed record CovenantEnvelopeKeySnapshot(
 /// </remarks>
 public static class CovenantEnvelopeLimits
 {
-
     /// <summary>The exact ASCII magic every envelope starts with.</summary>
     public const string Magic = "ACVE";
 
@@ -107,7 +102,7 @@ public static class CovenantEnvelopeLimits
     public const byte Version = 1;
 
     /// <summary>The exact header length, which is also the associated-data length.</summary>
-    public const int HeaderBytes = 46;
+    public const int HeaderBytes = CovenantLimits.EnvelopeHeaderBytes;
 
     /// <summary>AES-GCM nonce length, in bytes.</summary>
     public const int NonceBytes = 12;
@@ -119,10 +114,10 @@ public static class CovenantEnvelopeLimits
     public const int BodyTimeBytes = 16;
 
     /// <summary>The largest caller payload one envelope may carry.</summary>
-    public const int MaxPayloadBytes = 2048;
+    public const int MaxPayloadBytes = CovenantLimits.MaxPreflightPlaintextBytes;
 
     /// <summary>The largest encoded token this decoder will look at.</summary>
-    public const int MaxTokenCharacters = 4096;
+    public const int MaxTokenCharacters = CovenantLimits.MaxEnvelopeEncodedBytes;
 
     /// <summary>The issuance ordinal at which a purpose family must re-key rather than continue.</summary>
     public const ulong CounterRolloverBound = uint.MaxValue;
@@ -152,7 +147,6 @@ public static class CovenantEnvelopeLimits
         purpose is CovenantEnvelopePurpose.Cursor
             or CovenantEnvelopePurpose.OperatorPreflight
             or CovenantEnvelopePurpose.WardRetirement;
-
 }
 
 /// <summary>
@@ -165,7 +159,6 @@ public static class CovenantEnvelopeLimits
 /// </remarks>
 public sealed record CovenantCommittedCapabilityTransition
 {
-
     public CovenantCommittedCapabilityTransition(
         long ExpectedGeneration,
         long Generation,
@@ -193,7 +186,6 @@ public sealed record CovenantCommittedCapabilityTransition
         string? CanonicalDiagnosticCode,
         string? AcceleratorDiagnosticCode)
     {
-
         this.ExpectedGeneration =
             CovenantValidation.RequirePositive(ExpectedGeneration, nameof(ExpectedGeneration));
 
@@ -270,7 +262,6 @@ public sealed record CovenantCommittedCapabilityTransition
         this.CanonicalDiagnosticCode = CanonicalDiagnosticCode;
 
         this.AcceleratorDiagnosticCode = AcceleratorDiagnosticCode;
-
     }
 
     public long ExpectedGeneration { get; }
@@ -325,7 +316,6 @@ public sealed record CovenantCommittedCapabilityTransition
 
     private static long RequireNextGeneration(long expectedGeneration, long generation)
     {
-
         CovenantValidation.RequirePositive(generation, nameof(Generation));
 
         if (expectedGeneration == long.MaxValue || generation != expectedGeneration + 1)
@@ -336,7 +326,6 @@ public sealed record CovenantCommittedCapabilityTransition
         }
 
         return generation;
-
     }
 
     private static long RequireNonNegative(long value, string parameterName) =>
@@ -347,7 +336,6 @@ public sealed record CovenantCommittedCapabilityTransition
         long? sequence,
         long? campaignDeletionSequence)
     {
-
         bool complete = datasetGeneration is not null
             && sequence is not null
             && campaignDeletionSequence is not null;
@@ -380,7 +368,6 @@ public sealed record CovenantCommittedCapabilityTransition
         }
 
         return datasetGeneration;
-
     }
 
     private static CovenantCapabilityState ValidateTier(
@@ -390,7 +377,6 @@ public sealed record CovenantCommittedCapabilityTransition
         string? diagnosticCode,
         string parameterName)
     {
-
         if (!Enum.IsDefined(state))
         {
             throw new ArgumentOutOfRangeException(parameterName);
@@ -415,9 +401,7 @@ public sealed record CovenantCommittedCapabilityTransition
         }
 
         return state;
-
     }
-
 }
 
 /// <summary>
@@ -425,7 +409,6 @@ public sealed record CovenantCommittedCapabilityTransition
 /// </summary>
 public sealed record CovenantCommittedAuthorityTransition
 {
-
     public CovenantCommittedAuthorityTransition(
         string installationIdentity,
         long authorityEpoch,
@@ -436,7 +419,6 @@ public sealed record CovenantCommittedAuthorityTransition
         string? transitionId,
         CovenantCommittedCapabilityTransition capability)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(installationIdentity);
 
         CovenantValidation.RequirePositive(authorityEpoch, nameof(authorityEpoch));
@@ -476,7 +458,6 @@ public sealed record CovenantCommittedAuthorityTransition
         TransitionId = transitionId;
 
         Capability = capability ?? throw new ArgumentNullException(nameof(capability));
-
     }
 
     public string InstallationIdentity { get; }
@@ -494,7 +475,6 @@ public sealed record CovenantCommittedAuthorityTransition
     public string? TransitionId { get; }
 
     public CovenantCommittedCapabilityTransition Capability { get; }
-
 }
 
 /// <summary>
@@ -502,7 +482,6 @@ public sealed record CovenantCommittedAuthorityTransition
 /// </summary>
 public static class CovenantEnvelopeErrors
 {
-
     public static Error For(CovenantEnvelopeDecodeFailure failure) =>
         failure switch
         {
@@ -516,5 +495,4 @@ public static class CovenantEnvelopeErrors
                 ErrorCodes.Covenant.InvalidCursor,
                 "This token is not valid."),
         };
-
 }

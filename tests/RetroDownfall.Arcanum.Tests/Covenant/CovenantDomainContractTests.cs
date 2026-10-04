@@ -6,11 +6,9 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 public sealed class CovenantDomainContractTests
 {
-
     [Fact]
     public void Policy_v1_enum_codes_are_immutable()
     {
-
         Assert.Equal((byte)1, (byte)CovenantScope.Global);
         Assert.Equal((byte)2, (byte)CovenantScope.Campaign);
 
@@ -229,13 +227,11 @@ public sealed class CovenantDomainContractTests
         Assert.Equal((byte)2, (byte)CovenantCursorSort.FtsRank);
         Assert.Equal((byte)3, (byte)CovenantCursorSort.FallbackHeads);
         Assert.Equal((byte)4, (byte)CovenantCursorSort.VersionDescending);
-
     }
 
     [Fact]
     public void Campaign_path_and_session_binding_codes_are_immutable()
     {
-
         Assert.Equal((byte)1, (byte)CampaignPathIdentityOperation.Register);
         Assert.Equal((byte)2, (byte)CampaignPathIdentityOperation.Update);
         Assert.Equal((byte)3, (byte)CampaignPathIdentityOperation.RepairMoved);
@@ -245,7 +241,6 @@ public sealed class CovenantDomainContractTests
         Assert.Equal((byte)1, (byte)SessionCampaignBindingKind.GlobalOnly);
         Assert.Equal((byte)2, (byte)SessionCampaignBindingKind.Campaign);
         Assert.Equal((byte)3, (byte)SessionCampaignBindingKind.LegacyUnresolved);
-
     }
 
     /// <summary>
@@ -260,7 +255,6 @@ public sealed class CovenantDomainContractTests
     [Fact]
     public void The_three_placement_ceilings_agree_so_one_reported_ceiling_can_stand_for_all_of_them()
     {
-
         Assert.Equal(
             CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             CovenantLimits.MaxCampaignConfirmedRenderedBytes);
@@ -268,13 +262,11 @@ public sealed class CovenantDomainContractTests
         Assert.Equal(
             CovenantLimits.MaxGlobalConfirmedRenderedBytes,
             CovenantLimits.MaxCampaignProposedRenderedBytes);
-
     }
 
     [Fact]
     public void Hard_limits_match_the_approved_contract()
     {
-
         Assert.Equal(128, CovenantLimits.MaxKeyCharacters);
         Assert.Equal(2_048, CovenantLimits.MaxAuthoredContentBytes);
         Assert.Equal(4_096, CovenantLimits.MaxGlobalConfirmedRenderedBytes);
@@ -334,18 +326,35 @@ public sealed class CovenantDomainContractTests
         Assert.Equal(2_048, CovenantLimits.MaxFallbackCandidates);
         Assert.Equal(256, CovenantLimits.MaxEndUserIdentityBytes);
         Assert.Equal(32, CovenantLimits.MaxProposedAdmissionRemovals);
-        Assert.Equal(1_024, CovenantLimits.MaxCursorPlaintextBytes);
         Assert.Equal(2_048, CovenantLimits.MaxPreflightPlaintextBytes);
-        Assert.Equal(3_072, CovenantLimits.MaxEnvelopeDecodedBytes);
         Assert.Equal(4_096, CovenantLimits.MaxEnvelopeEncodedBytes);
         Assert.Equal(46, CovenantLimits.EnvelopeHeaderBytes);
+    }
 
+    /// <summary>
+    /// The envelope's sizes are declared once, in <see cref="CovenantLimits"/>; the codec-facing
+    /// <see cref="CovenantEnvelopeLimits"/> restates them by reference. A second literal would be free
+    /// to drift, and the wire validators and the codec would then disagree about what a token may be.
+    /// </summary>
+    [Fact]
+    public void Envelope_limits_agree_between_CovenantLimits_and_CovenantEnvelopeLimits()
+    {
+        Assert.Equal(CovenantLimits.EnvelopeHeaderBytes, CovenantEnvelopeLimits.HeaderBytes);
+        Assert.Equal(CovenantLimits.MaxPreflightPlaintextBytes, CovenantEnvelopeLimits.MaxPayloadBytes);
+        Assert.Equal(CovenantLimits.MaxEnvelopeEncodedBytes, CovenantEnvelopeLimits.MaxTokenCharacters);
+
+        // The largest wire form the payload ceiling implies must still fit the encoded-token ceiling.
+        int maxWireBytes = CovenantEnvelopeLimits.HeaderBytes
+            + CovenantEnvelopeLimits.BodyTimeBytes
+            + CovenantEnvelopeLimits.MaxPayloadBytes
+            + CovenantEnvelopeLimits.TagBytes;
+
+        Assert.True(((maxWireBytes + 2) / 3) * 4 <= CovenantLimits.MaxEnvelopeEncodedBytes);
     }
 
     [Fact]
     public void Invalid_cross_field_models_are_rejected()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         Assert.Throws<ArgumentException>(() => new CovenantKey("Invalid Key"));
@@ -382,13 +391,11 @@ public sealed class CovenantDomainContractTests
             producingEvidenceDigest: null,
             new CovenantDigest(new byte[CovenantLimits.DigestBytes]),
             DateTimeOffset.UtcNow));
-
     }
 
     [Fact]
     public void Default_binding_and_context_fail_closed_at_their_public_boundary()
     {
-
         SessionCampaignBinding binding = default;
 
         Assert.Throws<InvalidOperationException>(() => _ = binding.Kind);
@@ -403,13 +410,11 @@ public sealed class CovenantDomainContractTests
         Assert.Throws<InvalidOperationException>(() => _ = context.PathIdentityRevision);
         Assert.Throws<InvalidOperationException>(() => _ = context.RootIdentityDigest);
         Assert.Throws<InvalidOperationException>(() => _ = context.IsCampaignBound);
-
     }
 
     [Fact]
     public void Canonical_context_rejects_unresolved_or_incomplete_campaign_facts()
     {
-
         CovenantDigest rootIdentityDigest = new(new byte[CovenantLimits.DigestBytes]);
         SessionCampaignBinding campaignBinding = SessionCampaignBinding.ForCampaign(Guid.NewGuid());
 
@@ -447,7 +452,6 @@ public sealed class CovenantDomainContractTests
             pathIdentityPolicyVersion: 1,
             pathIdentityRevision: 1,
             rootIdentityDigest: null));
-
     }
 
     [Fact]
@@ -474,5 +478,4 @@ public sealed class CovenantDomainContractTests
         Assert.Equal(2, withPath.PathIdentityRevision);
         Assert.Equal(rootIdentityDigest, withPath.RootIdentityDigest);
     }
-
 }

@@ -120,13 +120,12 @@ public static class CovenantLimits
 
     public const int MaxProposedAdmissionRemovals = 32;
 
-    public const int MaxCursorPlaintextBytes = 1_024;
-
+    /// <summary>The largest plaintext payload one Covenant envelope carries, whichever purpose it is issued for.</summary>
     public const int MaxPreflightPlaintextBytes = 2_048;
 
-    public const int MaxEnvelopeDecodedBytes = 3_072;
-
+    /// <summary>The longest encoded envelope token a decoder will look at.</summary>
     public const int MaxEnvelopeEncodedBytes = 4_096;
 
+    /// <summary>The exact envelope header length, which is also the associated-data length.</summary>
     public const int EnvelopeHeaderBytes = 46;
 }
