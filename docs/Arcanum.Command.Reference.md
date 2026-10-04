@@ -394,7 +394,7 @@ Outcomes, least to most severe:
 | `--skip <id>` | Skip these diagnostic ids or subsystems; repeatable. |
 | `--include-network` | Also probe every configured provider endpoint with one non-billable `GET {endpoint}/models`. No completion is requested, so this never spends inference tokens. Without it, `providers.reachability` reports `Skipped`. |
 | `--repair <id>` | Plan a repair by id; repeatable. Shows the plan and changes nothing unless `--apply` is also passed. |
-| `--apply` | Perform the planned repairs after confirmation. Requires `--repair`; `--apply` alone exits `2` rather than repairing everything. Use the global `--yes` for automation. |
+| `--apply` | Perform the planned repairs after confirmation. Requires `--repair`; `--apply` alone exits `2` rather than repairing everything. Use the global `--yes` for automation. Ctrl+C while repairs are being applied stops the loop, still prints (or, under `--json`, writes) the report with the repairs already applied, leaves the ones that never ran as plans, marks one interrupted mid-run `failed` because part of it may have run, and exits `130`. |
 | `--strict` | Exit nonzero when any diagnostic is `Degraded` or `Unavailable`, not only when one is `Unhealthy`. |
 | `--fix-permissions` | Apply the owner-only permission repair. It does not prompt, preserving its pre-existing automation contract, and its exit code still reflects only whether that repair succeeded — not whether the rest of the installation is healthy. Unlike previous releases it no longer short-circuits: the full diagnostic runs and reports alongside it. The exemption is granted to this repair alone; any other `--repair` named on the same command line still needs `--apply` and still goes through confirmation. |
 

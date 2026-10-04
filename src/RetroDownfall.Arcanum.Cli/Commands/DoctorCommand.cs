@@ -86,16 +86,41 @@ public sealed class DoctorCommand(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        // Results are collected into a list the caller owns, so a Ctrl+C that lands between two repairs,
+        // or while the exclusive lease is being released, cannot take the already-applied ones with it.
+        List<DoctorRepairResult> appliedResults = [];
+
+        bool cancelled = false;
+
         if (report.IsSuccess && mutates)
         {
-            IReadOnlyList<DoctorRepairResult> applied = await initialization
-                .RunExclusiveAsync(
-                    (_, token) => ApplyRequestedRepairsAsync(request, fixPermissions, token),
-                    cancellationToken)
-                .ConfigureAwait(false);
+            try
+            {
+                cancelled = await initialization
+                    .RunExclusiveAsync(
+                        (_, token) => ApplyRequestedRepairsAsync(
+                            request,
+                            fixPermissions,
+                            appliedResults,
+                            token),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                cancelled = true;
+            }
 
             report = Result<DoctorReport>.Success(
-                MergeAppliedRepairs(report.Value, applied, fixPermissions, request.Strict));
+                MergeAppliedRepairs(report.Value, appliedResults, fixPermissions, request.Strict));
+
+            if (cancelled)
+            {
+                consoleDispatcher.WriteDiagnostic(
+                    $"Cancelled. {appliedResults.Count(static repair => repair.State == DoctorRepairState.Applied)} "
+                    + "repair(s) had been applied before the stop and the rest were not run; the report "
+                    + "shows what changed. Re-run 'arcanum doctor' to see what remains.");
+            }
         }
 
         if (report.IsFailure)
@@ -119,20 +144,30 @@ public sealed class DoctorCommand(
                 report.Value,
                 ArcanumJsonContext.Default.DoctorReport);
 
-            return healthy ? (int)CliExitCode.Success : (int)CliExitCode.GenericError;
+            return cancelled
+                ? (int)CliExitCode.Cancelled
+                : healthy ? (int)CliExitCode.Success : (int)CliExitCode.GenericError;
         }
 
-        return await RunHumanAsync(request, report.Value, healthy, cancellationToken).ConfigureAwait(false);
+        // The report is rendered after the repairs ran, so the render does not take the caller's token:
+        // a cancelled token would stop the operator hearing what already changed.
+        int humanExitCode = await RunHumanAsync(request, report.Value, healthy, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        return cancelled ? (int)CliExitCode.Cancelled : humanExitCode;
     }
 
     /// <summary>
     /// Revalidates each requested mutation under exclusive installation ownership, then applies only
     /// repairs whose plan still reports work. Unrelated diagnostics stay outside the lock so the
-    /// maintenance-lock check never mistakes this command's own lease for an external owner.
+    /// maintenance-lock check never mistakes this command's own lease for an external owner. Each result is
+    /// added to <paramref name="results"/> as soon as its repair finishes; cancellation stops the loop
+    /// rather than discarding what was done, and the method answers whether it stopped for that reason.
     /// </summary>
-    private async Task<IReadOnlyList<DoctorRepairResult>> ApplyRequestedRepairsAsync(
+    private async Task<bool> ApplyRequestedRepairsAsync(
         DoctorRunRequest request,
         bool fixPermissions,
+        List<DoctorRepairResult> results,
         CancellationToken cancellationToken)
     {
         List<IDoctorRepair> selected = request.Apply
@@ -154,25 +189,59 @@ public sealed class DoctorCommand(
             }
         }
 
-        List<DoctorRepairResult> results = [];
-
         foreach (IDoctorRepair repair in selected)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return true;
+            }
 
-            DoctorRepairResult revalidated = await RunRepairPhaseAsync(
-                    repair,
-                    apply: false,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            DoctorRepairResult revalidated;
 
-            results.Add(revalidated.State == DoctorRepairState.Planned
-                ? await RunRepairPhaseAsync(repair, apply: true, cancellationToken)
-                    .ConfigureAwait(false)
-                : revalidated);
+            try
+            {
+                revalidated = await RunRepairPhaseAsync(
+                        repair,
+                        apply: false,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Revalidation changes nothing, so this repair simply stays the plan it was.
+                return true;
+            }
+
+            if (revalidated.State != DoctorRepairState.Planned)
+            {
+                results.Add(revalidated);
+
+                continue;
+            }
+
+            try
+            {
+                results.Add(
+                    await RunRepairPhaseAsync(repair, apply: true, cancellationToken)
+                        .ConfigureAwait(false));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Cancelled with this repair in flight: part of it may have run, and saying nothing
+                // would let the operator believe it had not.
+                results.Add(
+                    new DoctorRepairResult(
+                        repair.Id,
+                        DoctorRepairState.Failed,
+                        "Cancelled while the repair was running; some of its steps may have been applied.",
+                        [],
+                        nameof(OperationCanceledException)));
+
+                return true;
+            }
         }
 
-        return results;
+        return false;
     }
 
     private static async Task<DoctorRepairResult> RunRepairPhaseAsync(
