@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
 
@@ -21,13 +22,7 @@ public sealed class ChildProcessSandboxRootsTests : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_workspace, recursive: true);
-        }
-        catch (Exception)
-        {
-        }
+        _ = TestDirectoryCleanup.TryDelete(_workspace, nameof(ChildProcessSandboxRootsTests));
     }
 
     [Fact]

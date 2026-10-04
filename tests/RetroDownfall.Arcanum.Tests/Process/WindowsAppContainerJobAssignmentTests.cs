@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
 
@@ -22,13 +23,7 @@ public sealed class WindowsAppContainerJobAssignmentTests : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (Exception)
-        {
-        }
+        _ = TestDirectoryCleanup.TryDelete(_root, nameof(WindowsAppContainerJobAssignmentTests));
     }
 
     [Fact]

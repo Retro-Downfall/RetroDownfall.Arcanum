@@ -5070,9 +5070,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 {
                     await disposeTask.WaitAsync(TimeSpan.FromSeconds(15));
                 }
-                catch
+                catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
                 {
-                    // Best-effort cleanup only — must not mask an assertion failure above.
+                    // A disposal that will not return was already reported by the 8 s wait above; this
+                    // wait only drains it and must not mask that failure.
                 }
             }
         }
