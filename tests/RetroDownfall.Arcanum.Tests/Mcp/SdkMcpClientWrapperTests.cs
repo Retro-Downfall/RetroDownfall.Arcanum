@@ -241,6 +241,40 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task InitializeAsync_reports_the_sdk_handshake_deadline_the_same_way_when_it_fires_first()
+    {
+        Channel<string> toServer = Channel.CreateUnbounded<string>();
+
+        Channel<string> fromServer = Channel.CreateUnbounded<string>();
+
+        ChannelClientTransport clientTransport = new(
+            toServer.Writer,
+            fromServer.Reader,
+            maxJsonRpcLineBytes: 2_097_152);
+
+        await using SdkMcpClientWrapper client = new(
+            clientTransport,
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+                InitializationTimeout = TimeSpan.FromMilliseconds(200),
+            },
+            initializationTimeout: TimeSpan.FromSeconds(60),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
+
+        // Both deadlines come from the same configured interval, so under load the SDK's own timer can
+        // win; the failure the manager sees (and the message it records) must not depend on which did.
+        TimeoutException timeout = await Assert.ThrowsAsync<TimeoutException>(
+            () => client.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Contains("initialize handshake", timeout.Message, StringComparison.Ordinal);
+
+        Assert.Null(timeout.InnerException);
+    }
+
+    [Fact]
     public async Task InitializeAsync_still_propagates_caller_cancellation_as_cancellation()
     {
         Channel<string> toServer = Channel.CreateUnbounded<string>();
