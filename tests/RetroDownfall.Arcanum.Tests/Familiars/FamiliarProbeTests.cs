@@ -1,5 +1,8 @@
+using System.Reflection;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Familiars;
 
@@ -11,11 +14,9 @@ namespace RetroDownfall.Arcanum.Tests.Familiars;
 [Collection("ChildProcess")]
 public sealed class FamiliarProbeTests
 {
-
     [Fact]
     public async Task A_missing_binary_reports_not_installed_and_tells_the_operator_to_install_it()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         FamiliarProbeResult result = await Probe(
@@ -29,13 +30,11 @@ public sealed class FamiliarProbeTests
 
         // Nothing was spawned: resolution is a filesystem question.
         Assert.Empty(runner.Requests);
-
     }
 
     [Fact]
     public async Task A_signed_in_claude_reports_configured_with_its_version()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -53,13 +52,11 @@ public sealed class FamiliarProbeTests
         Assert.Equal(string.Empty, result.Remediation);
 
         Assert.Null(result.RemediationCommand);
-
     }
 
     [Fact]
     public async Task A_signed_out_claude_reports_not_configured_with_a_copyable_sign_in_command()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -77,7 +74,6 @@ public sealed class FamiliarProbeTests
         Assert.Equal("claude auth login", result.RemediationCommand);
 
         Assert.Contains("never authenticates for you", result.Remediation, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -87,7 +83,6 @@ public sealed class FamiliarProbeTests
     [Fact]
     public async Task Account_material_from_the_status_command_never_reaches_the_probe_payload()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -116,13 +111,11 @@ public sealed class FamiliarProbeTests
         Assert.DoesNotContain("Organization", rendered, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("00000000-0000", rendered, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_signed_in_codex_reports_configured_with_the_version_from_its_own_report()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -138,13 +131,11 @@ public sealed class FamiliarProbeTests
         Assert.Equal(FamiliarProbeStatus.Configured, result.Status);
 
         Assert.Equal("0.147.0", result.Version);
-
     }
 
     [Fact]
     public async Task A_signed_out_codex_reports_not_configured()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -160,13 +151,11 @@ public sealed class FamiliarProbeTests
         Assert.Equal(FamiliarProbeStatus.NotConfigured, result.Status);
 
         Assert.Equal("codex login", result.RemediationCommand);
-
     }
 
     [Fact]
     public async Task Local_paths_from_the_codex_report_never_reach_the_probe_payload()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -182,13 +171,11 @@ public sealed class FamiliarProbeTests
         Assert.DoesNotContain("/Users/", result.Summary, StringComparison.Ordinal);
 
         Assert.DoesNotContain("auth.json", result.Summary, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Truncated_status_output_reports_not_configured_rather_than_crashing()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -202,13 +189,11 @@ public sealed class FamiliarProbeTests
         FamiliarProbeResult result = await Probe(runner, AiProviderKind.ClaudeCodeCli, stub.FileName);
 
         Assert.Equal(FamiliarProbeStatus.NotConfigured, result.Status);
-
     }
 
     [Fact]
     public async Task A_non_zero_status_exit_reports_not_configured()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -222,7 +207,6 @@ public sealed class FamiliarProbeTests
         FamiliarProbeResult result = await Probe(runner, AiProviderKind.ClaudeCodeCli, stub.FileName);
 
         Assert.Equal(FamiliarProbeStatus.NotConfigured, result.Status);
-
     }
 
     /// <summary>
@@ -237,7 +221,6 @@ public sealed class FamiliarProbeTests
     public async Task A_claude_status_command_that_could_not_answer_is_not_reported_as_signed_out(
         FamiliarProcessFailure failure)
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -251,7 +234,6 @@ public sealed class FamiliarProbeTests
         Assert.DoesNotContain("not signed in", result.Summary, StringComparison.OrdinalIgnoreCase);
 
         Assert.NotEqual("claude auth login", result.RemediationCommand);
-
     }
 
     /// <summary>
@@ -261,7 +243,6 @@ public sealed class FamiliarProbeTests
     [Fact]
     public async Task An_undeclared_catalogue_is_reported_as_unknown_never_as_a_guess()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -277,13 +258,11 @@ public sealed class FamiliarProbeTests
         Assert.Equal(FamiliarModelEnumeration.Unknown, result.Enumeration);
 
         Assert.Empty(result.Models);
-
     }
 
     [Fact]
     public async Task A_declared_catalogue_is_reported_as_operator_declared_with_the_hide_list_beside_it()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -303,7 +282,7 @@ public sealed class FamiliarProbeTests
             HiddenModels = ["claude-legacy", "claude-retired"],
         };
 
-        FamiliarProbeResult result = await new FamiliarProbe(runner)
+        FamiliarProbeResult result = await new FamiliarProbe(runner, EmptySettings())
             .ProbeAsync(provider, CancellationToken.None);
 
         Assert.Equal(FamiliarModelEnumeration.OperatorDeclared, result.Enumeration);
@@ -313,7 +292,6 @@ public sealed class FamiliarProbeTests
         // A hidden model the probe does not currently report is retained, not pruned — otherwise a
         // model that vanished for a release would come back unhidden.
         Assert.Equal(["claude-legacy", "claude-retired"], result.HiddenModels);
-
     }
 
     /// <summary>
@@ -324,7 +302,6 @@ public sealed class FamiliarProbeTests
     [SkippableFact]
     public async Task A_host_that_cannot_provide_a_private_directory_is_reported_not_thrown()
     {
-
         // TempRootScope makes the host unable to give out a private directory by pointing the temp
         // root at a path that does not exist. Windows does not stay refused: it creates the absent
         // root on demand, so Directory.CreateTempSubdirectory succeeds, the probe gets its directory
@@ -344,14 +321,12 @@ public sealed class FamiliarProbeTests
         Assert.Equal(FamiliarProbeStatus.NotConfigured, result.Status);
 
         Assert.Empty(runner.Requests);
-
     }
 
     /// <summary>The probe asks for status, never for a completion — it must cost nothing.</summary>
     [Fact]
     public async Task The_probe_never_asks_the_familiar_for_a_completion()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -368,19 +343,16 @@ public sealed class FamiliarProbeTests
             runner.Requests,
             static request =>
             {
-
                 Assert.DoesNotContain("--print", request.Arguments);
 
                 Assert.DoesNotContain("-p", request.Arguments);
 
                 Assert.Null(request.StandardInput);
-
             });
 
         Assert.Contains(
             runner.Requests,
             static request => request.Arguments.SequenceEqual(new[] { "auth", "status", "--json" }));
-
     }
 
     /// <summary>
@@ -397,7 +369,6 @@ public sealed class FamiliarProbeTests
     public async Task Every_probe_spawn_runs_in_a_private_directory_never_the_hosts_own(
         AiProviderKind kind)
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -421,13 +392,10 @@ public sealed class FamiliarProbeTests
             runner.Requests,
             request =>
             {
-
                 Assert.False(string.IsNullOrWhiteSpace(request.WorkingDirectory));
 
                 Assert.NotEqual(hostDirectory, Path.GetFullPath(request.WorkingDirectory!));
-
             });
-
     }
 
     /// <summary>
@@ -438,7 +406,6 @@ public sealed class FamiliarProbeTests
     [Fact]
     public async Task The_probes_spawns_share_one_private_directory()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         RecordingFamiliarProcessRunner runner = new();
@@ -454,14 +421,87 @@ public sealed class FamiliarProbeTests
         Assert.Equal(2, runner.Requests.Count);
 
         Assert.Single(runner.Requests.Select(static request => request.WorkingDirectory).Distinct());
-
     }
+
+    /// <summary>
+    /// A status spawn is still a spawn. Every probe request, the version read and the status read alike,
+    /// must name the operator-configured secret variables so the runner strips them from the child.
+    /// Without this a mutation that returned an empty denylist left every other probe test green while
+    /// <c>claude --version</c> inherited the host's configured provider keys.
+    /// </summary>
+    [Theory]
+    [InlineData(AiProviderKind.ClaudeCodeCli)]
+    [InlineData(AiProviderKind.CodexCli)]
+    public async Task Probe_denies_configured_secret_environment_variables_on_every_spawn(AiProviderKind kind)
+    {
+        using StubFamiliarCli stub = StubFamiliarCli.Create([]);
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.SetBufferedOutput(new FamiliarProcessOutput(
+            FamiliarProcessFailure.None,
+            0,
+            FamiliarFixtures.ReadText(FamiliarFixtures.ClaudeAuthStatusConfigured),
+            string.Empty));
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "compat",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://api.openai.com/v1",
+                    CredentialEnvironmentVariable = "MY_OPENAI_KEY",
+                    Models = ["gpt-4o"],
+                },
+            ],
+        };
+
+        _ = await Probe(runner, kind, stub.FileName, settings);
+
+        Assert.NotEmpty(runner.Requests);
+
+        foreach (FamiliarProcessRequest request in runner.Requests)
+        {
+            Assert.Contains("MY_OPENAI_KEY", request.DeniedEnvironmentVariables);
+
+            // The derived default is stripped too: an operator who never named one still has a key.
+            Assert.Contains("ARCANUM_PROVIDER_COMPAT_API_KEY", request.DeniedEnvironmentVariables);
+        }
+    }
+
+    /// <summary>
+    /// A probe built without settings would carry an empty denylist, which fails open. Production
+    /// always supplies settings through the singleton registration, so the parameter is required and
+    /// no caller can reach the unprotected shape by omission.
+    /// </summary>
+    [Fact]
+    public void Probe_requires_settings_so_the_denylist_cannot_fail_open()
+    {
+        ConstructorInfo constructor = Assert.Single(typeof(FamiliarProbe).GetConstructors());
+
+        ParameterInfo settings = Assert.Single(
+            constructor.GetParameters(),
+            static parameter => parameter.ParameterType == typeof(IOptionsMonitor<ArcanumSettings>));
+
+        Assert.False(settings.HasDefaultValue);
+
+        Assert.Equal(
+            NullabilityState.NotNull,
+            new NullabilityInfoContext().Create(settings).WriteState);
+    }
+
+    private static IOptionsMonitor<ArcanumSettings> EmptySettings(ArcanumSettings? settings = null) =>
+        new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings());
 
     private static Task<FamiliarProbeResult> Probe(
         IFamiliarProcessRunner runner,
         AiProviderKind kind,
-        string command) =>
-        new FamiliarProbe(runner).ProbeAsync(
+        string command,
+        ArcanumSettings? settings = null) =>
+        new FamiliarProbe(runner, EmptySettings(settings)).ProbeAsync(
             new ProviderSettings
             {
                 Name = $"{kind}-subscription",
@@ -469,5 +509,4 @@ public sealed class FamiliarProbeTests
                 Command = command,
             },
             CancellationToken.None);
-
 }
