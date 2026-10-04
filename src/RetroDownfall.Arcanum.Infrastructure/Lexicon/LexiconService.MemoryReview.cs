@@ -461,7 +461,7 @@ internal sealed partial class LexiconService
 
         Require(prepared.IsFailure ? Result.Failure(prepared.Error) : Result.Success());
 
-        DateTimeOffset issued = _reviewTimeProvider.GetUtcNow();
+        DateTimeOffset issued = _timeProvider.GetUtcNow();
 
         return new(
             new(
@@ -1407,9 +1407,7 @@ internal sealed partial class LexiconService
                 "The Lexicon curation generation is exhausted."));
         }
 
-        DateTimeOffset now = _reviewTimeProvider.GetUtcNow();
-
-        now = now > state.Row.Entry.UpdatedAt ? now : state.Row.Entry.UpdatedAt.AddTicks(1);
+        DateTimeOffset now = NextRecordedAt(state.Row.Entry.UpdatedAt, state.Head);
 
         if (action == MemoryReviewAction.Correct)
         {

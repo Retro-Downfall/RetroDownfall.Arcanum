@@ -40,7 +40,7 @@ internal sealed partial class LexiconService(
     IMemoryErasureKeyProvider erasureKeys,
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null,
     IMemoryReviewTokenCodec? reviewTokenCodec = null,
-    TimeProvider? reviewTimeProvider = null,
+    TimeProvider? timeProvider = null,
     LexiconErasureDependencies? erasure = null) : ILexiconService, ILexiconCurationService, ILexiconMemoryReviewService
 {
     private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
@@ -48,7 +48,7 @@ internal sealed partial class LexiconService(
     private readonly IMemoryReviewTokenCodec _reviewTokenCodec =
         reviewTokenCodec ?? new MemoryReviewTokenCodec(TimeProvider.System);
 
-    private readonly TimeProvider _reviewTimeProvider = reviewTimeProvider ?? TimeProvider.System;
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId, RetiredAtUtc, PinnedAtUtc, CurationGeneration";
 
@@ -201,9 +201,7 @@ internal sealed partial class LexiconService(
                                     "The Lexicon curation generation is exhausted."));
                             }
 
-                            DateTimeOffset now = DateTimeOffset.UtcNow;
-
-                            now = existing is null || now > existing.UpdatedAt ? now : existing.UpdatedAt.AddTicks(1);
+                            DateTimeOffset now = NextRecordedAt(existing?.UpdatedAt, head);
 
                             Guid id = existing?.Id ?? Guid.NewGuid();
 
