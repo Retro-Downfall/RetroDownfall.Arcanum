@@ -42,9 +42,7 @@ public sealed record CovenantErasureEffectDigestInput(
 /// </remarks>
 public interface ICovenantErasureEffectDigestCalculator
 {
-
     Result<CovenantDigest> Compute(CovenantErasureEffectDigestInput input);
-
 }
 
 /// <summary>
@@ -52,7 +50,6 @@ public interface ICovenantErasureEffectDigestCalculator
 /// </summary>
 public sealed class CovenantErasureEffectDigestCalculator : ICovenantErasureEffectDigestCalculator
 {
-
     /// <summary>The pinned domain of an ordinary Covenant reset.</summary>
     public const string ResetDomain = "Arcanum.Covenant.Reset.Effect.v1";
 
@@ -76,55 +73,44 @@ public sealed class CovenantErasureEffectDigestCalculator : ICovenantErasureEffe
 
     public Result<CovenantDigest> Compute(CovenantErasureEffectDigestInput input)
     {
-
         if (input is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A Covenant erasure effect digest requires a complete plan.");
-
         }
 
         // Only the two erasure operations have one. Every other exclusive operation already owns its
         // own effect identity, and minting one here would give two producers to a single owner.
         string? domain = input.Operation switch
         {
-
             CovenantExclusiveOperation.CovenantReset => ResetDomain,
 
             CovenantExclusiveOperation.HealthyCatalogFactoryErasure =>
                 HealthyCatalogFactoryErasureDomain,
 
             _ => null,
-
         };
 
         if (domain is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "Only a Covenant reset or a healthy-catalog factory erasure has an erasure effect digest.");
-
         }
 
         if (!CountKindWireValues.TryGetValue(input.DisclosureCountKind, out string? countKind))
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The disclosure count kind is not one this build can authorize.");
-
         }
 
         if (string.IsNullOrWhiteSpace(input.PlanId) || input.DatasetGeneration == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A Covenant erasure effect digest requires an identified plan and dataset.");
-
         }
 
         long[] counts =
@@ -140,11 +126,16 @@ public sealed class CovenantErasureEffectDigestCalculator : ICovenantErasureEffe
         // stable owner for a destructive operation nobody could have produced.
         if (counts.Any(static count => count < 0))
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A Covenant erasure inventory cannot carry a negative count.");
+        }
 
+        if (!StrictUtf8.TryGetBytes(input.PlanId, out byte[] planId))
+        {
+            return new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "A Covenant erasure effect digest requires a well-formed plan identity.");
         }
 
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -153,7 +144,7 @@ public sealed class CovenantErasureEffectDigestCalculator : ICovenantErasureEffe
 
         hash.AppendData([0x00]);
 
-        AppendLengthPrefixed(hash, Encoding.UTF8.GetBytes(input.PlanId));
+        AppendLengthPrefixed(hash, planId);
 
         Span<byte> uuid = stackalloc byte[16];
 
@@ -165,22 +156,18 @@ public sealed class CovenantErasureEffectDigestCalculator : ICovenantErasureEffe
 
         foreach (long count in counts)
         {
-
             BinaryPrimitives.WriteUInt64BigEndian(value, (ulong)count);
 
             hash.AppendData(value);
-
         }
 
         AppendLengthPrefixed(hash, Encoding.ASCII.GetBytes(countKind));
 
         return new CovenantDigest(hash.GetHashAndReset());
-
     }
 
     private static void AppendLengthPrefixed(IncrementalHash hash, byte[] utf8)
     {
-
         Span<byte> length = stackalloc byte[sizeof(uint)];
 
         BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)utf8.Length));
@@ -188,7 +175,5 @@ public sealed class CovenantErasureEffectDigestCalculator : ICovenantErasureEffe
         hash.AppendData(length);
 
         hash.AppendData(utf8);
-
     }
-
 }

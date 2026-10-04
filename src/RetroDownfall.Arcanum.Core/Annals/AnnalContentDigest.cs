@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 
 using System.Text;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 namespace RetroDownfall.Arcanum.Core.Annals;
 
 /// <summary>
@@ -14,7 +16,6 @@ namespace RetroDownfall.Arcanum.Core.Annals;
 /// </remarks>
 public static class AnnalContentDigest
 {
-
     /// <summary>
     /// Separates a Lexicon entry's type from its fact set. Without it a type ending in text that the
     /// fact set begins with would hash identically to a different pair, and two distinct states of one
@@ -26,11 +27,9 @@ public static class AnnalContentDigest
     /// <summary>The binding for one Saga memory's stored content.</summary>
     public static byte[] ForSagaMemory(string content)
     {
-
         ArgumentNullException.ThrowIfNull(content);
 
-        return SHA256.HashData(Encoding.UTF8.GetBytes(content));
-
+        return SHA256.HashData(StrictUtf8.Encoding.GetBytes(content));
     }
 
     /// <summary>The binding for one Lexicon entity's type and fact set.</summary>
@@ -41,13 +40,10 @@ public static class AnnalContentDigest
     /// </param>
     public static byte[] ForLexiconEntry(string type, string factsText)
     {
-
         ArgumentNullException.ThrowIfNull(type);
 
         ArgumentNullException.ThrowIfNull(factsText);
 
-        return SHA256.HashData(Encoding.UTF8.GetBytes($"{type}{FieldSeparator}{factsText}"));
-
+        return SHA256.HashData(StrictUtf8.Encoding.GetBytes($"{type}{FieldSeparator}{factsText}"));
     }
-
 }

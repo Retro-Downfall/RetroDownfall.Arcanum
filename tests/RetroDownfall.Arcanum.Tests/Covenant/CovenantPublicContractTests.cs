@@ -560,6 +560,48 @@ public sealed class CovenantPublicContractTests
         Assert.Contains("PhaseCode IN (1, 2, 3, 4, 5, 6)", ddl, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ValidateAuthoredContent_rejects_an_unpaired_surrogate_with_InvalidContent()
+    {
+        // Built in the body: xunit's theory serialization would replace a lone surrogate with U+FFFD.
+        foreach (string content in new[] { "a\uD800", "\uDC00b" })
+        {
+            Result validated = CovenantWireValidation.ValidateAuthoredContent(content);
+
+            Assert.True(validated.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.InvalidContent, validated.Error.Code);
+        }
+
+        Assert.True(CovenantWireValidation.ValidateAuthoredContent("a\U0001F600b").IsSuccess);
+    }
+
+    [Fact]
+    public void ValidateSearchText_counts_policy_whitespace_terms()
+    {
+        // 33 terms separated by U+3000 (ideographic space), which the Unicode policy treats as
+        // whitespace but the old ASCII-only split did not.
+        string query = string.Join('　', Enumerable.Repeat("a", CovenantLimits.MaxSearchQueryTerms + 1));
+
+        Result validated = CovenantWireValidation.ValidateSearchText(query);
+
+        Assert.True(validated.IsFailure);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidQuery, validated.Error.Code);
+
+        Assert.True(
+            CovenantWireValidation.ValidateSearchText(
+                string.Join(' ', Enumerable.Repeat("a", CovenantLimits.MaxSearchQueryTerms))).IsSuccess);
+    }
+
+    [Fact]
+    public void ValidateSearchText_rejects_an_unpaired_surrogate()
+    {
+        Assert.Equal(
+            ErrorCodes.Validation.InvalidQuery,
+            CovenantWireValidation.ValidateSearchText("a\uD800").Error.Code);
+    }
+
     private static string RepositoryRoot() =>
         global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

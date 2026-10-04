@@ -14,30 +14,31 @@ public sealed record CovenantFactoryErasureApplyRequestDigestInput(string PlanId
 
 public interface ICovenantFactoryErasureApplyRequestDigestCalculator
 {
-
     Result<CovenantDigest> Compute(
         CovenantFactoryErasureApplyRequestDigestInput input);
-
 }
 
 public sealed class CovenantFactoryErasureApplyRequestDigestCalculator
     : ICovenantFactoryErasureApplyRequestDigestCalculator
 {
-
     public const string Domain =
         "Arcanum.Covenant.HealthyCatalogFactoryErasure.ApplyRequest.v1";
 
     public Result<CovenantDigest> Compute(
         CovenantFactoryErasureApplyRequestDigestInput input)
     {
-
         if (input is null || string.IsNullOrWhiteSpace(input.PlanId))
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A factory-erasure apply digest requires an identified confirmed plan.");
+        }
 
+        if (!StrictUtf8.TryGetBytes(input.PlanId, out byte[] planId))
+        {
+            return new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "A factory-erasure apply digest requires a well-formed plan identity.");
         }
 
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -45,8 +46,6 @@ public sealed class CovenantFactoryErasureApplyRequestDigestCalculator
         hash.AppendData(Encoding.ASCII.GetBytes(Domain));
 
         hash.AppendData([0x00]);
-
-        byte[] planId = Encoding.UTF8.GetBytes(input.PlanId);
 
         Span<byte> length = stackalloc byte[sizeof(uint)];
 
@@ -57,7 +56,5 @@ public sealed class CovenantFactoryErasureApplyRequestDigestCalculator
         hash.AppendData(planId);
 
         return new CovenantDigest(hash.GetHashAndReset());
-
     }
-
 }
