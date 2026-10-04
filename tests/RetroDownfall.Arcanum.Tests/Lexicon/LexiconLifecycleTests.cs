@@ -682,6 +682,8 @@ internal sealed class LifecyclePurger(CorrectionFixture owner, ArcanumDbContext 
 
         Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM artifact_sensitivity"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(owner.Connection, cancellationToken);
+
         return Result<CovenantSensitivePurgeOutcome>.Success(new(
             [new(target.ArtifactId, target.Kind, CovenantSensitivePurgeDisposition.Purged, CovenantErasureBlocker.None)], result.Value));
     }

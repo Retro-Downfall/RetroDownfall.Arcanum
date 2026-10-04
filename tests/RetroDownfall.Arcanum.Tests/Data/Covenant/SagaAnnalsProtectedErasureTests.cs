@@ -210,6 +210,12 @@ public sealed class SagaAnnalsProtectedErasureTests
 
         Assert.Contains("annal_versions", failure.Message, StringComparison.Ordinal);
 
+        // The row's claim is gone, so no store can be named for it, and the message says that rather than
+        // listing the stores as though one of them were the diagnosis.
+        Assert.Contains("store not recoverable once the claim is gone", failure.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Saga or Lexicon", failure.Message, StringComparison.Ordinal);
+
     }
 
     private static async Task InsertAsync(SagaStoreHarness harness, Guid id, string content, DateTimeOffset createdAt)

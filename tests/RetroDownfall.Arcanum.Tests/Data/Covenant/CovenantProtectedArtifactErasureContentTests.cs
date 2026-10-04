@@ -120,11 +120,17 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         await harness.LabelAsync(SensitiveArtifactKind.Saga, memoryId, sessionId: null, "The operator prefers dark mode.");
 
+        // The claim the closing assertion is about: extraction opened it, and one that was never written
+        // would satisfy that assertion whether or not the erase took it.
+        Assert.Equal(1, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
+
         CovenantArtifactErasureProgress progress = await harness.EraseAsync(SensitiveArtifactKind.Saga, memoryId);
 
         Assert.Equal(1UL, progress.ErasedCount);
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
 
     }
 

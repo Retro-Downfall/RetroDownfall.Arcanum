@@ -7312,10 +7312,11 @@ internal sealed partial class DataRetentionService(
     /// live erasure kernel and the staged restore purge both take the claim in the transaction that
     /// takes the row. That is pinned on the plan itself by
     /// <c>CovenantDerivedOutputInventoryTests.Every_annals_store_plan_takes_its_claim_in_annals_order_before_the_subject_row</c>,
-    /// and <c>AnnalsOrphanAssertions</c> closes every erasure-path test by asking the database whether
-    /// any claim outlived its row. This is what is known rather than a closed account of what can
-    /// exist: a removal composed from a table name held elsewhere is invisible to a search for the
-    /// statement that would name it, and the account above has been incomplete that way before.</para>
+    /// and <c>AnnalsOrphanAssertions</c> closes the erasure-path tests that erase a claimed row, by
+    /// asking the database whether any claim outlived its row. This is what is known rather than a
+    /// closed account of what can exist: a removal composed from a table name held elsewhere is
+    /// invisible to a search for the statement that would name it, and the account above has been
+    /// incomplete that way before.</para>
     /// </remarks>
     internal static string[] MemoryResetResidueTables(MemoryResetScope scope) =>
         scope switch

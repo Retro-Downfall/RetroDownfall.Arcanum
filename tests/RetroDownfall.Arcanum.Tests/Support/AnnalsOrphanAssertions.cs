@@ -106,7 +106,7 @@ internal static class AnnalsOrphanAssertions
 
                 violations.Add(
                     $"{reader.GetString(0)} row {rowId} names a missing {reader.GetString(2)} row "
-                    + $"(Annals subject store {OwningStores(reader.GetString(0), stores)})");
+                    + $"(Annals subject store {OwningStore(reader.GetString(0))})");
 
             }
 
@@ -128,13 +128,15 @@ internal static class AnnalsOrphanAssertions
         };
 
     /// <summary>
-    /// The store a table's rows belong to: the Lexicon alone for its historical fact coordinates, and
-    /// every store for the shared claim graph.
+    /// The store a table's rows belong to, where the table says: the Lexicon alone owns its historical
+    /// fact coordinates. A row of the shared claim graph names no store of its own, and once its claim is
+    /// gone nothing else can name one, so the message says that instead of listing the stores as a
+    /// diagnosis.
     /// </summary>
-    private static string OwningStores(string table, AnnalSubjectStore[] stores) =>
+    private static string OwningStore(string table) =>
         table.StartsWith("lexicon_annal_", StringComparison.Ordinal)
             ? nameof(AnnalSubjectStore.Lexicon)
-            : string.Join(" or ", stores);
+            : "not recoverable once the claim is gone";
 
     private static async Task<IReadOnlyList<string>> AnnalsTablesAsync(
         DbConnection connection,
