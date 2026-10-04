@@ -9,6 +9,8 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// version published ignores comments, but the fixtures for versions 1 to 5 hash raw bytes and inherit
 /// every object they do not freeze through this one, so each edited table is frozen here byte for byte.
 /// <c>lexicon_fts</c> needs no copy, because <see cref="CoreSchemaVersionTenFixture"/> already freezes it.
+/// It starts from <see cref="CoreSchemaVersionThirteenFixture"/> rather than the head, so the objects
+/// version 14 changed reach it, and every older fixture, as they were at version 13.
 /// </remarks>
 internal static class CoreSchemaVersionTwelveFixture
 {
@@ -149,7 +151,7 @@ internal static class CoreSchemaVersionTwelveFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionThirteenFixture.Objects
             .Where(static definition => !definition.Name.StartsWith("memory_erasure_", StringComparison.Ordinal))
             .Select(static definition => definition.Name switch
             {

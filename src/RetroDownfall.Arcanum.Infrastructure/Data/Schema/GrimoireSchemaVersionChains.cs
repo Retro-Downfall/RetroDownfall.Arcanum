@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 13 and declares twelve steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 14 and declares thirteen steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -97,8 +97,14 @@ internal static class GrimoireSchemaVersionChains
     /// index once so tokens left by earlier deletes are gone. The step declares no sweep: every new
     /// table starts empty, and the index, the setting and the merge all complete inside the step's own
     /// transaction.</para>
+    ///
+    /// <para>Version 14 adds three expression indexes in the normalized shape a Session delete compares
+    /// with, <c>lower(replace(SessionId, '-', ''))</c>, on <c>attachment_memory_consultations</c>,
+    /// <c>saga_extraction_watermarks</c> and <c>SessionContextPins</c>, so those deletes and their
+    /// post-commit counts search rather than scan. The step declares no sweep: an index is built inside
+    /// the step's own transaction.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 13;
+    internal const int CoreSchemaVersion = 14;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -220,6 +226,12 @@ internal static class GrimoireSchemaVersionChains
             // version 12. Its frozen copies also keep the raw version-1 to version-5 pins still.
             [(GrimoireSchemaTransactionTier.Core, 13)] =
                 "616E371CA834F78D84C484E4918C4124F8399686B17E1E8D497557303C08063B",
+
+            // Captured from the normalized Core version-13 head before any version-14 head edit.
+            // CoreSchemaVersionThirteenFixture freezes the three tables version 14 appends an index to
+            // and proves this literal still names version 13.
+            [(GrimoireSchemaTransactionTier.Core, 14)] =
+                "E46E5902803F25CD43236A77882E5B057374A7B902840E0AC1308427513A8D84",
 
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture

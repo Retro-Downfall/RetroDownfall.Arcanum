@@ -60,7 +60,7 @@ public sealed class BackupRestoreStagedDrainTests
 
         await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
 
-        Assert.Equal(13, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
         Assert.Equal(6L, await ScalarAsync(restored, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 1"));
 
@@ -103,7 +103,7 @@ public sealed class BackupRestoreStagedDrainTests
 
         await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
 
-        Assert.Equal(13, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
         Assert.Equal(6L, await ScalarAsync(restored, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 1"));
 
@@ -154,7 +154,7 @@ public sealed class BackupRestoreStagedDrainTests
 
         await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(GrimoireFixture.TestGrimoireSecret);
 
-        Assert.Equal(13, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
         Assert.DoesNotContain(result.Phases, static p => p.Detail.StartsWith("Drained", StringComparison.Ordinal));
     }
@@ -703,7 +703,7 @@ public sealed class BackupRestoreStagedDrainTests
 
         await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
 
-        Assert.Equal(13, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
         Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_schema_transitions"));
     }

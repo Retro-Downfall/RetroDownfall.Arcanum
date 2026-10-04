@@ -13,6 +13,10 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// Core version 13: the erasure evidence tables, the unfolded-disclosure index, and Lexicon FTS
 /// secure delete, reached the same way from a fresh install and from a version-12 installation.
 /// </summary>
+/// <remarks>
+/// Each case installs to the head this binary declares, so the version-12 installation crosses every
+/// later step as well; version 14 declares no sweep, so the one-step, no-sweep assertions still hold.
+/// </remarks>
 public sealed class MemoryErasureSchemaEvolutionTests
 {
     private const string Marker = "zqxerasuremarkerqz";
@@ -39,6 +43,10 @@ public sealed class MemoryErasureSchemaEvolutionTests
             "idx_memory_erasure_receipts_pending",
             "idx_memory_erasure_receipt_subjects_digest",
             "idx_disclosure_subject_state_unfolded",
+            // Version 14, which the evolved catalog reaches through the same chain.
+            "IX_attachment_memory_consultations_SessionId_Norm",
+            "IX_saga_extraction_watermarks_SessionId_Norm",
+            "IX_SessionContextPins_SessionId_Norm",
         ])
         {
             Assert.Contains(name, fresh.Keys);
@@ -61,7 +69,7 @@ public sealed class MemoryErasureSchemaEvolutionTests
 
         await InstallAsync(connection, CoreSchemaVersionTwelveFixture.ChainSet(), 12);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 13);
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(
             0L,
@@ -124,7 +132,7 @@ public sealed class MemoryErasureSchemaEvolutionTests
 
         Assert.True(await ShadowCountAsync(connection, Marker) > 0);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 13);
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(0L, await ShadowCountAsync(connection, Marker));
 
@@ -142,7 +150,7 @@ public sealed class MemoryErasureSchemaEvolutionTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 13);
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT v FROM lexicon_fts_config WHERE k = 'secure-delete';"));
 
@@ -150,7 +158,7 @@ public sealed class MemoryErasureSchemaEvolutionTests
 
         Assert.Equal(0L, await ScalarAsync(connection, "SELECT v FROM lexicon_fts_config WHERE k = 'secure-delete';"));
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 13);
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT v FROM lexicon_fts_config WHERE k = 'secure-delete';"));
 
@@ -184,7 +192,7 @@ public sealed class MemoryErasureSchemaEvolutionTests
             await InstallAsync(connection, CoreSchemaVersionTwelveFixture.ChainSet(), 12);
         }
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 13);
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Dictionary<string, string> definitions = new(StringComparer.Ordinal);
 

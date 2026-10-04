@@ -38,7 +38,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifetime
 {
-
     private const string EntryEmbeddingsPredicate = "lower(replace(EntryId, '-', '')) = @id";
 
     private const string EntriesPredicate = "lower(replace(entry.SessionId, '-', '')) = @id";
@@ -46,6 +45,8 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     private const string AttachmentSessionPredicate = "lower(replace(attachment.SessionId, '-', '')) = @id";
 
     private const string AttachmentIdentityPredicate = "lower(replace(attachment.Id, '-', '')) = @id";
+
+    private const string SessionKeyPredicate = "lower(replace(SessionId, '-', '')) = @id";
 
     private readonly GrimoireFixture _fixture;
 
@@ -57,69 +58,56 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task The_entry_embedding_delete_is_answered_by_an_expression_index()
     {
-
         RequireSqlCipher();
 
         Assert.Equal(
             "SEARCH entry_embeddings USING INDEX IX_entry_embeddings_EntryId_Norm (<expr>=?)",
             await ExplainAsync($"SELECT Dim FROM entry_embeddings WHERE {EntryEmbeddingsPredicate}"));
-
     }
 
     [SkippableFact]
 
     public async Task The_entry_candidate_scan_is_answered_by_an_expression_index()
     {
-
         RequireSqlCipher();
 
         Assert.Equal(
             "SEARCH entry USING INDEX IX_Entries_SessionId_Norm (<expr>=?)",
             await ExplainAsync($"SELECT entry.Content FROM \"Entries\" entry WHERE {EntriesPredicate}"));
-
     }
 
     [SkippableFact]
 
     public async Task The_attachment_candidate_scans_are_answered_by_expression_indexes()
     {
-
         RequireSqlCipher();
 
         Assert.Equal(
@@ -131,11 +119,31 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
             "SEARCH attachment USING INDEX IX_SessionAttachments_Id_Norm (<expr>=?)",
             await ExplainAsync(
                 $"SELECT attachment.State FROM \"SessionAttachments\" attachment WHERE {AttachmentIdentityPredicate}"));
-
     }
 
     /// <summary>
-    /// The four predicates pinned above are still the text the sweep executes.
+    /// A Session delete's per-Session deletes and reconciliation counts over the three small
+    /// session-keyed tables are answered by expression indexes, not by a scan of each table.
+    /// </summary>
+    /// <remarks>
+    /// Core schema version 14 declares these three in the predicate's exact shape. Each is explained as
+    /// the <c>DELETE</c> the Session delete runs; the post-commit counts use the same predicate.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("attachment_memory_consultations", "IX_attachment_memory_consultations_SessionId_Norm")]
+    [InlineData("saga_extraction_watermarks", "IX_saga_extraction_watermarks_SessionId_Norm")]
+    [InlineData("SessionContextPins", "IX_SessionContextPins_SessionId_Norm")]
+    public async Task The_session_keyed_deletes_are_answered_by_expression_indexes(string table, string index)
+    {
+        RequireSqlCipher();
+
+        Assert.Equal(
+            $"SEARCH {table} USING INDEX {index} (<expr>=?)",
+            await ExplainAsync($"DELETE FROM {table} WHERE {SessionKeyPredicate}"));
+    }
+
+    /// <summary>
+    /// The predicates pinned above are still the text the sweep executes.
     /// </summary>
     /// <remarks>
     /// A plan test that explained SQL of its own would keep passing after the real predicate quietly
@@ -146,32 +154,25 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     [Fact]
     public void The_explained_predicates_are_the_ones_the_sweep_executes()
     {
-
         foreach (string predicate in
-            (string[])[EntryEmbeddingsPredicate, EntriesPredicate, AttachmentSessionPredicate, AttachmentIdentityPredicate])
+            (string[])[EntryEmbeddingsPredicate, EntriesPredicate, AttachmentSessionPredicate, AttachmentIdentityPredicate, SessionKeyPredicate])
         {
-
             string needle = predicate.Replace(" = @id", string.Empty, StringComparison.Ordinal);
 
             Assert.True(
                 ProductionSourceInventory.Sources().Any(source => source.Names(needle)),
                 $"No production source carries '{needle}', so the plan pinned here explains a predicate "
                 + "the retention sweep no longer executes.");
-
         }
-
     }
 
     private async Task<string> ExplainAsync(string sql)
     {
-
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         if (connection.State is not ConnectionState.Open)
         {
-
             await connection.OpenAsync(CancellationToken.None);
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -184,23 +185,17 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None))
         {
-
             while (await reader.ReadAsync(CancellationToken.None))
             {
-
                 rows.Add(reader.GetString(reader.GetOrdinal("detail")));
-
             }
-
         }
 
         return string.Join("\n", rows);
-
     }
 
     private static void RequireSqlCipher() =>
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
-
 }

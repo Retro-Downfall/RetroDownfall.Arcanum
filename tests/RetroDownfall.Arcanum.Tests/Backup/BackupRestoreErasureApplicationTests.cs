@@ -589,7 +589,7 @@ public sealed class BackupRestoreErasureApplicationTests
 
         await using (SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret))
         {
-            Assert.Equal(13, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+            Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
             Assert.Equal(0L, await CountAsync(restored, "SELECT COUNT(*) FROM saga_memories WHERE Content = 'erase me' AND ScopeKindCode = 1"));
         }
