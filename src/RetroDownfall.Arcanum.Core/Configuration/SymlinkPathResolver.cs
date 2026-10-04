@@ -7,89 +7,51 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 internal static class SymlinkPathResolver
 {
-
     /// <summary>
     /// Bounds symlink-chain recursion so a cycle of directory links cannot spin forever.
     /// </summary>
     private const int MaxResolutionDepth = 40;
 
-    /// <summary>
-    /// Test seam for symlink resolution failure and target branches.
-    /// </summary>
-    internal static Func<string, (bool Success, string? Target)>? TryResolveForTests { get; set; }
-
     public static bool TryResolveFinalTarget(string path, out string? resolvedTarget)
     {
-
         resolvedTarget = null;
-
-        if (TryResolveForTests is not null)
-        {
-
-            (bool success, string? target) = TryResolveForTests(path);
-
-            if (!success)
-            {
-
-                return false;
-
-            }
-
-            resolvedTarget = target;
-
-            return true;
-
-        }
 
         try
         {
-
             if (File.Exists(path))
             {
-
                 FileSystemInfo? linkTarget = File.ResolveLinkTarget(path, returnFinalTarget: true);
 
                 if (linkTarget is null)
                 {
-
                     return true;
-
                 }
 
                 resolvedTarget = Path.GetFullPath(linkTarget.FullName);
 
                 return true;
-
             }
 
             if (!Directory.Exists(path))
             {
-
                 return true;
-
             }
 
             FileSystemInfo? directoryLinkTarget = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
 
             if (directoryLinkTarget is null)
             {
-
                 return true;
-
             }
 
             resolvedTarget = Path.GetFullPath(directoryLinkTarget.FullName);
 
             return true;
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
         {
-
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -109,38 +71,29 @@ internal static class SymlinkPathResolver
 
     private static bool TryResolveCanonicalPath(string path, int resolutionDepth, out string? canonicalPath)
     {
-
         canonicalPath = null;
 
         if (resolutionDepth > MaxResolutionDepth)
         {
-
             return false;
-
         }
 
         string fullPath;
 
         try
         {
-
             fullPath = Path.GetFullPath(path);
-
         }
         catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException or IOException or UnauthorizedAccessException)
         {
-
             return false;
-
         }
 
         string? pathRoot = Path.GetPathRoot(fullPath);
 
         if (string.IsNullOrEmpty(pathRoot))
         {
-
             return false;
-
         }
 
         string[] components = fullPath[pathRoot.Length..].Split(
@@ -151,12 +104,10 @@ internal static class SymlinkPathResolver
 
         for (int index = 0; index < components.Length; index++)
         {
-
             string candidate = Path.Combine(current, components[index]);
 
             if (!File.Exists(candidate) && !Directory.Exists(candidate))
             {
-
                 string remainder = string.Join(
                     Path.DirectorySeparatorChar,
                     components[(index + 1)..]);
@@ -165,42 +116,32 @@ internal static class SymlinkPathResolver
                     remainder.Length == 0 ? candidate : Path.Combine(candidate, remainder));
 
                 return true;
-
             }
 
             if (!TryResolveFinalTarget(candidate, out string? target))
             {
-
                 return false;
-
             }
 
             if (target is null)
             {
-
                 current = candidate;
 
                 continue;
-
             }
 
             // The link's own target can sit behind further symlinked ancestors, so canonicalize it too.
             if (!TryResolveCanonicalPath(target, resolutionDepth + 1, out string? canonicalTarget)
                 || canonicalTarget is null)
             {
-
                 return false;
-
             }
 
             current = canonicalTarget;
-
         }
 
         canonicalPath = Path.TrimEndingDirectorySeparator(current);
 
         return true;
-
     }
-
 }
