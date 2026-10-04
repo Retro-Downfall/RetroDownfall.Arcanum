@@ -197,8 +197,9 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
 
                 RetentionDataClass.MemoryErasureEvidence =>
                     "Erasure evidence has no time-based retention rule and cannot be given one. It is "
-                    + "inventoried by 'data status' and removed only by a release, 'memory erasure "
-                    + "reset-key', or a full installation reset.",
+                    + "inventoried by 'data status' and removed only by a release, an operator "
+                    + "re-creation of the erased item, 'memory erasure reset-key', a restore's "
+                    + "destination-authoritative join, or a full installation reset.",
 
                 _ => "The retention data class has no configurable rule.",
 

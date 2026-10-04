@@ -291,10 +291,26 @@ public sealed class MemoryErasureLifecycleSurvivalTests
 
         Assert.Equal(ErrorCodes.Data.InvalidRequest, error.GetProperty("code").GetString());
 
+        string message = error.GetProperty("message").GetString()!;
+
         Assert.StartsWith(
             "Erasure evidence has no time-based retention rule",
-            error.GetProperty("message").GetString(),
+            message,
             StringComparison.Ordinal);
+
+        // The refusal names the closed list of ways evidence is removed, the same five every document
+        // names: a release, an operator re-creation, reset-key, a restore's join, a full installation reset.
+        foreach (string removal in (string[])
+                 [
+                     "a release",
+                     "operator re-creation",
+                     "'memory erasure reset-key'",
+                     "restore's destination-authoritative join",
+                     "a full installation reset",
+                 ])
+        {
+            Assert.Contains(removal, message, StringComparison.Ordinal);
+        }
 
         Assert.Equal(before, await RetentionSettingsJsonAsync(client));
     }

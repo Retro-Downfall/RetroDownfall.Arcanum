@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -17,6 +19,11 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 public sealed class DocumentationCodeContradictionTests
 {
+    private static readonly Regex EvidenceRemovalClause = new(
+        @"only (?:through|by) a release[^.]*\.",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
     [Fact]
     public void A_committed_entry_erase_is_documented_as_republishing_canonical_mutation()
     {
@@ -106,6 +113,48 @@ public sealed class DocumentationCodeContradictionTests
 
             Assert.Contains("registered in no container", section, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void Every_list_of_the_ways_erasure_evidence_is_removed_names_all_five()
+    {
+        (string File, int Minimum)[] documents =
+        [
+            ("Arcanum.API.md", 1),
+            ("Arcanum.Command.Reference.md", 2),
+            ("Arcanum.DESIGN.md", 2),
+        ];
+
+        List<string> offenders = [];
+
+        foreach ((string file, int minimum) in documents)
+        {
+            MatchCollection clauses = EvidenceRemovalClause.Matches(ReadDocument(file));
+
+            Assert.True(
+                clauses.Count >= minimum,
+                $"{file} was expected to carry at least {minimum} list(s) of what removes erasure evidence and carries {clauses.Count}.");
+
+            foreach (Match clause in clauses)
+            {
+                foreach (string path in (string[])
+                         [
+                             "a release",
+                             "re-creation",
+                             "reset-key",
+                             "restore",
+                             "full installation reset",
+                         ])
+                {
+                    if (!clause.Value.Contains(path, StringComparison.Ordinal))
+                    {
+                        offenders.Add($"{file}: \"{clause.Value}\" omits {path}");
+                    }
+                }
+            }
+        }
+
+        Assert.Empty(offenders);
     }
 
     private static string ReadDocument(string fileName) =>
