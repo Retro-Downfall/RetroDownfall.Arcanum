@@ -689,14 +689,14 @@ public sealed partial class MemoryCommands
     /// note when nothing proves the release rolled back.
     /// </summary>
     /// <remarks>
-    /// The status verb is named only when the host's own message does not already name it, so the
-    /// operator is told once.
+    /// The status verb is named for every lost-key refusal, keyed on the error code and never on how the
+    /// host worded its message, so a reworded message cannot change what the operator is told. A host
+    /// message that names the verb too is a second mention, never a missing one.
     /// </remarks>
     internal static void WriteReleaseRefusalGuidance(IConsoleDispatcher dispatcher, Error error)
     {
 
-        if (error.Code == ErrorCodes.MemoryErasure.KeyLost
-            && !error.Message.Contains(StatusCommand, StringComparison.Ordinal))
+        if (error.Code == ErrorCodes.MemoryErasure.KeyLost)
         {
 
             dispatcher.WriteDiagnostic($"Run '{StatusCommand}'.");

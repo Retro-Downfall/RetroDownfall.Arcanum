@@ -339,9 +339,14 @@ public sealed class MemoryErasureAdministrationCommandTests
     }
 
     /// <summary>
-    /// A lost key points the operator at status exactly once: the CLI adds the pointer only when the
-    /// host's own message does not already give it.
+    /// A lost key always gets the CLI's own pointer to status, keyed on the error code and never on how the
+    /// host worded its message.
     /// </summary>
+    /// <remarks>
+    /// The host's message may or may not name the verb, and a reworded one must not change what the
+    /// operator is told, so the pointer is its own diagnostic line either way. A host that names the verb
+    /// too is a second mention, never a missing one.
+    /// </remarks>
     [Theory]
     [InlineData("saga", false)]
     [InlineData("lexicon", false)]
@@ -349,7 +354,7 @@ public sealed class MemoryErasureAdministrationCommandTests
     [InlineData("saga", true)]
     [InlineData("lexicon", true)]
     [InlineData("covenant", true)]
-    public async Task A_KeyLost_refusal_exits_one_and_points_to_erasure_status_once(string store, bool hostNamesStatus)
+    public async Task A_KeyLost_refusal_exits_one_and_always_points_to_erasure_status_on_its_own_line(string store, bool hostNamesStatus)
     {
         using ContentFile file = new(SagaContent);
 
@@ -371,9 +376,36 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         Assert.Contains("The erasure key is lost.", result.Error, StringComparison.Ordinal);
 
-        Assert.Single(Regex.Matches(result.Error, Regex.Escape("arcanum memory erasure status")));
+        Assert.Single(
+            result.Error.Split('\n', StringSplitOptions.TrimEntries),
+            static line => line == "Run 'arcanum memory erasure status'.");
 
         Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Only a lost key earns the pointer: a refusal of another code never does, whatever its message says.
+    /// </summary>
+    [Fact]
+    public async Task A_refusal_that_is_not_KeyLost_adds_no_pointer_to_erasure_status()
+    {
+        using ContentFile file = new(SagaContent);
+
+        AdministrationHandler handler = new()
+        {
+            Failures =
+            {
+                ["/api/memory/saga/release"] = (
+                    HttpStatusCode.ServiceUnavailable,
+                    new Error(ErrorCodes.MemoryErasure.KeyUnavailable, "The erasure key could not be read.")),
+            },
+        };
+
+        CliTestResult result = await RunAsync(handler, ReleaseArgs("saga", file.Path), new RecordingPrompt(handler, answer: true));
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.DoesNotContain("arcanum memory erasure status", result.Error, StringComparison.Ordinal);
     }
 
     [Theory]
