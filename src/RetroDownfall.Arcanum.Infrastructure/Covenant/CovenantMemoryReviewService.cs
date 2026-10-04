@@ -1867,29 +1867,20 @@ internal sealed class CovenantMemoryReviewService(
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static string Outcome(MemoryReviewAction action) =>
-        action switch
-        {
-            MemoryReviewAction.Confirm => "Confirmed",
-            MemoryReviewAction.Correct => "Corrected",
-            MemoryReviewAction.Retire => "Retired",
-            MemoryReviewAction.Pin => "Pinned",
-            MemoryReviewAction.Unpin => "Unpinned",
-            _ => throw new ArgumentOutOfRangeException(nameof(action)),
-        };
+    private static string Outcome(MemoryReviewAction action) => MemoryReviewOutcomes.Applied(action);
 
     private static string Outcome(MemoryReviewAction action, CovenantMutationOutcome mutationOutcome) =>
         mutationOutcome switch
         {
             CovenantMutationOutcome.Applied => Outcome(action),
-            CovenantMutationOutcome.NoChange => nameof(CovenantMutationOutcome.NoChange),
+            CovenantMutationOutcome.NoChange => MemoryReviewOutcomes.NoChange,
             _ => throw new ArgumentOutOfRangeException(nameof(mutationOutcome)),
         };
 
     private static bool IsExpectedOutcome(MemoryReviewAction action, string outcome) =>
         string.Equals(outcome, Outcome(action), StringComparison.Ordinal)
         || action != MemoryReviewAction.Confirm
-            && string.Equals(outcome, nameof(CovenantMutationOutcome.NoChange), StringComparison.Ordinal);
+            && string.Equals(outcome, MemoryReviewOutcomes.NoChange, StringComparison.Ordinal);
 
     private static CovenantOperationScope OperationScope(CovenantScope scope, Guid? campaignId) =>
         scope == CovenantScope.Global

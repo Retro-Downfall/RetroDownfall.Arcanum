@@ -737,7 +737,7 @@ internal sealed class SagaMemoryReviewService(
             case MemoryReviewAction.Correct:
                 if (ReplacesNothing(target, decision))
                 {
-                    outcome = nameof(SagaCurationOutcomeKind.Unchanged);
+                    outcome = MemoryReviewOutcomes.Unchanged;
 
                     break;
                 }
@@ -793,7 +793,7 @@ internal sealed class SagaMemoryReviewService(
                 }
                 else
                 {
-                    outcome = nameof(SagaCurationOutcomeKind.AlreadyRetired);
+                    outcome = MemoryReviewOutcomes.AlreadyRetired;
                 }
 
                 break;
@@ -1045,23 +1045,14 @@ internal sealed class SagaMemoryReviewService(
             : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
-    private static string Outcome(MemoryReviewAction action) =>
-        action switch
-        {
-            MemoryReviewAction.Confirm => "Confirmed",
-            MemoryReviewAction.Correct => "Corrected",
-            MemoryReviewAction.Retire => "Retired",
-            MemoryReviewAction.Pin => "Pinned",
-            MemoryReviewAction.Unpin => "Unpinned",
-            _ => throw new ArgumentOutOfRangeException(nameof(action)),
-        };
+    private static string Outcome(MemoryReviewAction action) => MemoryReviewOutcomes.Applied(action);
 
     private static bool IsExpectedOutcome(MemoryReviewAction action, string outcome) =>
         string.Equals(outcome, Outcome(action), StringComparison.Ordinal)
         || action == MemoryReviewAction.Correct
-            && string.Equals(outcome, nameof(SagaCurationOutcomeKind.Unchanged), StringComparison.Ordinal)
+            && string.Equals(outcome, MemoryReviewOutcomes.Unchanged, StringComparison.Ordinal)
         || action == MemoryReviewAction.Retire
-            && string.Equals(outcome, nameof(SagaCurationOutcomeKind.AlreadyRetired), StringComparison.Ordinal);
+            && string.Equals(outcome, MemoryReviewOutcomes.AlreadyRetired, StringComparison.Ordinal);
 
     private static async Task<long> ComputeReviewedThroughAsync(
         DbConnection connection,

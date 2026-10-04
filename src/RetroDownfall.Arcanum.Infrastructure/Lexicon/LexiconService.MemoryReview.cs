@@ -1033,7 +1033,7 @@ internal sealed partial class LexiconService
             sequence,
             Guid.Parse(subject).ToString("D"),
             resultingVersion,
-            "auto-acknowledged",
+            MemoryReviewOutcomes.AutoAcknowledged,
             resultingVersion);
     }
 
@@ -1122,17 +1122,24 @@ internal sealed partial class LexiconService
                 throw new InspectionException(ReviewIntegrityFailure);
             }
 
-            MemoryReviewBulkItemResultDto item = new(
+            // The receipt's digest seals the spelling it was written with, so it is verified against that
+            // spelling; what the replay reports is the closed vocabulary's.
+            MemoryReviewBulkItemResultDto sealedItem = new(
                 originalEvent.Sequence,
                 originalEvent.SubjectId,
                 originalEvent.VersionId,
                 original.Envelope.Outcome,
                 original.Envelope.ResultingVersionId);
 
-            if (original.ResponseDigest != ResponseDigest(orderedDigest, original.Envelope, item))
+            if (original.ResponseDigest != ResponseDigest(orderedDigest, original.Envelope, sealedItem))
             {
                 throw new InspectionException(ReviewIntegrityFailure);
             }
+
+            MemoryReviewBulkItemResultDto item = sealedItem with
+            {
+                Outcome = MemoryReviewOutcomes.FromPersisted(sealedItem.Outcome)!,
+            };
 
             if (replacements.TryGetValue(index, out StoredReceipt? replacement))
             {
@@ -1143,7 +1150,11 @@ internal sealed partial class LexiconService
                     replacementEvent?.Sequence ?? -1,
                     replacementEvent?.SubjectId ?? string.Empty,
                     replacementEvent?.VersionId ?? string.Empty,
-                    "auto-acknowledged",
+                    // The generation that wrote the receipt is told by its outcome's spelling: a lowercase
+                    // one sealed the replacement with the lowercase acknowledgement.
+                    MemoryReviewOutcomes.IsKnown(original.Envelope.Outcome)
+                        ? MemoryReviewOutcomes.AutoAcknowledged
+                        : "auto-acknowledged",
                     replacementEvent?.VersionId);
 
                 if (request.Action != MemoryReviewAction.Correct
@@ -1371,28 +1382,29 @@ internal sealed partial class LexiconService
         ErrorCodes.MemoryReview.RequestReuse,
         "The Lexicon review request identity was already used for different decisions.");
 
-    private static string AppliedOutcomeForAction(MemoryReviewAction action) => action switch
-    {
-        MemoryReviewAction.Confirm => "acknowledged",
-        MemoryReviewAction.Correct => "corrected",
-        MemoryReviewAction.Retire => "retired",
-        MemoryReviewAction.Pin => "pinned",
-        MemoryReviewAction.Unpin => "unpinned",
-        _ => throw new InvalidOperationException("Unrecognized memory-review action."),
-    };
+    private static string AppliedOutcomeForAction(MemoryReviewAction action) => MemoryReviewOutcomes.Applied(action);
 
     private static string? NoOpOutcomeForAction(MemoryReviewAction action) => action switch
     {
-        MemoryReviewAction.Correct => nameof(LexiconCurationOutcomeKind.Unchanged),
-        MemoryReviewAction.Retire => nameof(LexiconCurationOutcomeKind.AlreadyRetired),
-        MemoryReviewAction.Pin => nameof(LexiconCurationOutcomeKind.AlreadyPinned),
-        MemoryReviewAction.Unpin => nameof(LexiconCurationOutcomeKind.NotPinned),
+        MemoryReviewAction.Correct => MemoryReviewOutcomes.Unchanged,
+        MemoryReviewAction.Retire => MemoryReviewOutcomes.AlreadyRetired,
+        MemoryReviewAction.Pin => MemoryReviewOutcomes.AlreadyPinned,
+        MemoryReviewAction.Unpin => MemoryReviewOutcomes.NotPinned,
         _ => null,
     };
 
-    private static bool IsAllowedOutcome(MemoryReviewAction action, string outcome) =>
-        string.Equals(outcome, AppliedOutcomeForAction(action), StringComparison.Ordinal)
-        || string.Equals(outcome, NoOpOutcomeForAction(action), StringComparison.Ordinal);
+    /// <summary>
+    /// Whether a persisted receipt's outcome is one this action can produce, in the closed spelling or in
+    /// the lowercase spelling an earlier build persisted.
+    /// </summary>
+    private static bool IsAllowedOutcome(MemoryReviewAction action, string outcome)
+    {
+        string? closed = MemoryReviewOutcomes.FromPersisted(outcome);
+
+        return closed is not null
+            && (string.Equals(closed, AppliedOutcomeForAction(action), StringComparison.Ordinal)
+                || string.Equals(closed, NoOpOutcomeForAction(action), StringComparison.Ordinal));
+    }
 
     private async Task<ReviewActionResult> ApplyReviewActionAsync(
         DbConnection connection,

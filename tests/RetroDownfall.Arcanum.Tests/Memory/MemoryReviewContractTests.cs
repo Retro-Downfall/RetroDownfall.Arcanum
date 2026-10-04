@@ -18,6 +18,53 @@ public sealed class MemoryReviewContractTests
     private static readonly Guid RequestId = Guid.Parse("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE");
 
     /// <summary>
+    /// R-172: each store used to invent its own per-item outcome strings, and Lexicon mixed casings
+    /// (<c>corrected</c> beside <c>AlreadyRetired</c>). Every outcome is now one member of a single closed,
+    /// PascalCase set that API §8.34 enumerates, and receipts persisted with an earlier build's lowercase
+    /// spelling still read back as that set.
+    /// </summary>
+    [Fact]
+    public void Every_store_reports_outcomes_from_one_closed_vocabulary()
+    {
+        Assert.Equal(MemoryReviewOutcomes.All.Count, MemoryReviewOutcomes.All.Distinct(StringComparer.Ordinal).Count());
+
+        Assert.All(
+            MemoryReviewOutcomes.All,
+            static outcome => Assert.Matches("^[A-Z][A-Za-z]+$", outcome));
+
+        foreach (MemoryReviewAction action in Enum.GetValues<MemoryReviewAction>())
+        {
+            string applied = MemoryReviewOutcomes.Applied(action);
+
+            Assert.Contains(applied, MemoryReviewOutcomes.All);
+
+            Assert.Equal(applied, MemoryReviewOutcomes.FromPersisted(applied));
+        }
+
+        // What an earlier Lexicon persisted.
+        Assert.Equal(MemoryReviewOutcomes.Confirmed, MemoryReviewOutcomes.FromPersisted("acknowledged"));
+
+        Assert.Equal(MemoryReviewOutcomes.Corrected, MemoryReviewOutcomes.FromPersisted("corrected"));
+
+        Assert.Equal(MemoryReviewOutcomes.Retired, MemoryReviewOutcomes.FromPersisted("retired"));
+
+        Assert.Equal(MemoryReviewOutcomes.Pinned, MemoryReviewOutcomes.FromPersisted("pinned"));
+
+        Assert.Equal(MemoryReviewOutcomes.Unpinned, MemoryReviewOutcomes.FromPersisted("unpinned"));
+
+        Assert.Equal(MemoryReviewOutcomes.AutoAcknowledged, MemoryReviewOutcomes.FromPersisted("auto-acknowledged"));
+
+        // Closed means closed: neither another casing of a member nor an invented word is an outcome.
+        Assert.Null(MemoryReviewOutcomes.FromPersisted("CORRECTED"));
+
+        Assert.Null(MemoryReviewOutcomes.FromPersisted("Applied"));
+
+        Assert.Null(MemoryReviewOutcomes.FromPersisted(null));
+
+        Assert.False(MemoryReviewOutcomes.IsKnown("corrected"));
+    }
+
+    /// <summary>
     /// R-168: replaying a request looks up every receipt of that request, and it ran twice per apply, once
     /// of them under the write lock. The predicate was a <c>substr</c> over the primary key, which SQLite
     /// cannot seek, so every apply scanned every receipt ever written. The three stores' statements are
