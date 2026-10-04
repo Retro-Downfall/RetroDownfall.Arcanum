@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantExportPolicyTests
 {
-
     private static readonly Guid Session = Guid.Parse("0A1B2C3D-4E5F-4A6B-8C9D-0E1F2A3B4C5D");
 
     private static readonly Guid OtherSession = Guid.Parse("6B7C8D9E-0F10-4A2B-8C3D-4E5F60718293");
@@ -39,7 +38,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task A_session_with_no_label_and_no_projection_is_clean()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         Result<CovenantSessionExportSensitivity> decision = await fixture.Policy.InspectSessionAsync(
@@ -54,7 +52,6 @@ public sealed class CovenantExportPolicyTests
         Assert.Equal(0, decision.Value.TaintedArtifactCount);
 
         Assert.Equal(ContentSensitivity.None, decision.Value.MaximumSensitivity);
-
     }
 
     /// <summary>
@@ -72,7 +69,6 @@ public sealed class CovenantExportPolicyTests
     [InlineData(SensitiveArtifactKind.SearchProjection)]
     public async Task A_session_carrying_any_tainted_artifact_kind_is_refused(SensitiveArtifactKind kind)
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         await fixture.LabelAsync(kind, Session);
@@ -89,7 +85,6 @@ public sealed class CovenantExportPolicyTests
         Assert.Equal(1, decision.Value.TaintedArtifactCount);
 
         Assert.Equal(ContentSensitivity.CovenantDerived, decision.Value.MaximumSensitivity);
-
     }
 
     /// <summary>
@@ -99,7 +94,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task Another_sessions_taint_does_not_refuse_this_session()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         await fixture.LabelAsync(SensitiveArtifactKind.AssistantEntry, OtherSession);
@@ -112,7 +106,6 @@ public sealed class CovenantExportPolicyTests
         Assert.True(decision.IsSuccess);
 
         Assert.False(decision.Value.IsRefused);
-
     }
 
     /// <summary>
@@ -123,7 +116,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task A_session_whose_labels_were_purged_is_still_refused_by_its_projection()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         await fixture.LabelAsync(SensitiveArtifactKind.AssistantEntry, Session);
@@ -140,7 +132,6 @@ public sealed class CovenantExportPolicyTests
         Assert.True(decision.Value.IsRefused);
 
         Assert.Equal(ContentSensitivity.CovenantDerived, decision.Value.MaximumSensitivity);
-
     }
 
     /// <summary>
@@ -151,7 +142,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task Campaign_exclusions_count_covenant_entries_and_tainted_artifacts_separately()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         await fixture.InsertCampaignCovenantEntryAsync(Campaign, "alpha");
@@ -168,7 +158,6 @@ public sealed class CovenantExportPolicyTests
         Assert.Equal(2, exclusions.Value.CovenantEntryCount);
 
         Assert.Equal(1, exclusions.Value.TaintedArtifactCount);
-
     }
 
     /// <summary>
@@ -178,7 +167,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task Campaign_exclusions_ignore_global_entries_and_another_campaigns_rows()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         await fixture.InsertGlobalCovenantEntryAsync("global");
@@ -195,7 +183,6 @@ public sealed class CovenantExportPolicyTests
         Assert.Equal(0, exclusions.Value.CovenantEntryCount);
 
         Assert.Equal(0, exclusions.Value.TaintedArtifactCount);
-
     }
 
     /// <summary>
@@ -206,7 +193,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task A_scoped_lease_cannot_cover_a_session_inspection()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         Result<CovenantSessionExportSensitivity> decision = await fixture.Policy.InspectSessionAsync(
@@ -217,7 +203,6 @@ public sealed class CovenantExportPolicyTests
         Assert.True(decision.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.InvalidScope, decision.Error.Code);
-
     }
 
     /// <summary>
@@ -226,7 +211,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task A_lease_over_another_campaign_cannot_cover_this_inventory()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         Result<CovenantCampaignExportExclusions> exclusions = await fixture.Policy
@@ -235,7 +219,6 @@ public sealed class CovenantExportPolicyTests
         Assert.True(exclusions.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.InvalidScope, exclusions.Error.Code);
-
     }
 
     /// <summary>
@@ -244,7 +227,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task An_installation_lease_covers_a_campaign_inventory()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         await fixture.InsertCampaignCovenantEntryAsync(Campaign, "alpha");
@@ -255,17 +237,16 @@ public sealed class CovenantExportPolicyTests
         Assert.True(exclusions.IsSuccess);
 
         Assert.Equal(1, exclusions.Value.CovenantEntryCount);
-
     }
 
     /// <summary>
-    /// With the feature off there is no arm at all, and the route that asked runs exactly as it did
-    /// before the Covenant tier existed. An absent arm is a real answer rather than a failure.
+    /// With the feature off there is no lease to take and no response to protect. An absent arm is a
+    /// real answer rather than a failure; it is not a claim that the ledger is empty, which the
+    /// lease-less inspection below answers.
     /// </summary>
     [Fact]
     public async Task With_the_feature_disabled_the_conditional_arm_is_absent()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync(featureEnabled: false);
 
         Result<CovenantExportAdmission> admission = await fixture.Policy
@@ -276,7 +257,99 @@ public sealed class CovenantExportPolicyTests
         Assert.False(admission.Value.IsProtected);
 
         Assert.Null(admission.Value.ReadLease);
+    }
 
+    /// <summary>
+    /// R-026: the feature flag is a live runtime switch, and the label ledger outlives it. A Session
+    /// that held Covenant content while the feature was on must still be refused after it is turned
+    /// off, or flipping one setting would turn a tainted transcript into a plaintext file nobody can
+    /// recall. The off arm runs the same two content-free reads, with no lease, over the core tables.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_tainted_session_is_refused_after_the_feature_is_disabled(bool labelsPurged)
+    {
+        await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync(featureEnabled: false);
+
+        await fixture.LabelAsync(SensitiveArtifactKind.AssistantEntry, Session);
+
+        if (labelsPurged)
+        {
+            // Only the conservative projection remains: the artifacts were purged, the Session did
+            // not stop having held Covenant content.
+            await fixture.DeleteLabelsAsync();
+        }
+
+        Result<CovenantExportAdmission> admission = await fixture.Policy
+            .AcquireConditionalReadAsync(scope: null, CancellationToken.None);
+
+        Assert.True(admission.IsSuccess);
+
+        Assert.Null(admission.Value.ReadLease);
+
+        Result<CovenantSessionExportSensitivity> decision = await fixture.Policy
+            .InspectSessionWithoutLeaseAsync(Session, CancellationToken.None);
+
+        Assert.True(decision.IsSuccess);
+
+        Assert.True(decision.Value.IsRefused);
+
+        Assert.Equal(ContentSensitivity.CovenantDerived, decision.Value.MaximumSensitivity);
+    }
+
+    /// <summary>
+    /// R-026: no ledger rows is still the honest clean answer with the feature off, so an installation
+    /// that never held Covenant content exports exactly as it always did.
+    /// </summary>
+    [Fact]
+    public async Task A_session_with_no_ledger_rows_is_clean_when_the_feature_is_disabled()
+    {
+        await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync(featureEnabled: false);
+
+        await fixture.LabelAsync(SensitiveArtifactKind.AssistantEntry, OtherSession);
+
+        Result<CovenantSessionExportSensitivity> decision = await fixture.Policy
+            .InspectSessionWithoutLeaseAsync(Session, CancellationToken.None);
+
+        Assert.True(decision.IsSuccess);
+
+        Assert.False(decision.Value.IsRefused);
+    }
+
+    /// <summary>
+    /// R-026 hazard: the off-arm reads must not latch the one-way Covenant process residence. That
+    /// latch closes the offline host-tools transition, and a gate-off installation that only exported
+    /// a Session would otherwise have no way to reopen it.
+    /// </summary>
+    [Fact]
+    public async Task The_lease_less_inspection_reads_through_the_core_connection_only()
+    {
+        await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync(featureEnabled: false);
+
+        await fixture.LabelAsync(SensitiveArtifactKind.Saga, Session);
+
+        _ = await fixture.Policy.InspectSessionWithoutLeaseAsync(Session, CancellationToken.None);
+
+        Assert.Equal(0, fixture.Connections.CanonicalOpens);
+
+        Assert.True(fixture.Connections.CoreOpens > 0);
+    }
+
+    /// <summary>
+    /// The lease-less arm answers about a Session, so it needs one.
+    /// </summary>
+    [Fact]
+    public async Task The_lease_less_inspection_requires_a_session()
+    {
+        await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync(featureEnabled: false);
+
+        Result<CovenantSessionExportSensitivity> decision = await fixture.Policy
+            .InspectSessionWithoutLeaseAsync(Guid.Empty, CancellationToken.None);
+
+        Assert.True(decision.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.InvalidScope, decision.Error.Code);
     }
 
     /// <summary>
@@ -285,7 +358,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task With_the_feature_enabled_the_conditional_arm_takes_one_lease()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         int before = fixture.Gate.LiveRegistrationCount;
@@ -308,7 +380,6 @@ public sealed class CovenantExportPolicyTests
         await admission.Value.ReadLease.DisposeAsync();
 
         Assert.Equal(before, fixture.Gate.LiveRegistrationCount);
-
     }
 
     /// <summary>
@@ -318,7 +389,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task An_enabled_feature_over_an_unhealthy_tier_fails_closed()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         fixture.Availability.Mutate(static current => current with
@@ -332,7 +402,6 @@ public sealed class CovenantExportPolicyTests
         Assert.True(admission.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.Unavailable, admission.Error.Code);
-
     }
 
     /// <summary>
@@ -342,7 +411,6 @@ public sealed class CovenantExportPolicyTests
     [Fact]
     public async Task A_campaign_scope_takes_the_exact_scoped_lease()
     {
-
         await using ExportPolicyFixture fixture = await ExportPolicyFixture.CreateAsync();
 
         Result<CovenantExportAdmission> admission = await fixture.Policy.AcquireConditionalReadAsync(
@@ -356,7 +424,31 @@ public sealed class CovenantExportPolicyTests
         Assert.Equal(Campaign, admission.Value.ReadLease.Snapshot.Scope!.Value.CampaignId);
 
         await admission.Value.ReadLease.DisposeAsync();
+    }
 
+    /// <summary>
+    /// Counts which door each read came through, because the two doors differ in exactly one way: the
+    /// canonical one latches the one-way Covenant process residence and the core one does not.
+    /// </summary>
+    private sealed class RecordingConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
+    {
+        internal int CanonicalOpens { get; private set; }
+
+        internal int CoreOpens { get; private set; }
+
+        public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
+        {
+            CanonicalOpens++;
+
+            return ValueTask.FromResult(connection);
+        }
+
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken)
+        {
+            CoreOpens++;
+
+            return ValueTask.FromResult(connection);
+        }
     }
 
     /// <summary>
@@ -365,7 +457,6 @@ public sealed class CovenantExportPolicyTests
     /// </summary>
     private sealed class ExportPolicyFixture : IAsyncDisposable
     {
-
         private readonly CovenantSchemaScratchDatabase _database;
 
         private readonly ArtifactSensitivityLedger _ledger;
@@ -377,7 +468,6 @@ public sealed class CovenantExportPolicyTests
             CovenantInstallationReadLease installationLease,
             CovenantReadLease campaignLease)
         {
-
             _database = database;
 
             _ledger = new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(database.Connection));
@@ -390,11 +480,9 @@ public sealed class CovenantExportPolicyTests
 
             CampaignLease = campaignLease;
 
-            Policy = new CovenantExportPolicy(
-                availability,
-                gate,
-                new FixedCovenantConnectionSource(database.Connection));
+            Connections = new RecordingConnectionSource(database.Connection);
 
+            Policy = new CovenantExportPolicy(availability, gate, Connections);
         }
 
         internal FakeCovenantAvailability Availability { get; }
@@ -403,19 +491,19 @@ public sealed class CovenantExportPolicyTests
 
         internal CovenantExportPolicy Policy { get; }
 
+        internal RecordingConnectionSource Connections { get; }
+
         internal CovenantInstallationReadLease InstallationLease { get; }
 
         internal CovenantReadLease CampaignLease { get; }
 
         internal static async Task<ExportPolicyFixture> CreateAsync(bool featureEnabled = true)
         {
-
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase
                 .CreateAsync(CancellationToken.None);
 
             try
             {
-
                 await database.InstallCanonicalAsync(CancellationToken.None);
 
                 await database.InstallCoreObjectsAsync(
@@ -430,9 +518,7 @@ public sealed class CovenantExportPolicyTests
 
                 if (!featureEnabled)
                 {
-
                     availability.Mutate(static current => current with { FeatureEnabled = false });
-
                 }
 
                 CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
@@ -450,17 +536,13 @@ public sealed class CovenantExportPolicyTests
                     gate,
                     installationLease,
                     campaignLease);
-
             }
             catch
             {
-
                 await database.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal async Task LabelAsync(
@@ -468,7 +550,6 @@ public sealed class CovenantExportPolicyTests
             Guid sessionId,
             Guid? campaignId = null)
         {
-
             Result<LabeledArtifactWriteReceipt> receipt = await _ledger.LabelAsync(
                 new DerivedArtifactWrite(
                     kind,
@@ -483,7 +564,6 @@ public sealed class CovenantExportPolicyTests
                 CancellationToken.None);
 
             Assert.True(receipt.IsSuccess);
-
         }
 
         internal Task DeleteLabelsAsync() =>
@@ -497,34 +577,27 @@ public sealed class CovenantExportPolicyTests
 
         public async ValueTask DisposeAsync()
         {
-
             await InstallationLease.DisposeAsync();
 
             await CampaignLease.DisposeAsync();
 
             await _database.DisposeAsync();
-
         }
 
         private static CovenantDigest Digest(byte seed)
         {
-
             byte[] bytes = new byte[32];
 
             for (int index = 0; index < bytes.Length; index++)
             {
-
                 bytes[index] = unchecked((byte)(seed + index));
-
             }
 
             return new CovenantDigest(bytes);
-
         }
 
         private static async Task SeedSessionAsync(CovenantSchemaScratchDatabase database, Guid sessionId)
         {
-
             await using SqliteCommand seed = database.Connection.CreateCommand();
 
             seed.CommandText = """
@@ -537,12 +610,10 @@ public sealed class CovenantExportPolicyTests
             _ = seed.Parameters.AddWithValue("$now", "2026-08-17T00:00:00.0000000+00:00");
 
             _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         private async Task InsertCovenantEntryAsync(long scopeCode, Guid? campaignId, string key)
         {
-
             await using SqliteCommand insert = _database.Connection.CreateCommand();
 
             insert.CommandText = """
@@ -567,9 +638,6 @@ public sealed class CovenantExportPolicyTests
             _ = insert.Parameters.AddWithValue("$now", "2026-08-17T00:00:00.0000000+00:00");
 
             _ = await insert.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
-
     }
-
 }

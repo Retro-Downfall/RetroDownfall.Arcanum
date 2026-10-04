@@ -27,24 +27,19 @@ internal sealed class CovenantExportPolicy(
     ICovenantOperationGate gate,
     ICovenantConnectionSource connections) : ICovenantExportPolicy
 {
-
     public async ValueTask<Result<CovenantExportAdmission>> AcquireConditionalReadAsync(
         CovenantOperationScope? scope,
         CancellationToken cancellationToken)
     {
-
         // Read once. Two reads of the availability snapshot could straddle a disable, and the arm a
         // response is written under has to be the arm its first decision was made under.
         if (!availability.Current.FeatureEnabled)
         {
-
             return Result<CovenantExportAdmission>.Success(CovenantExportAdmission.Absent);
-
         }
 
         if (scope is not { } exact)
         {
-
             Result<CovenantInstallationReadLease> installation = await gate
                 .AcquireInstallationReadAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -52,7 +47,6 @@ internal sealed class CovenantExportPolicy(
             return installation.IsFailure
                 ? Result<CovenantExportAdmission>.Failure(installation.Error)
                 : Result<CovenantExportAdmission>.Success(new CovenantExportAdmission(installation.Value));
-
         }
 
         Result<CovenantReadLease> scoped = await gate
@@ -62,7 +56,6 @@ internal sealed class CovenantExportPolicy(
         return scoped.IsFailure
             ? Result<CovenantExportAdmission>.Failure(scoped.Error)
             : Result<CovenantExportAdmission>.Success(new CovenantExportAdmission(scoped.Value));
-
     }
 
     public async Task<Result<CovenantSessionExportSensitivity>> InspectSessionAsync(
@@ -70,33 +63,71 @@ internal sealed class CovenantExportPolicy(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(readLease);
 
         if (sessionId == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "A plaintext export inspection requires the Session it is about.");
-
         }
 
         // A Session's labels may name any Campaign, or none, so nothing narrower than an installation
         // read covers the question this answers.
         if (readLease.Snapshot.Coverage is not CovenantLeaseCoverage.Installation)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "A Session export inspection requires an installation-wide Covenant read lease.");
-
         }
 
         SqliteConnection connection = await connections
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        Result<CovenantSessionExportSensitivity> sensitivity = await ReadSessionSensitivityAsync(
+            connection,
+            sessionId,
+            cancellationToken).ConfigureAwait(false);
+
+        if (sensitivity.IsFailure)
+        {
+            return sensitivity;
+        }
+
+        Result revalidated = await readLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+
+        return revalidated.IsFailure ? revalidated.Error : sensitivity;
+    }
+
+    public async Task<Result<CovenantSessionExportSensitivity>> InspectSessionWithoutLeaseAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        if (sessionId == Guid.Empty)
+        {
+            return new Error(
+                ErrorCodes.Covenant.InvalidScope,
+                "A plaintext export inspection requires the Session it is about.");
+        }
+
+        // The core door on purpose. Both tables are core tables that no Covenant capability owns, and
+        // the canonical door latches the one-way process residence that closes the offline host-tools
+        // transition; a gate-off installation that merely exported a Session has held no Covenant
+        // material and must not lose that transition for it.
+        SqliteConnection connection = await connections
+            .GetOpenCoreConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await ReadSessionSensitivityAsync(connection, sessionId, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<Result<CovenantSessionExportSensitivity>> ReadSessionSensitivityAsync(
+        SqliteConnection connection,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
         long labelled = await CountAsync(
             connection,
             "artifact_sensitivity",
@@ -111,18 +142,7 @@ internal sealed class CovenantExportPolicy(
 
         if (projected.IsFailure)
         {
-
             return projected.Error;
-
-        }
-
-        Result revalidated = await readLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
-
-        if (revalidated.IsFailure)
-        {
-
-            return revalidated.Error;
-
         }
 
         // The maximum of the two, in both fields. The label rows are the live evidence and the
@@ -136,7 +156,6 @@ internal sealed class CovenantExportPolicy(
                     ContentSensitivity.CovenantDerived,
                     projected.Value.MaximumSensitivity)
                 : projected.Value.MaximumSensitivity);
-
     }
 
     public async Task<Result<CovenantCampaignExportExclusions>> InventoryCampaignExclusionsAsync(
@@ -144,25 +163,20 @@ internal sealed class CovenantExportPolicy(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(readLease);
 
         if (campaignId == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "A Campaign export inventory requires the Campaign it is about.");
-
         }
 
         if (!CoversCampaign(readLease.Snapshot, campaignId))
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "A Campaign export inventory requires a lease over that exact Campaign or the installation.");
-
         }
 
         SqliteConnection connection = await connections
@@ -188,7 +202,6 @@ internal sealed class CovenantExportPolicy(
         return revalidated.IsFailure
             ? revalidated.Error
             : new CovenantCampaignExportExclusions(entries, tainted);
-
     }
 
     /// <summary>
@@ -227,14 +240,11 @@ internal sealed class CovenantExportPolicy(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(connection, "session_sensitivity_state", cancellationToken)
                 .ConfigureAwait(false))
         {
-
             return new ProjectedTaint(TaintedArtifactCount: 0, ContentSensitivity.None);
-
         }
 
         Result<Core.Storage.SessionSensitivityProjection> projection = await ArtifactSensitivityLedger
@@ -246,7 +256,6 @@ internal sealed class CovenantExportPolicy(
             : new ProjectedTaint(
                 projection.Value.TaintedArtifactCount,
                 projection.Value.MaximumSensitivity);
-
     }
 
     /// <summary>
@@ -280,14 +289,11 @@ internal sealed class CovenantExportPolicy(
         string ownerIdentity,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(connection, table, cancellationToken)
                 .ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -299,7 +305,5 @@ internal sealed class CovenantExportPolicy(
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
-
 }

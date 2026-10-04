@@ -15,13 +15,14 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public sealed record CovenantExportAdmission(ICovenantSnapshotReadLease? ReadLease)
 {
-
-    /// <summary>The arm is absent: the export runs exactly as it did before the Covenant tier existed.</summary>
+    /// <summary>
+    /// The arm is absent: the feature is off, so there is no lease to take and no response to protect.
+    /// A Session export still inspects the ledger without one, because the label rows outlive the flag.
+    /// </summary>
     public static CovenantExportAdmission Absent { get; } = new((ICovenantSnapshotReadLease?)null);
 
     /// <summary>Whether this export is a protected response that owes the private header tuple.</summary>
     public bool IsProtected => ReadLease is not null;
-
 }
 
 /// <summary>
@@ -41,7 +42,6 @@ public sealed record CovenantSessionExportSensitivity(
     long TaintedArtifactCount,
     ContentSensitivity MaximumSensitivity)
 {
-
     /// <summary>The answer for a Session that has produced no derived artifact at all.</summary>
     public static CovenantSessionExportSensitivity Clean(Guid sessionId) =>
         new(sessionId, TaintedArtifactCount: 0, ContentSensitivity.None);
@@ -49,7 +49,6 @@ public sealed record CovenantSessionExportSensitivity(
     /// <summary>Whether a plaintext export of this Session is refused before any content byte.</summary>
     public bool IsRefused =>
         TaintedArtifactCount > 0 || MaximumSensitivity is not ContentSensitivity.None;
-
 }
 
 /// <summary>
@@ -65,11 +64,9 @@ public sealed record CovenantCampaignExportExclusions(
     long CovenantEntryCount,
     long TaintedArtifactCount)
 {
-
     /// <summary>Nothing was excluded, and the inventory actually ran to prove it.</summary>
     public static CovenantCampaignExportExclusions None { get; } =
         new(CovenantEntryCount: 0, TaintedArtifactCount: 0);
-
 }
 
 /// <summary>
@@ -87,7 +84,6 @@ public sealed record CovenantCampaignExportExclusions(
 /// </remarks>
 public interface ICovenantExportPolicy
 {
-
     /// <summary>
     /// Acquires the conditional read lease this export runs under, or reports that this installation
     /// has no Covenant arm at all.
@@ -106,10 +102,24 @@ public interface ICovenantExportPolicy
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Reads whether this Session carries any Covenant-derived artifact when no read lease exists.
+    /// </summary>
+    /// <remarks>
+    /// The arm a plaintext Session export takes when <see cref="AcquireConditionalReadAsync"/> returned
+    /// <see cref="CovenantExportAdmission.Absent"/>. The label rows and the Session projection are
+    /// core tables that outlive the feature flag, so a Session that held Covenant content while the
+    /// feature was on is still refused after it is turned off: flipping one setting must not turn a
+    /// tainted transcript into a plaintext file nobody can recall. Two content-free reads and no
+    /// lease, and no read of any Covenant canonical table.
+    /// </remarks>
+    Task<Result<CovenantSessionExportSensitivity>> InspectSessionWithoutLeaseAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken);
+
     /// <summary>Counts what a Campaign export leaves behind, without reading any of it.</summary>
     Task<Result<CovenantCampaignExportExclusions>> InventoryCampaignExclusionsAsync(
         Guid campaignId,
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
-
 }
