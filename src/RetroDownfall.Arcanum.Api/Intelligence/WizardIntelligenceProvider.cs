@@ -1539,13 +1539,6 @@ public sealed partial class WizardIntelligenceProvider(
         && streamedLength == 0;
 
     /// <summary>
-    /// Frames a candidate can emit before it has committed anything. <c>Context</c> belongs here:
-    /// <c>ModelCallExecutor</c> yields the token-accounting frame before the provider socket is
-    /// dialled at all, so every streaming turn emits one ahead of a connectivity error. Leaving it
-    /// out closed the fallback window on that frame, the gate never reached the terminal
-    /// <c>error</c>, and streaming fallback never advanced to the next candidate.
-    /// </summary>
-    /// <summary>
     /// The one shape of an <c>error</c> frame for a typed failure: the message, with the failure's
     /// code in <c>Data</c>.
     /// </summary>
@@ -1559,6 +1552,13 @@ public sealed partial class WizardIntelligenceProvider(
     private static IntelligenceEvent ErrorFrame(Error error) =>
         new(IntelligenceEventType.Error, error.Message, error.Code);
 
+    /// <summary>
+    /// Frames a candidate can emit before it has committed anything. <c>Context</c> belongs here:
+    /// <c>ModelCallExecutor</c> yields the token-accounting frame before the provider socket is
+    /// dialled at all, so every streaming turn emits one ahead of a connectivity error. Leaving it
+    /// out closed the fallback window on that frame, the gate never reached the terminal
+    /// <c>error</c>, and streaming fallback never advanced to the next candidate.
+    /// </summary>
     private static bool IsPreCommitStreamingEvent(IntelligenceEvent evt) =>
         evt.Type is IntelligenceEventType.Status
             or IntelligenceEventType.SessionBound
