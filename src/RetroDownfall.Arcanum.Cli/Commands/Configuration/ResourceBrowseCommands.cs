@@ -228,11 +228,25 @@ public sealed class McpCommands(
 
         // Trust lets the file's commands run, so the operator sees what the file names before the host
         // binds trust to its bytes, and nothing reaches the host unless they approve it.
-        foreach (string line in await McpTrustPreview
-                     .DescribeAsync(workspace, cancellationToken)
-                     .ConfigureAwait(false))
+        McpTrustPreviewResult preview = await McpTrustPreview
+            .DescribeAsync(workspace, cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (string line in preview.Lines)
         {
             dispatcher.WriteDiagnostic(line);
+        }
+
+        // Approval has to be for text the operator was shown. A field the preview had to cut short could
+        // carry the part that matters past the cut, so it is never approved, not even with --yes.
+        if (preview.Truncated)
+        {
+            dispatcher.WriteDiagnostic(
+                "A field in this mcp.json is too long to show in full, so it cannot be reviewed. "
+                + "Nothing was trusted: shorten the field so the whole command is visible, then run "
+                + "'arcanum mcp trust' again.");
+
+            return (int)CliExitCode.ConfigurationError;
         }
 
         if (!await confirmationPrompt
