@@ -484,6 +484,204 @@ public sealed class ReleasePipelineTests
     }
 
     /// <summary>
+    /// A release dispatch must never replace the assets of a release that is already public, and two
+    /// dispatches must not interleave their uploads. <c>gh release upload --clobber</c> succeeds on
+    /// any existing release, so without a check an explicit version turns a notarized public
+    /// download into a mutable one.
+    /// </summary>
+    [Fact]
+    public void Release_refuses_to_clobber_a_published_release()
+    {
+        string root = RepositoryRoot();
+
+        string release = File
+            .ReadAllText(Path.Combine(root, ".github", "workflows", "release.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        int create = release.IndexOf("- name: Create or update the draft GitHub Release", StringComparison.Ordinal);
+
+        Assert.True(create > 0, "release.yml lost its draft-release assembly step.");
+
+        string beforeCreate = release[..create];
+
+        Assert.Contains("isDraft", beforeCreate, StringComparison.Ordinal);
+
+        int jobs = release.IndexOf("\njobs:\n", StringComparison.Ordinal);
+
+        Assert.True(jobs > 0, "release.yml declares no jobs.");
+
+        string topLevel = release[..jobs];
+
+        int concurrency = topLevel.IndexOf("\nconcurrency:\n", StringComparison.Ordinal);
+
+        Assert.True(
+            concurrency >= 0,
+            "release.yml needs a top-level concurrency group so two dispatches cannot interleave per-file uploads.");
+
+        string concurrencyBlock = topLevel[concurrency..];
+
+        Assert.Contains("cancel-in-progress: false", concurrencyBlock, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("cancel-in-progress: true", release, StringComparison.Ordinal);
+
+        // Never on a job: this workflow is also workflow_call, and a called job's group would
+        // serialize against the caller's.
+        Assert.Equal(
+            1,
+            release.Split('\n').Count(static line => line.TrimStart().StartsWith("concurrency:", StringComparison.Ordinal)));
+
+        string macOs = File
+            .ReadAllText(Path.Combine(root, ".github", "workflows", "release-macos-arm64.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        int macOsCreate = macOs.IndexOf("- name: Create or update draft GitHub Release", StringComparison.Ordinal);
+
+        Assert.True(macOsCreate > 0, "release-macos-arm64.yml lost its draft-release step.");
+
+        Assert.Contains("isDraft", macOs[..macOsCreate], StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A draft release holds a tag name and a target commit and writes neither into the repository
+    /// until it is published. Created without <c>--target</c> the draft points at the default
+    /// branch's head at that moment, so publishing it later tags whatever landed after the build
+    /// instead of the commit whose binaries the release carries.
+    /// </summary>
+    [Fact]
+    public void Every_gh_release_create_names_its_target_commit()
+    {
+        List<string> offenders = [];
+
+        int creates = 0;
+
+        foreach (string workflow in WorkflowFiles())
+        {
+            string folded = string.Join(
+                '\n',
+                ShellScriptLines(File.ReadAllLines(workflow)).Select(static line => line.Text))
+                .Replace("\\\n", " ", StringComparison.Ordinal);
+
+            foreach (string command in folded.Split('\n'))
+            {
+                if (!command.Contains("gh release create", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                creates++;
+
+                if (!command.Contains("--target \"$GITHUB_SHA\"", StringComparison.Ordinal))
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}: {command.Trim()}");
+                }
+            }
+        }
+
+        Assert.True(creates >= 2, "Expected both release workflows to create a draft release.");
+
+        Assert.True(
+            offenders.Count == 0,
+            "A gh release create does not pass --target \"$GITHUB_SHA\", so publishing the draft would "
+            + "tag the default branch's head instead of the built commit:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// The release workflow's CI report card used to say CI is "dispatch-only" while ci.yml runs on
+    /// every pull request. The operator reading "this is expected unless you ran it" would conclude a
+    /// merged commit had never been tested, when the truth is subtler: CI ran on the pull request's
+    /// head, and a squash or merge commit has no run of its own.
+    /// </summary>
+    [Fact]
+    public void Release_does_not_call_ci_dispatch_only_while_ci_runs_on_pull_requests()
+    {
+        string root = RepositoryRoot();
+
+        string ci = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"));
+
+        Assert.Matches(@"(?m)^  pull_request:\s*$", ci);
+
+        string release = File.ReadAllText(Path.Combine(root, ".github", "workflows", "release.yml"));
+
+        Assert.DoesNotContain("dispatch-only", release, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("pull requests", release, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>notarytool submit --wait</c> blocks for as long as Apple takes to answer. With no bound a
+    /// stalled submission holds the signing keychain and the macOS runner until the job ceiling, and
+    /// reads as a slow release rather than a failed one.
+    /// </summary>
+    [Fact]
+    public void Notarization_submit_bounds_its_wait()
+    {
+        string common = File.ReadAllText(
+            Path.Combine(RepositoryRoot(), "scripts", "packaging", "macos", "common.sh"));
+
+        int submit = common.IndexOf("xcrun notarytool submit", StringComparison.Ordinal);
+
+        Assert.True(submit >= 0, "common.sh no longer submits to notarytool.");
+
+        string call = common[submit..common.IndexOf('}', submit)];
+
+        Assert.Contains("--wait", call, StringComparison.Ordinal);
+
+        Assert.Contains("--timeout 30m", call, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A hung test host otherwise sits until the job-level ceiling. The hang detector kills it with a
+    /// named test, and <c>--blame-hang-dump-type none</c> keeps the kill from writing a multi-gigabyte
+    /// process dump on a hosted runner.
+    /// </summary>
+    [Fact]
+    public void Every_arcanum_suite_invocation_detects_a_hung_test()
+    {
+        string root = RepositoryRoot();
+
+        string coverage = File.ReadAllText(Path.Combine(root, "scripts", "coverage.sh"));
+
+        string[] invocations =
+        [
+            .. BlameHangCandidates(coverage, "dotnet test \"$TEST_PROJECT\""),
+            .. BlameHangCandidates(
+                File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("`\n", " ", StringComparison.Ordinal).Replace("\\\n", " ", StringComparison.Ordinal),
+                "dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj"),
+        ];
+
+        Assert.True(invocations.Length >= 4, $"Expected at least four Arcanum suite invocations (coverage.sh plus three CI lanes), found {invocations.Length}.");
+
+        foreach (string invocation in invocations)
+        {
+            Assert.Contains("--blame-hang-timeout 15m", invocation, StringComparison.Ordinal);
+
+            Assert.Contains("--blame-hang-dump-type none", invocation, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The text from each occurrence of <paramref name="command"/> to the end of its logical line.
+    /// Callers fold line continuations first when the document uses them.
+    /// </summary>
+    private static IEnumerable<string> BlameHangCandidates(string text, string command)
+    {
+        text = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\\\n", " ", StringComparison.Ordinal);
+
+        int index = 0;
+
+        while ((index = text.IndexOf(command, index, StringComparison.Ordinal)) >= 0)
+        {
+            int end = text.IndexOf('\n', index);
+
+            yield return text[index..(end < 0 ? text.Length : end)];
+
+            index += command.Length;
+        }
+    }
+
+    /// <summary>
     /// Bodies of every brace-delimited block that follows <paramref name="header"/>, brace-matched
     /// so a nested block does not terminate its parent.
     /// </summary>

@@ -115,7 +115,8 @@ function Resolve-DeclaringTypeName {
 # One branch tally per security type, aggregated over the declaring class *and* every
 # compiler-generated state machine nested inside it. Keyed by "file|line" so a line
 # reported by both the synchronous shell and its async state machine is counted once, at
-# its best observed condition coverage.
+# its worst observed condition coverage, so a covered shell can never mask an uncovered
+# state machine on the same line.
 $securityLines = @{}
 
 $securityClassRates = @{}
@@ -139,7 +140,7 @@ foreach ($class in $document.SelectNodes("//class")) {
         $securityClassRates[$shortName] = [System.Collections.Generic.List[double]]::new()
     }
 
-    $bestByLine = $securityLines[$shortName]
+    $worstByLine = $securityLines[$shortName]
 
     $securityClassRates[$shortName].Add(
         [double]::Parse(
@@ -163,8 +164,8 @@ foreach ($class in $document.SelectNodes("//class")) {
 
         $rate = if ($total -eq 0) { 1.0 } else { $covered / $total }
 
-        if (-not $bestByLine.ContainsKey($lineKey) -or $rate -gt $bestByLine[$lineKey].Rate) {
-            $bestByLine[$lineKey] = @{
+        if (-not $worstByLine.ContainsKey($lineKey) -or $rate -lt $worstByLine[$lineKey].Rate) {
+            $worstByLine[$lineKey] = @{
                 Covered = $covered
                 Total = $total
                 Rate = $rate
@@ -174,13 +175,13 @@ foreach ($class in $document.SelectNodes("//class")) {
 }
 
 foreach ($shortName in ($seenSecurityTypes | Sort-Object)) {
-    $bestByLine = $securityLines[$shortName]
+    $worstByLine = $securityLines[$shortName]
 
     $branchCovered = 0
 
     $branchCount = 0
 
-    foreach ($entry in $bestByLine.Values) {
+    foreach ($entry in $worstByLine.Values) {
         $branchCovered += $entry.Covered
 
         $branchCount += $entry.Total

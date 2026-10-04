@@ -45,6 +45,7 @@ jobs:
   manifest:
     name: Manifest provenance
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -56,7 +57,16 @@ jobs:
 
   macos:
     name: Native ${{ matrix.rid }}
+    # Pinned to macos-14 on purpose: it is the toolchain that produced the checked-in dylib, and the
+    # byte-identical rebuild below only holds on it. GitHub stopped publishing macos-14-arm64 images
+    # in June 2026, so this lane is queued on a label with no runner behind it. timeout-minutes
+    # bounds a job that is running, not one that is waiting for a runner, so nothing here can alert
+    # sooner than GitHub's own queue limit. Fixing it means rebuilding the dylib on macos-26 and
+    # re-recording its hash (and the compiler and linker identity beside it), which needs that
+    # runner; until then the checked-in macOS binary is verified only by running
+    # scripts/verify-native-sqlcipher.sh --rid osx-arm64 on a Mac by hand.
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +127,7 @@ jobs:
   windows:
     name: Native ${{ matrix.rid }}
     runs-on: windows-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -132,6 +143,19 @@ jobs:
 
       - name: Install NASM
         run: choco install nasm --no-progress -y
+
+      # The checked-in win-* asset is what ships, and nothing else compares its export table or its
+      # import table to the manifest: the build script's /DEF list is a construction-time guarantee
+      # about a rebuild, not an inspection of the committed bytes. dumpbin is on the path now that
+      # the MSVC toolchain is set up, so the script runs its dumpbin -exports and -dependents
+      # checks (a non-sqlite3_ export, a missing sqlite3_open, or an import the manifest does not
+      # declare, or declares and the binary lacks, fails the job). Provenance, hash, and compile
+      # options run first, exactly as on the macOS lane.
+      - name: Verify the checked-in asset
+        shell: bash
+        env:
+          RID: ${{ matrix.rid }}
+        run: ./scripts/verify-native-sqlcipher.sh --rid "$RID"
 
       - name: Build the hermetic library
         shell: pwsh

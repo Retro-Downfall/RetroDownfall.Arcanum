@@ -99,8 +99,4 @@
     <Compile Remove="Tools\ProcessRunnerResourceLimitTests.cs" />
 
   </ItemGroup>
-  <ItemGroup>
-    <PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />
-  </ItemGroup>
-
 </Project>

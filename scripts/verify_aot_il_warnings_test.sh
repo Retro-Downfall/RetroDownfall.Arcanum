@@ -360,7 +360,7 @@ else
 fi
 
 # The command substitution deliberately owns its complete failing-tool environment.
-# shellcheck disable=SC2031
+# shellcheck disable=SC2030,SC2031
 OUTPUT="$(
   export PATH="$FAILING_RM_BIN:$STUB_BIN:$PATH"
   export STUB_PUBLISH_AOT=true
@@ -395,6 +395,67 @@ if [[ "$OUTPUT" == *"exit=0"* && "$OUTPUT" == *"AOT IL gate passed"* ]]; then
   pass "both publish legs use isolated artifact roots"
 else
   fail "the AOT audit must isolate both publish legs from incremental outputs: $OUTPUT"
+fi
+
+# An explicitly named RID that the host cannot prove used to exit 0 on a skip, so a runner-image
+# regression (a host the script does not recognize, here a stubbed `uname` answering SunOS) turned a
+# release or CI audit into a green no-op. A named RID now fails on a skip unless --allow-skip says
+# the operator wants the local convenience.
+install_stub_uname() {
+  local bin="$WORK/uname-bin"
+
+  mkdir -p "$bin"
+
+  cat >"$bin/uname" <<'STUB'
+#!/usr/bin/env bash
+echo SunOS
+STUB
+
+  chmod +x "$bin/uname"
+
+  printf '%s' "$bin"
+}
+
+STUB_UNAME_BIN="$(install_stub_uname)"
+
+# The gate runs as its own process: main() ends in `exit`, and the stubs must be what it resolves.
+run_gate_main() {
+  local status
+
+  # The earlier substitutions modified PATH only inside their own subshells; this one reads the real one.
+  # shellcheck disable=SC2031
+  env PATH="$STUB_UNAME_BIN:$STUB_BIN:$PATH" bash "$GATE" "$@" 2>&1
+  status=$?
+
+  echo "exit=$status"
+}
+
+OUTPUT="$(run_gate_main win-x64)"
+
+if [[ "$OUTPUT" == *"exit=0"* ]]; then
+  fail "an explicitly named RID that skips must exit non-zero: $OUTPUT"
+elif [[ "$OUTPUT" != *"SKIP"* ]]; then
+  fail "the skip must still be reported, got: $OUTPUT"
+else
+  pass "an explicitly named RID that skips fails by default"
+fi
+
+OUTPUT="$(run_gate_main win-x64 --allow-skip)"
+
+if [[ "$OUTPUT" == *"exit=0"* ]]; then
+  pass "--allow-skip keeps the local-convenience exit 0 for a skipped RID"
+else
+  fail "--allow-skip must let a skipped RID exit 0: $OUTPUT"
+fi
+
+# The matrix keeps its documented behavior: cross-OS legs are skipped with a note, and --strict is
+# what turns a skip into a failure there.
+OUTPUT="$(run_gate_main all)"
+
+if [[ "$OUTPUT" == *"exit=0"* ]]; then
+  pass "the all matrix still tolerates skipped legs without --strict"
+else
+  fail "the all matrix must tolerate skipped legs unless --strict is passed: $OUTPUT"
 fi
 
 echo

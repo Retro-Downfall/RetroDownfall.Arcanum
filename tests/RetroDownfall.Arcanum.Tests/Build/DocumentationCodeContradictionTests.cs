@@ -244,6 +244,116 @@ public sealed class DocumentationCodeContradictionTests
         }
     }
 
+    [Fact]
+    public void The_design_does_not_claim_a_runtime_native_proof_that_no_host_code_calls()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        const string claimedCall = "SqliteNativeRuntimeValidator.ValidateAsync";
+
+        // The behavioral and hash proof is documented as a pre-open guarantee only while some host
+        // code calls it. The validator and its result type do not count as a call site.
+        string sourceRoot = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src");
+
+        bool hasProductionCallSite = Directory
+            .EnumerateFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(path => !Path.GetFileName(path).StartsWith("SqliteNativeRuntimeValidat", StringComparison.Ordinal))
+            .Any(path => File.ReadAllText(path).Contains("SqliteNativeRuntimeValidator", StringComparison.Ordinal));
+
+        if (!hasProductionCallSite)
+        {
+            Assert.DoesNotContain(claimedCall, design, StringComparison.Ordinal);
+
+            string section = DocumentSection(design, "**Runtime proof.**", "**Compatibility.**");
+
+            Assert.Contains("build, CI, and test-time", section, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("before the Grimoire opens", section, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void The_native_sqlcipher_targets_do_not_describe_the_embedded_manifest_as_a_runtime_input()
+    {
+        string targets = File
+            .ReadAllText(
+                Path.Combine(
+                    TestRepositoryPaths.RepositoryRoot(),
+                    "src",
+                    "RetroDownfall.Arcanum.NativeSqlCipher",
+                    "buildTransitive",
+                    "RetroDownfall.Arcanum.NativeSqlCipher.targets"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.DoesNotContain("The runtime validator compares", targets, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("rather than being read from a", targets, StringComparison.Ordinal);
+
+        Assert.Contains("test-time", targets, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_design_places_cli_diagnostics_outside_the_coverage_denominator_and_names_the_real_ci_runner()
+    {
+        string root = TestRepositoryPaths.RepositoryRoot();
+
+        string runsettings = File.ReadAllText(
+            Path.Combine(root, "tests", "RetroDownfall.Arcanum.Tests", "coverage.runsettings"));
+
+        // The claim below is false for as long as the Include filter omits Cli.
+        Assert.DoesNotContain("[RetroDownfall.Arcanum.Cli]", runsettings, StringComparison.Ordinal);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string placement = DocumentSection(design, "**Placement.**", "The twelve original checks");
+
+        Assert.DoesNotContain("All of those are inside the coverage denominator", placement, StringComparison.Ordinal);
+
+        Assert.Contains("outside", placement, StringComparison.Ordinal);
+
+        string workflow = File
+            .ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        string job = workflow[workflow.IndexOf("\n  build-test:", StringComparison.Ordinal)..];
+
+        Match runner = Regex.Match(job, @"\n    runs-on: (?<label>\S+)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
+
+        Assert.True(runner.Success, "ci.yml's build-test job names no runner.");
+
+        string header = Assert.Single(
+            design.Split('\n'),
+            static line => line.StartsWith("| Post-exclusion metric", StringComparison.Ordinal));
+
+        Assert.Contains($"`{runner.Groups["label"].Value}`", header, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("macOS 14", header, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_engineering_house_style_states_the_same_blank_line_rule_as_agents_md()
+    {
+        string agents = File
+            .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "AGENTS.md"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        const string rule = "never immediately after an opening or before a closing parenthesis, bracket, or brace";
+
+        Assert.Contains(rule, agents, StringComparison.Ordinal);
+
+        string engineering = ReadDocument("Arcanum.Engineering.md");
+
+        string section = DocumentSection(engineering, "### 7. C# house style", "> **Note on org-wide rules:**");
+
+        // The older wording ("one blank line after each line ... curly braces do not require blank
+        // lines around them") told contributors the opposite of what the formatter and AGENTS.md rule
+        // 4 enforce around delimiters.
+        Assert.Contains(rule, section, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Curly braces do not require blank lines around them", section, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))

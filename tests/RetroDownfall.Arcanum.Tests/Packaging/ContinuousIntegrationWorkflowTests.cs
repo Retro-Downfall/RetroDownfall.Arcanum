@@ -1,6 +1,12 @@
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
+
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 using Xunit;
 
@@ -32,7 +38,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
             Assert.False(lane.IsConditional);
 
-            Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+            Assert.Contains(PinnedSdkInput, lane.Body, StringComparison.Ordinal);
 
             Assert.Contains("--configuration Release", lane.Body, StringComparison.Ordinal);
 
@@ -171,6 +177,10 @@ public sealed class ContinuousIntegrationWorkflowTests
             "Platform.WindowsJobObjectSessionTests",
             "Process.WindowsAppContainerPolicyTests",
             "Process.WindowsAppContainerRestoreJournalTests",
+            "Process.WindowsAppContainerBrokerTests",
+            "Process.WindowsAppContainerAclTests",
+            "Process.WindowsBrokerTargetResolverTests",
+            "Process.ChildProcessSandboxRootsTests",
             "Process.ChildProcessBoundaryBehaviorTests",
             "Process.ChildProcessFilesystemJailTests",
             "Familiars.FamiliarExecutableResolverTests",
@@ -206,6 +216,197 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.Contains("ARCANUM_TEST_OS_CREDENTIAL_STORE: true", lane.Body, StringComparison.Ordinal);
 
         Assert.Contains("FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions", lane.Body, StringComparison.Ordinal);
+
+        // WindowsAppContainerBrokerTests re-executes a published apphost (the xunit host cannot be the
+        // broker) and skips when ARCANUM_PUBLISHED_EXECUTABLE is unset, so a lane that selects the class
+        // without publishing one reports a green skip. The variable is exported before the suite starts.
+        string rid = jobId == "windows-arm64-suite" ? "win-arm64" : "win-x64";
+
+        int publish = lane.Body.IndexOf("dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj", StringComparison.Ordinal);
+
+        int export = lane.Body.IndexOf("ARCANUM_PUBLISHED_EXECUTABLE=", StringComparison.Ordinal);
+
+        int suite = lane.Body.IndexOf("dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj", StringComparison.Ordinal);
+
+        Assert.True(publish >= 0, $"{jobId} selects the AppContainer broker smoke without publishing the apphost it re-executes.");
+
+        Assert.Contains($"-r {rid}", lane.Body[publish..], StringComparison.Ordinal);
+
+        Assert.True(export > publish, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE after publishing the apphost.");
+
+        Assert.True(suite > export, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE before the Arcanum suite starts.");
+    }
+
+    private const string ArcanumTestNamespacePrefix = "RetroDownfall.Arcanum.Tests.";
+
+    private const string CompendiumTestNamespacePrefix = "RetroDownfall.Compendium.Ux.Tests.";
+
+    private static readonly Regex TestFilterEntry = new(
+        @"FullyQualifiedName(?<operator>[=~])(?<name>[A-Za-z0-9_.]+)",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// A <c>dotnet test --filter</c> alternative that matches nothing is not an error, so renaming a
+    /// method the Windows lane names by exact <c>FullyQualifiedName=</c> leaves the lane green while
+    /// it silently runs one test fewer. The workflow-text test above compares the workflow to a copy
+    /// of itself and cannot see that; this one resolves every exact entry in <c>ci.yml</c> against
+    /// the real test code. A Windows ACL, reparse-point, or hard-link security test can otherwise
+    /// drop out of the only Windows evidence with no signal.
+    /// </summary>
+    [Fact]
+    public void Every_exact_windows_filter_names_an_existing_test_method()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        string[] exactNames = FilterEntries(repositoryRoot, "=")
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.NotEmpty(exactNames);
+
+        IReadOnlyList<TestMethodIdentity> arcanum = ArcanumTestMethods();
+
+        IReadOnlyList<TestMethodIdentity> compendium = CompendiumTestMethods(repositoryRoot);
+
+        List<string> offenders = [];
+
+        foreach (string name in exactNames)
+        {
+            IReadOnlyList<TestMethodIdentity> candidates = name.StartsWith(ArcanumTestNamespacePrefix, StringComparison.Ordinal)
+                ? arcanum
+                : name.StartsWith(CompendiumTestNamespacePrefix, StringComparison.Ordinal)
+                    ? compendium
+                    : [];
+
+            int matches = candidates.Count(candidate => string.Equals(candidate.FullName, name, StringComparison.Ordinal));
+
+            if (matches != 1)
+            {
+                offenders.Add($"{name} resolves to {matches} test method(s)");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "ci.yml selects a test by exact name that no longer resolves to exactly one [Fact], "
+            + "[SkippableFact], or [Theory], so the lane silently runs without it. Update the "
+            + "workflow and the test together:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// The class-level counterpart: a <c>FullyQualifiedName~</c> entry whose class or method was
+    /// renamed matches nothing, and the Windows lane (or the macOS workspace-check lane) then runs
+    /// without the whole class.
+    /// </summary>
+    [Fact]
+    public void Every_contains_filter_in_ci_matches_at_least_one_test_method()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        string[] containsNames = FilterEntries(repositoryRoot, "~")
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.NotEmpty(containsNames);
+
+        IReadOnlyList<TestMethodIdentity> arcanum = ArcanumTestMethods();
+
+        List<string> offenders = [];
+
+        foreach (string name in containsNames)
+        {
+            if (!arcanum.Any(candidate => candidate.FullName.Contains(name, StringComparison.Ordinal)))
+            {
+                offenders.Add(name);
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "ci.yml selects tests by a name fragment that matches no test method, so the lane "
+            + "silently runs without them:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    private sealed record TestMethodIdentity(string FullName);
+
+    private static IEnumerable<string> FilterEntries(string repositoryRoot, string filterOperator)
+    {
+        foreach (Match match in TestFilterEntry.Matches(WorkflowText(repositoryRoot)))
+        {
+            if (match.Groups["operator"].Value == filterOperator)
+            {
+                yield return match.Groups["name"].Value;
+            }
+        }
+    }
+
+    private static IReadOnlyList<TestMethodIdentity> ArcanumTestMethods() =>
+        typeof(ContinuousIntegrationWorkflowTests).Assembly
+            .GetTypes()
+            .Where(static type => type.FullName is not null)
+            .SelectMany(static type => type
+                .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Where(static method => method.IsDefined(typeof(FactAttribute), inherit: true))
+                .Select(method => new TestMethodIdentity($"{type.FullName}.{method.Name}")))
+            .ToArray();
+
+    /// <summary>
+    /// The Compendium suite is a separate assembly this project does not reference, so its test
+    /// methods are read from source: every method carrying a fact or theory attribute inside a
+    /// namespace-qualified class under the Compendium test project.
+    /// </summary>
+    private static IReadOnlyList<TestMethodIdentity> CompendiumTestMethods(string repositoryRoot)
+    {
+        string directory = Path.Combine(repositoryRoot, "tests", "RetroDownfall.Compendium.Tests");
+
+        Assert.True(Directory.Exists(directory), $"Missing Compendium test project: {directory}");
+
+        string[] attributeNames = ["Fact", "SkippableFact", "Theory", "SkippableTheory"];
+
+        List<TestMethodIdentity> methods = [];
+
+        foreach (string file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot();
+
+            foreach (ClassDeclarationSyntax type in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
+            {
+                string? declaredNamespace = type.Ancestors()
+                    .OfType<BaseNamespaceDeclarationSyntax>()
+                    .FirstOrDefault()
+                    ?.Name.ToString();
+
+                if (declaredNamespace is null)
+                {
+                    continue;
+                }
+
+                foreach (MethodDeclarationSyntax method in type.Members.OfType<MethodDeclarationSyntax>())
+                {
+                    bool isTest = method.AttributeLists
+                        .SelectMany(static list => list.Attributes)
+                        .Any(attribute => attributeNames.Contains(attribute.Name.ToString().Replace("Attribute", string.Empty, StringComparison.Ordinal)));
+
+                    if (isTest)
+                    {
+                        methods.Add(new TestMethodIdentity($"{declaredNamespace}.{type.Identifier.Text}.{method.Identifier.Text}"));
+                    }
+                }
+            }
+        }
+
+        return methods;
     }
 
     [Fact]
@@ -224,7 +425,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("--filter \"Category!=Perf&(" + expected + ")\"", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+        Assert.Contains(PinnedSdkInput, lane.Body, StringComparison.Ordinal);
 
         Assert.Contains("Assert the SDK is native to win-arm64", lane.Body, StringComparison.Ordinal);
     }
@@ -245,7 +446,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         const string project = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/"
             + "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj";
 
-        int sdk = lane.Body.IndexOf("dotnet-version: \"10.0.401\"", StringComparison.Ordinal);
+        int sdk = lane.Body.IndexOf(PinnedSdkInput, StringComparison.Ordinal);
 
         int build = lane.Body.IndexOf("dotnet build " + project, StringComparison.Ordinal);
 
@@ -345,6 +546,58 @@ public sealed class ContinuousIntegrationWorkflowTests
             "A workflow job builds .NET on a runtime identifier whose hermetic SQLCipher asset is "
             + "not checked in and verified, so it fails with ARCSQLC002 before any test runs. Gate "
             + "the job on the manifest status so it returns automatically once the asset lands:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    private static readonly Regex GatedOnRuntimeIdentifier = new(
+        @"outputs\.(?<rid>(?:linux|osx|win)-[a-z0-9]+)",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// A job gated on a runtime identifier the manifest does not ship can never run: the gate is
+    /// read from the manifest, so the job skips on every dispatch and reads as a dormant feature
+    /// instead of a deleted one. The private beta workflow kept a Linux packaging job in exactly that
+    /// state, beside a second and weaker Windows release path.
+    /// </summary>
+    [Fact]
+    public void No_workflow_job_is_gated_on_a_rid_absent_from_the_manifest()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlyList<string> shipped = ShippingRuntimeIdentifiers(repositoryRoot);
+
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles(repositoryRoot))
+        {
+            foreach (WorkflowJob job in JobsIn(workflow))
+            {
+                foreach (string line in job.Body.Split('\n'))
+                {
+                    if (WorkflowIndentOf(line) != 4 || !line.Trim().StartsWith("if:", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    foreach (Match match in GatedOnRuntimeIdentifier.Matches(line))
+                    {
+                        string rid = match.Groups["rid"].Value;
+
+                        if (!shipped.Contains(rid, StringComparer.Ordinal))
+                        {
+                            offenders.Add($"{Path.GetFileName(workflow)}: {job.Id} is gated on {rid}");
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A workflow job is gated on a runtime identifier native-source-manifest.json does not "
+            + "ship, so it can never run. Delete it, or add the RID and its verified asset:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
     }
@@ -526,7 +779,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
                 matching.Add(identity);
 
-                if (!job.Body.Contains("dotnet-version: \"10.0.401\"", StringComparison.Ordinal)
+                if (!job.Body.Contains(PinnedSdkInput, StringComparison.Ordinal)
                     || job.Body.Contains("ld64.lld", StringComparison.Ordinal)
                     || job.Body.Contains("brew install lld", StringComparison.Ordinal))
                 {
@@ -536,9 +789,18 @@ public sealed class ContinuousIntegrationWorkflowTests
         }
 
         Assert.Contains("release-macos-arm64.yml: release-macos-arm64", matching);
+
+        // The pin every one of these lanes reads must itself be the serviced SDK that carries the Apple
+        // linker path, not merely some version.
+        using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(Path.Combine(FindRepositoryRoot(), "global.json")));
+
+        Assert.True(
+            Version.Parse(globalJson.RootElement.GetProperty("sdk").GetProperty("version").GetString()!) >= new Version(10, 0, 401),
+            "global.json pins an SDK older than the serviced 10.0.401 that the macOS Native AOT lanes require.");
+
         Assert.True(
             offenders.Count == 0,
-            "A macOS Native AOT lane does not pin .NET SDK 10.0.401 with its compatible Apple "
+            "A macOS Native AOT lane does not read the pinned .NET SDK from global.json with its compatible Apple "
             + "linker, or still forces LLVM lld:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
@@ -688,6 +950,169 @@ public sealed class ContinuousIntegrationWorkflowTests
             "The Windows release must clear its AOT diagnostic profile before creating archives.");
         Assert.Contains("RID: ${{ inputs.rid }}", package.Body, StringComparison.Ordinal);
         Assert.Contains("rg --version", package.Body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The longest a job may be allowed to run. A hung test, a notarization that never answers, or a
+    /// stuck runner otherwise holds the job for the platform default (six hours), which is a long
+    /// time to hold a signing keychain or a scarce macOS runner. The ceiling sits above the slowest
+    /// legitimate job (the macOS release: a Native AOT diagnostic audit, a Native AOT publish and
+    /// three notarizations).
+    /// </summary>
+    private const int MaximumJobTimeoutMinutes = 150;
+
+    [Fact]
+    public void Every_job_declares_a_job_level_timeout()
+    {
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles(FindRepositoryRoot()))
+        {
+            foreach (WorkflowJob job in JobsIn(workflow))
+            {
+                string[] lines = job.Body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+                // A job that calls a reusable workflow cannot carry timeout-minutes; the called
+                // workflow's own jobs do.
+                if (lines.Any(static line => WorkflowIndentOf(line) == 4 && line.Trim().StartsWith("uses:", StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                string? declared = lines
+                    .Where(static line => WorkflowIndentOf(line) == 4 && line.Trim().StartsWith("timeout-minutes:", StringComparison.Ordinal))
+                    .Select(static line => line.Trim()["timeout-minutes:".Length..].Trim())
+                    .FirstOrDefault();
+
+                if (declared is null
+                    || !int.TryParse(declared, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int minutes)
+                    || minutes is < 1 or > MaximumJobTimeoutMinutes)
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}: {job.Id} (timeout-minutes: {declared ?? "absent"})");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"A workflow job declares no job-level timeout-minutes between 1 and {MaximumJobTimeoutMinutes}, "
+            + "so a hang holds it for the platform default of six hours:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    private const string PinnedSdkInput = "global-json-file: global.json";
+
+    /// <summary>
+    /// One SDK for every workflow. The gating lanes pinned 10.0.401 by hand while the Windows shipping
+    /// builds floated on <c>10.0.x</c>, so a release could be built by an SDK no gate had ever run.
+    /// The repository's <c>global.json</c> is the single statement, and every <c>setup-dotnet</c>
+    /// step reads it, so raising the pin (in lockstep with the macOS portable-pack SHA table in
+    /// <c>Directory.Build.targets</c>) is one edit.
+    /// </summary>
+    [Fact]
+    public void Every_workflow_pins_the_same_dotnet_sdk_version()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        string globalJsonPath = Path.Combine(repositoryRoot, "global.json");
+
+        Assert.True(File.Exists(globalJsonPath), "The repository has no global.json, so no single SDK version is pinned.");
+
+        using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(globalJsonPath));
+
+        JsonElement sdk = globalJson.RootElement.GetProperty("sdk");
+
+        string version = sdk.GetProperty("version").GetString()!;
+
+        Assert.Matches(@"^10\.0\.\d{3}$", version);
+
+        Assert.Contains(sdk.GetProperty("rollForward").GetString(), new[] { "disable", "latestPatch" });
+
+        List<string> offenders = [];
+
+        int setups = 0;
+
+        foreach (string workflow in WorkflowFiles(repositoryRoot))
+        {
+            string[] lines = File.ReadAllLines(workflow);
+
+            for (int index = 0; index < lines.Length; index++)
+            {
+                if (!lines[index].TrimStart().StartsWith("uses: actions/setup-dotnet@", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                setups++;
+
+                int indent = WorkflowIndentOf(lines[index]);
+
+                StringBuilder step = new();
+
+                for (int next = index + 1; next < lines.Length; next++)
+                {
+                    if (lines[next].Trim().Length > 0 && WorkflowIndentOf(lines[next]) < indent)
+                    {
+                        break;
+                    }
+
+                    step.AppendLine(lines[next]);
+                }
+
+                string body = step.ToString();
+
+                if (!body.Contains(PinnedSdkInput, StringComparison.Ordinal)
+                    || body.Contains("dotnet-version:", StringComparison.Ordinal))
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}:{index + 1}");
+                }
+            }
+        }
+
+        Assert.True(setups > 0, "No workflow sets .NET up, so there is nothing to pin.");
+
+        Assert.True(
+            offenders.Count == 0,
+            $"A setup-dotnet step does not read the SDK from `{PinnedSdkInput}` (or still names a "
+            + "literal dotnet-version), so that workflow can build with an SDK no gate ran:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// Every workflow that publishes a shipping archive audits the detailed Native AOT diagnostics for
+    /// the exact RID first. The shipping publish deliberately suppresses dependency summary
+    /// diagnostics after that audit has classified them, so a release that skipped the audit would
+    /// accept a first-party IL warning that CI's host-RID lane never saw for this RID. Windows already
+    /// audited; the macOS release did not.
+    /// </summary>
+    [Theory]
+
+    [InlineData("build-windows.yml", "./scripts/verify-aot-il-warnings.sh \"$RID\"", "package-windows.ps1")]
+
+    [InlineData("release-macos-arm64.yml", "./scripts/verify-aot-il-warnings.sh osx-arm64", "build-arcanum.sh")]
+
+    public void Every_release_workflow_audits_aot_diagnostics_before_it_packages(
+        string workflowFile,
+        string auditInvocation,
+        string packagingInvocation)
+    {
+        string path = Path.Combine(FindRepositoryRoot(), ".github", "workflows", workflowFile);
+
+        WorkflowJob job = Assert.Single(
+            JobsIn(path),
+            candidate => candidate.Body.Contains(packagingInvocation, StringComparison.Ordinal));
+
+        int audit = job.Body.IndexOf(auditInvocation, StringComparison.Ordinal);
+
+        int packaging = job.Body.IndexOf(packagingInvocation, StringComparison.Ordinal);
+
+        Assert.True(audit >= 0, $"{workflowFile} never runs `{auditInvocation}`, so a first-party AOT warning unique to the released RID ships unaudited.");
+
+        Assert.True(audit < packaging, $"{workflowFile} audits Native AOT diagnostics only after packaging has already published.");
+
+        Assert.Contains("ripgrep", job.Body[..audit], StringComparison.Ordinal);
     }
 
     /// <summary>
