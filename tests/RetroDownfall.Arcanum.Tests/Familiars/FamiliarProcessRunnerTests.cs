@@ -14,31 +14,26 @@ namespace RetroDownfall.Arcanum.Tests.Familiars;
 [Collection("ChildProcess")]
 public sealed class FamiliarProcessRunnerTests
 {
-
     private readonly FamiliarProcessRunner _runner = new();
 
     [Fact]
     public async Task Lines_are_streamed_in_order()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(["one", "two", "three"]);
 
         List<string> lines = await CollectAsync(stub);
 
         Assert.Equal(["one", "two", "three"], lines);
-
     }
 
     [Fact]
     public async Task Blank_lines_are_skipped_so_a_trailing_newline_is_not_a_frame()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(["one", "", "  ", "two"]);
 
         List<string> lines = await CollectAsync(stub);
 
         Assert.Equal(["one", "two"], lines);
-
     }
 
     /// <summary>
@@ -50,7 +45,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task A_frame_that_outgrows_the_ceiling_is_dropped_rather_than_delivered_truncated()
     {
-
         string oversize = new('x', FamiliarProcessLimits.MaxLineCharacters + 64);
 
         using StubFamiliarCli stub = StubFamiliarCli.Create(["one", oversize, "two"]);
@@ -61,7 +55,6 @@ public sealed class FamiliarProcessRunnerTests
         Assert.Equal([3, 3], [.. lines.Select(static line => line.Length)]);
 
         Assert.Equal(["one", "two"], lines);
-
     }
 
     /// <summary>
@@ -72,7 +65,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task An_unterminated_run_stops_accumulating_at_the_ceiling()
     {
-
         FamiliarStdoutLineReader reader = new(new StringReader(new string('x', 64 * 1024)), 16);
 
         FamiliarStdoutLine? frame = await reader.ReadLineAsync(CancellationToken.None);
@@ -82,7 +74,6 @@ public sealed class FamiliarProcessRunnerTests
         Assert.True(frame.Value.Exceeded);
 
         Assert.Equal(16, frame.Value.Text.Length);
-
     }
 
     /// <summary>
@@ -93,7 +84,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task The_reader_resumes_at_the_next_frame_after_an_over_long_one()
     {
-
         FamiliarStdoutLineReader reader = new(
             new StringReader($"{new string('x', 8192)}\r\nafter\r\n"),
             16);
@@ -109,7 +99,6 @@ public sealed class FamiliarProcessRunnerTests
         Assert.False(next.Value.Exceeded);
 
         Assert.Null(await reader.ReadLineAsync(CancellationToken.None));
-
     }
 
     /// <summary>
@@ -119,13 +108,11 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task The_prompt_is_written_to_standard_input_and_the_stream_is_closed()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
 
         _ = await CollectAsync(stub, standardInput: "the prompt\nsecond line");
 
         Assert.Equal("the prompt\nsecond line", stub.ReadRecordedStandardInput().TrimEnd('\r', '\n'));
-
     }
 
     /// <summary>
@@ -138,7 +125,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task A_large_prompt_does_not_wedge_against_a_familiar_that_writes_before_it_reads()
     {
-
         string frame = new('x', 1_024);
 
         using StubFamiliarCli stub = StubFamiliarCli.CreateEmittingBeforeReadingStandardInput(
@@ -159,7 +145,6 @@ public sealed class FamiliarProcessRunnerTests
         Assert.Equal(512, lines.Count);
 
         Assert.Equal(prompt, stub.ReadRecordedStandardInput().TrimEnd('\r', '\n'));
-
     }
 
     /// <summary>
@@ -170,7 +155,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task Arguments_are_passed_as_a_list_so_a_hostile_value_stays_one_argument()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
 
         string[] arguments =
@@ -182,13 +166,11 @@ public sealed class FamiliarProcessRunnerTests
         _ = await CollectAsync(stub, arguments: arguments);
 
         Assert.Equal(arguments, stub.ReadRecordedArgv());
-
     }
 
     [Fact]
     public async Task Arcanum_environment_variables_never_reach_the_child()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
 
         using EnvironmentVariableScope scope = new();
@@ -204,13 +186,11 @@ public sealed class FamiliarProcessRunnerTests
         Assert.DoesNotContain(childEnvironment, static line => line.StartsWith("ARCANUM_", StringComparison.Ordinal));
 
         Assert.DoesNotContain(childEnvironment, static line => line.Contains("super-secret", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public async Task Loader_hijack_variables_never_reach_the_child()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
 
         using EnvironmentVariableScope scope = new();
@@ -226,7 +206,6 @@ public sealed class FamiliarProcessRunnerTests
         Assert.DoesNotContain(childEnvironment, static line => line.StartsWith("NODE_OPTIONS=", StringComparison.Ordinal));
 
         Assert.DoesNotContain(childEnvironment, static line => line.StartsWith("LD_PRELOAD=", StringComparison.Ordinal));
-
     }
 
     /// <summary>
@@ -236,7 +215,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task Configured_provider_credential_variables_are_stripped_by_name()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
 
         using EnvironmentVariableScope scope = new();
@@ -248,7 +226,6 @@ public sealed class FamiliarProcessRunnerTests
         string[] childEnvironment = [.. stub.ReadRecordedEnvironment()];
 
         Assert.DoesNotContain(childEnvironment, static line => line.StartsWith("MY_OPENAI_KEY=", StringComparison.Ordinal));
-
     }
 
     /// <summary>
@@ -258,7 +235,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task Path_survives_the_scrub_so_the_operators_own_install_still_resolves()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
 
         _ = await CollectAsync(stub);
@@ -266,7 +242,6 @@ public sealed class FamiliarProcessRunnerTests
         string[] childEnvironment = [.. stub.ReadRecordedEnvironment()];
 
         Assert.Contains(childEnvironment, static line => line.StartsWith("PATH=", StringComparison.OrdinalIgnoreCase));
-
     }
 
     /// <summary>
@@ -281,7 +256,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public void Child_streams_are_decoded_as_utf8_never_as_the_hosts_console_code_page()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create([]);
 
         ProcessStartInfo startInfo = FamiliarProcessRunner.BuildStartInfo(
@@ -298,34 +272,27 @@ public sealed class FamiliarProcessRunnerTests
             streamEncodings,
             static encoding =>
             {
-
                 Assert.Equal(Encoding.UTF8.CodePage, encoding?.CodePage);
 
                 // A byte-order mark on stdin is a stray three bytes in front of the prompt.
                 Assert.Empty(encoding!.GetPreamble());
-
             });
-
     }
 
     [Fact]
     public async Task A_missing_binary_fails_closed_as_not_installed()
     {
-
         FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
             async () =>
             {
-
                 await foreach (string _ in _runner.RunLinesAsync(
                     new FamiliarProcessRequest { FileName = StubFamiliarCli.MissingExecutablePath() },
                     CancellationToken.None))
                 {
                 }
-
             });
 
         Assert.Equal(FamiliarProcessFailure.NotInstalled, failure.Failure);
-
     }
 
     /// <summary>
@@ -335,7 +302,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task A_non_zero_exit_faults_the_stream_after_the_frames_it_did_emit()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(
             ["partial"],
             stderr: "the familiar refused",
@@ -346,12 +312,10 @@ public sealed class FamiliarProcessRunnerTests
         FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
             async () =>
             {
-
                 await foreach (string line in RunAsync(stub))
                 {
                     received.Add(line);
                 }
-
             });
 
         Assert.Equal(["partial"], received);
@@ -361,13 +325,52 @@ public sealed class FamiliarProcessRunnerTests
         Assert.Equal(3, failure.ExitCode);
 
         Assert.Contains("the familiar refused", failure.StandardError, StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// The exception message is forwarded to the caller, so it carries only a bounded single-line head
+    /// of what the CLI said. The whole tail (up to the runner's stderr ceiling) stays on
+    /// <see cref="FamiliarProcessException.StandardError"/> for the logs.
+    /// </summary>
+    [Fact]
+    public async Task NonZeroExit_message_bounds_the_stderr_excerpt()
+    {
+        string stderr = "the familiar refused\nsecond line\r\n"
+            + new string('x', 20_000)
+            + "\nTAIL-MARKER";
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(
+            ["partial"],
+            stderr: stderr,
+            exitCode: 3);
+
+        FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
+            async () => await CollectAsync(stub));
+
+        Assert.Equal(FamiliarProcessFailure.NonZeroExit, failure.Failure);
+
+        Assert.Contains("exited with code 3", failure.Message, StringComparison.Ordinal);
+
+        Assert.Contains("the familiar refused second line", failure.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain('\n', failure.Message);
+
+        Assert.DoesNotContain('\r', failure.Message);
+
+        Assert.DoesNotContain("TAIL-MARKER", failure.Message, StringComparison.Ordinal);
+
+        // The file name, the fixed wording, and a head of at most 512 characters; nowhere near the
+        // 64 KiB tail.
+        Assert.True(
+            failure.Message.Length <= stub.FileName.Length + 600,
+            $"The message was {failure.Message.Length} characters.");
+
+        Assert.Contains("TAIL-MARKER", failure.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task A_wedged_familiar_is_torn_down_by_its_deadline()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(
             ["one", "two", "three", "four", "five"],
             perLineDelayMilliseconds: 2000);
@@ -375,21 +378,17 @@ public sealed class FamiliarProcessRunnerTests
         FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
             async () =>
             {
-
                 await foreach (string _ in RunAsync(stub, timeout: TimeSpan.FromMilliseconds(750)))
                 {
                 }
-
             });
 
         Assert.Equal(FamiliarProcessFailure.TimedOut, failure.Failure);
-
     }
 
     [Fact]
     public async Task Caller_cancellation_stops_the_stream_without_a_transport_failure()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(
             ["one", "two", "three", "four", "five"],
             perLineDelayMilliseconds: 1000);
@@ -399,14 +398,11 @@ public sealed class FamiliarProcessRunnerTests
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             async () =>
             {
-
                 await foreach (string _ in RunAsync(stub, cancellationToken: cts.Token))
                 {
                     await cts.CancelAsync();
                 }
-
             });
-
     }
 
     /// <summary>
@@ -422,7 +418,6 @@ public sealed class FamiliarProcessRunnerTests
     [SkippableFact]
     public async Task A_deadline_that_lands_after_the_stream_ended_is_still_a_timeout()
     {
-
         SkipWhereTheHostNeedsNoSimulating();
 
         using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
@@ -435,18 +430,15 @@ public sealed class FamiliarProcessRunnerTests
         FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
             async () =>
             {
-
                 await foreach (string line in RunAsync(stub, timeout: TimeSpan.FromMilliseconds(750)))
                 {
                     received.Add(line);
                 }
-
             });
 
         Assert.Equal(["one"], received);
 
         Assert.Equal(FamiliarProcessFailure.TimedOut, failure.Failure);
-
     }
 
     /// <summary>
@@ -458,7 +450,6 @@ public sealed class FamiliarProcessRunnerTests
     [SkippableFact]
     public async Task Caller_cancellation_that_lands_after_the_stream_ended_is_never_a_timeout()
     {
-
         SkipWhereTheHostNeedsNoSimulating();
 
         using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
@@ -473,19 +464,15 @@ public sealed class FamiliarProcessRunnerTests
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             async () =>
             {
-
                 await foreach (string _ in RunAsync(stub, cancellationToken: cts.Token))
                 {
                 }
-
             });
-
     }
 
     [Fact]
     public async Task Run_to_completion_reports_exit_code_and_both_streams_without_throwing()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(
             ["{\"loggedIn\":false}"],
             stderr: "not signed in",
@@ -506,7 +493,6 @@ public sealed class FamiliarProcessRunnerTests
         Assert.Contains("loggedIn", output.StandardOutput, StringComparison.Ordinal);
 
         Assert.Contains("not signed in", output.StandardError, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -521,7 +507,6 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task Run_to_completion_surfaces_caller_cancellation_rather_than_a_timeout()
     {
-
         using StubFamiliarCli stub = StubFamiliarCli.Create(
             ["one", "two", "three", "four", "five"],
             perLineDelayMilliseconds: 1000);
@@ -534,7 +519,6 @@ public sealed class FamiliarProcessRunnerTests
             () => _runner.RunToCompletionAsync(
                 new FamiliarProcessRequest
                 {
-
                     FileName = stub.FileName,
 
                     Arguments = stub.Arguments,
@@ -542,10 +526,8 @@ public sealed class FamiliarProcessRunnerTests
                     StandardInput = new string('p', 512 * 1024),
 
                     Timeout = TimeSpan.FromMinutes(2),
-
                 },
                 cts.Token));
-
     }
 
     /// <summary>
@@ -558,7 +540,6 @@ public sealed class FamiliarProcessRunnerTests
     [SkippableFact]
     public async Task Run_to_completion_reports_a_deadline_that_lands_after_the_read_ended_as_a_timeout()
     {
-
         SkipWhereTheHostNeedsNoSimulating();
 
         using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
@@ -569,18 +550,15 @@ public sealed class FamiliarProcessRunnerTests
         FamiliarProcessOutput output = await _runner.RunToCompletionAsync(
             new FamiliarProcessRequest
             {
-
                 FileName = stub.FileName,
 
                 Arguments = stub.Arguments,
 
                 Timeout = TimeSpan.FromMilliseconds(750),
-
             },
             CancellationToken.None);
 
         Assert.Equal(FamiliarProcessFailure.TimedOut, output.Failure);
-
     }
 
     /// <summary>
@@ -592,7 +570,6 @@ public sealed class FamiliarProcessRunnerTests
     [SkippableFact]
     public async Task Run_to_completion_surfaces_a_caller_cancellation_that_lands_after_the_read_ended()
     {
-
         SkipWhereTheHostNeedsNoSimulating();
 
         using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
@@ -608,16 +585,13 @@ public sealed class FamiliarProcessRunnerTests
             () => _runner.RunToCompletionAsync(
                 new FamiliarProcessRequest
                 {
-
                     FileName = stub.FileName,
 
                     Arguments = stub.Arguments,
 
                     Timeout = TimeSpan.FromMinutes(2),
-
                 },
                 cts.Token));
-
     }
 
     /// <summary>
@@ -632,31 +606,26 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task A_command_PATH_cannot_resolve_never_falls_through_to_the_current_directory()
     {
-
         using CurrentDirectoryExecutable planted = CurrentDirectoryExecutable.Plant();
 
         FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
             async () =>
             {
-
                 await foreach (string _ in _runner.RunLinesAsync(
                     new FamiliarProcessRequest { FileName = planted.Name },
                     CancellationToken.None))
                 {
                 }
-
             });
 
         Assert.Equal(FamiliarProcessFailure.NotInstalled, failure.Failure);
 
         Assert.False(planted.WasExecuted);
-
     }
 
     [Fact]
     public async Task Run_to_completion_also_refuses_a_command_PATH_cannot_resolve()
     {
-
         using CurrentDirectoryExecutable planted = CurrentDirectoryExecutable.Plant();
 
         FamiliarProcessOutput output = await _runner.RunToCompletionAsync(
@@ -666,7 +635,6 @@ public sealed class FamiliarProcessRunnerTests
         Assert.Equal(FamiliarProcessFailure.NotInstalled, output.Failure);
 
         Assert.False(planted.WasExecuted);
-
     }
 
     /// <summary>
@@ -676,13 +644,11 @@ public sealed class FamiliarProcessRunnerTests
     [Fact]
     public async Task Run_to_completion_classifies_a_missing_binary_as_not_installed()
     {
-
         FamiliarProcessOutput output = await _runner.RunToCompletionAsync(
             new FamiliarProcessRequest { FileName = StubFamiliarCli.MissingExecutablePath() },
             CancellationToken.None);
 
         Assert.Equal(FamiliarProcessFailure.NotInstalled, output.Failure);
-
     }
 
     /// <summary>
@@ -705,7 +671,6 @@ public sealed class FamiliarProcessRunnerTests
         string? standardInput = null,
         IReadOnlyList<string>? deniedEnvironmentVariables = null)
     {
-
         List<string> lines = [];
 
         await foreach (string line in RunAsync(
@@ -718,7 +683,6 @@ public sealed class FamiliarProcessRunnerTests
         }
 
         return lines;
-
     }
 
     private IAsyncEnumerable<string> RunAsync(
@@ -729,11 +693,9 @@ public sealed class FamiliarProcessRunnerTests
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
-
         return _runner.RunLinesAsync(
             new FamiliarProcessRequest
             {
-
                 FileName = stub.FileName,
 
                 Arguments = [.. stub.Arguments, .. arguments ?? []],
@@ -743,10 +705,8 @@ public sealed class FamiliarProcessRunnerTests
                 DeniedEnvironmentVariables = deniedEnvironmentVariables ?? [],
 
                 Timeout = timeout ?? TimeSpan.FromMinutes(2),
-
             },
             cancellationToken);
-
     }
 
     /// <summary>
@@ -756,20 +716,17 @@ public sealed class FamiliarProcessRunnerTests
     /// </summary>
     private sealed class CurrentDirectoryExecutable : IDisposable
     {
-
         private readonly string _path;
 
         private readonly string _markerPath;
 
         private CurrentDirectoryExecutable(string name, string path, string markerPath)
         {
-
             Name = name;
 
             _path = path;
 
             _markerPath = markerPath;
-
         }
 
         /// <summary>The bare command name — deliberately absent from PATH.</summary>
@@ -779,7 +736,6 @@ public sealed class FamiliarProcessRunnerTests
 
         public static CurrentDirectoryExecutable Plant()
         {
-
             string name = "arcanum-familiar-cwd-" + Guid.NewGuid().ToString("N");
 
             string path = Path.Combine(Directory.GetCurrentDirectory(), name);
@@ -790,71 +746,52 @@ public sealed class FamiliarProcessRunnerTests
 
             if (!OperatingSystem.IsWindows())
             {
-
                 File.SetUnixFileMode(
                     path,
                     UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
             }
 
             return new CurrentDirectoryExecutable(name, path, markerPath);
-
         }
 
         public void Dispose()
         {
-
             Delete(_path);
 
             Delete(_markerPath);
-
         }
 
         private static void Delete(string path)
         {
-
             try
             {
-
                 File.Delete(path);
-
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-
                 // A leftover temp file is not worth failing a test over.
-
             }
-
         }
-
     }
 
     /// <summary>Sets process environment variables and restores them, so tests stay independent.</summary>
     private sealed class EnvironmentVariableScope : IDisposable
     {
-
         private readonly List<(string Name, string? Original)> _saved = [];
 
         public void Set(string name, string? value)
         {
-
             _saved.Add((name, System.Environment.GetEnvironmentVariable(name)));
 
             System.Environment.SetEnvironmentVariable(name, value);
-
         }
 
         public void Dispose()
         {
-
             foreach ((string name, string? original) in _saved)
             {
                 System.Environment.SetEnvironmentVariable(name, original);
             }
-
         }
-
     }
-
 }

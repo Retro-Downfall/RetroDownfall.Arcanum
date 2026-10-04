@@ -371,6 +371,10 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantLaunchGapFactoryResetRecoveryHandler>());
         services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
             sp.GetRequiredService<CovenantLaunchGapFactoryResetRecoveryHandler>());
+        // Exact settlement only, on purpose: stopped-host bootstrap settles the one operation its
+        // authenticated journal names (SettleExactlyAsync, which needs neither port below). Without the
+        // discovery and classified-lease ports a generic pass from this container throws instead of
+        // scanning an installation the CLI does not own. The host registers the full reconciler below.
         services.AddScoped(static sp => new LongRunningOperationReconciler(
             sp.GetRequiredService<ILongRunningOperationStore>(),
             sp.GetServices<ILongRunningOperationRecoveryHandler>(),
@@ -416,11 +420,11 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<DataProtectionSecretStore>();
 
-        services.AddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
+        services.TryAddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
 
-        services.AddSingleton<IProviderCredentialStore, ProviderCredentialStore>();
+        services.TryAddSingleton<IProviderCredentialStore, ProviderCredentialStore>();
 
-        services.AddSingleton<IProviderApiKeyResolver, ProviderApiKeyResolver>();
+        services.TryAddSingleton<IProviderApiKeyResolver, ProviderApiKeyResolver>();
 
         services.AddSingleton<ISecretStore>(static sp => new OsKeychainSecretStore(
             sp.GetRequiredService<IOsCredentialStore>(),
@@ -896,7 +900,7 @@ public static class ServiceCollectionExtensions
         services.Configure<ArcanumSettings>(settings =>
             ConfigurationBootstrapper.CopySettings(settingsSnapshot, settings));
 
-        services.AddSingleton<ConfigurationWriter>();
+        services.TryAddSingleton<ConfigurationWriter>();
 
         services.AddSingleton<IDataRetentionPolicyStore, DataRetentionPolicyStore>();
 
@@ -908,7 +912,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IWorkspaceCheckAdvertisementEligibility>(
             static sp => sp.GetRequiredService<WorkspaceCheckCapabilityReporter>());
 
-        services.AddSingleton<ConfigurationValidator>();
+        services.TryAddSingleton<ConfigurationValidator>();
 
         services.AddArcanumEyeOfTheWorld();
 
@@ -1090,11 +1094,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SpellWeaveCache>();
         services.AddSingleton<LongRunningOperationReconciliationStatus>();
 
-        services.AddSingleton<InstallationResetMaintenanceLockAccessor>();
+        services.TryAddSingleton<InstallationResetMaintenanceLockAccessor>();
 
         services.AddSingleton<InstallationResetApiAdmission>();
 
-        services.AddSingleton<IInstallationResetMaintenanceLockAccessor>(
+        services.TryAddSingleton<IInstallationResetMaintenanceLockAccessor>(
             static sp => sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>());
 
         services.TryAddScoped(

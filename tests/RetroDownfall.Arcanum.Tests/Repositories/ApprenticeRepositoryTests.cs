@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
@@ -7,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
@@ -435,6 +437,89 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
         Assert.Equal(
             first.Items.Select(static a => a.Id),
             second.Items.Select(static a => a.Id));
+    }
+
+    /// <summary>
+    /// A list page must be cut in SQL, not after loading every matching row. The Plan and
+    /// CheckpointData blobs of rows that are never returned are the expensive part, and an Apprentice
+    /// table has no retention rule that would keep it small.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_reads_only_the_requested_page_from_storage()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        DateTimeOffset newest = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+
+        List<Guid> newestFirst = [];
+
+        for (int index = 0; index < 12; index++)
+        {
+            Apprentice created = await repository.AddAsync(
+                new Apprentice
+                {
+                    Id = Guid.NewGuid(),
+                    Name = $"Page {index}",
+                    Goal = "Read only the page",
+                    Plan = new string('p', 20_000),
+                    CheckpointData = new string('c', 20_000),
+                    Status = ApprenticeStatus.Idle.ToString(),
+                    WorkspacePath = "/tmp/workspace",
+                    CreatedAt = newest.AddMinutes(-index),
+                    UpdatedAt = newest.AddMinutes(-index),
+                },
+                CancellationToken.None);
+
+            newestFirst.Add(created.Id);
+        }
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        List<string> statements = [];
+
+        raw.sqlite3_trace(connection.Handle, (object _, string sql) => statements.Add(sql), null);
+
+        ListPageResult<Apprentice> page;
+
+        try
+        {
+            page = await repository.ListAsync(
+                campaignId: null,
+                status: null,
+                limit: 3,
+                beforeUpdatedAt: null,
+                CancellationToken.None);
+        }
+        finally
+        {
+            raw.sqlite3_trace(connection.Handle, (strdelegate_trace)null!, null);
+        }
+
+        Assert.Equal(newestFirst.Take(3), page.Items.Select(static item => item.Id));
+
+        Assert.True(page.HasMore);
+
+        string[] selects =
+        [
+            .. statements.Where(static sql =>
+                sql.Contains("FROM \"Apprentices\"", StringComparison.Ordinal)),
+        ];
+
+        Assert.NotEmpty(selects);
+
+        Assert.All(selects, static sql => Assert.Matches(@"\bLIMIT\b", sql));
+
+        // The cursor still works: the next page starts exactly where this one stopped.
+        ListPageResult<Apprentice> next = await repository.ListAsync(
+            campaignId: null,
+            status: null,
+            limit: 3,
+            beforeUpdatedAt: page.NextBeforeUpdatedAt,
+            CancellationToken.None);
+
+        Assert.Equal(newestFirst.Skip(3).Take(3), next.Items.Select(static item => item.Id));
     }
 
     private static Campaign Campaign(

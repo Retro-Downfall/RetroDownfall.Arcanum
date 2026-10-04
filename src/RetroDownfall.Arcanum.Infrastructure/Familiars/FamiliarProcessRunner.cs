@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Familiars;
 /// </remarks>
 public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger = null) : IFamiliarProcessRunner
 {
-
     /// <summary>
     /// Both CLIs speak UTF-8 on every platform, so the transport pins it rather than inheriting the
     /// host's console code page — which on Windows is CP437 on a default console and CP_ACP with no
@@ -35,7 +34,6 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         FamiliarProcessRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         using Process process = CreateProcess(request);
@@ -71,23 +69,17 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         try
         {
-
             while (true)
             {
-
                 FamiliarStdoutLine? frame;
 
                 try
                 {
-
                     frame = await reader.ReadLineAsync(deadline.Token).ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-
                     throw TimedOut(request, standardError);
-
                 }
 
                 if (frame is not { } line)
@@ -97,7 +89,6 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
                 if (line.Exceeded)
                 {
-
                     // Dropped whole rather than passed on cut at a character offset: the fragment is
                     // not valid JSON, so projection would discard it silently. Said out loud instead,
                     // and a turn whose terminal frame went this way still fails closed on the
@@ -108,7 +99,6 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                         FamiliarProcessLimits.MaxLineCharacters);
 
                     continue;
-
                 }
 
                 if (string.IsNullOrWhiteSpace(line.Text))
@@ -117,7 +107,6 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 }
 
                 yield return line.Text;
-
             }
 
             // Awaited before the exit code is read so a prompt the deadline cut short is reported as
@@ -126,15 +115,11 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
             try
             {
-
                 await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-
                 throw TimedOut(request, standardError);
-
             }
 
             await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
@@ -160,50 +145,39 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
             if (process.ExitCode != 0)
             {
-
                 // Reported after the frames, not instead of them: a CLI that streams a partial answer
                 // and then fails must never read as a clean short completion.
                 throw NonZeroExit(request, process.ExitCode, standardError);
-
             }
-
         }
         finally
         {
-
             // A consumer that stops enumerating early — a client disconnect, a projection that has
             // what it needs — leaves a CLI with nowhere to write. Reaping here means no Familiar can
             // outlive the turn that asked for it, whether the stream ended, faulted, or was dropped.
             KillQuietly(process);
 
             await AwaitStandardInputWriteAsync(standardInputWrite).ConfigureAwait(false);
-
         }
-
     }
 
     public async Task<FamiliarProcessOutput> RunToCompletionAsync(
         FamiliarProcessRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Process created;
 
         try
         {
-
             // A command PATH cannot resolve fails here rather than at the spawn, so the probe still
             // gets a classification instead of an exception it would have to catch.
             created = CreateProcess(request);
-
         }
         catch (FamiliarProcessException ex)
         {
-
             return new FamiliarProcessOutput(ex.Failure, ExitCode: 0, string.Empty, ex.Message);
-
         }
 
         using Process process = created;
@@ -212,15 +186,11 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         try
         {
-
             Start(process, request);
-
         }
         catch (FamiliarProcessException ex)
         {
-
             return new FamiliarProcessOutput(ex.Failure, ExitCode: 0, string.Empty, ex.Message);
-
         }
 
         await using CancellationTokenRegistration teardown = deadline.Token.Register(
@@ -239,12 +209,10 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         try
         {
-
             char[] buffer = new char[4096];
 
             while (true)
             {
-
                 int read = await process.StandardOutput
                     .ReadAsync(buffer.AsMemory(), deadline.Token)
                     .ConfigureAwait(false);
@@ -255,7 +223,6 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 }
 
                 Append(standardOutput, buffer.AsSpan(0, read), FamiliarProcessLimits.MaxBufferedStandardOutputCharacters);
-
             }
 
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
@@ -278,17 +245,13 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 process.ExitCode,
                 standardOutput.ToString(),
                 ReadTail(standardError));
-
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-
             return TimedOutOutput(standardOutput, standardError);
-
         }
         finally
         {
-
             // In the finally rather than on each exit, exactly as the streaming path does it. The two
             // returns above are not the only ways out: a caller that cancels its own token fails the
             // `when` filter, so the read loop's OperationCanceledException propagates instead — and the
@@ -296,9 +259,7 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             // would be left to surface later as an unobserved faulted task rather than as this turn's
             // outcome. Cheap on the ordinary path, where the write has long since completed.
             await AwaitStandardInputWriteAsync(standardInputWrite).ConfigureAwait(false);
-
         }
-
     }
 
     private static Process CreateProcess(FamiliarProcessRequest request) =>
@@ -313,7 +274,6 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
     /// </summary>
     internal static ProcessStartInfo BuildStartInfo(FamiliarProcessRequest request)
     {
-
         // ArgumentList only. A single command string would let any value Arcanum interpolates —
         // a model name, a path — be re-parsed as further arguments by the OS or a shell.
         // Spawn the file resolution found, and nothing else. Falling back to the bare name would
@@ -330,7 +290,6 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         ProcessStartInfo startInfo = new()
         {
-
             FileName = fileName!,
 
             UseShellExecute = false,
@@ -348,17 +307,14 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             StandardErrorEncoding = Utf8NoBom,
 
             CreateNoWindow = true,
-
         };
 
         foreach (string argument in request.Arguments ?? [])
         {
-
             if (argument is not null)
             {
                 startInfo.ArgumentList.Add(argument);
             }
-
         }
 
         if (!string.IsNullOrWhiteSpace(request.WorkingDirectory))
@@ -373,23 +329,19 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         // it does not manage how that Familiar authenticates.
         foreach (string name in request.DeniedEnvironmentVariables ?? [])
         {
-
             if (!string.IsNullOrWhiteSpace(name))
             {
                 _ = startInfo.Environment.Remove(name);
             }
-
         }
 
         return startInfo;
-
     }
 
     private static CancellationTokenSource CreateDeadline(
         FamiliarProcessRequest request,
         CancellationToken cancellationToken)
     {
-
         CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         TimeSpan timeout = request.Timeout > TimeSpan.Zero
@@ -399,21 +351,16 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         deadline.CancelAfter(timeout);
 
         return deadline;
-
     }
 
     private void Start(Process process, FamiliarProcessRequest request)
     {
-
         try
         {
-
             _ = process.Start();
-
         }
         catch (Win32Exception ex)
         {
-
             // The distinction matters to the operator: "install it" and "your OS refused" have
             // different fixes, and neither is "check your Arcanum configuration".
             throw ex.NativeErrorCode is 2 or 3
@@ -421,11 +368,9 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 : new FamiliarProcessException(
                     FamiliarProcessFailure.StartFailed,
                     $"'{request.FileName}' could not be started ({ex.NativeErrorCode}). Check that it is executable.");
-
         }
         catch (Exception ex) when (ex is InvalidOperationException or PlatformNotSupportedException)
         {
-
             logger?.LogError(
                 "Familiar '{FileName}' failed to start ({ExceptionType}).",
                 request.FileName,
@@ -434,20 +379,16 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             throw new FamiliarProcessException(
                 FamiliarProcessFailure.StartFailed,
                 $"'{request.FileName}' could not be started on this host.");
-
         }
-
     }
 
     private static FamiliarProcessException NotInstalled(FamiliarProcessRequest request, Exception? cause = null)
     {
-
         _ = cause;
 
         return new FamiliarProcessException(
             FamiliarProcessFailure.NotInstalled,
             $"'{request.FileName}' was not found. Arcanum never installs a Familiar — install the CLI yourself, or set the provider's `command` to its full path.");
-
     }
 
     private static FamiliarProcessException TimedOut(
@@ -476,11 +417,14 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         int exitCode,
         StringBuilder standardError)
     {
-
         string tail = ReadTail(standardError);
 
-        string detail = tail.Length > 0
-            ? $" {tail.Trim()}"
+        // The message travels to the caller, so it carries only a bounded single-line head. The whole
+        // tail stays on StandardError, which is for the log.
+        string excerpt = BoundedExcerpt(tail, FamiliarProcessLimits.MaxExceptionMessageExcerptCharacters);
+
+        string detail = excerpt.Length > 0
+            ? $" {excerpt}"
             : string.Empty;
 
         return new FamiliarProcessException(
@@ -488,7 +432,45 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             $"'{request.FileName}' exited with code {exitCode}.{detail}",
             exitCode,
             tail);
+    }
 
+    /// <summary>
+    /// Collapses every whitespace or control run in the head of <paramref name="text"/> to one space and
+    /// stops at <paramref name="limit"/> characters, appending an ellipsis when something was cut.
+    /// </summary>
+    private static string BoundedExcerpt(string text, int limit)
+    {
+        StringBuilder excerpt = new(Math.Min(text.Length, limit));
+
+        bool pendingSpace = false;
+
+        foreach (char c in text)
+        {
+            if (char.IsWhiteSpace(c) || char.IsControl(c))
+            {
+                pendingSpace = excerpt.Length > 0;
+
+                continue;
+            }
+
+            if (excerpt.Length + (pendingSpace ? 1 : 0) >= limit)
+            {
+                _ = excerpt.Append("...");
+
+                return excerpt.ToString();
+            }
+
+            if (pendingSpace)
+            {
+                _ = excerpt.Append(' ');
+
+                pendingSpace = false;
+            }
+
+            _ = excerpt.Append(c);
+        }
+
+        return excerpt.ToString();
     }
 
     private static async Task WriteStandardInputAsync(
@@ -496,31 +478,23 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         string? standardInput,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             if (!string.IsNullOrEmpty(standardInput))
             {
-
                 await process.StandardInput
                     .WriteAsync(standardInput.AsMemory(), cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             // Closed either way: a Familiar reading its prompt from stdin waits forever otherwise.
             process.StandardInput.Close();
-
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {
-
             // A CLI that rejected the invocation before reading its prompt closes the pipe first.
             // Its exit code and stderr are the real diagnostic; a broken pipe here is noise.
-
         }
-
     }
 
     /// <summary>
@@ -536,21 +510,15 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         CancellationToken deadlineToken,
         CancellationToken callerToken)
     {
-
         try
         {
-
             await WriteStandardInputAsync(process, request.StandardInput, deadlineToken)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
         {
-
             throw TimedOut(request, standardError);
-
         }
-
     }
 
     private static async Task DrainStandardErrorAsync(
@@ -558,15 +526,12 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         StringBuilder sink,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             char[] buffer = new char[1024];
 
             while (true)
             {
-
                 int read = await process.StandardError
                     .ReadAsync(buffer.AsMemory(), cancellationToken)
                     .ConfigureAwait(false);
@@ -580,32 +545,23 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 {
                     Append(sink, buffer.AsSpan(0, read), FamiliarProcessLimits.MaxStandardErrorCharacters);
                 }
-
             }
-
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
         {
-
             // stderr is a diagnostic, never the outcome — losing its tail must not fail the turn.
-
         }
-
     }
 
     private static async Task AwaitErrorPumpAsync(Task errorPump)
     {
-
         try
         {
-
             await errorPump.ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
         {
         }
-
     }
 
     /// <summary>
@@ -616,17 +572,13 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
     /// </summary>
     private static async Task AwaitStandardInputWriteAsync(Task standardInputWrite)
     {
-
         try
         {
-
             await standardInputWrite.ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is FamiliarProcessException or OperationCanceledException or IOException or ObjectDisposedException)
         {
         }
-
     }
 
     /// <summary>
@@ -635,17 +587,14 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
     /// </summary>
     private static string ReadTail(StringBuilder sink)
     {
-
         lock (sink)
         {
             return sink.ToString();
         }
-
     }
 
     private static void Append(StringBuilder sink, ReadOnlySpan<char> chunk, int limit)
     {
-
         int remaining = limit - sink.Length;
 
         if (remaining <= 0)
@@ -654,30 +603,22 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         }
 
         _ = sink.Append(chunk.Length <= remaining ? chunk : chunk[..remaining]);
-
     }
 
     private static void KillQuietly(Process process)
     {
-
         try
         {
-
             if (!process.HasExited)
             {
                 ProcessTreeKiller.TryKillEntireTree(process, context: "familiar");
             }
-
         }
         catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException)
         {
-
             // Already gone, or the OS will not say. Either way there is nothing left to reap.
-
         }
-
     }
-
 }
 
 /// <summary>One NDJSON frame from a Familiar, and whether it outgrew the frame ceiling.</summary>
@@ -697,7 +638,6 @@ internal readonly record struct FamiliarStdoutLine(string Text, bool Exceeded);
 /// </remarks>
 internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCharacters)
 {
-
     private readonly char[] _buffer = new char[4096];
 
     private int _length;
@@ -707,30 +647,24 @@ internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCha
     /// <summary>The next frame, or null once the stream has ended.</summary>
     public async ValueTask<FamiliarStdoutLine?> ReadLineAsync(CancellationToken cancellationToken)
     {
-
         StringBuilder line = new();
 
         bool exceeded = false;
 
         while (true)
         {
-
             if (_index >= _length)
             {
-
                 _length = await reader.ReadAsync(_buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
 
                 _index = 0;
 
                 if (_length <= 0)
                 {
-
                     return line.Length == 0 && !exceeded
                         ? null
                         : new FamiliarStdoutLine(Render(line), exceeded);
-
                 }
-
             }
 
             int start = _index;
@@ -743,11 +677,9 @@ internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCha
 
             if (segment > room)
             {
-
                 // Past the ceiling the remainder is read and thrown away rather than kept, so the
                 // rest of this frame costs the pipe buffer and nothing more.
                 exceeded = true;
-
             }
 
             _ = line.Append(_buffer, start, Math.Min(segment, room));
@@ -756,15 +688,11 @@ internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCha
 
             if (newline >= 0)
             {
-
                 _index++;
 
                 return new FamiliarStdoutLine(Render(line), exceeded);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -776,5 +704,4 @@ internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCha
         line.Length > 0 && line[^1] == '\r'
             ? line.ToString(0, line.Length - 1)
             : line.ToString();
-
 }

@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
@@ -190,6 +191,80 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
         Assert.False(secondPage.HasMore);
 
         Assert.Equal([campaignSummon.Id], campaignPage.Items.Select(static prompt => prompt.Id));
+    }
+
+    /// <summary>
+    /// A prompt list page must be cut in SQL with the same (Name, UpdatedAt) order the client used to
+    /// apply, so rows outside the page are never loaded.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_reads_only_the_requested_page_from_storage()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Dictionary<string, Prompt> byName = [];
+
+        foreach (string name in new[] { "echo", "alpha", "delta", "bravo", "charlie", "foxtrot" })
+        {
+            byName[name] = await repository.AddAsync(
+                CreatePrompt(null, name, "1", now.AddMinutes(-byName.Count)),
+                CancellationToken.None);
+        }
+
+        // Two versions of one name sort newest first within the name.
+        Prompt alphaNewer = await repository.AddAsync(
+            CreatePrompt(null, "alpha", "2", now),
+            CancellationToken.None);
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        List<string> statements = [];
+
+        raw.sqlite3_trace(connection.Handle, (object _, string sql) => statements.Add(sql), null);
+
+        ListPageResult<Prompt> page;
+
+        try
+        {
+            page = await repository.ListAsync(
+                campaignId: null,
+                limit: 3,
+                offset: 2,
+                CancellationToken.None);
+        }
+        finally
+        {
+            raw.sqlite3_trace(connection.Handle, (strdelegate_trace)null!, null);
+        }
+
+        // alpha v2, alpha v1, bravo, charlie, delta, echo, foxtrot; offset 2 and three rows.
+        Assert.Equal(
+            [byName["bravo"].Id, byName["charlie"].Id, byName["delta"].Id],
+            page.Items.Select(static prompt => prompt.Id));
+
+        Assert.True(page.HasMore);
+
+        Assert.Equal(5, page.NextOffset);
+
+        Assert.Equal(alphaNewer.Id, (await repository.ListAsync(
+            campaignId: null,
+            limit: 1,
+            offset: 0,
+            CancellationToken.None)).Items.Single().Id);
+
+        string[] selects =
+        [
+            .. statements.Where(static sql =>
+                sql.Contains("FROM \"Prompts\"", StringComparison.Ordinal)),
+        ];
+
+        Assert.NotEmpty(selects);
+
+        Assert.All(selects, static sql => Assert.Matches(@"\bLIMIT\b", sql));
     }
 
     [SkippableFact]

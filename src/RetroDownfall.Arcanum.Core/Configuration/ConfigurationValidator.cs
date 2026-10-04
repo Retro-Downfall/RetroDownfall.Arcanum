@@ -1090,6 +1090,15 @@ public sealed class ConfigurationValidator(
             EnvironmentCredentialResolver.GetCommLinkWebhookUrlEnvironmentVariableName(commLink),
             "integrations.commLink.webhookUrlEnvironmentVariable",
             environmentReferences);
+        if (!commLink.AllowedSchemes.Any(static scheme => !string.IsNullOrWhiteSpace(scheme)))
+        {
+            // An empty allowlist makes every webhook dispatch refuse itself with only a log line, so it is
+            // a configuration error rather than a silent "alerts never leave".
+            errors.Add(new ConfigurationValidationError(
+                "integrations.commLink.allowedSchemes",
+                "CommLink allowedSchemes must name at least one URI scheme (the default is [\"https\"])."));
+        }
+
         ValidateOptionalEnvironmentVariableName(
             webResearch.CredentialEnvironmentVariable,
             "integrations.webResearch.credentialEnvironmentVariable",

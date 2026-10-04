@@ -15,9 +15,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Familiars;
 /// </remarks>
 public interface IFamiliarProbe
 {
-
     Task<FamiliarProbeResult> ProbeAsync(ProviderSettings provider, CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -37,14 +35,12 @@ public interface IFamiliarProbe
 /// </remarks>
 public sealed class FamiliarProbe(
     IFamiliarProcessRunner runner,
-    IOptionsMonitor<ArcanumSettings>? settings = null) : IFamiliarProbe
+    IOptionsMonitor<ArcanumSettings> settings) : IFamiliarProbe
 {
-
     public async Task<FamiliarProbeResult> ProbeAsync(
         ProviderSettings provider,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(provider);
 
         string command = FamiliarProviders.ResolveCommand(provider);
@@ -56,7 +52,6 @@ public sealed class FamiliarProbe(
         // start — reporting "ready" for something that can never run.
         if (!FamiliarExecutableResolver.TryResolve(command, out string? resolvedPath))
         {
-
             return Build(
                 provider,
                 FamiliarProbeStatus.NotInstalled,
@@ -66,7 +61,6 @@ public sealed class FamiliarProbe(
                 remediationCommand: null,
                 enumeration,
                 models);
-
         }
 
         string executable = resolvedPath ?? command;
@@ -79,13 +73,10 @@ public sealed class FamiliarProbe(
 
         try
         {
-
             root = FamiliarWorkingDirectory.Create();
-
         }
         catch (IOException)
         {
-
             // The inference path is right to throw here, but the probe is the surface an operator
             // calls to find out what is wrong — so it reports the unusable host instead of taking
             // down the caller. Nothing is spawned either way: running the CLI from a directory other
@@ -99,15 +90,12 @@ public sealed class FamiliarProbe(
                 remediationCommand: null,
                 enumeration,
                 models);
-
         }
 
         using (root)
         {
-
             return provider.Type switch
             {
-
                 AiProviderKind.ClaudeCodeCli =>
                     await ProbeClaudeAsync(provider, executable, root.Path, enumeration, models, cancellationToken)
                         .ConfigureAwait(false),
@@ -125,11 +113,8 @@ public sealed class FamiliarProbe(
                     remediationCommand: null,
                     enumeration,
                     models),
-
             };
-
         }
-
     }
 
     private async Task<FamiliarProbeResult> ProbeClaudeAsync(
@@ -140,7 +125,6 @@ public sealed class FamiliarProbe(
         string[] models,
         CancellationToken cancellationToken)
     {
-
         string? version = await ReadVersionAsync(command, ["--version"], workingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
@@ -162,7 +146,6 @@ public sealed class FamiliarProbe(
             or FamiliarProcessFailure.StartFailed
             or FamiliarProcessFailure.NotInstalled)
         {
-
             return Build(
                 provider,
                 FamiliarProbeStatus.NotConfigured,
@@ -172,7 +155,6 @@ public sealed class FamiliarProbe(
                 "claude auth status",
                 enumeration,
                 models);
-
         }
 
         ClaudeAuthStatus? status = TryParse(
@@ -183,7 +165,6 @@ public sealed class FamiliarProbe(
         // binary is the same operator action as an explicit "not signed in".
         if (status?.LoggedIn != true)
         {
-
             return Build(
                 provider,
                 FamiliarProbeStatus.NotConfigured,
@@ -193,7 +174,6 @@ public sealed class FamiliarProbe(
                 FamiliarProviders.SignInCommand(provider.Type),
                 enumeration,
                 models);
-
         }
 
         string plan = string.IsNullOrWhiteSpace(status.SubscriptionType)
@@ -209,7 +189,6 @@ public sealed class FamiliarProbe(
             remediationCommand: null,
             enumeration,
             models);
-
     }
 
     private async Task<FamiliarProbeResult> ProbeCodexAsync(
@@ -220,7 +199,6 @@ public sealed class FamiliarProbe(
         string[] models,
         CancellationToken cancellationToken)
     {
-
         FamiliarProcessOutput output = await runner.RunToCompletionAsync(
             new FamiliarProcessRequest
             {
@@ -238,7 +216,6 @@ public sealed class FamiliarProbe(
 
         if (report is null)
         {
-
             return Build(
                 provider,
                 FamiliarProbeStatus.NotConfigured,
@@ -248,7 +225,6 @@ public sealed class FamiliarProbe(
                 "codex doctor",
                 enumeration,
                 models);
-
         }
 
         bool authConfigured =
@@ -258,7 +234,6 @@ public sealed class FamiliarProbe(
 
         if (!authConfigured)
         {
-
             return Build(
                 provider,
                 FamiliarProbeStatus.NotConfigured,
@@ -268,7 +243,6 @@ public sealed class FamiliarProbe(
                 FamiliarProviders.SignInCommand(provider.Type),
                 enumeration,
                 models);
-
         }
 
         return Build(
@@ -280,7 +254,6 @@ public sealed class FamiliarProbe(
             remediationCommand: null,
             enumeration,
             models);
-
     }
 
     /// <summary>
@@ -293,7 +266,6 @@ public sealed class FamiliarProbe(
         string workingDirectory,
         CancellationToken cancellationToken)
     {
-
         FamiliarProcessOutput output = await runner.RunToCompletionAsync(
             new FamiliarProcessRequest
             {
@@ -319,7 +291,6 @@ public sealed class FamiliarProbe(
             .FirstOrDefault(string.Empty);
 
         return token.Length > 0 ? token : null;
-
     }
 
     /// <summary>
@@ -328,9 +299,7 @@ public sealed class FamiliarProbe(
     /// question.
     /// </summary>
     private IReadOnlyList<string> DeniedEnvironmentVariables() =>
-        settings is null
-            ? []
-            : FamiliarSecretEnvironmentNames.Collect(settings.CurrentValue);
+        FamiliarSecretEnvironmentNames.Collect(settings.CurrentValue);
 
     /// <summary>
     /// What Arcanum can say about this Familiar's catalogue. Neither CLI publishes one, so the
@@ -339,13 +308,11 @@ public sealed class FamiliarProbe(
     private static (FamiliarModelEnumeration Enumeration, string[] Models) ResolveModels(
         ProviderSettings provider)
     {
-
         string[] declared = [.. ProviderResolver.EnumerateAdvertisedModels(provider)];
 
         return declared.Length > 0
             ? (FamiliarModelEnumeration.OperatorDeclared, declared)
             : (FamiliarModelEnumeration.Unknown, []);
-
     }
 
     private static FamiliarProbeResult Build(
@@ -372,7 +339,6 @@ public sealed class FamiliarProbe(
     private static T? TryParse<T>(string json, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo)
         where T : class
     {
-
         if (string.IsNullOrWhiteSpace(json))
         {
             return null;
@@ -380,20 +346,14 @@ public sealed class FamiliarProbe(
 
         try
         {
-
             return JsonSerializer.Deserialize(json, typeInfo);
-
         }
         catch (JsonException)
         {
-
             // A CLI whose report Arcanum cannot read is reported as unready, not as a crash.
             return null;
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -406,25 +366,21 @@ public sealed class FamiliarProbe(
 /// </remarks>
 internal sealed record ClaudeAuthStatus
 {
-
     public bool LoggedIn { get; init; }
 
     public string? AuthMethod { get; init; }
 
     public string? SubscriptionType { get; init; }
-
 }
 
 /// <summary>The subset of <c>codex doctor --json</c> Arcanum binds.</summary>
 internal sealed record CodexDoctorReport
 {
-
     public string? CodexVersion { get; init; }
 
     public string? OverallStatus { get; init; }
 
     public Dictionary<string, CodexDoctorCheck>? Checks { get; init; }
-
 }
 
 /// <summary>
@@ -432,11 +388,9 @@ internal sealed record CodexDoctorReport
 /// </summary>
 internal sealed record CodexDoctorCheck
 {
-
     public string? Status { get; init; }
 
     public string? Summary { get; init; }
-
 }
 
 [JsonSourceGenerationOptions(

@@ -76,10 +76,8 @@ public sealed class PromptRepository : IPromptRepository
     {
         string trimmedName = name.Trim();
 
-        // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY (see
-        // PromptRepository.ListAsync for the same constraint). Materialize the name+campaign-
-        // scoped rows (small set) and sort client-side.
-        List<Prompt> matched = await ReadManyAsync(
+        // Newest first; "Id" makes the order total for versions written in the same clock tick.
+        return await ReadManyAsync(
             $"""
             SELECT {GrimoireEntitySql.PromptColumns}
             FROM "Prompts"
@@ -88,7 +86,8 @@ public sealed class PromptRepository : IPromptRepository
               (
                   "CampaignId" = $campaignId
                   OR ("CampaignId" IS NULL AND $campaignId IS NULL)
-              );
+              )
+            ORDER BY "UpdatedAt" DESC, "Id" DESC;
             """,
             command =>
             {
@@ -99,10 +98,6 @@ public sealed class PromptRepository : IPromptRepository
                     campaignId is { } id ? GrimoireEntitySql.Format(id) : null);
             },
             cancellationToken).ConfigureAwait(false);
-
-        return matched
-            .OrderByDescending(p => p.UpdatedAt)
-            .ToArray();
     }
 
     public async Task<ListPageResult<Prompt>> ListAsync(
@@ -115,36 +110,35 @@ public sealed class PromptRepository : IPromptRepository
 
         int skip = Math.Max(0, offset);
 
-        // W: composite server-side ORDER BY (Name, UpdatedAt) combined with Skip/Take triggers
-        // "SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses" from the
-        // EF Core Sqlite provider's paging translator. Sort and page client-side instead; prompt tables
-        // are workspace-scoped and small, so this is not a performance concern.
-        List<Prompt> matched = await ReadManyAsync(
+        // The order and the page bound run in SQL, so a prompt outside the page (and its Template) is never
+        // read. "UpdatedAt" is fixed-width UTC text, so ordinal TEXT order is chronological, and "Id"
+        // makes the order total for versions written in the same clock tick. One extra row says whether
+        // another page exists.
+        List<Prompt> rows = await ReadManyAsync(
             $"""
             SELECT {GrimoireEntitySql.PromptColumns}
             FROM "Prompts"
             WHERE "CampaignId" = $campaignId
-               OR ("CampaignId" IS NULL AND $campaignId IS NULL);
+               OR ("CampaignId" IS NULL AND $campaignId IS NULL)
+            ORDER BY "Name", "UpdatedAt" DESC, "Id" DESC
+            LIMIT $take OFFSET $skip;
             """,
-            command => GrimoireEntitySql.AddParameter(
-                command,
-                "$campaignId",
-                campaignId is { } id ? GrimoireEntitySql.Format(id) : null),
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(
+                    command,
+                    "$campaignId",
+                    campaignId is { } id ? GrimoireEntitySql.Format(id) : null);
+                GrimoireEntitySql.AddParameter(command, "$take", pageSize + 1);
+                GrimoireEntitySql.AddParameter(command, "$skip", skip);
+            },
             cancellationToken).ConfigureAwait(false);
 
-        Prompt[] ordered = matched
-            .OrderBy(p => p.Name, StringComparer.Ordinal)
-            .ThenByDescending(p => p.UpdatedAt)
-            .ToArray();
+        bool hasMore = rows.Count > pageSize;
 
-        Prompt[] page = ordered.Skip(skip).Take(pageSize + 1).ToArray();
-
-        bool hasMore = page.Length > pageSize;
-
-        if (hasMore)
-        {
-            page = page.Take(pageSize).ToArray();
-        }
+        Prompt[] page = hasMore
+            ? [.. rows.Take(pageSize)]
+            : [.. rows];
 
         int? nextOffset = hasMore ? skip + pageSize : null;
 

@@ -15,6 +15,12 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 {
     private const int DefaultListLimit = 100;
 
+    /// <summary>
+    /// The most Apprentices that may share one <c>UpdatedAt</c> at a page boundary. A Conclave fan-out
+    /// writes a handful of children in one clock tick, so this is far above any real group.
+    /// </summary>
+    internal const int MaxTieGroupWidening = 1_000;
+
     private readonly ArcanumDbContext _db;
 
     private readonly ILogger<ApprenticeRepository> _logger;
@@ -52,77 +58,52 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
         string? statusFilter = string.IsNullOrWhiteSpace(status) ? null : status.Trim();
 
-        // DateTimeOffset comparison and ORDER BY cannot be translated by EF Core's SQLite
-        // provider (see EntryTemporalQueries and PromptRepository.ListAsync). Materialize the
-        // server-side-filtered set, then apply the temporal cursor and ordering client-side.
-        // Apprentice tables are workspace-scoped and small, so this is not a performance concern.
-        List<Apprentice> matched;
+        // The filter, the order, the cursor and the page bound all run in SQL, so a row outside the page
+        // (and its Plan and CheckpointData blobs) is never read. "UpdatedAt" is fixed-width UTC text, so
+        // ordinal TEXT comparison is chronological (see UtcInstantText).
+        List<string> conditions = [];
 
-        if (campaignId is { } campaignFilter && statusFilter is not null)
+        List<(string Name, object Value)> parameters = [];
+
+        if (campaignId is { } campaignFilter)
         {
-            matched = await ReadManyAsync(
-                $"""
-                SELECT {GrimoireEntitySql.ApprenticeColumns}
-                FROM "Apprentices"
-                WHERE "CampaignId" = $campaignId AND "Status" = $status;
-                """,
-                command =>
-                {
-                    GrimoireEntitySql.AddParameter(
-                        command,
-                        "$campaignId",
-                        GrimoireEntitySql.Format(campaignFilter));
-                    GrimoireEntitySql.AddParameter(command, "$status", statusFilter);
-                },
-                cancellationToken).ConfigureAwait(false);
+            conditions.Add("\"CampaignId\" = $campaignId");
+
+            parameters.Add(("$campaignId", GrimoireEntitySql.Format(campaignFilter)));
         }
-        else if (campaignId is { } campaignOnly)
+
+        if (statusFilter is not null)
         {
-            matched = await ReadManyAsync(
-                $"""
-                SELECT {GrimoireEntitySql.ApprenticeColumns}
-                FROM "Apprentices"
-                WHERE "CampaignId" = $campaignId;
-                """,
-                command => GrimoireEntitySql.AddParameter(
-                    command,
-                    "$campaignId",
-                    GrimoireEntitySql.Format(campaignOnly)),
-                cancellationToken).ConfigureAwait(false);
-        }
-        else if (statusFilter is not null)
-        {
-            matched = await ReadManyAsync(
-                $"""
-                SELECT {GrimoireEntitySql.ApprenticeColumns}
-                FROM "Apprentices"
-                WHERE "Status" = $status;
-                """,
-                command => GrimoireEntitySql.AddParameter(command, "$status", statusFilter),
-                cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            matched = await ReadManyAsync(
-                $"SELECT {GrimoireEntitySql.ApprenticeColumns} FROM \"Apprentices\";",
-                static _ => { },
-                cancellationToken).ConfigureAwait(false);
+            conditions.Add("\"Status\" = $status");
+
+            parameters.Add(("$status", statusFilter));
         }
 
         if (beforeUpdatedAt is DateTimeOffset beforeCutoff)
         {
-            matched = matched.Where(a => a.UpdatedAt < beforeCutoff).ToList();
+            conditions.Add("\"UpdatedAt\" < $before");
+
+            parameters.Add(("$before", GrimoireEntitySql.Format(beforeCutoff.ToUniversalTime())));
         }
+
+        string where = conditions.Count == 0
+            ? string.Empty
+            : $" WHERE {string.Join(" AND ", conditions)}";
 
         // "Id" is the identity tie-breaker. Without it the sort is undefined among Apprentices sharing
         // an "UpdatedAt" — a Conclave fan-out creates a batch of children within one clock tick — so a
         // tie straddling a page boundary would be ordered differently on each query and the keyset
-        // cursor below could not reason about it at all.
-        List<Apprentice> ordered = matched
-            .OrderByDescending(a => a.UpdatedAt)
-            .ThenByDescending(a => a.Id)
-            .Take(pageSize + 1)
-            .ToList();
+        // cursor below could not reason about it at all. One extra row says whether another page exists.
+        List<Apprentice> ordered = await ReadManyAsync(
+            $"SELECT {GrimoireEntitySql.ApprenticeColumns} FROM \"Apprentices\"{where} "
+            + "ORDER BY \"UpdatedAt\" DESC, \"Id\" DESC LIMIT $take;",
+            command =>
+            {
+                BindAll(command, parameters);
+
+                GrimoireEntitySql.AddParameter(command, "$take", pageSize + 1);
+            },
+            cancellationToken).ConfigureAwait(false);
 
         bool hasMore = ordered.Count > pageSize;
 
@@ -152,13 +133,47 @@ public sealed class ApprenticeRepository : IApprenticeRepository
                 // Degenerate case: the whole page is one timestamp, so cutting at the tie boundary would
                 // return nothing and leave the cursor exactly where it started. Return the complete tie
                 // group instead — the page exceeds the requested limit, but it is whole and the cursor
-                // advances past it. The set is already materialized, so no second query is needed.
-                page = matched
-                    .Where(a => a.UpdatedAt == boundary)
-                    .OrderByDescending(a => a.Id)
-                    .ToList();
+                // advances past it. Two further bounded queries: the group, and whether anything is older.
+                string boundaryText = GrimoireEntitySql.Format(boundary.ToUniversalTime());
 
-                hasMore = matched.Exists(a => a.UpdatedAt < boundary);
+                string tieWhere = (conditions.Count == 0 ? " WHERE " : $"{where} AND ")
+                    + "\"UpdatedAt\" = $boundary";
+
+                page = await ReadManyAsync(
+                    $"SELECT {GrimoireEntitySql.ApprenticeColumns} FROM \"Apprentices\"{tieWhere} "
+                    + "ORDER BY \"Id\" DESC LIMIT $take;",
+                    command =>
+                    {
+                        BindAll(command, parameters);
+
+                        GrimoireEntitySql.AddParameter(command, "$boundary", boundaryText);
+
+                        GrimoireEntitySql.AddParameter(command, "$take", MaxTieGroupWidening + 1);
+                    },
+                    cancellationToken).ConfigureAwait(false);
+
+                if (page.Count > MaxTieGroupWidening)
+                {
+                    // Clipping would leave the cursor on the boundary timestamp and strand the rest of the
+                    // group behind the strict "UpdatedAt" < @before predicate, so fail loudly instead.
+                    throw new InvalidOperationException(
+                        $"More than {MaxTieGroupWidening} Apprentices share the timestamp at this page "
+                        + "boundary. The Apprentice-list cursor is a bare timestamp and cannot express a "
+                        + "position inside a tie group; narrow the query with a campaign or status filter.");
+                }
+
+                string olderWhere = (conditions.Count == 0 ? " WHERE " : $"{where} AND ")
+                    + "\"UpdatedAt\" < $boundary";
+
+                hasMore = await ExistsAsync(
+                    $"SELECT 1 FROM \"Apprentices\"{olderWhere} LIMIT 1;",
+                    command =>
+                    {
+                        BindAll(command, parameters);
+
+                        GrimoireEntitySql.AddParameter(command, "$boundary", boundaryText);
+                    },
+                    cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -293,6 +308,31 @@ public sealed class ApprenticeRepository : IApprenticeRepository
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? GrimoireEntitySql.ReadApprentice(reader)
             : null;
+    }
+
+    private static void BindAll(SqliteCommand command, List<(string Name, object Value)> parameters)
+    {
+        foreach ((string name, object value) in parameters)
+        {
+            GrimoireEntitySql.AddParameter(command, name, value);
+        }
+    }
+
+    private async Task<bool> ExistsAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<List<Apprentice>> ReadManyAsync(
