@@ -446,6 +446,53 @@ public sealed partial class DataRetentionServiceTests
         await ReopenRetentionGateAsync(harness.Inner, Assert.IsAssignableFrom<IGrimoireClosingOwner>(closing));
     }
 
+    /// <summary>
+    /// A hosted prune that fails after a candidate's effect has committed leaves its row for durable
+    /// recovery rather than terminally failed, and says the effect may exist.
+    /// </summary>
+    /// <remarks>
+    /// The Completed transition throws after the one candidate has been pruned, so the failure escapes to
+    /// the generic arm. That arm used to record the row <c>Failed</c> and say the operation "failed before
+    /// a candidate effect began", which is false and leaves nothing to reconcile what did happen.
+    /// </remarks>
+    [SkippableFact]
+    public async Task HostedPruneThatFailsAfterACandidateCompletedRequiresReconciliation()
+    {
+        RequireSqlCipher();
+
+        HostedPruneHarness harness = await CreateHostedPruneHarnessAsync(
+            wrapStore: static store => new HeartbeatCountingOperationStore(store)
+            {
+                BeforeTransition = static state =>
+                {
+                    if (state is LongRunningOperationState.Completed)
+                    {
+                        throw new InvalidOperationException("injected completion failure");
+                    }
+                },
+            });
+
+        DataRetentionHostedSweepOutcome outcome = await RunHostedPruneAsync(harness);
+
+        Assert.Equal(DataRetentionHostedSweepDisposition.Concluded, outcome.Disposition);
+
+        Result<DataRetentionApplyResult> result = Assert.IsType<Result<DataRetentionApplyResult>>(outcome.Result);
+
+        Assert.True(result.IsFailure);
+
+        Assert.DoesNotContain("before a candidate effect began", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.False(File.Exists(harness.Path));
+
+        LongRunningOperation operation = Assert.Single(
+            await harness.Store.ListAsync(
+                new LongRunningOperationQuery(Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(DataRetentionService.RetentionRecoveryTerminalCode, operation.TerminalErrorCode);
+    }
+
     [SkippableFact]
     public async Task HostedPruneRejectsAWorkLeaseForAnotherProducerBeforeStartingAnOperation()
     {
@@ -943,7 +990,8 @@ public sealed partial class DataRetentionServiceTests
     }
 
     private async Task<HostedPruneHarness> CreateHostedPruneHarnessAsync(
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Func<LongRunningOperationStore, ILongRunningOperationStore>? wrapStore = null)
     {
         Guid fileId = Guid.NewGuid();
 
@@ -975,7 +1023,7 @@ public sealed partial class DataRetentionServiceTests
             settings,
             static (_, _) => Task.CompletedTask,
             logger,
-            store,
+            wrapStore is null ? store : wrapStore(store),
             clock,
             ownership,
             resumption);

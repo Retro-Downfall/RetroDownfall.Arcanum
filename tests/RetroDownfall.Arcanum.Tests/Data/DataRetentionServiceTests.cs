@@ -4933,6 +4933,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 utcNow,
                 cancellationToken);
 
+        /// <summary>Runs before every state transition, with the state being entered.</summary>
+        internal Action<LongRunningOperationState>? BeforeTransition { get; init; }
+
         public Task<bool> TryTransitionAsync(
             Guid operationId,
             long expectedRevision,
@@ -4940,8 +4943,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             LongRunningOperationState state,
             DateTimeOffset utcNow,
             string? terminalErrorCode = null,
-            CancellationToken cancellationToken = default) =>
-            inner.TryTransitionAsync(
+            CancellationToken cancellationToken = default)
+        {
+            BeforeTransition?.Invoke(state);
+
+            return inner.TryTransitionAsync(
                 operationId,
                 expectedRevision,
                 ownerId,
@@ -4949,6 +4955,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 utcNow,
                 terminalErrorCode,
                 cancellationToken);
+        }
 
         public Task<bool> RequestCancellationAsync(
             Guid operationId,

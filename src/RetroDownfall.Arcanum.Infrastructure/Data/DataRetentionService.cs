@@ -825,6 +825,8 @@ internal sealed partial class DataRetentionService(
 
         bool keepClaim = false;
 
+        bool candidateCompleted = false;
+
         try
         {
             DataRetentionPruneExecutionOutcome execution = await ApplyUnifiedPruneCoreAsync(
@@ -854,6 +856,8 @@ internal sealed partial class DataRetentionService(
             {
                 return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
             }
+
+            candidateCompleted = HasCandidateEffect(execution.Applied);
 
             return ConcludedHostedPrune(await CompleteHostedPruneAsync(
                 operation.Id,
@@ -891,12 +895,11 @@ internal sealed partial class DataRetentionService(
                 "Automatic retention operation {OperationId} failed outside a candidate frontier.",
                 operation.Id);
 
-            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+            return ConcludedHostedPrune(await SettleUnexpectedHostedPruneFailureAsync(
                 operation,
                 ownerId,
-                LongRunningOperationState.Failed,
-                HostedPruneError("The automatic retention operation failed before a candidate effect began."),
-                CancellationToken.None).ConfigureAwait(false));
+                candidateCompleted,
+                "The automatic retention operation failed before a candidate effect began.").ConfigureAwait(false));
         }
         finally
         {
@@ -925,6 +928,8 @@ internal sealed partial class DataRetentionService(
         }
 
         bool keepClaim = false;
+
+        bool resumedCandidateCompleted = false;
 
         try
         {
@@ -1004,6 +1009,8 @@ internal sealed partial class DataRetentionService(
                 return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
             }
 
+            resumedCandidateCompleted = HasCandidateEffect(recovery.Execution?.Applied);
+
             return ConcludedHostedPrune(await CompleteHostedPruneAsync(
                 operation!.Id,
                 continuation.OwnerId,
@@ -1050,12 +1057,11 @@ internal sealed partial class DataRetentionService(
                 continuation.OperationId,
                 CancellationToken.None).ConfigureAwait(false);
 
-            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+            return ConcludedHostedPrune(await SettleUnexpectedHostedPruneFailureAsync(
                 operation,
                 continuation.OwnerId,
-                LongRunningOperationState.Failed,
-                HostedPruneError("The automatic retention operation failed while resuming."),
-                CancellationToken.None).ConfigureAwait(false));
+                resumedCandidateCompleted,
+                "The automatic retention operation failed while resuming, before a candidate effect began.").ConfigureAwait(false));
         }
         finally
         {
@@ -1080,6 +1086,72 @@ internal sealed partial class DataRetentionService(
         && operation.State is LongRunningOperationState.Running
             or LongRunningOperationState.Waiting
             or LongRunningOperationState.Cancelling;
+
+    /// <summary>Whether a finished pass removed anything at all.</summary>
+    private static bool HasCandidateEffect(DataRetentionApplyResult? applied) =>
+        applied is not null
+        && (applied.RowsDeleted != 0 || applied.FilesDeleted != 0 || applied.DerivedRecordsDeleted != 0);
+
+    /// <summary>
+    /// Settles a hosted prune that failed outside every candidate frontier, by whether a candidate effect
+    /// may already exist.
+    /// </summary>
+    /// <remarks>
+    /// Effects may exist when a pass finished having removed something, or when the durable row carries
+    /// a checkpoint — the same evidence <see cref="FailUnexpectedCovenantResetAsync"/> reads. Such a row is
+    /// left <c>ReconciliationRequired</c> under the retention recovery code, which recovery adopts and
+    /// restarts idempotently; marking it terminally <c>Failed</c> would leave nothing to reconcile what
+    /// did happen, and its message would claim nothing had. A row whose evidence cannot be read is
+    /// treated as one with effects. Only a row with neither is <c>Failed</c>, with the caller's wording.
+    /// </remarks>
+    private async Task<Result<DataRetentionApplyResult>> SettleUnexpectedHostedPruneFailureAsync(
+        LongRunningOperation? operation,
+        string ownerId,
+        bool candidateCompleted,
+        string noEffectMessage)
+    {
+        bool effectsMayExist = candidateCompleted;
+
+        if (!effectsMayExist && operation is not null)
+        {
+            try
+            {
+                LongRunningOperation current = await operations
+                    .GetAsync(operation.Id, CancellationToken.None)
+                    .ConfigureAwait(false)
+                    ?? operation;
+
+                effectsMayExist = current.CheckpointVersion != 0
+                    || current.CheckpointPayload is not null
+                    || current.CheckpointReference is not null;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Automatic retention operation {OperationId} could not classify its durable effect boundary.",
+                    operation.Id);
+
+                effectsMayExist = true;
+            }
+        }
+
+        return effectsMayExist
+            ? await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.ReconciliationRequired,
+                HostedPruneError(
+                    "The automatic retention operation failed after a candidate effect may have begun; durable recovery will reconcile it."),
+                CancellationToken.None,
+                RetentionRecoveryTerminalCode).ConfigureAwait(false)
+            : await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.Failed,
+                HostedPruneError(noEffectMessage),
+                CancellationToken.None).ConfigureAwait(false);
+    }
 
     private async Task<Result<DataRetentionApplyResult>> CompleteHostedPruneAsync(
         Guid operationId,
