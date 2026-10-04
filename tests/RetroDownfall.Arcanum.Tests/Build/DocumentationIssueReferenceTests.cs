@@ -22,10 +22,12 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// snapshots and the plan and specification archive under <c>docs/superpowers</c> are historical
 /// records of a single run and are deliberately left alone.</para>
 /// <para>The pattern accepts the tracker spellings <c>issue #55</c>, <c>issue-55</c>, and
-/// <c>issue 55</c>, plus a bare <c>#55</c> token when whitespace places it in prose. It deliberately
+/// <c>issue 55</c>, plus a bare <c>#55</c> token when whitespace, an opening bracket, or an opening
+/// parenthesis places it in prose, so <c>(#55)</c> and <c>[#55]</c> are caught. It deliberately
 /// does not treat every hash and digit sequence as a tracker reference: Markdown URL fragments,
-/// repository references such as <c>dotnet/runtime#119380</c>, and ordinary heading markers remain
-/// valid document structure rather than prose dependencies.</para>
+/// including the section links whose target opens with <c>](#</c>, repository references such as
+/// <c>dotnet/runtime#119380</c>, and ordinary heading markers remain valid document structure rather
+/// than prose dependencies.</para>
 /// </remarks>
 public sealed class DocumentationIssueReferenceTests
 {
@@ -74,7 +76,7 @@ public sealed class DocumentationIssueReferenceTests
     ];
 
     private static readonly Regex TrackerIssueReference = new(
-        @"(?:\bissues?(?:\s*#\s*|[- ])\d+|(?<=\s)#\d+\b)",
+        @"(?:\bissues?(?:\s*#\s*|[- ])\d+|(?<=[\s\[]|(?<!\])\()#\d+\b)",
         RegexOptions.IgnoreCase,
         TimeSpan.FromSeconds(5));
 
@@ -82,8 +84,11 @@ public sealed class DocumentationIssueReferenceTests
     [InlineData("The later work is tracked by #245.", true)]
     [InlineData("The later work is tracked by\t#250.", true)]
     [InlineData("This is issue #55 scope.", true)]
+    [InlineData("The later work is tracked separately (#100).", true)]
+    [InlineData("The later work is tracked separately [#100].", true)]
     [InlineData("See [runtime note](https://github.com/dotnet/runtime/issues/820#issuecomment-1).", false)]
     [InlineData("See [section](#820-details).", false)]
+    [InlineData("See [section](#100).", false)]
     [InlineData("The upstream fix is dotnet/runtime#119380.", false)]
     [InlineData("## 10.20 Covenant lifecycle", false)]
     [InlineData("# 244 Typed lifecycle", false)]

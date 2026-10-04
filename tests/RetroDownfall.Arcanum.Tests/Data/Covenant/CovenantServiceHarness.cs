@@ -1,9 +1,13 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -17,9 +21,10 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// a world neither of them read.
 ///
 /// <para>Two seams are substituted and they are the only two. The envelope codec keeps the exact token
-/// shape — purpose, timestamps, payload — and skips the cryptography, which has its own vectors and its
-/// own suite; the authority snapshot states an operator authority epoch, because a test process has no
-/// runtime generation to derive one from. Neither decides, measures, or stores anything.</para>
+/// shape — purpose, timestamps, payload — and the production expiry rule, and skips the cryptography,
+/// which has its own vectors and its own suite; the authority snapshot states an operator authority
+/// epoch, because a test process has no runtime generation to derive one from. Neither decides,
+/// measures, or stores anything.</para>
 /// </remarks>
 internal sealed class CovenantServiceHarness : IAsyncDisposable
 {
@@ -55,26 +60,52 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// Composes the service over a canonical tier that also carries the core objects owner cleanup
     /// needs, so a suite can drive a Campaign deletion through the same worker the host runs.
     /// </summary>
+    /// <param name="withErasureEvidence">
+    /// Gives the catalog the erasure fingerprint table and a head Core version, so fingerprints can be
+    /// seeded and every chokepoint reads them the way an installed Grimoire's are read.
+    /// </param>
+    /// <param name="coreObjects">
+    /// Further named core objects a suite depends on, installed after the ones the other switches
+    /// imply, such as the disclosure journal an exposure read measures.
+    /// </param>
+    /// <param name="withAccelerator">
+    /// Also installs the accelerator tier, so a suite can synchronize the search projection and erase
+    /// what it holds.
+    /// </param>
+    /// <param name="afterReplayProbeForTesting">
+    /// Runs inside a commit once its receipt probe has found nothing, so a suite can commit the same
+    /// mutation in between and make the first commit meet that receipt inside its own transaction.
+    /// </param>
     internal static async Task<CovenantServiceHarness> StartAsync(
         CancellationToken cancellationToken,
-        bool withOwnerCleanup = false)
+        bool withOwnerCleanup = false,
+        bool withErasureEvidence = false,
+        IReadOnlyList<string>? coreObjects = null,
+        bool withAccelerator = false,
+        Func<CancellationToken, Task>? afterReplayProbeForTesting = null)
     {
 
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
             cancellationToken,
-            coreObjects: withOwnerCleanup
-                ?
-                [
-                    .. CovenantCapacityFixture.CoreObjects,
-                    "capability_cleanup_state",
-                    "owner_deletion_events",
-                    "owner_deletion_operation_intents",
-                    "Campaigns_owner_deletion_event",
-                    "Sessions_owner_deletion_event",
-                    "owner_deletion_events_guard_delete",
-                    "owner_deletion_events_guard_update",
-                ]
-                : null);
+            withAccelerator: withAccelerator,
+            coreObjects:
+            [
+                .. withOwnerCleanup
+                    ?
+                    [
+                        .. CovenantCapacityFixture.CoreObjects,
+                        "capability_cleanup_state",
+                        "owner_deletion_events",
+                        "owner_deletion_operation_intents",
+                        "Campaigns_owner_deletion_event",
+                        "Sessions_owner_deletion_event",
+                        "owner_deletion_events_guard_delete",
+                        "owner_deletion_events_guard_update",
+                    ]
+                    : (IReadOnlyList<string>)[],
+                .. coreObjects ?? [],
+            ],
+            withErasureEvidence: withErasureEvidence);
 
         if (withOwnerCleanup)
         {
@@ -96,12 +127,16 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         CovenantMutationService service = new(
             fixture.Store,
             new CovenantCompiler(),
-            new HarnessEnvelopeCodec(),
+            new HarnessEnvelopeCodec(clock),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), fixture.ErasureKeys),
             new CovenantCurationKernel(),
             new HarnessAuthority(),
-            clock);
+            clock,
+            DetachedAvailabilityRepublisher.Create())
+        {
+            AfterReplayProbeForTesting = afterReplayProbeForTesting,
+        };
 
         return new CovenantServiceHarness(fixture, service, CovenantOperationGateFixture.CreateGate(), clock);
 
@@ -116,6 +151,142 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// </remarks>
     internal Task AddCampaignAsync(Guid campaignId, CancellationToken cancellationToken) =>
         _fixture.AddCampaignAsync(campaignId, $"Harness Campaign {campaignId:N}", cancellationToken);
+
+    /// <summary>
+    /// Writes the epoch row the version-6 step leaves for a key that already had head changes: its
+    /// binding epoch is the key epoch it carried at the upgrade.
+    /// </summary>
+    /// <remarks>
+    /// Every key row created from canonical version 6 on carries binding epoch 0, so a suite that only
+    /// ever creates keys cannot tell a read that joins the key row's binding epoch from one that
+    /// assumes zero. On an upgraded installation nonzero is the ordinary case, and this is the seam
+    /// that reaches it: the row is the one no production write can create, and everything after it
+    /// goes through the production services.
+    /// </remarks>
+    internal async Task SeedUpgradedKeyAsync(string key, long epoch, CancellationToken cancellationToken)
+    {
+
+        await using Microsoft.Data.Sqlite.SqliteCommand command = _fixture.Connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc, IncarnationEpoch)
+            VALUES ($key, $epoch, '2026-01-01T00:00:00.0000000Z', $epoch);
+            """;
+
+        _ = command.Parameters.AddWithValue("$key", key);
+
+        _ = command.Parameters.AddWithValue("$epoch", epoch);
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Records the erasure fingerprint of one Covenant identity, creating the erasure key on first use.
+    /// </summary>
+    /// <remarks>
+    /// The key is opened the way erase prepare opens it: created only on a proven absence with no
+    /// evidence, and published as Present into the fixture's own latch before any fingerprint is
+    /// written. The fingerprint is then recorded through the evidence store's own insert. The Covenant
+    /// erase route is what writes it in production; until that route exists this is the seam.
+    /// </remarks>
+    internal async Task SeedCovenantFingerprintAsync(
+        CovenantScope scope,
+        Guid? campaignId,
+        string key,
+        CancellationToken cancellationToken)
+    {
+
+        MemoryErasureKeyOpenResult opened = _fixture.ErasureKeys.OpenOrCreate(evidenceRowsExist: false);
+
+        Assert.Equal(MemoryErasureKeyState.Present, opened.State);
+
+        using MemoryErasureKey erasureKey = opened.Key!;
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            _fixture.Connection,
+            erasureKey,
+            MemoryErasureIdentity.ForCovenant(scope, campaignId, key),
+            cancellationToken);
+
+    }
+
+    /// <summary>
+    /// A fresh keyring over the fixture's own credential store, its latch driven into
+    /// <paramref name="state"/> the way a real probe of that store would leave it.
+    /// </summary>
+    /// <remarks>
+    /// <para>Unresolved is left unprobed. Present re-probes a stored key, so it needs one: seed a
+    /// fingerprint first. Absent deletes the stored key and re-probes. Unavailable makes the store fail
+    /// for the one probe and then answer again. Malformed stores text that is not a key and
+    /// re-probes.</para>
+    ///
+    /// <para>Every probe happens here, so a caller that measures credential calls afterwards measures
+    /// only what it did with the keyring. The caller owns the keyring and disposes it.</para>
+    /// </remarks>
+    internal MemoryErasureKeyring KeyringInState(MemoryErasureKeyState state)
+    {
+
+        MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(_fixture.Credentials);
+
+        switch (state)
+        {
+
+            case MemoryErasureKeyState.Unresolved:
+
+                break;
+
+            case MemoryErasureKeyState.Present:
+
+                break;
+
+            case MemoryErasureKeyState.Absent:
+
+                _ = _fixture.Credentials.Delete(
+                    ArcanumCredentialIdentity.Service,
+                    ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount);
+
+                break;
+
+            case MemoryErasureKeyState.Unavailable:
+
+                _fixture.Credentials.FailWith = OsCredentialStoreStatus.Unavailable;
+
+                break;
+
+            case MemoryErasureKeyState.Malformed:
+
+                _ = _fixture.Credentials.Set(
+                    ArcanumCredentialIdentity.Service,
+                    ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount,
+                    "not-base64url");
+
+                break;
+
+            default:
+
+                throw new ArgumentOutOfRangeException(nameof(state), state, "A recognized key state is required.");
+
+        }
+
+        if (state is not MemoryErasureKeyState.Unresolved)
+        {
+
+            MemoryErasureKeyOpenResult probed = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
+
+            probed.Key?.Dispose();
+
+            _fixture.Credentials.FailWith = null;
+
+            Assert.Equal(state, probed.State);
+
+        }
+
+        Assert.Equal(state, keyring.Latch.State);
+
+        return keyring;
+
+    }
 
     /// <summary>Writes one entry through the production prepare-and-commit path.</summary>
     internal async Task SetAsync(
@@ -246,6 +417,87 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     }
 
+    /// <summary>Corrects the live Confirmed head of one key through the production path.</summary>
+    /// <remarks>
+    /// The target is read off canonical storage the way an operator reads it off <c>show</c> before
+    /// naming it, so a suite that needs "the operator wrote this key again" states only that.
+    /// </remarks>
+    internal async Task CorrectAsync(
+        CovenantScope scope,
+        Guid? campaignId,
+        string key,
+        string content,
+        CancellationToken cancellationToken)
+    {
+
+        Guid targetVersionId;
+
+        long revision;
+
+        string renderedHash;
+
+        await using (Microsoft.Data.Sqlite.SqliteCommand command = _fixture.Connection.CreateCommand())
+        {
+
+            command.CommandText = """
+                SELECT h.CurrentVersionId, h.CurrentLaneRevision, v.RenderedHash
+                FROM covenant_heads h
+                JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
+                WHERE h.CampaignId IS $campaign AND h.NormalizedKey = $key AND h.LaneCode = 1;
+                """;
+
+            _ = command.Parameters.AddWithValue(
+                "$campaign",
+                campaignId is { } owner ? owner.ToString("D") : DBNull.Value);
+
+            _ = command.Parameters.AddWithValue("$key", key);
+
+            await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                await command.ExecuteReaderAsync(cancellationToken);
+
+            Assert.True(await reader.ReadAsync(cancellationToken), "No Confirmed head exists for that key.");
+
+            targetVersionId = Guid.Parse(reader.GetString(0), System.Globalization.CultureInfo.InvariantCulture);
+
+            revision = reader.GetInt64(1);
+
+            renderedHash = Convert.ToHexStringLower((byte[])reader.GetValue(2));
+
+        }
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        Result<CovenantMutationPreflightDto> prepared = await PrepareCorrectAsync(
+            scope,
+            campaignId,
+            key,
+            content,
+            targetVersionId,
+            renderedHash,
+            revision,
+            cancellationToken,
+            mutationId);
+
+        Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+        Result<CovenantMutationResultDto> committed = await CommitCorrectAsync(
+            new CovenantCorrectRequest(
+                scope,
+                campaignId,
+                key,
+                content,
+                targetVersionId,
+                CovenantLane.Confirmed,
+                revision,
+                renderedHash,
+                mutationId,
+                prepared.Value.PreflightToken),
+            cancellationToken);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+    }
+
     internal async Task<Result<CovenantCurationPreflightDto>> PrepareCurationAsync(
         CovenantCurationKind kind,
         CovenantScope scope,
@@ -359,7 +611,11 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     public ValueTask DisposeAsync() => _fixture.DisposeAsync();
 
-    private async Task<ICovenantSnapshotReadLease> AcquireReadAsync(
+    /// <summary>
+    /// Acquires the read lease a route takes for one scope: the installation read capability for
+    /// Global, and a scoped read lease for one Campaign.
+    /// </summary>
+    internal async Task<ICovenantSnapshotReadLease> AcquireReadAsync(
         CovenantScope scope,
         Guid? campaignId,
         CancellationToken cancellationToken) =>
@@ -385,7 +641,7 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     }
 
-    private sealed class HarnessEnvelopeCodec : ICovenantEnvelopeCodec
+    private sealed class HarnessEnvelopeCodec(HarnessClock clock) : ICovenantEnvelopeCodec
     {
 
         private readonly Dictionary<string, CovenantEnvelopeBody> _issued = new(StringComparer.Ordinal);
@@ -419,13 +675,34 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
         }
 
-        public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
-            token is not null && _issued.TryGetValue(token, out CovenantEnvelopeBody? body)
-                && body.Purpose == expectedPurpose
-                ? Result<CovenantEnvelopeBody>.Success(body)
-                : Result<CovenantEnvelopeBody>.Failure(new Error(
+        public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token)
+        {
+
+            if (token is null
+                || !_issued.TryGetValue(token, out CovenantEnvelopeBody? body)
+                || body.Purpose != expectedPurpose)
+            {
+
+                return Result<CovenantEnvelopeBody>.Failure(new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This Covenant token is not valid for this purpose."));
+
+            }
+
+            // The production codec's rule, stated on the harness clock. A stand-in that decoded an
+            // expired token would let a suite call something a replay when the service had simply
+            // accepted a token the real codec refuses.
+            if (clock.GetUtcNow() >= body.ExpiresAtUtc)
+            {
+
+                return Result<CovenantEnvelopeBody>.Failure(
+                    CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Expired));
+
+            }
+
+            return Result<CovenantEnvelopeBody>.Success(body);
+
+        }
 
     }
 

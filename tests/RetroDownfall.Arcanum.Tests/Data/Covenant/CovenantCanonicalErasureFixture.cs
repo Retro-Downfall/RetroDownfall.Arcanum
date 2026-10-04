@@ -277,6 +277,8 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
 
         await SeedFamilyAsync(cancellationToken);
 
+        await SeedCurationAsync(cancellationToken);
+
         await SeedReceiptsAsync(cancellationToken);
 
         await SeedDisclosureAsync(cancellationToken);
@@ -594,7 +596,7 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
     /// exactly why an erasure has to delete key epochs after heads rather than before, and why seeding
     /// one by hand would hide that ordering behind a duplicate-key failure.</para>
     /// </remarks>
-    private async Task SeedFamilyAsync(CancellationToken cancellationToken)
+    internal async Task SeedFamilyAsync(CancellationToken cancellationToken)
     {
 
         Guid entryId = new("aaaaaaaa-1111-4111-8111-111111111111");
@@ -681,6 +683,52 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
         _ = projection.Parameters.AddWithValue("$version", versionId.ToString("D"));
 
         _ = await projection.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Seeds one pin of the seeded Global key: its version, the head that points at it, and its receipt.
+    /// </summary>
+    /// <remarks>
+    /// The rows are the ones the curation kernel writes for a pin of <c>tone</c> after its first head.
+    /// The head and version carry the key's binding epoch, which is 0 for a key row created at canonical
+    /// version 6, and the receipt carries the dependency epoch the head insert left at 1. A reset that
+    /// removed the key's epoch row and left these behind would leave a pin bound to epoch 0, which is
+    /// exactly what the next key of that name would read.
+    /// </remarks>
+    private async Task SeedCurationAsync(CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO covenant_curation_versions (
+                CurationVersionId, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                CurationKindCode, Revision, PredecessorVersionId, MutationId,
+                RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, CreatedAtUtc)
+            VALUES ($version, 1, NULL, 'tone', 1, 0, 1, 1, NULL, $mutation, $hash, $hash, $hash, $created);
+
+            INSERT INTO covenant_curation_heads (
+                ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                IsPinned, IsMasked, CurrentVersionId, CurrentRevision, UpdatedAtUtc)
+            VALUES (1, NULL, 'tone', 1, 0, 1, 0, $version, 1, $created);
+
+            INSERT INTO covenant_curation_receipts (
+                MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest,
+                CurationKindCode, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                OutcomeCode, ResultingVersionId, ResultingRevision, ResponseReceiptDigest, CommittedAtUtc)
+            VALUES ($mutation, $hash, $hash, $hash, 1, 1, NULL, 'tone', 1, 1, 1, $version, 1, $hash, $created);
+            """;
+
+        _ = command.Parameters.AddWithValue("$version", Guid.NewGuid().ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$mutation", Guid.NewGuid().ToString("D"));
+
+        _ = command.Parameters.AddWithValue("$hash", CovenantRetainedEvidence.Digest(0xA0).Bytes);
+
+        _ = command.Parameters.AddWithValue("$created", Timestamp(SeedTime));
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
 
     }
 

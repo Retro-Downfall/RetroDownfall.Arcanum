@@ -418,6 +418,82 @@ public sealed class SessionManagementCommandTests
         Assert.Equal(entry.Id, document.RootElement.GetProperty("id").GetGuid());
     }
 
+    /// <summary>
+    /// A compaction that stopped early says so in the terminal, with the count it really removed.
+    /// </summary>
+    /// <remarks>
+    /// The exit code stays 0: the host answered a success carrying a partial result, and the stop is a
+    /// fact about the result rather than a failure of the request.
+    /// </remarks>
+    [Fact]
+
+    public void Session_compact_names_the_stop_and_keeps_the_removed_count()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<CompactResult>.FromResult(
+                Result<CompactResult>.Success(new CompactResult(100, 60, 2, ErrorCodes.Covenant.StaleSnapshot))),
+            ArcanumJsonContext.Default.ApiResponseCompactResult));
+
+        CliTestResult result = RunCommand(handler, ["session", "compact", sessionId.ToString("D")]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("2 entries removed", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("stopped early", result.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(ErrorCodes.Covenant.StaleSnapshot, result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A compaction that ran to the end names no stop.
+    /// </summary>
+    [Fact]
+
+    public void Session_compact_that_ran_to_the_end_names_no_stop()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        RecordingHandler handler = new(request => ResponseFor(request, sessionId));
+
+        CliTestResult result = RunCommand(handler, ["session", "compact", sessionId.ToString("D")]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("3 entries removed", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("stopped", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The JSON document carries the stop code beside the counts.
+    /// </summary>
+    [Fact]
+
+    public void Session_compact_json_carries_the_stop_code()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<CompactResult>.FromResult(
+                Result<CompactResult>.Success(new CompactResult(100, 60, 2, ErrorCodes.Covenant.StaleSnapshot))),
+            ArcanumJsonContext.Default.ApiResponseCompactResult));
+
+        CliTestResult result = RunCommand(handler, ["--json", "session", "compact", sessionId.ToString("D")]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(2, document.RootElement.GetProperty("entriesRemoved").GetInt32());
+
+        Assert.Equal(
+            ErrorCodes.Covenant.StaleSnapshot,
+            document.RootElement.GetProperty("stoppedBy").GetString());
+    }
+
     [Fact]
 
     public void Session_memory_errors_keep_api_code_visible_and_actionable()

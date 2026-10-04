@@ -31,7 +31,12 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(nameof(CovenantMutationKernel.ApplyBatchAsync), only.Name);
 
         Assert.Equal(
-            [typeof(CovenantMutationBatch), typeof(CovenantMutationTransaction), typeof(CancellationToken)],
+            [
+                typeof(CovenantMutationBatch),
+                typeof(CovenantMutationTransaction),
+                typeof(CovenantAgentErasureGate),
+                typeof(CancellationToken),
+            ],
             only.GetParameters().Select(static parameter => parameter.ParameterType));
 
     }
@@ -212,6 +217,42 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(2, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"));
+
+    }
+
+    /// <summary>
+    /// A receipt names the entry it resolved whether or not it appended, so an erasure can find every
+    /// receipt for an entry by that column instead of guessing from scope and time.
+    /// </summary>
+    [Fact]
+    public async Task Both_receipt_outcomes_record_the_entry_they_resolved()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
+
+        _ = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(
+                generation,
+                CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.style", "Same.", 0, 0)),
+            Token);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> repeated = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(
+                generation,
+                CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.style", "Same.", 1, 1)),
+            Token);
+
+        Assert.Equal(CovenantMutationOutcome.NoChange, Assert.Single(repeated.Value).Outcome);
+
+        Assert.Equal(
+            2,
+            await ScalarAsync(
+                fixture,
+                "SELECT COUNT(*) FROM covenant_mutation_receipts WHERE EntryId = (SELECT EntryId FROM covenant_entries);"));
 
     }
 

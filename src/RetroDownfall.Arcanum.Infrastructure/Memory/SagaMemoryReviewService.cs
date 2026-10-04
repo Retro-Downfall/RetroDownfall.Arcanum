@@ -29,6 +29,8 @@ internal sealed class SagaMemoryReviewService(
     IMemoryReviewTokenCodec tokenCodec,
     WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
+    IMemoryErasureKeyProvider erasureKeys,
+    IOperatorAuthorityContextIssuer releaseAuthority,
     TimeProvider timeProvider) : ISagaMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
@@ -167,6 +169,10 @@ internal sealed class SagaMemoryReviewService(
 
                 SagaReviewItemDto[] items = new SagaReviewItemDto[rows.Count];
 
+                // Read once, so every item on one page is judged under the same retrieval policy: the
+                // gate retrieval reads, which decides whether unresolved ownership withholds a memory.
+                bool campaignScopingEnforced = options.CurrentValue.Features.CampaignScopedMemory;
+
                 for (int index = 0; index < rows.Count; index++)
                 {
                     SagaReviewEvent row = rows[index];
@@ -175,6 +181,7 @@ internal sealed class SagaMemoryReviewService(
                         connection,
                         transaction,
                         row.SubjectId,
+                        campaignScopingEnforced,
                         cancellationToken).ConfigureAwait(false);
 
                     if (current?.Claim is not { } claim
@@ -291,6 +298,14 @@ internal sealed class SagaMemoryReviewService(
 
         MemoryReviewObservationTokenFacts first = observations.Value[0];
 
+        // The plan discloses what apply will do to an erasure fingerprint, under apply's own rule: only
+        // a correction that changes the content can release, only where release authority would be
+        // issued, and only with the key copied from the latch before any transaction.
+        bool releasePermitted = request.Action == MemoryReviewAction.Correct
+            && MemoryErasureFingerprintRelease.OperatorMayRelease(releaseAuthority);
+
+        using MemoryErasureKey? erasureKey = releasePermitted ? erasureKeys.TryCopyLatched() : null;
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -336,7 +351,18 @@ internal sealed class SagaMemoryReviewService(
                         return Result<MemoryReviewBulkPlanDto>.Failure(error);
                     }
 
-                    items[index] = PlanItem(row!);
+                    items[index] = PlanItem(row!) with
+                    {
+                        ReleasesErasureFingerprint = releasePermitted && !ReplacesNothing(row!, request.Decisions[index])
+                            ? await MemoryErasureFingerprintRelease.WouldReleaseAsync(
+                                (SqliteConnection)connection,
+                                (SqliteTransaction)transaction,
+                                MemoryReviewStore.Saga,
+                                RecreatedIdentity(row!, request.Decisions[index].ReplacementContent!),
+                                erasureKey,
+                                cancellationToken).ConfigureAwait(false)
+                            : false,
+                    };
                 }
 
                 MemoryReviewDigest requestDigest = OrderedRequestDigest(request);
@@ -444,6 +470,15 @@ internal sealed class SagaMemoryReviewService(
             return Result<MemoryReviewBulkResultDto>.Failure(embeddings.Error);
         }
 
+        // Only a correction can make erased content live again, so only a correction needs the key. It is
+        // a copy of the latch, taken once before any transaction, never a credential read. Review runs
+        // under ordinary API authority, so where release authority would not be issued - a host-tools-
+        // tainted installation - a correction lands and lifts nothing.
+        bool releasePermitted = preparedRequest.Action == MemoryReviewAction.Correct
+            && MemoryErasureFingerprintRelease.OperatorMayRelease(releaseAuthority);
+
+        using MemoryErasureKey? erasureKey = releasePermitted ? erasureKeys.TryCopyLatched() : null;
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -532,6 +567,8 @@ internal sealed class SagaMemoryReviewService(
                         targets[index],
                         preparedRequest.Decisions[index],
                         embeddings.Value[index],
+                        releasePermitted,
+                        erasureKey,
                         changedAt,
                         cancellationToken).ConfigureAwait(false);
 
@@ -679,12 +716,16 @@ internal sealed class SagaMemoryReviewService(
         SagaReviewEvent target,
         SagaReviewDecision decision,
         float[] embedding,
+        bool releasePermitted,
+        MemoryErasureKey? erasureKey,
         DateTimeOffset changedAt,
         CancellationToken cancellationToken)
     {
         string? resultingVersionId = null;
 
         long? replacementEventSequence = null;
+
+        bool? releasedErasureFingerprint = false;
 
         string outcome = Outcome(action);
 
@@ -694,11 +735,7 @@ internal sealed class SagaMemoryReviewService(
                 break;
 
             case MemoryReviewAction.Correct:
-                byte[] current = AnnalContentDigest.ForSagaMemory(target.CurrentContent!);
-
-                byte[] replacement = AnnalContentDigest.ForSagaMemory(decision.ReplacementContent!);
-
-                if (CryptographicOperations.FixedTimeEquals(current, replacement))
+                if (ReplacesNothing(target, decision))
                 {
                     outcome = nameof(SagaCurationOutcomeKind.Unchanged);
 
@@ -718,6 +755,18 @@ internal sealed class SagaMemoryReviewService(
                 {
                     return Result<AppliedDecision>.Failure(IntegrityFailure);
                 }
+
+                // An operator write, so never refused: when the replacement is content erased in this
+                // memory's own scope, it is live again and its fingerprint goes in this transaction.
+                releasedErasureFingerprint = releasePermitted
+                    ? await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                        (SqliteConnection)connection,
+                        (SqliteTransaction)transaction,
+                        MemoryReviewStore.Saga,
+                        RecreatedIdentity(target, decision.ReplacementContent!),
+                        erasureKey,
+                        cancellationToken).ConfigureAwait(false)
+                    : false;
 
                 replacementEventSequence = await ReadReviewEventSequenceAsync(
                     connection,
@@ -779,7 +828,8 @@ internal sealed class SagaMemoryReviewService(
             target.SubjectId,
             target.VersionId,
             outcome,
-            resultingVersionId);
+            resultingVersionId,
+            releasedErasureFingerprint);
 
         return Result<AppliedDecision>.Success(
             new AppliedDecision(ordinal, target, result, replacementEventSequence));
@@ -816,19 +866,15 @@ internal sealed class SagaMemoryReviewService(
             ("@embedding", blob),
             ("@dimensions", embedding.Length)).ConfigureAwait(false);
 
-        if (availability.IsVecAvailable)
-        {
-            await ExecuteAsync(
-                connection,
-                transaction,
-                cancellationToken,
-                """
-                INSERT OR REPLACE INTO saga_memory_embeddings_vec (MemoryId, Embedding)
-                VALUES (@id, @embedding)
-                """,
-                ("@id", target.SubjectId),
-                ("@embedding", blob)).ConfigureAwait(false);
-        }
+        // The same rule SagaMemoryStore follows: written only while the accelerator is live, and the
+        // stale vector removed from a plain mirror when it is not.
+        _ = await SagaVectorMirror.UpsertAsync(
+            connection,
+            transaction,
+            target.SubjectId,
+            embedding,
+            availability.IsVecAvailable,
+            cancellationToken).ConfigureAwait(false);
 
         return await AnnalsClaimWriter.AppendCorrectionAsync(
             connection,
@@ -847,6 +893,31 @@ internal sealed class SagaMemoryReviewService(
             cancellationToken,
             legacySchema: true).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// The erasure identity a correction gives its replacement in the reviewed memory's scope, or null
+    /// when that scope and Campaign name no identity a fingerprint can describe.
+    /// </summary>
+    private static MemoryErasureIdentity? RecreatedIdentity(SagaReviewEvent target, string content)
+    {
+        try
+        {
+            return MemoryErasureIdentity.ForSaga(target.ScopeKind, target.CampaignId, content);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether a correction's replacement is the content the memory already holds, so it writes
+    /// nothing and can release nothing. Prepare's disclosure and apply's write both decide by it.
+    /// </summary>
+    private static bool ReplacesNothing(SagaReviewEvent target, SagaReviewDecision decision) =>
+        CryptographicOperations.FixedTimeEquals(
+            AnnalContentDigest.ForSagaMemory(target.CurrentContent!),
+            AnnalContentDigest.ForSagaMemory(decision.ReplacementContent!));
 
     private async Task<string?> RetireAsync(
         DbConnection connection,
@@ -870,15 +941,9 @@ internal sealed class SagaMemoryReviewService(
             "DELETE FROM saga_memory_embeddings WHERE MemoryId = @id",
             ("@id", target.SubjectId)).ConfigureAwait(false);
 
-        if (availability.IsVecAvailable)
-        {
-            await ExecuteAsync(
-                connection,
-                transaction,
-                cancellationToken,
-                "DELETE FROM saga_memory_embeddings_vec WHERE MemoryId = @id",
-                ("@id", target.SubjectId)).ConfigureAwait(false);
-        }
+        // Whatever the accelerator flag says, exactly as SagaMemoryStore.RetireAsync does.
+        _ = await SagaVectorMirror.DeleteAsync(connection, transaction, target.SubjectId, cancellationToken)
+            .ConfigureAwait(false);
 
         byte[] suppressionKey = await SagaSuppressionKeyStore.ReadOrCreateAsync(
             connection,
@@ -1862,6 +1927,7 @@ internal sealed class SagaMemoryReviewService(
         DbConnection connection,
         DbTransaction transaction,
         string subjectId,
+        bool campaignScopingEnforced,
         CancellationToken cancellationToken)
     {
         SagaMemoryDto memory;
@@ -1942,13 +2008,9 @@ internal sealed class SagaMemoryReviewService(
 
         SagaMemoryLifecycle lifecycle = new(memory.RetiredAtUtc, memory.PinnedAtUtc);
 
-        SagaRetrievalEligibility eligibility = memory.RetiredAtUtc is not null
-            ? SagaRetrievalEligibility.Retired
-            : memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved
-                ? SagaRetrievalEligibility.OwnershipUnresolved
-                : !hasEmbedding
-                    ? SagaRetrievalEligibility.EmbeddingMissing
-                    : SagaRetrievalEligibility.Eligible;
+        SagaRetrievalEligibility eligibility = SagaRetrievalEligibilityClassifier.Classify(
+            new SagaMemoryCurationRow(memory, lifecycle, hasEmbedding),
+            campaignScopingEnforced);
 
         return new SagaReviewCurrentDto(
             memory,

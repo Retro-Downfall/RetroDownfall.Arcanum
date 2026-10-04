@@ -24,11 +24,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// <para>The gate lease is what makes the sweep yield: an installation reset, an erasure, or any other
 /// exclusive owner drains it rather than racing it. That is why the batch runs under a lease it does
 /// not strictly need to read rows — the lease is the yielding, not the authorization.</para>
+///
+/// <para>A batch that removes a head advances the canonical search sequence, so every committed batch
+/// republishes availability under the same lease. One that removed nothing republishes too, which is
+/// what corrects a snapshot an earlier writer left stale.</para>
 /// </remarks>
 internal sealed class CovenantOwnerCleanupCoordinator(
     ICovenantOperationGate gate,
     ICovenantConnectionSource connections,
-    CovenantCleanupWorker worker)
+    CovenantCleanupWorker worker,
+    CovenantAvailabilityRepublisher availabilityRepublisher)
 {
 
     internal async ValueTask<Result<CovenantCleanupOutcome>> RunBatchAsync(
@@ -72,6 +77,10 @@ internal sealed class CovenantOwnerCleanupCoordinator(
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
+        await availabilityRepublisher
+            .RepublishAsync(connection, CovenantHealthTransition.OwnerCleanup)
+            .ConfigureAwait(false);
+
         return applied.Value;
 
     }
@@ -87,12 +96,20 @@ internal sealed class CovenantOwnerCleanupCoordinator(
 /// ever grew: every canonical commit appended to it and nothing under <c>src</c> drained it, so the
 /// projection stayed at whatever sequence the last test left and the pending-row ceiling was the only
 /// thing standing between an installation and a write refusal it could not act on.
+///
+/// <para>Every committed batch republishes availability under the same lease, including one that
+/// applied nothing. Without that the applied tuple advanced in the database while the published
+/// snapshot kept its bootstrap value, so status reported search as synchronizing until a restart.</para>
 /// </remarks>
 internal sealed class CovenantSearchOutboxCoordinator(
     ICovenantOperationGate gate,
     ICovenantConnectionSource connections,
-    CovenantSearchOutboxWorker worker)
+    CovenantSearchOutboxWorker worker,
+    CovenantAvailabilityRepublisher availabilityRepublisher)
 {
+
+    /// <summary>Test seam: runs inside the batch's transaction after the worker has applied it, before COMMIT.</summary>
+    internal Func<SqliteTransaction, CancellationToken, Task>? BeforeCommitForTesting { get; init; }
 
     internal async ValueTask<Result<CovenantOutboxSyncOutcome>> SynchronizeAsync(
         int maxRows,
@@ -133,7 +150,19 @@ internal sealed class CovenantSearchOutboxCoordinator(
 
         }
 
+        if (BeforeCommitForTesting is { } beforeCommit)
+        {
+
+            await beforeCommit(transaction, cancellationToken).ConfigureAwait(false);
+
+        }
+
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        // After COMMIT and on the connection that committed, so a batch that rolls back publishes nothing.
+        await availabilityRepublisher
+            .RepublishAsync(connection, CovenantHealthTransition.AcceleratorSynchronization)
+            .ConfigureAwait(false);
 
         return applied.Value;
 

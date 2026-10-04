@@ -15,33 +15,6 @@ internal sealed partial class SessionAttachmentStore
 {
     private const int ForkAttachmentPageSize = 128;
 
-    public async Task DeleteRowsForSessionInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken = default)
-    {
-        if (_db.Database.CurrentTransaction is null)
-        {
-            throw new InvalidOperationException(
-                "DeleteRowsForSessionInAmbientTransactionAsync requires an ambient EF transaction.");
-        }
-
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-        await using DbCommand cmd = connection.CreateCommand();
-
-        EnlistAmbientTransaction(cmd);
-
-        cmd.CommandText =
-            """
-            DELETE FROM "SessionAttachments"
-            WHERE "SessionId" = @sessionId
-            """;
-
-        AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
-
-        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     public bool TryDeleteSessionDirectory(Guid sessionId)
     {
         string sessionSegment = sessionId.ToString("N");

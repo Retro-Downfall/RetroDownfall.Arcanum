@@ -12,7 +12,8 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// <para>A single nullable Campaign column would have collapsed <see cref="Global"/> and
 /// <see cref="LegacyUnresolved"/> into one null, and those two must never be the same answer: an
 /// explicitly installation-global memory is retrievable everywhere, and one whose ownership was never
-/// resolved is retrievable nowhere until an operator resolves it.</para>
+/// resolved is retrievable nowhere under Campaign scoping until an operator resolves it. With scoping
+/// off, retrieval does not read ownership at all and ranks both alike.</para>
 /// </remarks>
 public enum SagaMemoryScopeKind
 {
@@ -28,7 +29,7 @@ public enum SagaMemoryScopeKind
 
     /// <summary>
     /// The owning Session's binding is unresolved, or the Session is gone. It supplies no authority, so
-    /// it is retrievable nowhere until the binding is resolved.
+    /// under Campaign scoping it is retrievable nowhere until the binding is resolved.
     /// </summary>
     LegacyUnresolved = 3,
 

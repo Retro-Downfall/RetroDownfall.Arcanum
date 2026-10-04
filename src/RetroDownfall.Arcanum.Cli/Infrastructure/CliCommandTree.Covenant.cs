@@ -220,13 +220,13 @@ internal static partial class CliCommandTree
 
         Option<Guid> targetVersion = new("--target-version")
         {
-            Description = "The version identity being corrected, as `show --history` reports it.",
+            Description = "The version identity being corrected, as `show` reports it.",
             Required = true,
         };
 
         Option<string> targetHash = new("--target-hash")
         {
-            Description = "The compiled hash of the version being corrected, as `show` reports it.",
+            Description = "The rendered hash of the version being corrected, as `show` reports it.",
             Required = true,
         };
 
@@ -273,6 +273,44 @@ internal static partial class CliCommandTree
         covenant.Add(show);
 
         covenant.Add(retire);
+
+        Command erase = new(
+            "erase",
+            "Erase one preference entry for good, every version in both lanes, so agents cannot propose its key again in that scope.");
+
+        Argument<string> eraseKey = new("key") { Description = "The preference key." };
+
+        erase.Add(eraseKey);
+
+        erase.Add(campaign);
+
+        erase.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Erase(
+                    pr.GetValue(eraseKey)!,
+                    pr.GetValue(campaign),
+                    ct).ConfigureAwait(false));
+
+        covenant.Add(erase);
+
+        Command release = new(
+            "release",
+            "Release one key's erasure fingerprint in exactly one scope, so agents may propose that key there again.");
+
+        Argument<string> releaseKey = new("key") { Description = "The preference key." };
+
+        release.Add(releaseKey);
+
+        release.Add(campaign);
+
+        release.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Release(
+                    pr.GetValue(releaseKey)!,
+                    pr.GetValue(campaign),
+                    ct).ConfigureAwait(false));
+
+        covenant.Add(release);
 
         covenant.Add(CurationCommand(
             handler,
@@ -345,7 +383,7 @@ internal static partial class CliCommandTree
 
         Option<long> expectedRevision = new("--expected-revision")
         {
-            Description = "The curation revision this change expects to replace. Zero is an uncurated subject.",
+            Description = "The curation revision `show` reports for this lane. Zero is an uncurated subject.",
         };
 
         command.Add(key);

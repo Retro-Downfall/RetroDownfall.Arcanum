@@ -21,10 +21,15 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Lexicon.ProtectedMutationRefused =>
                 StatusCodes.Status403Forbidden,
 
+            // The two operator-management refusals sit here with the other Lexicon states the operator
+            // re-reads and decides on again: a name an erasure suppressed, and a pinned entry an agent
+            // may not mutate.
             ErrorCodes.Lexicon.StaleCurationTarget
                 or ErrorCodes.Lexicon.RetiredMutationRefused
                 or ErrorCodes.Lexicon.CurationGenerationExhausted
-                or ErrorCodes.Lexicon.ArtifactRevisionExhausted =>
+                or ErrorCodes.Lexicon.ArtifactRevisionExhausted
+                or ErrorCodes.Lexicon.SuppressedNameRefused
+                or ErrorCodes.Lexicon.PinnedMutationRefused =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.Lexicon.CurationIntegrityFailed
@@ -42,6 +47,28 @@ internal static class ArcanumErrorMapper
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.MemoryReview.IntegrityFailure =>
+                StatusCodes.Status500InternalServerError,
+
+            // Selective erasure. A token that cannot be read is the request's fault. A lost key and a
+            // plan that moved are states the operator re-reads and decides on again. An erased
+            // subject is gone and a receipt proves it. A key secure storage cannot reach, or a schema not yet at this slice's version, is
+            // worth retrying. An erase that could not prove its own absence rolled back and is a
+            // server fault, which the default-bad-request mapping must never downgrade.
+            ErrorCodes.MemoryErasure.InvalidPreflight =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.MemoryErasure.KeyLost
+                or ErrorCodes.MemoryErasure.StalePlan =>
+                StatusCodes.Status409Conflict,
+
+            ErrorCodes.MemoryErasure.SubjectErased =>
+                StatusCodes.Status410Gone,
+
+            ErrorCodes.MemoryErasure.Unavailable
+                or ErrorCodes.MemoryErasure.KeyUnavailable =>
+                StatusCodes.Status503ServiceUnavailable,
+
+            ErrorCodes.MemoryErasure.ErasureIncomplete =>
                 StatusCodes.Status500InternalServerError,
 
             ErrorCodes.Validation.InvalidPrompt
@@ -302,6 +329,7 @@ internal static class ArcanumErrorMapper
             or ErrorCodes.Workspace.DeleteFailed
             or ErrorCodes.Spell.WriteFailed
             or ErrorCodes.Saga.SearchFailed
+            or ErrorCodes.MemoryErasure.ErasureIncomplete
             or ErrorCodes.Hub.Error)
         {
             return ResolveStatusCode(errorCode);

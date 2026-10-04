@@ -257,13 +257,15 @@ public sealed class AnnalsStoreTests : IAsyncLifetime
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
     private ILexiconService CreateLexiconService() =>
         new LexiconService(
             _db!,
             NullLogger<LexiconService>.Instance,
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings { Features = new FeatureSettings { Annals = true } }));
+                new ArcanumSettings { Features = new FeatureSettings { Annals = true } }),
+            MemoryErasureTestKeys.Isolated());
 
 }

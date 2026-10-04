@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Lexicon;
 
@@ -6,6 +8,10 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Secrets.Security;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -45,6 +51,47 @@ public sealed partial class DataRetentionServiceTests
         await AssertLifecycleLexiconUnchangedAsync(otherCampaign);
 
         await AssertLifecycleLexiconUnchangedAsync(global);
+    }
+
+    /// <summary>
+    /// A workspace reset removes its own workspace's rows and leaves every erasure evidence row
+    /// byte-identical.
+    /// </summary>
+    [SkippableFact]
+    public async Task Workspace_reset_preserves_erasure_evidence()
+    {
+        RequireSqlCipher();
+
+        WorkspaceResetGraph graph = await SeedWorkspaceResetGraphAsync();
+
+        InMemoryOsCredentialStore credentials = new();
+
+        SqliteConnection connection = await SeedErasureEvidenceAsync(credentials);
+
+        MemoryErasureRetainedSnapshot before = await MemoryErasureRetainedEvidence.CaptureAsync(
+            connection,
+            credentials,
+            CancellationToken.None);
+
+        Assert.Equal((1, 1, 1), (before.Fingerprints.Count, before.Receipts.Count, before.Subjects.Count));
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = WorkspaceResetRequest(graph);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(new(request, plan.PlanId));
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.Reconciled);
+
+        Assert.Equal(0, await CountAsync("WorkspaceContexts", "RootPath", graph.TargetRoot));
+
+        Assert.Equal(0, await CountAsync("workspace_file_chunks", "ChunkId", graph.TargetChunkId));
+
+        await MemoryErasureRetainedEvidence.AssertRetainedAsync(before, connection, credentials, CancellationToken.None);
     }
 
     [SkippableFact]
@@ -299,6 +346,52 @@ public sealed partial class DataRetentionServiceTests
 
         }
 
+    }
+
+    /// <summary>
+    /// A workspace reset empties its workspace's rows from a plain vector mirror and skips a legacy
+    /// virtual one, which this runtime has no module to open.
+    /// </summary>
+    /// <remarks>
+    /// The mirrors exist before the graph is seeded, because the seeds write a mirror row wherever one
+    /// exists. The legacy mirror is stood in for by an FTS5 virtual table that can be deleted from, so
+    /// the target node's row still being there is what shows no statement reached it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ApplyAsync_ResetWorkspace_SkipsALegacyVirtualVectorMirrorAndEmptiesThePlainOne()
+    {
+        RequireSqlCipher();
+
+        await RecreateVectorTableAsync("workspace_file_embeddings_vec", "ChunkId");
+
+        await RecreateLegacyVectorTableAsync("tapestry_node_embeddings_vec", "NodeId");
+
+        WorkspaceResetGraph graph = await SeedWorkspaceResetGraphAsync();
+
+        Assert.Equal(4, await CountAllAsync("tapestry_node_embeddings_vec"));
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = WorkspaceResetRequest(graph);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId));
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.True(result.Value.Reconciled);
+
+        Assert.Equal(0, await CountAsync("tapestry_node_embeddings", "NodeId", graph.TargetNodeId));
+
+        Assert.Equal(0, await CountAsync("workspace_file_embeddings_vec", "ChunkId", graph.TargetChunkId));
+
+        Assert.Equal(1, await CountAsync("workspace_file_embeddings_vec", "ChunkId", graph.NestedChunkId));
+
+        Assert.Equal(1, await CountAsync("workspace_file_embeddings_vec", "ChunkId", graph.SiblingChunkId));
+
+        Assert.Equal(4, await CountAllAsync("tapestry_node_embeddings_vec"));
     }
 
     [SkippableFact]

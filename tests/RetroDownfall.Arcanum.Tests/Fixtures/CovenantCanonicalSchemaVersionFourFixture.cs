@@ -10,7 +10,7 @@ internal static class CovenantCanonicalSchemaVersionFourFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CovenantCanonicalObjects
+        .. CovenantCanonicalSchemaVersionFiveFixture.Objects
             .Where(static definition => !definition.Name.StartsWith("covenant_review_", StringComparison.Ordinal))
             .Select(static definition => definition.Name == "covenant_utc_instant_columns"
                 ? definition with { Sql = WithoutReviewInventoryRows(definition.Sql) }

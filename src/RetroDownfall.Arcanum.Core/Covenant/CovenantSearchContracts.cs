@@ -167,6 +167,12 @@ public sealed record CovenantSearchHit(
 /// It carries the compiler's output, never a raw MATCH fragment. A query type that could hold raw
 /// syntax would make "the compiler is the only normalization and escaping path" a convention rather
 /// than a fact.
+///
+/// <para><see cref="Accelerator"/> is the state the host has published for the accelerator tier, which
+/// no row can say. The index answers from the accelerator only while it is
+/// <see cref="CovenantCapabilityState.Healthy"/> and its persisted tuple is current, so a tier the host
+/// has found degraded or unavailable is answered by the canonical fallback and reported the way the
+/// status route reports it.</para>
 /// </remarks>
 public sealed record CovenantSearchQuery(
     CovenantCompiledSearchTerms Terms,
@@ -175,7 +181,8 @@ public sealed record CovenantSearchQuery(
     CovenantLane? Lane,
     CovenantLifecycle Lifecycle,
     int PageSize,
-    CovenantSearchKeyset? After)
+    CovenantSearchKeyset? After,
+    CovenantCapabilityState Accelerator = CovenantCapabilityState.Healthy)
 {
 
     public int EffectivePageSize => CovenantManagementReadLimits.ClampPageSize(PageSize);

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -8,7 +9,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// <summary>
 /// Seeds and converges the always-present core rows inside the Core install transaction: the
 /// Campaign registry epoch, the installation authority row, one Campaign binding per Session, and
-/// the Covenant family's deletion-cleanup cursor.
+/// the Covenant family's deletion-cleanup cursor. It also converges FTS5 secure delete on the
+/// Lexicon index.
 /// </summary>
 /// <remarks>
 /// Everything here is convergent rather than incremental, because the same code runs on a database
@@ -76,6 +78,8 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         await SeedCovenantCleanupCursorAsync(connection, transaction, installedAtUtc, cancellationToken)
             .ConfigureAwait(false);
+
+        await ConvergeLexiconSecureDeleteAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -461,6 +465,47 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         _ = UtcInstantSql.AddStoredParameter(command, "$updatedAtUtc", installedAtUtc);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Turns on FTS5 secure delete for <c>lexicon_fts</c> and reads it back.
+    /// </summary>
+    /// <remarks>
+    /// Without it a deleted or replaced Lexicon row leaves its tokens in the index's segments until a
+    /// later merge happens to reach them, so an erased entry would stay legible in
+    /// <c>lexicon_fts_data</c>. The version-13 step sets it for an upgraded installation; converging it
+    /// here as well gives a fresh installation the setting before its first write, and restores it on
+    /// an installation that lost it. <c>lexicon_fts</c> exists at every Core version, so there is no
+    /// version to check first.
+    ///
+    /// <para>A read-back that disagrees throws, as the Covenant accelerator's does. This runs inside the
+    /// Core transaction, so a runtime that cannot honor the setting refuses the install instead of
+    /// leaving deleted Lexicon text quietly recoverable.</para>
+    /// </remarks>
+    private static async Task ConvergeLexiconSecureDeleteAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "INSERT INTO lexicon_fts(lexicon_fts, rank) VALUES('secure-delete', 1);";
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        // The shadow config table is the only place FTS5 exposes an applied rank setting for
+        // read-back; there is no pragma equivalent.
+        command.CommandText = "SELECT v FROM lexicon_fts_config WHERE k = 'secure-delete';";
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        if (value is null or DBNull || Convert.ToInt64(value, CultureInfo.InvariantCulture) != 1)
+        {
+            throw new InvalidOperationException(
+                "The Lexicon FTS5 index did not report secure-delete after it was enabled.");
+        }
     }
 
     /// <summary>

@@ -4,24 +4,37 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
 /// RAG Phase 4 — raw-SQL persistence for Saga memories (<c>saga_memories</c> +
-/// <c>saga_memory_embeddings</c> [+ <c>saga_memory_embeddings_vec</c> when available] +
+/// <c>saga_memory_embeddings</c> [+ the <c>saga_memory_embeddings_vec</c> mirror where one exists] +
 /// <c>saga_extraction_watermarks</c>; see <c>Infrastructure/Data/Schema/Tables/</c>). Shared by
 /// <c>SagaExtractionService</c> (writes), the <c>/api/saga</c> endpoints (reads/deletes), and the
 /// <c>read_saga</c> MCP tool (reads), so all three surfaces stay consistent without duplicating SQL.
 /// </summary>
+/// <remarks>
+/// One rule governs the vector mirror on every write, and it is read from the database rather than
+/// from whether this process loaded a sqlite-vec accelerator. A plain-table mirror has its rows for
+/// a memory deleted whatever the accelerator flag says, because a mirror an earlier build filled still
+/// holds that memory's embedding; a row is written only while the accelerator is live. A legacy
+/// <c>vec0</c> virtual mirror, which this runtime cannot open, is never touched. No schema file
+/// installs the mirror, so where none exists there is nothing to write or remove.
+/// </remarks>
 public interface ISagaMemoryStore
 {
 
     /// <summary>
     /// Inserts a new memory: a row in <c>saga_memories</c>, its BLOB embedding in
-    /// <c>saga_memory_embeddings</c>, and (when sqlite-vec is available) a mirrored row in
-    /// <c>saga_memory_embeddings_vec</c>.
+    /// <c>saga_memory_embeddings</c>, and, only while the accelerator is live, a mirrored row in a
+    /// plain <c>saga_memory_embeddings_vec</c>.
     /// </summary>
     /// <remarks>
-    /// Returns <see cref="SagaMemoryWriteOutcome.Suppressed"/>, writing nothing, when an operator has
-    /// already retired an equivalent conclusion in this scope. The check runs inside the insert
-    /// transaction, after scope is derived and before any row lands, so no writer — extraction included
-    /// — can reach around it.
+    /// <para>Returns <see cref="SagaMemoryWriteOutcome.Suppressed"/>, writing nothing, when an operator
+    /// has already retired an equivalent conclusion in this scope, or erased this exact content in this
+    /// exact scope. Both checks run inside the insert transaction, after scope is derived and before any
+    /// row lands, so no writer — extraction included — can reach around them. This is the authoritative
+    /// erasure chokepoint; extraction's earlier checks only save it a model or embedding call.</para>
+    ///
+    /// <para>When the store holds erasure fingerprints that the erasure key cannot verify, because the
+    /// key is lost, unreadable, or not the key that recorded them, the insert fails closed and throws
+    /// rather than writing anything.</para>
     /// </remarks>
     Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
@@ -76,7 +89,9 @@ public interface ISagaMemoryStore
     /// <para>Ownership is all that is shared. A retired memory is listed exactly as a live one is --
     /// this reads <c>saga_memories</c> and retirement removes only the embeddings retrieval ranks
     /// through -- so the two surfaces agree about who owns a memory and not about whether a turn can
-    /// recall it. <c>ISagaCurationService.ShowAsync</c> is what reports a memory's retirement.</para>
+    /// recall it. Each row carries <see cref="SagaMemoryDto.RetiredAtUtc"/> and
+    /// <see cref="SagaMemoryDto.PinnedAtUtc"/>, which <c>saga list</c> renders as its <c>State</c>
+    /// column.</para>
     /// </remarks>
     Task<SagaMemoryDto[]> ListAsync(
         string? query,
@@ -85,6 +100,67 @@ public interface ISagaMemoryStore
         int limit,
         int offset,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// <see cref="ListAsync"/>'s page, each memory read together with its curation lifecycle and
+    /// whether it still has an embedding.
+    /// </summary>
+    /// <remarks>
+    /// The same query, the same arguments, and so the same memories in the same order as
+    /// <see cref="ListAsync"/>: the embedding probe is one projected column and never a filter. What it
+    /// adds is what <see cref="SagaRetrievalEligibilityClassifier"/> needs, read in the same statement
+    /// as the row, so search can say whether a turn can still recall each hit.
+    /// </remarks>
+    Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
+        string? query,
+        Guid? sessionId,
+        MemoryScope scope,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// One bounded page of memory positions for a walk that removes what it reads: every memory, in one
+    /// total order, strictly after <paramref name="after"/>, or from the newest when it is
+    /// <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>Newest first, with the identity breaking a tie, so no two memories share a place and a page
+    /// boundary can fall inside a group of memories that share a <c>CreatedAt</c>. The next page is
+    /// whatever follows the last position this one returned, never a count of rows to skip: a row removed
+    /// in the meantime cannot slide a later one past the walk, and a row already removed is never read
+    /// again. The position that resumes a walk does not have to belong to a row that still exists.</para>
+    ///
+    /// <para>Deliberately takes no scope, Session or text filter. Erasure has to reach every memory,
+    /// including the ones no turn in any Campaign can currently retrieve, so this lists them all.
+    /// <paramref name="limit"/> must be at least 1; a non-positive limit is refused rather than read as
+    /// "no limit".</para>
+    /// </remarks>
+    Task<SagaMemoryPosition[]> ListPositionsAfterAsync(
+        SagaMemoryPosition? after,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromException<SagaMemoryPosition[]>(
+            new NotSupportedException(
+                "This Saga memory store does not expose an ordered keyset walk over its memories."));
+
+    }
+
+    /// <summary>
+    /// Whether a turn in <paramref name="scope"/> could reach at least one memory: one that is not
+    /// retired, still has an embedding, and is owned by that scope.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors retrieval's own choice rather than restating it. With Campaign scoping off a turn ranks
+    /// every embedded memory, so this asks about all of them; with it on, only installation-scoped
+    /// memories and the resolved Campaign's own, as the scoped search ranks. This is what <c>memory
+    /// explain</c> reports; <see cref="CountAsync"/> keeps reporting what is stored.
+    /// </remarks>
+    Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken);
 
     /// <summary>
     /// Looks up memories by id (as returned by <c>IDivinationService.SearchAsync</c> against
@@ -105,13 +181,13 @@ public interface ISagaMemoryStore
     /// </remarks>
     Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken);
 
-    /// <summary>Deletes a single memory (and its embedding, from both BLOB and vec0 tables). Returns <c>false</c> when no such memory exists.</summary>
+    /// <summary>Deletes a single memory (and its embedding, from the BLOB table and from a plain mirror whatever the accelerator flag says). Returns <c>false</c> when no such memory exists.</summary>
     Task<bool> DeleteAsync(string id, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Retires a memory: its embedding is removed from both <c>saga_memory_embeddings</c> and (when
-    /// available) <c>saga_memory_embeddings_vec</c>, so no retrieval path can reach it, while the
-    /// <c>saga_memories</c> row itself survives for inspection and for reversal.
+    /// Retires a memory: its embedding is removed from <c>saga_memory_embeddings</c> and from a plain
+    /// <c>saga_memory_embeddings_vec</c> whatever the accelerator flag says, so no retrieval path can
+    /// reach it, while the <c>saga_memories</c> row itself survives for inspection and for reversal.
     /// </summary>
     /// <remarks>
     /// <paramref name="expectedContentDigest"/> is the caller's proof that it read the content it is
@@ -125,8 +201,9 @@ public interface ISagaMemoryStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Reinstates a retired memory: its embedding is restored to both <c>saga_memory_embeddings</c> and
-    /// (when available) <c>saga_memory_embeddings_vec</c> from <paramref name="embedding"/>, and the
+    /// Reinstates a retired memory: its embedding is restored to <c>saga_memory_embeddings</c> from
+    /// <paramref name="embedding"/>, and mirrored into a plain <c>saga_memory_embeddings_vec</c> only
+    /// while the accelerator is live (otherwise any mirror row the memory still has is removed), and the
     /// retirement suppression over its content-and-scope is released so a later extraction pass may
     /// write it again.
     /// </summary>
@@ -139,7 +216,9 @@ public interface ISagaMemoryStore
 
     /// <summary>
     /// Replaces one memory's text in place: <c>saga_memories.Content</c>, its BLOB embedding in
-    /// <c>saga_memory_embeddings</c>, and (when available) its <c>saga_memory_embeddings_vec</c> mirror.
+    /// <c>saga_memory_embeddings</c>, and its row in a plain <c>saga_memory_embeddings_vec</c> — rewritten
+    /// while the accelerator is live, and otherwise removed, because the old vector describes text the
+    /// memory no longer holds.
     /// </summary>
     /// <remarks>
     /// <paramref name="expectedContentDigest"/> is the caller's proof that it read the content it is
@@ -174,7 +253,7 @@ public interface ISagaMemoryStore
         DateTimeOffset changedAt,
         CancellationToken cancellationToken);
 
-    /// <summary>Deletes every Saga memory, embedding, and extraction watermark.</summary>
+    /// <summary>Deletes every Saga memory, embedding (including a plain mirror's rows, whatever the accelerator flag says), and extraction watermark.</summary>
     Task DeleteAllAsync(CancellationToken cancellationToken);
 
     /// <summary>Aggregate counts and timestamp bounds across all Saga memories.</summary>
@@ -216,3 +295,15 @@ public interface ISagaMemoryStore
     Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken);
 
 }
+
+/// <summary>
+/// Where one memory falls in the order a bulk walk visits Saga memories: newest first, the identity
+/// breaking a tie.
+/// </summary>
+/// <param name="CreatedAt">
+/// The memory's <c>CreatedAt</c> exactly as stored, which is the text the database orders by. A caller
+/// hands it back unchanged as part of the position and never parses or reformats it, so a stored value
+/// that would not survive a round trip through a timestamp still resumes the walk at the right row.
+/// </param>
+/// <param name="Id">The memory's identity exactly as stored.</param>
+public sealed record SagaMemoryPosition(string CreatedAt, string Id);

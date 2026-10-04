@@ -408,6 +408,12 @@ public sealed class SagaCurationEndpointTests
 
         Assert.NotNull(listed.RetiredAtUtc);
 
+        // The wire spelling, read raw: a name a client can match, not an ordinal that would change
+        // meaning if the enum were ever reordered.
+        using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-retire");
+
+        Assert.Contains("\"eligibility\":\"Retired\"", await shown.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
     }
 
     /// <summary>

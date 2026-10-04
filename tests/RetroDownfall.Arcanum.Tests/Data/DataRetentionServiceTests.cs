@@ -3970,7 +3970,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
             {
                 Features = new FeatureSettings { Annals = true },
-            }));
+            }),
+            MemoryErasureTestKeys.Isolated());
 
     private async Task<LexiconEntryDetail> SeedCuratableLexiconAsync(string name, bool aged = true)
     {

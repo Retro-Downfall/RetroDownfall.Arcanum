@@ -317,7 +317,8 @@ public sealed class LexiconPinTests(GrimoireFixture fixture)
         await using ArcanumDbContext other = fixture.CreateContext(owner.Path);
 
         ILexiconCurationService staleWriter = new LexiconService(other, NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<Core.Configuration.ArcanumSettings>(owner.Settings));
+            new TestOptionsMonitor<Core.Configuration.ArcanumSettings>(owner.Settings),
+            MemoryErasureTestKeys.Isolated());
 
         PinBarrierRegistration barrier = new();
 

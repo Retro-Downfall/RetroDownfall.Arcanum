@@ -33,6 +33,70 @@ public sealed partial class DataRetentionServiceTests
 
     private static readonly Guid ResetCampaignB = new("B0000000-0000-4000-8000-000000000B22");
 
+    /// <summary>
+    /// A memory that arrives after an empty preview has been rebuilt for apply, and before the reset's
+    /// transaction counts the store, is refused rather than cleared unseen.
+    /// </summary>
+    /// <remarks>
+    /// The window is the one an empty preview's no-op leans on: the plan-identity check has already
+    /// passed with nothing in the store, so only the count inside the transaction can still see a row.
+    /// The memory is written by the store's own insert at the moment the reset's durable operation
+    /// starts, which is after the rebuild and before the transaction opens. The refusal is the
+    /// in-transaction one, <c>Data.Conflict</c>, which the reset route answers as 409.
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_empty_reset_refuses_a_memory_that_arrives_inside_its_apply_window()
+    {
+        RequireSqlCipher();
+
+        string? arrived = null;
+
+        HeartbeatCountingOperationStore operations = new(
+            new LongRunningOperationStore(_db!, TestOrdinaryConnectionFactory.For(_db!)))
+        {
+            AfterStartAsync = async cancellationToken =>
+            {
+                ISagaMemoryStore store = CreateSagaMemoryStore();
+
+                string id = Guid.NewGuid().ToString();
+
+                Assert.Equal(
+                    SagaMemoryWriteOutcome.Written,
+                    await store.InsertAsync(
+                        id,
+                        "arrived inside the apply window",
+                        DateTimeOffset.UtcNow,
+                        null,
+                        tags: null,
+                        source: "test",
+                        SagaEmbedding(),
+                        cancellationToken));
+
+                arrived = id;
+            },
+        };
+
+        IDataRetentionService service = CreateService(operationStore: operations);
+
+        DataRetentionRequest request = new(DataRetentionOperation.ResetMemory, MemoryScope: MemoryResetScope.Saga);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Assert.Empty(plan.CandidateIds);
+
+        Assert.Equal(0, plan.DerivedRecords);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(new DataRetentionApplyRequest(request, plan.PlanId));
+
+        Assert.True(result.IsFailure, "The reset cleared a memory its preview never showed.");
+
+        Assert.Equal(ErrorCodes.Data.Conflict, result.Error.Code);
+
+        Assert.NotNull(arrived);
+
+        Assert.Equal(1, await CountSagaAsync(arrived!));
+    }
+
     [SkippableFact]
     public async Task Campaign_reset_erases_retired_pinned_Lexicon_and_its_history_but_preserves_other_scopes()
     {
@@ -69,7 +133,7 @@ public sealed partial class DataRetentionServiceTests
     }
 
     private LexiconService CreateLifecycleLexiconService() => new(_db!,
-        new TestCapturingLogger<LexiconService>(), new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+        new TestCapturingLogger<LexiconService>(), new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), MemoryErasureTestKeys.Isolated());
 
     private async Task<LexiconEntryDetail> SeedLifecycleLexiconAsync(string name, Guid? campaign)
     {
@@ -489,7 +553,8 @@ public sealed partial class DataRetentionServiceTests
 
                     },
 
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
     /// <summary>A deterministic vector of the length the store is configured to accept.</summary>
     private static float[] SagaEmbedding()

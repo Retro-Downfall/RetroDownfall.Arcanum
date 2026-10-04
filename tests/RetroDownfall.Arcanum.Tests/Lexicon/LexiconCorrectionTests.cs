@@ -690,10 +690,14 @@ internal sealed class CorrectionFixture : IAsyncDisposable
 
     internal SqliteConnection Connection => (SqliteConnection)_db.Database.GetDbConnection();
 
+    /// <summary>The erasure key provider the service was composed with: the caller's, or an isolated keyring.</summary>
+    internal RetroDownfall.Arcanum.Core.Memory.IMemoryErasureKeyProvider ErasureKeys { get; }
+
     internal CorrectionFixture(
         GrimoireFixture fixture,
         bool annals = false,
-        RetroDownfall.Arcanum.Core.Memory.IMemoryReviewTokenCodec? reviewTokenCodec = null)
+        RetroDownfall.Arcanum.Core.Memory.IMemoryReviewTokenCodec? reviewTokenCodec = null,
+        RetroDownfall.Arcanum.Core.Memory.IMemoryErasureKeyProvider? erasureKeys = null)
     {
         Path = fixture.CopyDatabase();
 
@@ -701,8 +705,10 @@ internal sealed class CorrectionFixture : IAsyncDisposable
 
         Settings = new ArcanumSettings { Features = new FeatureSettings { Annals = annals } };
 
+        ErasureKeys = erasureKeys ?? MemoryErasureTestKeys.Isolated();
+
         Concrete = new LexiconService(_db, Logger,
-            new TestOptionsMonitor<ArcanumSettings>(Settings), reviewTokenCodec: reviewTokenCodec);
+            new TestOptionsMonitor<ArcanumSettings>(Settings), ErasureKeys, reviewTokenCodec: reviewTokenCodec);
     }
 
     internal async Task<LexiconEntryDetail> SeedAsync()

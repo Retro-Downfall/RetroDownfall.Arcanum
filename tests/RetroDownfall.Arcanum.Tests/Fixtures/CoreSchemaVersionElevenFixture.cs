@@ -10,7 +10,7 @@ internal static class CoreSchemaVersionElevenFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionTwelveFixture.Objects
             .Where(static definition => !definition.Name.StartsWith("annal_review_", StringComparison.Ordinal))
             .Select(static definition => definition.Name == "grimoire_utc_instant_columns"
                 ? definition with { Sql = WithoutReviewInventoryRows(definition.Sql) }

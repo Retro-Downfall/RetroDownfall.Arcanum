@@ -49,6 +49,8 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         "arcanum_managed_file_intent_mutation_authorized",
 
         "arcanum_restore_staging_managed_authority_sanitization_authorized",
+
+        "arcanum_covenant_entry_erasure_authorized",
     ];
 
     private static readonly ConditionalWeakTable<SqliteConnection, CovenantSqliteConnectionState> States = new();

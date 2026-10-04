@@ -392,6 +392,10 @@ public sealed class CovenantArchitectureBoundaryTests
             "System.Net.Http",
 
             "Microsoft.Extensions.AI",
+
+            // ADO.NET is storage too: a Core contract that names DbTransaction has learned that its
+            // implementation is a database, which is the same coupling Microsoft.Data.Sqlite would be.
+            "System.Data.Common",
         ];
 
         AssemblyName[] referenced = CoreAssembly.GetReferencedAssemblies();
@@ -462,6 +466,11 @@ public sealed class CovenantArchitectureBoundaryTests
                     typeof(CovenantReadLease),
                     typeof(CovenantTurnLease),
                     typeof(CovenantProtectedTransferLease),
+
+                    // A compound read-and-exclusive lease minted only by AcquireEntryErasureAsync. It
+                    // claims installation coverage only after it has closed and drained the whole
+                    // installation, so it is never a second ordinary all-scopes read.
+                    typeof(CovenantEntryErasureLease),
                 ]));
     }
 
@@ -503,6 +512,14 @@ public sealed class CovenantArchitectureBoundaryTests
 
         Assert.Equal(
             [
+                // The third declared exception, listed first because the scan orders paths ordinally,
+                // and it is not a writer at all. The file names covenant_search_documents only as one
+                // entry in the append-only effect-digest table-code registry, which gives each erasure
+                // plan target a stable byte. Core has no SQLite access, so it cannot reach the
+                // projection, and the name stays a plain literal because hiding it from this scan would
+                // hide it from the next reader too.
+                "src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureEffectFacts.cs",
+
                 // The one declared exception, and it is not a live writer. This file owns the list of
                 // Covenant family content tables for two staged-only callers: the pre-staging inventory,
                 // which counts them, and the protected-state purge of §10.19.10, which clears them out
@@ -521,12 +538,174 @@ public sealed class CovenantArchitectureBoundaryTests
                 // clearing the projection is not a race against the workers that own it.
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalErasureTransaction.cs",
 
+                // The fourth declared exception. A selective entry erasure deletes the entry's search
+                // documents and appends content-free absent deltas in the same transaction, under an
+                // entry-erasure closure during which the accelerator lease is refused, so the applied
+                // tuple never claims a document this file removed.
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantEntryErasurePlan.cs",
+
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantIndexRebuilder.cs",
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchIndex.cs",
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchOutboxWorker.cs",
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchSql.cs",
             ],
             writers);
+    }
+
+    /// <summary>
+    /// The key's binding epoch is joined in one place, <c>CovenantStoreSql.BindingEpoch</c>, which
+    /// every pin and mask read calls, and read into C# in one other, <c>CovenantKeyEpochs.ReadAsync</c>.
+    /// </summary>
+    /// <remarks>
+    /// The rule the expression spells, that a missing key row reads as binding epoch 0, is what keeps a
+    /// keyless pin bound when the first head creates the key. A copy that drifted from it, by joining
+    /// the moving dependency epoch or dropping the <c>COALESCE</c>, would lapse a pin or a mask on one
+    /// path and keep it on another, and every one of those paths answers the same operator question.
+    ///
+    /// <para>Pinned on the column's name rather than on one spelling of the expression. A copy written
+    /// with a table alias, with an aggregate, or as a join with <c>COALESCE(k.IncarnationEpoch, 0)</c>,
+    /// which is how the design states the rule, contains no fixed phrase a narrower pin could match.
+    /// Comments are stripped, and each remaining code token is resolved to the member that holds it, so
+    /// a second statement in the owning file is caught as surely as one in another file.</para>
+    ///
+    /// <para><c>CovenantKeyEpochs.ReadAsync</c> is the one other site. It reads both epochs of one key
+    /// into C#, inside the write transaction, for the curation writers to record under. It is not a
+    /// join expression, so it applies the same missing-row rule with an aggregate rather than calling
+    /// the shared expression.</para>
+    ///
+    /// <para>The schema's <c>.sql</c> files are scanned too, and the ones whose code names the column are
+    /// listed: the table, its immutability guard, the three head triggers that create a key row at
+    /// binding epoch 0, and the version 6 steps that add, backfill, guard and re-create them. Each
+    /// defines or writes the column and none reads it into a comparison, so a new schema object that
+    /// names it has to be added here deliberately.</para>
+    /// </remarks>
+    [Fact]
+    public void The_binding_epoch_expression_has_one_source()
+    {
+        const string Owner = "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStoreSql.cs";
+
+        const string EpochReader = "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantKeyEpochs.cs";
+
+        const string Column = "IncarnationEpoch";
+
+        const string Expression = "SELECT IncarnationEpoch FROM covenant_key_epochs";
+
+        const string InlineRule = "COALESCE((SELECT IncarnationEpoch";
+
+        IReadOnlyList<ProductionSource> sources = ProductionSourceInventory.Sources();
+
+        string[] sites = [.. sources
+            .Where(static source => source.Names(Column))
+            .SelectMany(static source => ColumnSites(source, Column))
+            .Order(StringComparer.Ordinal)];
+
+        Assert.Equal(
+            [
+                $"{EpochReader} CovenantKeyEpochs.ReadAsync",
+                $"{Owner} CovenantStoreSql.BindingEpoch",
+            ],
+            sites);
+
+        string[] files = [.. sources
+            .Where(static source => source.Names(Expression))
+            .Select(static source => source.RelativePath)
+            .Order(StringComparer.Ordinal)];
+
+        Assert.Equal([Owner], files);
+
+        ProductionSource owner = sources.Single(static source => source.IsExactOwner(Owner));
+
+        Assert.Equal(1, owner.Occurrences(Expression));
+
+        Assert.Equal(1, sources.Sum(static source => source.Occurrences(InlineRule)));
+
+        // The one occurrence is the definition itself, not a statement that happens to live beside it.
+        MethodDeclarationSyntax definition = Assert.Single(
+            CSharpSyntaxTree.ParseText(owner.Text).GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(),
+            static method => method.Identifier.ValueText == "BindingEpoch");
+
+        Assert.Contains(InlineRule, definition.ToString(), StringComparison.Ordinal);
+
+        const string Canonical = "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Covenant/Canonical/";
+
+        Assert.Equal(
+            [
+                Canonical + "Tables/covenant_key_epochs.sql",
+                Canonical + "Transitions/V6/030_covenant_key_epochs_incarnation_epoch.sql",
+                Canonical + "Transitions/V6/050_covenant_key_epochs_incarnation_backfill.sql",
+                Canonical + "Transitions/V6/070_covenant_key_epochs_guard_incarnation.sql",
+                Canonical + "Transitions/V6/220_covenant_heads_key_epoch_insert.sql",
+                Canonical + "Transitions/V6/230_covenant_heads_key_epoch_update.sql",
+                Canonical + "Transitions/V6/240_covenant_heads_key_epoch_delete.sql",
+                Canonical + "Triggers/covenant_heads_key_epoch_delete.sql",
+                Canonical + "Triggers/covenant_heads_key_epoch_insert.sql",
+                Canonical + "Triggers/covenant_heads_key_epoch_update.sql",
+                Canonical + "Triggers/covenant_key_epochs_guard_incarnation.sql",
+            ],
+            SchemaFilesNaming(Column));
+    }
+
+    /// <summary>
+    /// Each code token of one source that names <paramref name="column"/>, as the file and the
+    /// <c>Type.Member</c> holding it, once per occurrence.
+    /// </summary>
+    private static IEnumerable<string> ColumnSites(ProductionSource source, string column)
+    {
+        foreach (SyntaxToken token in CSharpSyntaxTree.ParseText(source.Text).GetRoot().DescendantTokens())
+        {
+            int occurrences = 0;
+
+            for (int index = token.Text.IndexOf(column, StringComparison.Ordinal);
+                index >= 0;
+                index = token.Text.IndexOf(column, index + column.Length, StringComparison.Ordinal))
+            {
+                occurrences++;
+            }
+
+            if (occurrences == 0)
+            {
+                continue;
+            }
+
+            string type = token.Parent?.AncestorsAndSelf().OfType<BaseTypeDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText
+                ?? "<no type>";
+
+            string member = token.Parent?.AncestorsAndSelf().OfType<MemberDeclarationSyntax>().FirstOrDefault() switch
+            {
+                MethodDeclarationSyntax method => method.Identifier.ValueText,
+                PropertyDeclarationSyntax property => property.Identifier.ValueText,
+                FieldDeclarationSyntax field => string.Join(",", field.Declaration.Variables.Select(static variable => variable.Identifier.ValueText)),
+                ConstructorDeclarationSyntax => ".ctor",
+                BaseTypeDeclarationSyntax declared => declared.Identifier.ValueText,
+                { } other => other.Kind().ToString(),
+                null => "<no member>",
+            };
+
+            for (int found = 0; found < occurrences; found++)
+            {
+                yield return $"{source.RelativePath} {type}.{member}";
+            }
+        }
+    }
+
+    /// <summary>
+    /// The authored <c>.sql</c> files under <c>src</c> whose code, with <c>--</c> comment lines removed,
+    /// names <paramref name="column"/>, repository-relative and ordered.
+    /// </summary>
+    private static string[] SchemaFilesNaming(string column)
+    {
+        string root = RetroDownfall.Arcanum.Tests.NativeSqlCipher.NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string separator = Path.DirectorySeparatorChar.ToString();
+
+        return [.. Directory.EnumerateFiles(Path.Combine(root, "src"), "*.sql", SearchOption.AllDirectories)
+            .Where(file => !file.Contains($"{separator}bin{separator}", StringComparison.Ordinal)
+                && !file.Contains($"{separator}obj{separator}", StringComparison.Ordinal))
+            .Where(file => File.ReadLines(file)
+                .Where(static line => !line.TrimStart().StartsWith("--", StringComparison.Ordinal))
+                .Any(line => line.Contains(column, StringComparison.Ordinal)))
+            .Select(file => Path.GetRelativePath(root, file).Replace('\\', '/'))
+            .Order(StringComparer.Ordinal)];
     }
 
     [Fact]

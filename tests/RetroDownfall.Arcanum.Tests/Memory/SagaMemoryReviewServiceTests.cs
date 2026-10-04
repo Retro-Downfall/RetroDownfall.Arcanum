@@ -2,12 +2,14 @@ using Microsoft.Extensions.AI;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -297,6 +299,44 @@ public sealed class SagaMemoryReviewServiceTests
         Assert.True(scopeResult.IsFailure);
 
         Assert.Equal(ErrorCodes.MemoryReview.InvalidToken, scopeResult.Error.Code);
+    }
+
+    /// <summary>
+    /// A queue item's eligibility follows the same retrieval policy as every other surface: unresolved
+    /// ownership withholds a memory only while Campaign scoping is on, and with it off a turn ranks the
+    /// memory like any other, so the item reads <c>Eligible</c>.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false, SagaRetrievalEligibility.Eligible)]
+    [InlineData(true, SagaRetrievalEligibility.OwnershipUnresolved)]
+    public async Task Unresolved_ownership_follows_the_campaign_scoping_policy(
+        bool campaignScopedMemory,
+        SagaRetrievalEligibility expected)
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        Guid orphan = await harness.SessionWithUnresolvedBindingAsync().ConfigureAwait(false);
+
+        await InsertAsync(
+            harness,
+            "m-1",
+            "remembered",
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            orphan)
+            .ConfigureAwait(false);
+
+        ReviewRuntime runtime = CreateRuntime(harness, campaignScopedMemory: campaignScopedMemory);
+
+        Result<SagaReviewPageDto> page = await runtime.Service.ListAsync(
+            new SagaReviewListRequest(SagaMemoryScopeKind.LegacyUnresolved, null, 10, null),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(page.IsSuccess, page.Error.Message);
+
+        SagaReviewItemDto item = Assert.Single(page.Value.Items);
+
+        Assert.Equal(expected, item.Current!.Eligibility);
     }
 
     [SkippableFact]
@@ -741,6 +781,46 @@ public sealed class SagaMemoryReviewServiceTests
     }
 
     [SkippableFact]
+    public async Task Bulk_retire_removes_the_mirror_row_while_the_accelerator_flag_is_off()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        Result<MemoryReviewBulkResultDto> applied = await ApplyOverAFilledMirrorAsync(
+            harness,
+            Guid.Parse("BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"),
+            MemoryReviewAction.Retire,
+            replacementContent: null).ConfigureAwait(false);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.NotNull(Assert.Single(applied.Value.Items).ResultingVersionId);
+
+        Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+    }
+
+    [SkippableFact]
+    public async Task Bulk_correct_removes_the_stale_mirror_vector_while_the_accelerator_flag_is_off()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        Result<MemoryReviewBulkResultDto> applied = await ApplyOverAFilledMirrorAsync(
+            harness,
+            Guid.Parse("CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"),
+            MemoryReviewAction.Correct,
+            replacementContent: "corrected").ConfigureAwait(false);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.NotNull(Assert.Single(applied.Value.Items).ResultingVersionId);
+
+        // The corrected vector cannot be mirrored without the accelerator, so the old one must not stay
+        // behind describing text the memory no longer holds.
+        Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+    }
+
+    [SkippableFact]
     public async Task A_stale_item_refuses_the_whole_bulk_before_any_pin_changes()
     {
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
@@ -942,17 +1022,66 @@ public sealed class SagaMemoryReviewServiceTests
         Assert.Equal("concurrent", unreviewed.SubjectId);
     }
 
+    /// <summary>
+    /// Fills the plain vector mirror through the harness store with its accelerator flag on, then
+    /// drives one bulk decision through a review service whose own flag is off.
+    /// </summary>
+    private static async Task<Result<MemoryReviewBulkResultDto>> ApplyOverAFilledMirrorAsync(
+        SagaStoreHarness harness,
+        Guid requestId,
+        MemoryReviewAction action,
+        string? replacementContent)
+    {
+        await harness.CreatePlainVectorMirrorAsync().ConfigureAwait(false);
+
+        harness.VectorAccelerator.SetAvailable(true);
+
+        await InsertAsync(
+            harness,
+            "m-1",
+            "remembered",
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture))
+            .ConfigureAwait(false);
+
+        Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+
+        SagaMemoryReviewService service = CreateService(harness);
+
+        SagaReviewItemDto item = Assert.Single((await service.ListAsync(
+            new SagaReviewListRequest(SagaMemoryScopeKind.Global, null, 10, null),
+            CancellationToken.None).ConfigureAwait(false)).Value.Items);
+
+        SagaReviewBulkPrepareRequest request = new(
+            requestId,
+            SagaMemoryScopeKind.Global,
+            CampaignId: null,
+            action,
+            [new SagaReviewDecision(item.ObservationToken, replacementContent)]);
+
+        Result<MemoryReviewBulkPlanDto> prepared = await service.PrepareAsync(
+            request,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+        return await service.ApplyAsync(
+            new SagaReviewBulkApplyRequest(request, prepared.Value.PreparedPlanToken),
+            CancellationToken.None).ConfigureAwait(false);
+    }
+
     private static SagaMemoryReviewService CreateService(SagaStoreHarness harness) =>
         CreateRuntime(harness).Service;
 
     private static ReviewRuntime CreateRuntime(
         SagaStoreHarness harness,
-        IWeaveService? weave = null)
-        => CreateRuntime(harness.Context, weave);
+        IWeaveService? weave = null,
+        bool campaignScopedMemory = false)
+        => CreateRuntime(harness.Context, weave, campaignScopedMemory);
 
     private static ReviewRuntime CreateRuntime(
         ArcanumDbContext context,
-        IWeaveService? weave = null)
+        IWeaveService? weave = null,
+        bool campaignScopedMemory = false)
     {
         FakeTimeProvider time = new();
 
@@ -967,7 +1096,9 @@ public sealed class SagaMemoryReviewServiceTests
             weave ?? FakeWeaveService.Available,
             codec,
             new WeaveIndexAvailability(),
-            Settings(),
+            Settings(campaignScopedMemory),
+            MemoryErasureTestKeys.Isolated(),
+            new OperatorAuthorityContextIssuer(new FakeCovenantAuthorityProvider()),
             time);
 
         return new ReviewRuntime(service, codec, time);
@@ -1004,11 +1135,11 @@ public sealed class SagaMemoryReviewServiceTests
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
     }
 
-    private static TestOptionsMonitor<ArcanumSettings> Settings() =>
+    private static TestOptionsMonitor<ArcanumSettings> Settings(bool campaignScopedMemory = false) =>
         new(
             new ArcanumSettings
             {
-                Features = new FeatureSettings { Annals = true },
+                Features = new FeatureSettings { Annals = true, CampaignScopedMemory = campaignScopedMemory },
                 Integrations = new IntegrationSettings
                 {
                     Embeddings = new EmbeddingIntegrationSettings { Dimensions = 64 },

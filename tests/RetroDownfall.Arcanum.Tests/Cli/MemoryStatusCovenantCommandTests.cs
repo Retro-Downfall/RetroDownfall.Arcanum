@@ -8,6 +8,8 @@ using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Commands.Tower;
@@ -17,6 +19,8 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Cli.UX;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
@@ -195,7 +199,8 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
             provider.GetRequiredService<ArcanumApiClient>(),
             provider.GetRequiredService<IThemePalette>(),
             dispatcher,
-            new RefusingConfirmation());
+            new RefusingConfirmation(),
+            provider.GetRequiredService<IOptions<ArcanumSettings>>());
 
         Assert.Equal(0, await commands.Status(sessionIdentifier: null, Token));
 

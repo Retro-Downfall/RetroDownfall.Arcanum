@@ -1335,11 +1335,6 @@ public sealed class SessionAttachmentToolInjectionTests
         public Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IDisposable>(EmptyDisposable.Instance);
 
-        public Task DeleteRowsForSessionInAmbientTransactionAsync(
-            Guid sessionId,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-
         public bool TryDeleteSessionDirectory(Guid sessionId) => true;
 
         public Task ClearEntryIdsInAmbientTransactionAsync(

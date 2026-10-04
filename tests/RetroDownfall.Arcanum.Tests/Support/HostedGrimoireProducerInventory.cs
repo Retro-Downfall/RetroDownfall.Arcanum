@@ -825,7 +825,7 @@ internal static class HostedGrimoireProducerInventory
         "System.Boolean.TryParse",
         "System.Buffers.Text.Base64.DecodeFromUtf8",
         "System.Buffers.Text.Base64.EncodeToUtf8",
-        "System.Buffers.Text.Base64Url.TryDecodeFromChars",
+        "System.Buffers.Text.Base64Url.DecodeFromChars",
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove",
         "System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue",
         "System.Collections.Generic.Dictionary`2.Remove",
@@ -44621,7 +44621,7 @@ internal static class HostedGrimoireProducerInventory
                 || type == "Microsoft.Data.Sqlite.SqliteDataReader"
                     && property.Name == "FieldCount"
                 || type == "Microsoft.Data.Sqlite.SqliteException"
-                    && property.Name == "SqliteErrorCode"
+                    && property.Name is "SqliteErrorCode" or "SqliteExtendedErrorCode"
                 || type == "Microsoft.Data.Sqlite.SqliteParameter"
                     && property.Name is "ParameterName" or "Value"
                 || type == "Microsoft.Data.Sqlite.SqliteTransaction"

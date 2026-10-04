@@ -4,20 +4,27 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// The exact thing one curation change is about.
 /// </summary>
 /// <remarks>
-/// A scoped key and lane, plus the key's reclamation epoch. It is deliberately not an entry identity:
+/// A scoped key and lane, plus the two epochs of the key. It is deliberately not an entry identity:
 /// masking a Global key inside a Campaign is exactly the case where that Campaign holds no entry, no
 /// head, and no version for the key, and a subject that required one could not name it.
 ///
-/// <para>The epoch is part of the subject rather than a recorded detail beside it. A key that is
-/// retired, reclaimed, and later re-created is a different key wearing an old name, so a pin recorded
-/// against the earlier epoch has to be inert rather than silently applying to content the operator
-/// never saw.</para>
+/// <para><see cref="KeyDependencyEpoch"/> is the epoch the change was prepared against. It advances on
+/// every head change for the key, the request digest binds it, and the receipt records it, so a change
+/// prepared before some other write to the key is refused as stale.</para>
+///
+/// <para><see cref="KeyBindingEpoch"/> is the epoch the curation itself is recorded under. It is fixed
+/// for the life of the key's epoch row, so a pin or a mask keeps applying across ordinary writes, while
+/// a key that is reclaimed and later re-created is a different key wearing an old name and takes none
+/// of its predecessor's curation. Null means the kernel resolves it under the write lock; a caller
+/// that read it states it, and the kernel refuses when the two disagree. A receipt's subject always
+/// carries the resolved value.</para>
 /// </remarks>
 public sealed record CovenantCurationSubject(
     CovenantOperationScope Scope,
     CovenantKey NormalizedKey,
     CovenantLane Lane,
-    long KeyEpoch);
+    long KeyDependencyEpoch,
+    long? KeyBindingEpoch = null);
 
 /// <summary>
 /// What one subject's curation head currently says.
@@ -65,10 +72,17 @@ public sealed class CovenantCurationIntent
             ? kind
             : throw new ArgumentOutOfRangeException(nameof(kind));
 
-        if (subject.KeyEpoch < 0)
+        if (subject.KeyDependencyEpoch < 0)
         {
 
-            throw new ArgumentOutOfRangeException(nameof(subject), "A key reclamation epoch is never negative.");
+            throw new ArgumentOutOfRangeException(nameof(subject), "A key dependency epoch is never negative.");
+
+        }
+
+        if (subject.KeyBindingEpoch is < 0)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(subject), "A key binding epoch is never negative.");
 
         }
 

@@ -645,6 +645,24 @@ public class TheForgeJsonContextTests
     }
 
     [Fact]
+    public void CompactResult_WithStop_KeepsTheStopCode()
+    {
+
+        CompactResult original = new(120, 45, 5, "Covenant.StaleSnapshot");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.CompactResult);
+
+        CompactResult? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.CompactResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal(5, roundTripped.EntriesRemoved);
+
+        Assert.Equal("Covenant.StaleSnapshot", roundTripped.StoppedBy);
+
+    }
+
+    [Fact]
     public void ApiResponse_CompactResult_RoundTrips()
     {
 

@@ -6,9 +6,13 @@ using System.Text;
 
 using System.Text.Json;
 
+using System.Text.Json.Nodes;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
+
+using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
@@ -17,6 +21,8 @@ using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
@@ -466,6 +472,11 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.Equal(
             nameof(CovenantPageTruncation.FallbackCandidateCapReached),
             document.RootElement.GetProperty("truncationReason").GetString());
+
+        // A search hit is the same entry shape as a listed one, rendered hash included.
+        Assert.Equal(
+            "88",
+            Assert.Single(document.RootElement.GetProperty("entries").EnumerateArray()).GetProperty("renderedHash").GetString());
     }
 
     [Fact]
@@ -723,11 +734,154 @@ public sealed class CovenantCommandTests : IDisposable
             ["POST /api/memory/covenant/detail", "POST /api/memory/covenant/versions"],
             handler.Requests);
 
-        string rendered = string.Join("\n", dispatcher.Payloads);
+        CovenantVersionDto version = RecordingHandler.HistoryVersion;
 
-        Assert.Contains("revision 2", rendered, StringComparison.Ordinal);
+        Assert.Equal(
+            $"  revision 2  version {version.VersionId:D}  Set  Operator  64 bytes  hash {version.RenderedHash}  "
+                + $"mutation {version.MutationId}  {version.CreatedAtUtc:u}",
+            Assert.Single(dispatcher.Payloads, static line => line.StartsWith("  revision ", StringComparison.Ordinal)));
+    }
 
-        Assert.Contains("Operator", rendered, StringComparison.Ordinal);
+    /// <summary>
+    /// History names each version by identity and rendered hash, the two things <c>correct</c> asks for.
+    /// </summary>
+    [Fact]
+    public async Task History_prints_each_versions_identity_and_hash()
+    {
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        Assert.Equal(0, await commands.Show("preference.builds", campaignId: null, history: true, Token));
+
+        CovenantVersionDto v = RecordingHandler.HistoryVersion;
+
+        string line = Assert.Single(dispatcher.Payloads, static payload => payload.StartsWith("  revision ", StringComparison.Ordinal));
+
+        Assert.Contains($"version {v.VersionId:D}", line, StringComparison.Ordinal);
+
+        Assert.Contains($"hash {v.RenderedHash}", line, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Plain <c>show</c> prints each lane's exact head identity and its curation, and nothing a key
+    /// says.
+    /// </summary>
+    /// <remarks>
+    /// The version identity and rendered hash are what <c>correct</c> requires, so an operator no longer
+    /// needs <c>--history</c> to name the version in front of them. The curation line is printed for a
+    /// lane with no head too, because a lane can be curated with nothing written to it.
+    /// </remarks>
+    [Fact]
+    public async Task Show_prints_version_lifecycle_hash_and_curation()
+    {
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        Assert.Equal(0, await commands.Show("preference.builds", campaignId: null, history: false, Token));
+
+        CovenantHeadDto head = RecordingHandler.DetailHead;
+
+        string output = string.Join("\n", dispatcher.Payloads);
+
+        Assert.Contains(
+            $"Confirmed: version {head.VersionId:D}, revision {head.LaneRevision}, {head.Lifecycle}, {head.Origin}, "
+                + $"{head.CompiledByteCost} bytes, hash {head.RenderedHash}, updated {head.UpdatedAtUtc:u}",
+            output,
+            StringComparison.Ordinal);
+
+        Assert.Contains("  Curation: pinned, not masked, curation revision 2", output, StringComparison.Ordinal);
+
+        Assert.Contains("Proposed: none", output, StringComparison.Ordinal);
+
+        Assert.Contains("  Curation: not pinned, not masked, curation revision 0", output, StringComparison.Ordinal);
+
+        // Each curation line sits under its own lane.
+        Assert.Equal(
+            [
+                "  Curation: pinned, not masked, curation revision 2",
+                "Proposed: none",
+                "  Curation: not pinned, not masked, curation revision 0",
+            ],
+            dispatcher.Payloads.Skip(1));
+    }
+
+    /// <summary>
+    /// A key with no entry in the asked scope still reports the curation that scope holds for it.
+    /// </summary>
+    /// <remarks>
+    /// A Campaign mask over a Global key is curation in a Campaign that holds no entry for that key, so
+    /// stopping at "no entry" hid the one fact the operator came to check. A key nobody curated still
+    /// answers with the single line it always did.
+    /// </remarks>
+    [Fact]
+    public async Task Show_reports_the_curation_of_a_key_with_no_entry_in_that_scope()
+    {
+        RecordingHandler masked = new()
+        {
+            DetailWithoutEntry = true,
+            EntrylessCuration = new CovenantCurationStateDto(false, true, 1),
+        };
+
+        CovenantCommands commands = Commands(masked, confirm: true, out RecordingDispatcher dispatcher);
+
+        Assert.Equal(0, await commands.Show("preference.builds", MaskCampaignId, history: true, Token));
+
+        Assert.Equal(["POST /api/memory/covenant/detail"], masked.Requests);
+
+        Assert.Equal(
+            [
+                "No Covenant entry under 'preference.builds' in that scope.",
+                "Confirmed: none",
+                "  Curation: not pinned, masked, curation revision 1",
+                "Proposed: none",
+                "  Curation: not pinned, not masked, curation revision 0",
+            ],
+            dispatcher.Payloads);
+
+        RecordingHandler uncurated = new() { DetailWithoutEntry = true };
+
+        CovenantCommands plain = Commands(uncurated, confirm: true, out RecordingDispatcher plainDispatcher);
+
+        Assert.Equal(0, await plain.Show("preference.builds", MaskCampaignId, history: false, Token));
+
+        Assert.Equal(["No Covenant entry under 'preference.builds' in that scope."], plainDispatcher.Payloads);
+    }
+
+    /// <summary>
+    /// A host older than the curation members leaves them out, and <c>show</c> reads that as uncurated
+    /// rather than failing.
+    /// </summary>
+    /// <remarks>
+    /// The source-generated reader leaves an absent constructor member null, so a CLI upgraded while an
+    /// older <c>serve</c> process is still running would otherwise throw on every key that has an
+    /// entry.
+    /// </remarks>
+    [Fact]
+    public async Task Show_reads_a_detail_without_curation_as_uncurated()
+    {
+        RecordingHandler handler = new() { OmitCuration = true };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        Assert.Equal(0, await commands.Show("preference.builds", campaignId: null, history: false, Token));
+
+        Assert.Equal(
+            [
+                "  Curation: not pinned, not masked, curation revision 0",
+                "Proposed: none",
+                "  Curation: not pinned, not masked, curation revision 0",
+            ],
+            dispatcher.Payloads.Skip(1));
+
+        RecordingHandler entryless = new() { OmitCuration = true, DetailWithoutEntry = true };
+
+        CovenantCommands plain = Commands(entryless, confirm: true, out RecordingDispatcher plainDispatcher);
+
+        Assert.Equal(0, await plain.Show("preference.builds", MaskCampaignId, history: false, Token));
+
+        Assert.Equal(["No Covenant entry under 'preference.builds' in that scope."], plainDispatcher.Payloads);
     }
 
     /// <summary>
@@ -861,6 +1015,11 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.True(entries[0].TryGetProperty("revision", out _));
 
         Assert.True(entries[0].TryGetProperty("byteCost", out _));
+
+        // Every listed entry carries the rendered hash its head reported, the value correct names.
+        Assert.All(
+            entries.EnumerateArray(),
+            static entry => Assert.Equal("88", entry.GetProperty("renderedHash").GetString()));
     }
 
     /// <summary>
@@ -903,6 +1062,18 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.True(root.TryGetProperty("history", out JsonElement history));
 
         Assert.Equal(1, history.GetArrayLength());
+
+        Assert.Equal(RecordingHandler.DetailHead.RenderedHash, confirmed.GetProperty("renderedHash").GetString());
+
+        Assert.True(root.TryGetProperty("confirmedCuration", out JsonElement confirmedCuration));
+
+        Assert.True(confirmedCuration.GetProperty("isPinned").GetBoolean());
+
+        Assert.Equal(2, confirmedCuration.GetProperty("revision").GetInt64());
+
+        Assert.True(root.TryGetProperty("proposedCuration", out JsonElement proposedCuration));
+
+        Assert.False(proposedCuration.GetProperty("isPinned").GetBoolean());
     }
 
     /// <summary>
@@ -950,6 +1121,97 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.True(planRoot.TryGetProperty("affectedCampaignCount", out _));
 
         Assert.True(planRoot.TryGetProperty("expiresAtUtc", out _));
+    }
+
+    /// <summary>
+    /// A set that re-creates an erased key says so before the question is put: releasing the
+    /// fingerprint is what lets agents write the key in that scope again, so it is part of what the
+    /// operator approves.
+    /// </summary>
+    [Fact]
+    public async Task Set_preflight_names_the_fingerprint_release_before_the_prompt()
+    {
+        RecordingHandler handler = new() { ReleasesFingerprint = true, ReleasedFingerprint = true };
+
+        SnapshotConfirmation prompt = new();
+
+        CovenantCommands commands = Commands(handler, prompt, out RecordingDispatcher dispatcher);
+
+        prompt.Source = dispatcher;
+
+        int exitCode = await commands.Set(
+            "preference.builds",
+            campaignId: null,
+            file: WriteTempFile("Run build commands from the repository root."),
+            expectedRevision: 0,
+            reactivate: false,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Contains(
+            "  Releases an erasure fingerprint: agents may write this key in this scope again.",
+            prompt.Shown,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Released an erasure fingerprint for this key.",
+            string.Join("\n", dispatcher.Payloads),
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// When the server could not check the fingerprints, the screen says so and names the command that
+    /// can, rather than implying nothing would be released.
+    /// </summary>
+    [Fact]
+    public async Task Set_preflight_with_unverifiable_fingerprints_points_to_erasure_status()
+    {
+        RecordingHandler handler = new() { ReleasesFingerprint = null };
+
+        SnapshotConfirmation prompt = new();
+
+        CovenantCommands commands = Commands(handler, prompt, out RecordingDispatcher dispatcher);
+
+        prompt.Source = dispatcher;
+
+        _ = await commands.Set(
+            "preference.builds",
+            campaignId: null,
+            file: WriteTempFile("Run build commands from the repository root."),
+            expectedRevision: 0,
+            reactivate: false,
+            Token);
+
+        Assert.Contains(
+            "  Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.",
+            prompt.Shown,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Releases an erasure fingerprint", prompt.Shown, StringComparison.Ordinal);
+    }
+
+    /// <summary>Both structured documents carry the server's release flags, unchanged.</summary>
+    [Fact]
+    public async Task Set_json_carries_the_release_flags()
+    {
+        RecordingHandler handler = new() { ReleasesFingerprint = true, ReleasedFingerprint = true };
+
+        CliTestResult result = await RunCliAsync(handler, Invocation("set", approve: "--yes"));
+
+        Assert.Equal(0, result.ExitCode);
+
+        string planLine = Assert.Single(
+            result.Error.Split('\n'),
+            line => line.StartsWith('{'));
+
+        using JsonDocument plan = JsonDocument.Parse(planLine);
+
+        Assert.True(plan.RootElement.GetProperty("releasesErasureFingerprint").GetBoolean());
+
+        using JsonDocument committed = JsonDocument.Parse(result.Output);
+
+        Assert.True(committed.RootElement.GetProperty("releasedErasureFingerprint").GetBoolean());
     }
 
     private static readonly Guid MaskCampaignId = new("55555555-5555-4555-8555-555555555555");
@@ -1232,7 +1494,8 @@ public sealed class CovenantCommandTests : IDisposable
             provider.GetRequiredService<ArcanumApiClient>(),
             dispatcher,
             prompt,
-            new FixedInvocationContext());
+            new FixedInvocationContext(),
+            provider.GetRequiredService<IOptions<ArcanumSettings>>());
     }
 
     private sealed class FixedSecretStore : ISecretStore
@@ -1283,6 +1546,15 @@ public sealed class CovenantCommandTests : IDisposable
 
         internal bool EmptyList { get; init; }
 
+        /// <summary>Whether the stubbed detail is a Campaign key with no entry, carrying only curation.</summary>
+        internal bool DetailWithoutEntry { get; init; }
+
+        /// <summary>The Confirmed curation the entryless detail reports.</summary>
+        internal CovenantCurationStateDto EntrylessCuration { get; init; } = CovenantCurationStateDto.None;
+
+        /// <summary>Whether the stubbed detail omits both curation members, as a host older than them does.</summary>
+        internal bool OmitCuration { get; init; }
+
         /// <summary>The revision the stubbed head sits at, as the preflight would report it.</summary>
         internal long HeadRevision { get; init; }
 
@@ -1298,6 +1570,12 @@ public sealed class CovenantCommandTests : IDisposable
         internal bool ServerTruncated { get; init; }
 
         internal CovenantPageTruncation ServerTruncationReason { get; init; } = CovenantPageTruncation.None;
+
+        /// <summary>What the stubbed set preflight says the commit would release.</summary>
+        internal bool? ReleasesFingerprint { get; init; } = false;
+
+        /// <summary>What the stubbed commit says it released.</summary>
+        internal bool? ReleasedFingerprint { get; init; } = false;
 
         private int _listCalls;
 
@@ -1328,7 +1606,7 @@ public sealed class CovenantCommandTests : IDisposable
                 // Echoed from the request, exactly as the service echoes it. A stub that reported its
                 // own expectation could never disagree with the head, which is the disagreement the
                 // confirmation path exists to catch.
-                body = Preflight(HeadRevision, ExpectedRevisionOf(Bodies[^1]));
+                body = Preflight(HeadRevision, ExpectedRevisionOf(Bodies[^1]), ReleasesFingerprint);
             }
             else if (path.EndsWith("list", StringComparison.Ordinal)
                 || path.EndsWith("query", StringComparison.Ordinal))
@@ -1343,11 +1621,11 @@ public sealed class CovenantCommandTests : IDisposable
             }
             else if (path.EndsWith("detail", StringComparison.Ordinal))
             {
-                body = Detail();
+                body = OmitCuration ? WithoutCuration(Detail()) : Detail();
             }
             else
             {
-                body = Mutation();
+                body = Mutation(ReleasedFingerprint);
             }
 
             return new HttpResponseMessage(HttpStatusCode.OK)
@@ -1377,47 +1655,87 @@ public sealed class CovenantCommandTests : IDisposable
                 CovenantEffectiveShadowState.NotEvaluated,
                 CovenantEffectiveMaterialization.NotEvaluated);
 
-        private static string Detail() =>
+        private string Detail() =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantDetailDto>.FromResult(
-                    Result<CovenantDetailDto>.Success(new CovenantDetailDto(
-                        CovenantScope.Global,
-                        null,
-                        "preference.builds",
-                        DetailEntryId,
-                        Head("preference.builds"),
-                        null,
-                        1,
-                        null,
-                        null)),
+                    Result<CovenantDetailDto>.Success(DetailWithoutEntry
+                        ? new CovenantDetailDto(
+                            CovenantScope.Campaign,
+                            MaskCampaignId,
+                            "preference.builds",
+                            null,
+                            null,
+                            null,
+                            1,
+                            null,
+                            null,
+                            ConfirmedCuration: EntrylessCuration,
+                            ProposedCuration: CovenantCurationStateDto.None)
+                        : new CovenantDetailDto(
+                            CovenantScope.Global,
+                            null,
+                            "preference.builds",
+                            DetailEntryId,
+                            DetailHead,
+                            null,
+                            1,
+                            null,
+                            null,
+                            ConfirmedCuration: new CovenantCurationStateDto(true, false, 2),
+                            ProposedCuration: CovenantCurationStateDto.None)),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantDetailDto);
 
+        /// <summary>The same detail envelope with the two curation members removed, as an older host writes it.</summary>
+        private static string WithoutCuration(string envelope)
+        {
+            JsonObject root = JsonNode.Parse(envelope)!.AsObject();
+
+            JsonObject data = root["data"]!.AsObject();
+
+            if (!data.Remove("confirmedCuration") || !data.Remove("proposedCuration"))
+            {
+                throw new InvalidOperationException("The stubbed detail no longer carries the curation members it removes.");
+            }
+
+            return root.ToJsonString();
+        }
+
         internal static readonly Guid DetailEntryId = new("44444444-4444-4444-8444-444444444444");
+
+        /// <summary>The Confirmed head the stubbed detail reports, fixed so a rendering can be compared to it.</summary>
+        internal static readonly CovenantHeadDto DetailHead = Head("preference.builds") with
+        {
+            EntryId = DetailEntryId,
+            VersionId = new Guid("66666666-6666-4666-8666-666666666666"),
+            RenderedHash = RenderedHash,
+            UpdatedAtUtc = new DateTimeOffset(2026, 9, 1, 12, 30, 15, TimeSpan.Zero),
+        };
+
+        /// <summary>The one version the stubbed history page reports.</summary>
+        internal static readonly CovenantVersionDto HistoryVersion = new(
+            new Guid("77777777-7777-4777-8777-777777777777"),
+            DetailEntryId,
+            CovenantLane.Confirmed,
+            2,
+            CovenantOperation.Set,
+            CovenantOrigin.Operator,
+            "99",
+            "cc33dd44ee55ff66",
+            64,
+            1,
+            1,
+            null,
+            new Guid("88888888-8888-4888-8888-888888888888"),
+            0,
+            "bb",
+            new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero));
 
         private static string Versions() =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantVersionPageDto>.FromResult(
                     Result<CovenantVersionPageDto>.Success(new CovenantVersionPageDto(
-                        [
-                            new CovenantVersionDto(
-                                Guid.NewGuid(),
-                                DetailEntryId,
-                                CovenantLane.Confirmed,
-                                2,
-                                CovenantOperation.Set,
-                                CovenantOrigin.Operator,
-                                "99",
-                                "aa",
-                                64,
-                                1,
-                                1,
-                                null,
-                                Guid.NewGuid(),
-                                0,
-                                "bb",
-                                DateTimeOffset.UtcNow),
-                        ],
+                        [HistoryVersion],
                         NextCursor: null,
                         "cc",
                         Truncated: false)),
@@ -1485,7 +1803,7 @@ public sealed class CovenantCommandTests : IDisposable
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
 
-        private static string Preflight(long headRevision, long expectedRevision) =>
+        private static string Preflight(long headRevision, long expectedRevision, bool? releasesFingerprint) =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantMutationPreflightDto>.FromResult(
                     Result<CovenantMutationPreflightDto>.Success(new CovenantMutationPreflightDto(
@@ -1512,14 +1830,15 @@ public sealed class CovenantCommandTests : IDisposable
                             false,
                             false,
                             "22",
-                            "33"),
+                            "33",
+                            releasesFingerprint),
                         DateTimeOffset.UtcNow,
                         DateTimeOffset.UtcNow.AddMinutes(5),
                         "token")),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationPreflightDto);
 
-        private static string Mutation() =>
+        private static string Mutation(bool? releasedFingerprint) =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantMutationResultDto>.FromResult(
                     Result<CovenantMutationResultDto>.Success(new CovenantMutationResultDto(
@@ -1535,7 +1854,8 @@ public sealed class CovenantCommandTests : IDisposable
                         1,
                         "44",
                         "55",
-                        false)),
+                        false,
+                        releasedFingerprint)),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto);
 
@@ -1594,6 +1914,21 @@ public sealed class CovenantCommandTests : IDisposable
     {
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken) =>
             Task.FromResult(answer);
+    }
+
+    /// <summary>Approves, after recording everything the operator had been shown when asked.</summary>
+    private sealed class SnapshotConfirmation : IConfirmationPrompt
+    {
+        internal RecordingDispatcher? Source { get; set; }
+
+        internal string Shown { get; private set; } = string.Empty;
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            Shown = string.Join("\n", Source!.Payloads);
+
+            return Task.FromResult(true);
+        }
     }
 
     private sealed class FixedInvocationContext : ICliInvocationContext

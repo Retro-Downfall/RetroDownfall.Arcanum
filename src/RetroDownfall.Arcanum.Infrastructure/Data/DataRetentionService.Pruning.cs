@@ -4239,9 +4239,9 @@ internal sealed partial class DataRetentionService
 
             // The Session delete refuses a labelled Entry outright, which is right for the route that
             // names one Session and wrong for a sweep that named this one among many. Nothing has
-            // been mutated when it refuses — the guard asks before the transaction opens — so the
-            // sweep leaves this Session alone and carries on, the way it does for any other candidate
-            // it may not take.
+            // been mutated when it refuses — the guard asks inside the transaction that would delete,
+            // before its first write, and the refusal rolls it back — so the sweep leaves this Session
+            // alone and carries on, the way it does for any other candidate it may not take.
             DataRetentionApplyResult result;
 
             try
@@ -5298,18 +5298,6 @@ internal sealed partial class DataRetentionService
             "Entries_fts",
             cancellationToken).ConfigureAwait(false);
 
-        // A sweep is not a targeted deletion: one protected member is a reason to leave that member
-        // where it is, exactly as a pin or an operator hold is, not to abandon every other candidate.
-        // Skipping keeps the label pointing at content that still exists, which is the invariant the
-        // raw delete broke (§10.20.2).
-        if ((await EnsureArtifactUnlabeledAsync(
-                SensitiveArtifactKind.AssistantEntry,
-                entryId,
-                cancellationToken).ConfigureAwait(false)).IsFailure)
-        {
-            return CandidateDeleteResult.Empty;
-        }
-
         await using DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
             cancellationToken).ConfigureAwait(false);
@@ -5320,6 +5308,22 @@ internal sealed partial class DataRetentionService
 
         try
         {
+            // A sweep is not a targeted deletion: one protected member is a reason to leave that member
+            // where it is, exactly as a pin or an operator hold is, not to abandon every other candidate.
+            // Skipping keeps the label pointing at content that still exists, which is the invariant the
+            // raw delete broke (§10.20.2). Asked first, inside the transaction that deletes, so no label
+            // can be committed between the answer and the delete.
+            if ((await EnsureArtifactUnlabeledAsync(
+                    SensitiveArtifactKind.AssistantEntry,
+                    entryId,
+                    connection,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false)).IsFailure)
+            {
+                // Nothing has been written, and disposing the transaction on the way out rolls it back.
+                return CandidateDeleteResult.Empty;
+            }
+
             string? boundarySessionId = await ScalarStringInTransactionAsync(
                 connection,
                 transaction,
@@ -5848,15 +5852,23 @@ internal sealed partial class DataRetentionService
     /// A candidate whose identity is not a <see cref="Guid"/> can carry no label at all: the label
     /// table keys every artifact by one, so there is no row such an identity could match. Answering
     /// false there is not a relaxation — it is the only answer the table can give.
+    ///
+    /// <para>Asked inside the transaction that deletes the candidate, so a label cannot be committed
+    /// between the answer and the delete. A label table that cannot be read answers "labelled", and
+    /// the sweep leaves the candidate where it is.</para>
     /// </remarks>
     private async ValueTask<bool> CandidateIsLabeledAsync(
         SensitiveArtifactKind kind,
         string candidateId,
+        DbConnection connection,
+        DbTransaction transaction,
         CancellationToken cancellationToken) =>
         Guid.TryParse(candidateId, out Guid artifactId)
         && (await EnsureArtifactUnlabeledAsync(
                 kind,
                 artifactId,
+                connection,
+                transaction,
                 cancellationToken).ConfigureAwait(false)).IsFailure;
 
     private async Task<CandidateDeleteResult> DeleteSagaCandidateAsync(
@@ -5874,14 +5886,6 @@ internal sealed partial class DataRetentionService
             "saga_memory_embeddings_vec",
             cancellationToken).ConfigureAwait(false);
 
-        if (await CandidateIsLabeledAsync(
-                SensitiveArtifactKind.Saga,
-                memoryId,
-                cancellationToken).ConfigureAwait(false))
-        {
-            return CandidateDeleteResult.Empty;
-        }
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -5891,6 +5895,17 @@ internal sealed partial class DataRetentionService
 
         try
         {
+            if (await CandidateIsLabeledAsync(
+                    SensitiveArtifactKind.Saga,
+                    memoryId,
+                    connection,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                // Nothing has been written, and disposing the transaction on the way out rolls it back.
+                return CandidateDeleteResult.Empty;
+            }
+
             if (vectorTableExists)
             {
                 derived += await ExecuteAsync(
@@ -6003,14 +6018,6 @@ internal sealed partial class DataRetentionService
         DateTimeOffset effectiveCutoff,
         CancellationToken cancellationToken)
     {
-        if (await CandidateIsLabeledAsync(
-                SensitiveArtifactKind.Lexicon,
-                entryId,
-                cancellationToken).ConfigureAwait(false))
-        {
-            return CandidateDeleteResult.Empty;
-        }
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -6030,6 +6037,17 @@ internal sealed partial class DataRetentionService
 
         try
         {
+            if (await CandidateIsLabeledAsync(
+                    SensitiveArtifactKind.Lexicon,
+                    entryId,
+                    connection,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                // Nothing has been written, and disposing the transaction on the way out rolls it back.
+                return CandidateDeleteResult.Empty;
+            }
+
             rowId = await ScalarStringInTransactionAsync(
             connection,
             transaction,

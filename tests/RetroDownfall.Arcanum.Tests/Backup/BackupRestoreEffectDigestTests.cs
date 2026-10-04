@@ -180,6 +180,66 @@ public sealed class BackupRestoreEffectDigestTests
 
     }
 
+    /// <summary>
+    /// The erasure evidence a restore applies is the destination's own, read at execute time, and is
+    /// deliberately outside both the restore effect digest and the authenticated journal: the digest binds
+    /// the operator's destructive choice, and the journal names the operation and its topology. Neither
+    /// may grow an erasure input, because a digest that moved with the destination's evidence would orphan
+    /// every half-finished restore the moment anything was erased or released.
+    /// </summary>
+    /// <remarks>
+    /// A frozen pin: the input's and the payload's members by name, and the digest of one fixed input as
+    /// this build computed it before restore staging began applying erasure evidence.
+    /// </remarks>
+    [Fact]
+    public void The_restore_effect_digest_and_the_v2_journal_payload_carry_no_erasure_evidence()
+    {
+
+        Assert.Equal(
+            [
+                "ArchiveManifestDigest",
+                "ArchivePhysicalIdentityDigest",
+                "ProfileNamespaceDigest",
+                "InstallationId",
+                "DestinationRootIdentityDigest",
+                "ConflictMode",
+                "ProtectedStateMode",
+                "PathMappingVectorDigest",
+                "RestoreMasterApiKey",
+                "CreateSafetyBackup",
+            ],
+            ParameterNames(typeof(BackupRestoreEffectDigestInput)));
+
+        Assert.Equal(
+            [
+                "OwnerOperationId",
+                "OwnerOperation",
+                "OwnerEffectDigest",
+                "ConflictMode",
+                "Phase",
+                "RestoreRequestDigest",
+                "LiveRoot",
+                "StagedRoot",
+                "DisplacedRoot",
+                "ArchiveSource",
+                "SafetyBackup",
+                "MarkerCleanup",
+            ],
+            ParameterNames(typeof(RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreJournalPayloadV2)));
+
+        Result<CovenantDigest> digest = Calculator.Compute(Input());
+
+        Assert.True(digest.IsSuccess, Describe(digest));
+
+        Assert.Equal(
+            "ae4e04d965b13ebd33197bc1b5b9a4409dbec1cfadff84dd92d28b4eb656147f",
+            Convert.ToHexStringLower(digest.Value.Bytes));
+
+    }
+
+    private static string[] ParameterNames(Type type) =>
+        [.. Assert.Single(type.GetConstructors()).GetParameters().Select(static parameter => parameter.Name ?? string.Empty)];
+
     private static BackupRestoreEffectDigestInput Input() =>
         new(
             Digest(1),

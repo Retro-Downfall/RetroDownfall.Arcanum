@@ -157,9 +157,10 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
     /// </summary>
     /// <remarks>
     /// The two refusals are separated because they mean opposite things to an operator. An unrecognized
-    /// name is a typo they should fix. A recognized class with no rule — <c>covenant</c> is the only one
-    /// — is a deliberate design property, and telling them it "is not recognized" would send them
-    /// hunting for a spelling mistake that does not exist (§10.20.1).
+    /// name is a typo they should fix. A recognized class that can never have a rule — <c>covenant</c>
+    /// and <c>memory-erasure-evidence</c> — is a deliberate design property, and telling them it "is not
+    /// recognized" would send them hunting for a spelling mistake that does not exist (§10.20.1). Each of
+    /// the two says why it has no rule and what does remove its rows.
     /// </remarks>
     private static bool TryUpdateRule(
         RetentionSettings current,
@@ -187,10 +188,22 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
 
             updated = current;
 
-            refusal = dataClass is RetentionDataClass.Covenant
-                ? "The Covenant has no time-based retention rule and cannot be given one. It is "
-                    + "inventoried by 'data status' and removed only by an explicit reset."
-                : "The retention data class has no configurable rule.";
+            refusal = dataClass switch
+            {
+
+                RetentionDataClass.Covenant =>
+                    "The Covenant has no time-based retention rule and cannot be given one. It is "
+                    + "inventoried by 'data status' and removed only by an explicit reset.",
+
+                RetentionDataClass.MemoryErasureEvidence =>
+                    "Erasure evidence has no time-based retention rule and cannot be given one. It is "
+                    + "inventoried by 'data status' and removed only by a release, an operator "
+                    + "re-creation of the erased item, 'memory erasure reset-key', a restore's "
+                    + "destination-authoritative join, or a full installation reset.",
+
+                _ => "The retention data class has no configurable rule.",
+
+            };
 
             return false;
 

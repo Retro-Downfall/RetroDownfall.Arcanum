@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -76,9 +77,17 @@ internal sealed class ContextCompressionService : IContextCompressionService
     /// Paged rather than sent whole, because the boundary is bounded and a long Session's compaction can
     /// select more Entries than one page carries. Each page is a stable identity list read before the
     /// purge, so no unexamined labelled Entry can leave through a set-based call.
+    ///
+    /// <para>A block ends the walk with the same typed code every other direct-deletion route answers: a
+    /// label that moved is <c>Covenant.StaleSnapshot</c>, anything else the kernel could not erase is
+    /// <c>Covenant.ManualArtifactErasureRequired</c>. The Entries erased before the block are already
+    /// gone, so the walk records each one the purge reported erased in <paramref name="erasedByPurge"/>,
+    /// the blocked page's included, and the caller counts what the stop removed from that and from the
+    /// stored Entries rather than from this failure.</para>
     /// </remarks>
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeSelectedEntriesAsync(
         IReadOnlyCollection<Guid> entryIds,
+        HashSet<Guid> erasedByPurge,
         CancellationToken cancellationToken)
     {
 
@@ -103,11 +112,16 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             }
 
+            erasedByPurge.UnionWith(
+                purged.Value.Results
+                    .Where(static result => result.Disposition is CovenantSensitivePurgeDisposition.Purged)
+                    .Select(static result => result.ArtifactId));
+
             if (purged.Value.IsBlocked)
             {
 
                 return new Error(
-                    ErrorCodes.Covenant.ManualArtifactErasureRequired,
+                    CovenantSensitiveDeletion.BlockedError(purged.Value).Code,
                     "A protected Entry selected by compaction could not be erased and was left unchanged.");
 
             }
@@ -120,6 +134,66 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         return Result<CovenantSensitivePurgeOutcome>.Success(
             new CovenantSensitivePurgeOutcome(results, progress));
+
+    }
+
+    /// <summary>
+    /// How many of the dispatched Entries a stopped compaction removed.
+    /// </summary>
+    /// <remarks>
+    /// Not what the purge reported, because a page that stopped at its third item took the first two with
+    /// it and a purge that failed after erasing some of its items reports none of them. And not what the
+    /// reloaded Session lacks either: the repository returns only the newest Entries of a long Session,
+    /// so the oldest ones, which compaction selects first, are missing from it whether or not they still
+    /// exist. Each dispatched Entry the window does not show is therefore confirmed against the stored
+    /// Entry, one lookup per Entry on this path only and never more than the dispatched set.
+    ///
+    /// <para>When the Session cannot be read at all, the count is a lower bound: the Entries the purge
+    /// itself reported erased. An Entry erased by a purge that then failed outright is not among them,
+    /// and nothing here can say it was.</para>
+    /// </remarks>
+    private async Task<int> CountRemovedAfterStopAsync(
+        Guid sessionId,
+        IReadOnlyCollection<Guid> dispatched,
+        HashSet<Guid> erasedByPurge,
+        Session? reloaded,
+        CancellationToken cancellationToken)
+    {
+
+        if (reloaded is null)
+        {
+
+            return erasedByPurge.Count;
+
+        }
+
+        HashSet<Guid> inWindow = [.. reloaded.Entries.Select(static entry => entry.Id)];
+
+        int gone = 0;
+
+        foreach (Guid entryId in dispatched)
+        {
+
+            if (inWindow.Contains(entryId))
+            {
+
+                continue;
+
+            }
+
+            if (erasedByPurge.Contains(entryId)
+                || await _grimoire
+                    .GetEntryByIdAsync(sessionId, entryId, cancellationToken)
+                    .ConfigureAwait(false) is null)
+            {
+
+                gone++;
+
+            }
+
+        }
+
+        return gone;
 
     }
 
@@ -185,6 +259,8 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         int tokensAfter = tokensBefore;
 
+        string? stoppedBy = null;
+
         if (ordered.Count > 0)
         {
 
@@ -225,9 +301,11 @@ internal sealed class ContextCompressionService : IContextCompressionService
             // Expanding first and purging second is what keeps a partially deleted tool group from
             // existing at any point: a labelled Entry that left through the shared kernel and an
             // unlabelled sibling that left through the ordinary delete are still one group (§10.20.2).
+            HashSet<Guid> erasedByPurge = [];
+
             Result<CovenantSensitivePurgeOutcome>? purged = _purger is null
                 ? null
-                : await PurgeSelectedEntriesAsync(groupSafeDeletes, cancellationToken).ConfigureAwait(false);
+                : await PurgeSelectedEntriesAsync(groupSafeDeletes, erasedByPurge, cancellationToken).ConfigureAwait(false);
 
             if (purged is { } attempted && attempted.IsFailure)
             {
@@ -235,37 +313,36 @@ internal sealed class ContextCompressionService : IContextCompressionService
                 // A refused purge stops compaction rather than falling back to the ordinary delete.
                 // Removing the unlabelled remainder would leave the Session compacted around protected
                 // Entries that are still there, which is worse than not compacting at all.
-                _logger.LogWarning(
-                    "Compaction of session {SessionId} stopped: a protected Entry could not be erased ({Code}).",
-                    sessionId,
-                    attempted.Error.Code);
-
-                return new CompactResult(tokensBefore, tokensBefore, 0);
+                stoppedBy = attempted.Error.Code;
 
             }
-
-            foreach (Guid entryId in groupSafeDeletes)
+            else
             {
 
-                if (purged is { } outcome && !outcome.Value.RequiresOrdinaryDelete(entryId))
+                foreach (Guid entryId in groupSafeDeletes)
                 {
 
-                    if (outcome.Value.WasPurged(entryId))
+                    if (purged is { } outcome && !outcome.Value.RequiresOrdinaryDelete(entryId))
                     {
 
-                        removed++;
+                        if (outcome.Value.WasPurged(entryId))
+                        {
+
+                            removed++;
+
+                        }
+
+                        continue;
 
                     }
 
-                    continue;
+                    await _grimoire
+                        .DeleteEntryAsync(sessionId, entryId, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    removed++;
 
                 }
-
-                await _grimoire
-                    .DeleteEntryAsync(sessionId, entryId, cancellationToken)
-                    .ConfigureAwait(false);
-
-                removed++;
 
             }
 
@@ -282,6 +359,30 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             }
 
+            if (stoppedBy is not null)
+            {
+
+                removed = await CountRemovedAfterStopAsync(
+                        sessionId,
+                        groupSafeDeletes,
+                        erasedByPurge,
+                        session,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+
+        }
+
+        if (stoppedBy is not null)
+        {
+
+            _logger.LogWarning(
+                "Compaction of session {SessionId} stopped after removing {Removed} entries: a protected Entry could not be erased ({Code}).",
+                sessionId,
+                removed,
+                stoppedBy);
+
         }
 
         if (removed > 0 && tokensAfter > effectiveLimit)
@@ -296,7 +397,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         }
 
-        return new CompactResult(tokensBefore, tokensAfter, removed);
+        return new CompactResult(tokensBefore, tokensAfter, removed, stoppedBy);
 
     }
 

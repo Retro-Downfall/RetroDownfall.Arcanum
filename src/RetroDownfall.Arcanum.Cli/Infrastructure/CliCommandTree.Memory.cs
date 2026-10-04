@@ -126,7 +126,7 @@ internal static partial class CliCommandTree
                     pr.GetValue(lexiconQuery)!,
                     ct).ConfigureAwait(false));
 
-        Command lexiconDelete = new("delete", "Delete one explicitly named Lexicon entity.");
+        Command lexiconDelete = new("delete", "Delete one explicitly named Lexicon entity without erasing it.");
 
         Argument<string> deleteName = new("name") { Description = "Lexicon entity name." };
 
@@ -180,6 +180,48 @@ internal static partial class CliCommandTree
 
         AddLexiconMutation(lexicon, "unpin", "Release an exact Lexicon entry's protection from automatic retention pruning.", handler.LexiconUnpin);
 
+        Command lexiconErase = new(
+            "erase",
+            "Erase one exact Lexicon entry for good, so extraction and agents cannot write its name again in that scope.");
+
+        Argument<string> eraseName = new("name") { Description = "Lexicon entity name." };
+
+        Option<Guid?> eraseCampaign = LexiconCampaignOption();
+
+        lexiconErase.Add(eraseName);
+
+        lexiconErase.Add(eraseCampaign);
+
+        lexiconErase.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.LexiconErase(
+                    pr.GetValue(eraseName)!,
+                    pr.GetValue(eraseCampaign),
+                    ct).ConfigureAwait(false));
+
+        lexicon.Add(lexiconErase);
+
+        Command lexiconRelease = new(
+            "release",
+            "Release one exact Lexicon name's erasure fingerprint, so extraction and agents may write it again in that scope.");
+
+        Argument<string> releaseName = new("name") { Description = "Lexicon entity name." };
+
+        Option<Guid?> releaseCampaign = LexiconCampaignOption();
+
+        lexiconRelease.Add(releaseName);
+
+        lexiconRelease.Add(releaseCampaign);
+
+        lexiconRelease.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.LexiconRelease(
+                    pr.GetValue(releaseName)!,
+                    pr.GetValue(releaseCampaign),
+                    ct).ConfigureAwait(false));
+
+        lexicon.Add(lexiconRelease);
+
         memory.Add(status);
 
         memory.Add(sources);
@@ -194,7 +236,58 @@ internal static partial class CliCommandTree
 
         memory.Add(BuildMemorySagaCuration(sp));
 
+        memory.Add(BuildMemoryErasure(handler));
+
         return memory;
+
+    }
+
+    /// <summary>
+    /// The <c>memory erasure</c> subgroup: the erasure evidence that belongs to no one store.
+    /// </summary>
+    /// <remarks>
+    /// <c>status</c> reads, <c>scrub</c> finishes what an erase left pending on the log, and
+    /// <c>reset-key</c> discards the evidence the current key cannot verify. Only the last asks first:
+    /// it is the one that cannot be undone.
+    /// </remarks>
+    private static Command BuildMemoryErasure(MemoryCommands handler)
+    {
+
+        Command erasure = new(
+            "erasure",
+            "Inspect and administer erasure fingerprints and receipts across the memory stores.");
+
+        Command status = new(
+            "status",
+            "Show the erasure key's state and each store's fingerprint, unverifiable and receipt counts.");
+
+        status.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.ErasureStatus(ct).ConfigureAwait(false));
+
+        Command scrub = new(
+            "scrub",
+            "Retry the write-ahead-log checkpoint erasures left pending, and report what it verified.");
+
+        scrub.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.ErasureScrub(ct).ConfigureAwait(false));
+
+        Command resetKey = new(
+            "reset-key",
+            "Discard the erasure evidence the current key cannot verify, creating a key when none exists.");
+
+        resetKey.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.ErasureResetKey(ct).ConfigureAwait(false));
+
+        erasure.Add(status);
+
+        erasure.Add(scrub);
+
+        erasure.Add(resetKey);
+
+        return erasure;
 
     }
 
@@ -356,9 +449,71 @@ internal static partial class CliCommandTree
 
         saga.Add(reinstate);
 
+        Command erase = new(
+            "erase",
+            "Erase one Saga memory and its identical-content twins for good, so extraction cannot write that content again in its scope.");
+
+        Argument<string> eraseId = SagaMemoryIdArgument();
+
+        // Optional here, unlike on correct: omitted, the hash show just reported is sent, which still
+        // binds the erase to the text the host holds.
+        Option<string?> eraseHash = new("--expected-content-hash")
+        {
+            Description = "The content hash 'memory saga show' printed for the text you read. Omit to use the hash shown now.",
+        };
+
+        erase.Add(eraseId);
+
+        erase.Add(eraseHash);
+
+        erase.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaErase(
+                    pr.GetValue(eraseId)!,
+                    pr.GetValue(eraseHash),
+                    ct).ConfigureAwait(false));
+
+        Command release = new(
+            "release",
+            "Release the erasure fingerprint of one Saga content in one exact scope, so extraction may write it again there.");
+
+        Option<string> releaseFile = new("--file", "-f")
+        {
+            Required = true,
+            Description = "Read the erased content from this file, or use - for stdin (requires --yes). Sent exactly as read.",
+        };
+
+        Option<Guid?> releaseCampaign = new("--campaign", "-C")
+        {
+            Description = "Exact Campaign GUID. Alone it means Campaign scope; saved and active context are never used.",
+        };
+
+        Option<string?> releaseScope = new("--scope")
+        {
+            Description = "global, campaign, unresolved, or unclassified. Omit for Global, or for Campaign when --campaign is given.",
+        };
+
+        release.Add(releaseFile);
+
+        release.Add(releaseCampaign);
+
+        release.Add(releaseScope);
+
+        release.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaRelease(
+                    pr.GetValue(releaseFile)!,
+                    pr.GetValue(releaseCampaign),
+                    pr.GetValue(releaseScope),
+                    ct).ConfigureAwait(false));
+
         saga.Add(pin);
 
         saga.Add(unpin);
+
+        saga.Add(erase);
+
+        saga.Add(release);
 
         saga.Add(BuildSagaReview(handler));
 
@@ -415,7 +570,7 @@ internal static partial class CliCommandTree
             ActiveSession(sp, pr.GetValue(divineSession)),
             ct).ConfigureAwait(false));
 
-        Command delete = new("delete", "Delete a single Saga memory.");
+        Command delete = new("delete", "Delete a single Saga memory without erasing it.");
         Argument<string> id = new("id") { Description = "Saga memory ID." };
         delete.Add(id);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Delete(

@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Backup;
@@ -157,7 +158,7 @@ public sealed class CovenantRestoreStateJoinerTests : IAsyncLifetime
 
         await transaction.CommitAsync(CancellationToken.None);
 
-        List<CovenantDisclosureState> after = await CovenantDisclosureStateJoiner.ReadAllAsync(
+        List<CovenantDisclosureState> after = await ExternalDisclosureStateStore.ReadAllAsync(
             _database.Connection,
             null,
             CancellationToken.None);
@@ -191,7 +192,7 @@ public sealed class CovenantRestoreStateJoinerTests : IAsyncLifetime
 
         await transaction.CommitAsync(CancellationToken.None);
 
-        Assert.Single(await CovenantDisclosureStateJoiner.ReadAllAsync(
+        Assert.Single(await ExternalDisclosureStateStore.ReadAllAsync(
             _database.Connection,
             null,
             CancellationToken.None));

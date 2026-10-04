@@ -115,10 +115,12 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.Core, 10),
                         (GrimoireSchemaTransactionTier.Core, 11),
                         (GrimoireSchemaTransactionTier.Core, 12),
+                        (GrimoireSchemaTransactionTier.Core, 13),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 2),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 3),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 4),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 5),
+                        (GrimoireSchemaTransactionTier.CovenantCanonical, 6),
                     ]);
             });
 
@@ -256,6 +258,13 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "annal_review_markers",
                 "annal_review_events_head_insert",
                 "annal_review_events_head_update",
+                "memory_erasure_fingerprints",
+                "memory_erasure_receipts",
+                "memory_erasure_receipt_subjects",
+                "memory_erasure_receipts_guard_update",
+                "disclosure_subject_state_unfolded_index",
+                "lexicon_fts_secure_delete",
+                "lexicon_fts_optimize",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",
@@ -315,6 +324,30 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "covenant_review_markers",
                 "covenant_review_events_head_insert",
                 "covenant_review_events_head_update",
+                "covenant_mutation_receipts_entry_id",
+                "covenant_mutation_receipts_entry_index",
+                "covenant_key_epochs_incarnation_epoch",
+                "covenant_key_epochs_guard_overflow_drop",
+                "covenant_key_epochs_incarnation_backfill",
+                "covenant_key_epochs_guard_overflow",
+                "covenant_key_epochs_guard_incarnation",
+                "covenant_curation_versions_guard_delete_drop",
+                "covenant_curation_receipts_guard_delete_drop",
+                "covenant_curation_heads_leftover_delete",
+                "covenant_curation_versions_leftover_delete",
+                "covenant_curation_receipts_leftover_delete",
+                "covenant_entries_guard_delete",
+                "covenant_versions_guard_delete",
+                "covenant_version_attachment_provenance_guard_delete",
+                "covenant_mutation_receipts_guard_delete",
+                "covenant_curation_versions_guard_delete",
+                "covenant_curation_receipts_guard_delete",
+                "covenant_search_outbox_guard_delete",
+                "covenant_key_epochs_guard_delete",
+                "covenant_curation_heads_guard_delete",
+                "covenant_heads_key_epoch_insert",
+                "covenant_heads_key_epoch_update",
+                "covenant_heads_key_epoch_delete",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
     }
@@ -348,8 +381,9 @@ public sealed class GrimoireSchemaTransitionResourceTests
             GrimoireSchemaCatalog.CoreSchemaFingerprint,
             GrimoireSchemaCatalog.ComputeSourceFingerprint(GrimoireSchemaCatalog.CoreObjects));
 
-        // Both Covenant tiers still publish the raw computation: neither is leaving its version in
-        // this change, and a tier's fingerprint may only switch in the change that raises its version.
+        // Both Covenant tiers still publish the raw computation. Covenant canonical leaves version 5
+        // for version 6 without switching, because its step pins the raw value version 5 published,
+        // and the accelerator has never left version 1.
         Assert.Equal(
             GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
             GrimoireSchemaCatalog.ComputeRawSourceFingerprint(GrimoireSchemaCatalog.CovenantCanonicalObjects));

@@ -7694,6 +7694,15 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
             Task.FromResult(Memories.Values.Skip(offset).Take(limit).ToArray());
 
+        public Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
+            Task.FromResult(Memories.Values.Skip(offset).Take(limit)
+                .Select(memory => new SagaMemoryCurationRow(
+                    memory, new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc), _embeddedIds.Contains(memory.Id)))
+                .ToArray());
+
+        public Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken) =>
+            Task.FromResult(Memories.Values.Any(memory => memory.RetiredAtUtc is null && _embeddedIds.Contains(memory.Id)));
+
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(
             IReadOnlyList<string> ids,
             CancellationToken cancellationToken)
@@ -10822,9 +10831,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
-
-        public Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(0);
 
         public Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             Task.FromResult<List<GrimoireEntryDto>?>(null);

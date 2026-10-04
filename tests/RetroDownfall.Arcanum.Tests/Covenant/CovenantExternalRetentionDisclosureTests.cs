@@ -36,7 +36,7 @@ public sealed class CovenantExternalRetentionDisclosureTests
             CovenantExternalRetentionDisclosure.EnablementText);
 
         Assert.Equal(
-            "Local disable, reset, protected-state purge, family reinitialize, and factory erasure "
+            "Local disable, reset, selective erasure, protected-state purge, family reinitialize, and factory erasure "
                 + "cannot revoke content retained in provider logs or automatic prompt caches, "
                 + "encrypted backup copies, unmanaged files, or other nonrevocable disclosures. "
                 + "Review each configured provider's retention and deletion documentation and "

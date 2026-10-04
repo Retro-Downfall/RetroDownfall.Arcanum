@@ -41,4 +41,11 @@ internal enum CovenantSqliteAuthorizationKind
     /// </summary>
     RestoreStagingManagedAuthoritySanitization = 11,
 
+    /// <summary>
+    /// Erasing one Covenant entry and every canonical row that names it. Only the canonical delete
+    /// guards on that closure admit it, and no Core guard names it, so it is narrower than owner
+    /// cleanup rather than a second name for it.
+    /// </summary>
+    CovenantEntryErasure = 12,
+
 }

@@ -577,7 +577,8 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
             _db!,
             logger,
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings { Features = features }));
+                new ArcanumSettings { Features = features }),
+            MemoryErasureTestKeys.Isolated());
 
     private async Task<IReadOnlyList<VersionRow>> ReadVersionsAsync(string entryId)
     {

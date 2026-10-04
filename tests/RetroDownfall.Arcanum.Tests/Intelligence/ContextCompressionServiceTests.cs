@@ -3,6 +3,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -143,9 +145,273 @@ public sealed class ContextCompressionServiceTests
             service.CompressSessionAsync(Guid.NewGuid(), 256, cancellation.Token));
     }
 
+    /// <summary>
+    /// A purge that erases two pages' worth of protected Entries and then meets a refused one reports
+    /// every Entry it erased, and the refusal's code.
+    /// </summary>
+    /// <remarks>
+    /// The second page is the interesting one: the Entries erased before the refused item are gone, and
+    /// so are all of the first page's. A result that said nothing was removed told the operator a
+    /// compaction had done no harm while it had already erased protected Entries.
+    /// </remarks>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeBlockedAfterErasing_ReportsEveryEntryErasedAndTheBlock()
+    {
+        Session session = CreateOverLimitSession(entryCount: 300);
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ScriptedPurger purger = new(
+            EraseAll(session),
+            EraseThenBlock(session, erased: 2, CovenantErasureBlocker.AuthorityStale));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(2, purger.CallCount);
+        Assert.Equal(ICovenantSensitiveArtifactPurger.MaxTargets + 2, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.StoppedBy);
+        Assert.Equal(300 - result.EntriesRemoved, session.Entries.Count);
+        Assert.True(result.TokensAfter < result.TokensBefore);
+        Assert.Empty(grimoire.DeletedEntryIds);
+    }
+
+    /// <summary>
+    /// A block that is not a stale label reports the manual-erasure code, not the stale one.
+    /// </summary>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeBlockedByIntegrity_ReportsManualErasureRequired()
+    {
+        Session session = CreateOverLimitSession(entryCount: 8);
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ScriptedPurger purger = new(EraseThenBlock(session, erased: 0, CovenantErasureBlocker.IntegrityFailure));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(0, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, result.StoppedBy);
+        Assert.Equal(result.TokensBefore, result.TokensAfter);
+        Assert.Equal(8, session.Entries.Count);
+        Assert.Empty(grimoire.DeletedEntryIds);
+    }
+
+    /// <summary>
+    /// A purge that fails after erasing some of its own items still has those items counted.
+    /// </summary>
+    /// <remarks>
+    /// The purger drops the dispositions of items it erased before a later item's step failed, so the
+    /// count cannot come from its results. It comes from what the Session no longer holds.
+    /// </remarks>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeFailsAfterErasing_CountsWhatTheSessionLost()
+    {
+        Session session = CreateOverLimitSession(entryCount: 300);
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ScriptedPurger purger = new(
+            EraseAll(session),
+            EraseThenFail(session, erased: 2, new Error(ErrorCodes.Covenant.Unavailable, "Storage could not answer.")));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(ICovenantSensitiveArtifactPurger.MaxTargets + 2, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.StoppedBy);
+        Assert.Equal(300 - result.EntriesRemoved, session.Entries.Count);
+        Assert.Empty(grimoire.DeletedEntryIds);
+    }
+
+    /// <summary>
+    /// A stop leaves the unlabelled remainder where it was, even the part that sat before the block.
+    /// </summary>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeBlocked_DoesNotDeleteTheUnlabeledRemainder()
+    {
+        Session session = CreateOverLimitSession(entryCount: 8);
+        Guid[] order = [.. session.Entries.OrderBy(entry => entry.CreatedAt).Select(entry => entry.Id)];
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ScriptedPurger purger = new(ids => PurgeOutcome(
+            ids,
+            [
+                (CovenantSensitivePurgeDisposition.Unlabeled, CovenantErasureBlocker.None),
+                (CovenantSensitivePurgeDisposition.Purged, CovenantErasureBlocker.None),
+                (CovenantSensitivePurgeDisposition.Blocked, CovenantErasureBlocker.AuthorityStale),
+            ],
+            session));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(1, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.StoppedBy);
+        Assert.Empty(grimoire.DeletedEntryIds);
+        Assert.DoesNotContain(session.Entries, entry => entry.Id == order[1]);
+        Assert.Contains(session.Entries, entry => entry.Id == order[0]);
+    }
+
+    /// <summary>
+    /// Compaction that runs to the end names no stop, and an unlabelled Entry still leaves through the
+    /// ordinary delete.
+    /// </summary>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeFindsNothingProtected_DeletesOrdinarilyAndReportsNoStop()
+    {
+        Session session = CreateOverLimitSession(entryCount: 8);
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ScriptedPurger purger = new(ids => PurgeOutcome(
+            ids,
+            [(CovenantSensitivePurgeDisposition.Unlabeled, CovenantErasureBlocker.None)],
+            session));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.True(result.EntriesRemoved > 0);
+        Assert.Null(result.StoppedBy);
+        Assert.Equal(result.EntriesRemoved, grimoire.DeletedEntryIds.Count);
+        Assert.Equal(0, grimoire.EntryLookupCount);
+    }
+
+    /// <summary>
+    /// A block ends the whole walk: no page after the refused one is dispatched, so nothing is erased
+    /// under an authority already shown not to hold.
+    /// </summary>
+    /// <remarks>
+    /// Three pages are scripted and the middle one blocks. A walk that kept going would run the third
+    /// page's erase and report more than the two pages' worth that the stop actually reached.
+    /// </remarks>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeBlocked_NeverDispatchesALaterPage()
+    {
+        Session session = CreateOverLimitSession(entryCount: 700);
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ScriptedPurger purger = new(
+            EraseAll(session),
+            EraseThenBlock(session, erased: 2, CovenantErasureBlocker.AuthorityStale),
+            EraseAll(session));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(2, purger.CallCount);
+        Assert.Equal(ICovenantSensitiveArtifactPurger.MaxTargets + 2, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.StoppedBy);
+        Assert.Equal(700 - result.EntriesRemoved, session.Entries.Count);
+        Assert.Empty(grimoire.DeletedEntryIds);
+    }
+
+    /// <summary>
+    /// A stop whose Session cannot be read again still reports every Entry the purge said it erased,
+    /// including the ones before the blocked item on the page that blocked.
+    /// </summary>
+    /// <remarks>
+    /// The count is a lower bound here, because a purge that fails outright reports none of the items it
+    /// erased first. The old stop path answered zero removed whenever the reload came back empty.
+    /// </remarks>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeBlockedAfterErasingOne_SessionUnreadable_ReportsTheErasedEntry()
+    {
+        Session session = CreateOverLimitSession(entryCount: 8);
+        CompressionGrimoireRepository grimoire = new()
+        {
+            Session = session,
+            ReturnNullAfterFirstLoad = true,
+        };
+        ScriptedPurger purger = new(EraseThenBlock(session, erased: 1, CovenantErasureBlocker.AuthorityStale));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(1, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.StoppedBy);
+        Assert.Equal(result.TokensBefore, result.TokensAfter);
+        Assert.Equal(7, session.Entries.Count);
+        Assert.Empty(grimoire.DeletedEntryIds);
+    }
+
+    /// <summary>
+    /// The lower bound adds up every page the walk reached, not only the one that blocked.
+    /// </summary>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeBlockedOnASecondPage_SessionUnreadable_AddsUpEveryPage()
+    {
+        Session session = CreateOverLimitSession(entryCount: 300);
+        CompressionGrimoireRepository grimoire = new()
+        {
+            Session = session,
+            ReturnNullAfterFirstLoad = true,
+        };
+        ScriptedPurger purger = new(
+            EraseAll(session),
+            EraseThenBlock(session, erased: 2, CovenantErasureBlocker.AuthorityStale));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(ICovenantSensitiveArtifactPurger.MaxTargets + 2, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.StoppedBy);
+        Assert.Equal(300 - result.EntriesRemoved, session.Entries.Count);
+    }
+
+    /// <summary>
+    /// Entries that left the reloaded window but were never erased are not counted as removed.
+    /// </summary>
+    /// <remarks>
+    /// The reload returns only the newest Entries of a long Session. The oldest Entries, which
+    /// compaction selects first, are outside it whether or not they still exist, so being absent from the
+    /// window proves nothing and each absence is confirmed against the stored Entry.
+    /// </remarks>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeBlocked_EntriesOutsideTheReloadWindowThatStillExistAreNotCounted()
+    {
+        Session session = CreateOverLimitSession(entryCount: 8);
+        CompressionGrimoireRepository grimoire = new()
+        {
+            Session = session,
+            ReloadWindow = 2,
+        };
+        ScriptedPurger purger = new(EraseThenBlock(session, erased: 0, CovenantErasureBlocker.AuthorityStale));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(0, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.StoppedBy);
+        Assert.Equal(8, session.Entries.Count);
+        Assert.Empty(grimoire.DeletedEntryIds);
+    }
+
+    /// <summary>
+    /// An Entry the purge erased before it failed is counted even though the reloaded window no longer
+    /// shows it and the failure reports no disposition for it.
+    /// </summary>
+    /// <remarks>
+    /// Both kinds of absence sit outside the window here: the two erased Entries and the ones that still
+    /// exist. Only the stored Entry tells them apart.
+    /// </remarks>
+    [Fact]
+    public async Task CompressSessionAsync_PurgeFailsAfterErasing_ErasedEntryOutsideTheReloadWindow_IsStillCounted()
+    {
+        Session session = CreateOverLimitSession(entryCount: 8);
+        CompressionGrimoireRepository grimoire = new()
+        {
+            Session = session,
+            ReloadWindow = 2,
+        };
+        ScriptedPurger purger = new(
+            EraseThenFail(session, erased: 2, new Error(ErrorCodes.Covenant.Unavailable, "Storage could not answer.")));
+        ContextCompressionService service = CreateService(grimoire, purger: purger);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal(2, result.EntriesRemoved);
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.StoppedBy);
+        Assert.Equal(6, session.Entries.Count);
+        Assert.Empty(grimoire.DeletedEntryIds);
+    }
+
     private static ContextCompressionService CreateService(
         CompressionGrimoireRepository grimoire,
-        ILogger<ContextCompressionService>? logger = null)
+        ILogger<ContextCompressionService>? logger = null,
+        ICovenantSensitiveArtifactPurger? purger = null)
     {
         InferenceTokenizerResolver tokenizerResolver = new(
             NullLogger<InferenceTokenizerResolver>.Instance);
@@ -154,7 +420,110 @@ public sealed class ContextCompressionServiceTests
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             tokenizerResolver,
-            logger ?? NullLogger<ContextCompressionService>.Instance);
+            logger ?? NullLogger<ContextCompressionService>.Instance,
+            purger: purger);
+    }
+
+    /// <summary>
+    /// Enough small Entries, oldest first, that a 256-token window selects nearly all of them.
+    /// </summary>
+    private static Session CreateOverLimitSession(int entryCount) =>
+        CreateSession(
+            [.. Enumerable.Range(0, entryCount)
+                .Select(index => CreateEntry(
+                    string.Join(' ', Enumerable.Repeat($"ward-stone-{index}", 12)),
+                    createdAtOffset: index))]);
+
+    private static void RemoveFromSession(Session session, Guid entryId)
+    {
+        Entry? entry = session.Entries.SingleOrDefault(candidate => candidate.Id == entryId);
+
+        if (entry is not null)
+        {
+            _ = session.Entries.Remove(entry);
+        }
+    }
+
+    /// <summary>
+    /// One purge call that erases every target and removes it from the Session, as the kernel would.
+    /// </summary>
+    private static Func<Guid[], Result<CovenantSensitivePurgeOutcome>> EraseAll(Session session) =>
+        ids =>
+        {
+            foreach (Guid id in ids)
+            {
+                RemoveFromSession(session, id);
+            }
+
+            return PurgeOutcome(
+                ids,
+                [(CovenantSensitivePurgeDisposition.Purged, CovenantErasureBlocker.None)],
+                session: null);
+        };
+
+    /// <summary>
+    /// One purge call that erases its first targets, then blocks the next one and every one after it,
+    /// which is what the coordinator reports when a labelled item cannot be erased.
+    /// </summary>
+    private static Func<Guid[], Result<CovenantSensitivePurgeOutcome>> EraseThenBlock(
+        Session session,
+        int erased,
+        CovenantErasureBlocker blocker) =>
+        ids => PurgeOutcome(
+            ids,
+            [
+                .. Enumerable.Repeat((CovenantSensitivePurgeDisposition.Purged, CovenantErasureBlocker.None), erased),
+                (CovenantSensitivePurgeDisposition.Blocked, blocker),
+            ],
+            session);
+
+    /// <summary>
+    /// One purge call that erases its first targets and then fails outright, reporting none of them.
+    /// </summary>
+    private static Func<Guid[], Result<CovenantSensitivePurgeOutcome>> EraseThenFail(
+        Session session,
+        int erased,
+        Error error) =>
+        ids =>
+        {
+            foreach (Guid id in ids.Take(erased))
+            {
+                RemoveFromSession(session, id);
+            }
+
+            return error;
+        };
+
+    /// <summary>
+    /// An outcome that gives the targets the listed dispositions in order, the last one repeating for
+    /// the rest. A purged target is also removed from <paramref name="session"/>.
+    /// </summary>
+    private static Result<CovenantSensitivePurgeOutcome> PurgeOutcome(
+        Guid[] ids,
+        (CovenantSensitivePurgeDisposition Disposition, CovenantErasureBlocker Blocker)[] steps,
+        Session? session)
+    {
+        List<CovenantSensitivePurgeResult> results = [];
+
+        for (int index = 0; index < ids.Length; index++)
+        {
+            (CovenantSensitivePurgeDisposition disposition, CovenantErasureBlocker blocker) =
+                steps[Math.Min(index, steps.Length - 1)];
+
+            if (disposition is CovenantSensitivePurgeDisposition.Purged && session is not null)
+            {
+                RemoveFromSession(session, ids[index]);
+            }
+
+            results.Add(new CovenantSensitivePurgeResult(
+                ids[index],
+                SensitiveArtifactKind.AssistantEntry,
+                disposition,
+                blocker));
+        }
+
+        return Result<CovenantSensitivePurgeOutcome>.Success(
+            new CovenantSensitivePurgeOutcome(results, CovenantArtifactErasureProgress.Empty));
     }
 
     private static Session CreateSession(params Entry[] entries)
@@ -185,6 +554,23 @@ public sealed class ContextCompressionServiceTests
             CreatedAt = DateTimeOffset.UnixEpoch.AddSeconds(createdAtOffset),
         };
 
+    private sealed class ScriptedPurger(
+        params Func<Guid[], Result<CovenantSensitivePurgeOutcome>>[] calls) : ICovenantSensitiveArtifactPurger
+    {
+        public int CallCount { get; private set; }
+
+        public ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
+            IReadOnlyList<CovenantSensitivePurgeTarget> targets,
+            CancellationToken cancellationToken = default)
+        {
+            Func<Guid[], Result<CovenantSensitivePurgeOutcome>> call = calls[Math.Min(CallCount, calls.Length - 1)];
+
+            CallCount++;
+
+            return ValueTask.FromResult(call([.. targets.Select(target => target.ArtifactId)]));
+        }
+    }
+
     private sealed class CapturingLogger<T> : ILogger<T>
     {
         public List<string> Messages { get; } = [];
@@ -210,7 +596,15 @@ public sealed class ContextCompressionServiceTests
 
         public bool ReturnNullAfterFirstLoad { get; init; }
 
+        /// <summary>
+        /// When set, every load after the first holds only this many of the newest Entries, which is
+        /// all the repository returns of a long Session.
+        /// </summary>
+        public int? ReloadWindow { get; init; }
+
         public List<Guid> DeletedEntryIds { get; } = [];
+
+        public int EntryLookupCount { get; private set; }
 
         public Task<Session?> GetSessionAsync(
             Guid id,
@@ -218,6 +612,15 @@ public sealed class ContextCompressionServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             _sessionLoadCount++;
+
+            if (ReloadWindow is { } window && _sessionLoadCount > 1 && Session is { } full)
+            {
+                return Task.FromResult<Session?>(new Session
+                {
+                    Id = full.Id,
+                    Entries = [.. full.Entries.OrderBy(entry => entry.CreatedAt).TakeLast(window)],
+                });
+            }
 
             return Task.FromResult(
                 ReturnNullAfterFirstLoad && _sessionLoadCount > 1
@@ -276,11 +679,6 @@ public sealed class ContextCompressionServiceTests
             CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
-        public Task<int> PurgeSessionAsync(
-            Guid sessionId,
-            CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
         public Task<Session?> GetSessionHeaderAsync(
             Guid id,
             CancellationToken cancellationToken = default) =>
@@ -300,8 +698,24 @@ public sealed class ContextCompressionServiceTests
         public Task<GrimoireEntryDto?> GetEntryByIdAsync(
             Guid sessionId,
             Guid entryId,
-            CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EntryLookupCount++;
+
+            Entry? entry = Session?.Entries.SingleOrDefault(candidate => candidate.Id == entryId);
+
+            return Task.FromResult(
+                entry is null
+                    ? null
+                    : new GrimoireEntryDto(
+                        entry.Id,
+                        entry.Role,
+                        entry.Content,
+                        entry.ModelUsed,
+                        entry.CreatedAt,
+                        entry.IsPinned));
+        }
 
         public Task<bool> SetEntryPinnedAsync(
             Guid sessionId,

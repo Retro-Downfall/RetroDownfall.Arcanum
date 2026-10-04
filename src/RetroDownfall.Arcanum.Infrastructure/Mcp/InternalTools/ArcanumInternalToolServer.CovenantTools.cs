@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -380,6 +381,22 @@ internal sealed partial class ArcanumInternalToolServer
         if (probe.IsFailure)
         {
             return Result<CovenantProposedLaneExpectation>.Failure(probe.Error);
+        }
+
+        // Refused here, before anything is staged, for the same reason the publication authority
+        // refuses: a pinned lane and an erased key are the operator's, and they share one answer so the
+        // model cannot tell them apart. Refusing at staging costs the model a tool call; the same
+        // refusal at publication would cost the operator the turn's reply.
+        if (probe.Value.IsPinned)
+        {
+            return Result<CovenantProposedLaneExpectation>.Failure(new Error(
+                ErrorCodes.Covenant.ForbiddenAuthority,
+                CovenantAgentErasureGate.OperatorManagedRefusal));
+        }
+
+        if (CovenantAgentErasureGate.RefusalFor(probe.Value.AgentErasure) is { } withheld)
+        {
+            return Result<CovenantProposedLaneExpectation>.Failure(withheld);
         }
 
         return probe.Value.Presence switch

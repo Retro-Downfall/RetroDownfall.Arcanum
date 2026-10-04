@@ -45,6 +45,47 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
 
     }
 
+    /// <summary>
+    /// The two kinds whose rows carry an Annals claim say that the claim goes with them, and name the
+    /// graph that goes with the claim.
+    /// </summary>
+    /// <remarks>
+    /// The text is the policy's statement of what an erasure removes, and both purge plans take the
+    /// store's whole claim graph ahead of the row. A policy that said less would describe a narrower
+    /// purge than the one that runs, and an operator reading it would believe a claim survives. The
+    /// Saga text once named an FTS projection the Saga store has never had, which is the opposite
+    /// failure and is pinned out for the same reason.
+    /// </remarks>
+    [Theory]
+    [InlineData(SensitiveArtifactKind.Saga)]
+    [InlineData(SensitiveArtifactKind.Lexicon)]
+    public void Annals_store_policies_name_the_claim_graph_they_remove(SensitiveArtifactKind kind)
+    {
+
+        string policy = CovenantSensitiveArtifactPurgePolicy.Resolve(kind).Value.Policy;
+
+        foreach (string part in new[] { "Annals claim", "every version", "head", "dependency edge", "review event", "review decision receipt" })
+        {
+
+            Assert.Contains(part, policy, StringComparison.Ordinal);
+
+        }
+
+        if (kind == SensitiveArtifactKind.Lexicon)
+        {
+
+            Assert.Contains("historical fact provenance", policy, StringComparison.Ordinal);
+
+        }
+        else
+        {
+
+            Assert.DoesNotContain("FTS", policy, StringComparison.Ordinal);
+
+        }
+
+    }
+
     [Fact]
     public void Purge_registry_is_exhaustive_over_the_thirteen_kinds_and_rejects_anything_else()
     {

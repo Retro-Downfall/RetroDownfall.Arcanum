@@ -339,45 +339,74 @@ internal sealed class EntryWeavingService(
 
                 byte[] encoded = EmbeddingBlobCodec.Encode(vector);
 
-                await using DbCommand cmd = connection.CreateCommand();
+                // One transaction for the embedding and its mirror row, so a mirror row an earlier build
+                // wrote never outlives the embedding that replaced it.
+                await using DbTransaction transaction = await connection
+                    .BeginTransactionAsync(cancellationToken)
+                    .ConfigureAwait(false);
 
-                cmd.CommandText =
-                    """
-                    INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
-                    VALUES (@entryId, @embedding, @dim)
-                    ON CONFLICT("EntryId") DO UPDATE SET
-                        "Embedding" = @embedding,
-                        "Dim" = @dim
-                    """;
-
-                AddParameter(cmd, "@entryId", entryId);
-
-                AddParameter(cmd, "@embedding", encoded);
-
-                AddParameter(cmd, "@dim", vector.Length);
-
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                if (!weaveIndexAvailability.IsVecAvailable)
+                await using (DbCommand cmd = connection.CreateCommand())
                 {
 
-                    return;
+                    cmd.Transaction = transaction;
+
+                    cmd.CommandText =
+                        """
+                        INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
+                        VALUES (@entryId, @embedding, @dim)
+                        ON CONFLICT("EntryId") DO UPDATE SET
+                            "Embedding" = @embedding,
+                            "Dim" = @dim
+                        """;
+
+                    AddParameter(cmd, "@entryId", entryId);
+
+                    AddParameter(cmd, "@embedding", encoded);
+
+                    AddParameter(cmd, "@dim", vector.Length);
+
+                    _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 }
 
-                await using DbCommand vecCmd = connection.CreateCommand();
+                if (weaveIndexAvailability.IsVecAvailable)
+                {
 
-                vecCmd.CommandText =
-                    """
-                    INSERT OR REPLACE INTO "entry_embeddings_vec" ("EntryId", "Embedding")
-                    VALUES (@entryId, @embedding)
-                    """;
+                    await using DbCommand vecCmd = connection.CreateCommand();
 
-                AddParameter(vecCmd, "@entryId", entryId);
+                    vecCmd.Transaction = transaction;
 
-                AddParameter(vecCmd, "@embedding", encoded);
+                    vecCmd.CommandText =
+                        """
+                        INSERT OR REPLACE INTO "entry_embeddings_vec" ("EntryId", "Embedding")
+                        VALUES (@entryId, @embedding)
+                        """;
 
-                _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    AddParameter(vecCmd, "@entryId", entryId);
+
+                    AddParameter(vecCmd, "@embedding", encoded);
+
+                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                }
+                else
+                {
+
+                    // The mirror cannot be rewritten without the accelerator, so a row an earlier build
+                    // wrote would keep describing an embedding this entry no longer has. It goes through
+                    // the shared helper, which classifies the mirror first: a plain one loses the row,
+                    // and a legacy virtual one this runtime cannot open is left alone.
+                    _ = await SagaVectorMirror.DeleteAsync(
+                        connection,
+                        transaction,
+                        "entry_embeddings_vec",
+                        "EntryId",
+                        entryId,
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             },
             cancellationToken);

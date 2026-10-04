@@ -2,9 +2,12 @@ using System.Data.Common;
 using System.Globalization;
 using System.Security.Cryptography;
 
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
@@ -169,18 +172,10 @@ internal sealed partial class SagaMemoryStore
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText = """DELETE FROM "saga_memory_embeddings_vec" WHERE "MemoryId" = @id""";
-
-                    AddParameter(vecCmd, "@id", id);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Whatever the accelerator flag says: retirement promises no retrieval path can reach
+                // the memory, and a mirror an earlier build filled is one.
+                _ = await SagaVectorMirror.DeleteAsync(connection, transaction, id, cancellationToken)
+                    .ConfigureAwait(false);
 
                 byte[] suppressionKey = await SagaSuppressionKeyStore
                     .ReadOrCreateAsync(connection, transaction, retiredAt, cancellationToken).ConfigureAwait(false);
@@ -214,10 +209,10 @@ internal sealed partial class SagaMemoryStore
                     // The stored scope is canonicalized; the digest above is not, and the asymmetry is
                     // deliberate. The digest binds the spelling this memory row holds now and cannot be
                     // recomputed once the retired content is gone, so a reader of it has to ask for
-                    // whichever spellings it might carry - SuppressionDigests is where that pair is
-                    // decided. The column is a governed stored identity and is written as one: the
-                    // memory row this reads from may not have been swept yet, and a suppression left
-                    // holding that spelling would be invisible to a selection binding the canonical
+                    // whichever spellings it might carry - SagaRetirementSuppression.Digests is where
+                    // that pair is decided. The column is a governed stored identity and is written as
+                    // one: the memory row this reads from may not have been swept yet, and a suppression
+                    // left holding that spelling would be invisible to a selection binding the canonical
                     // form.
                     AddParameter(
                         suppressionCmd,
@@ -402,24 +397,16 @@ internal sealed partial class SagaMemoryStore
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText =
-                        """
-                        INSERT OR REPLACE INTO "saga_memory_embeddings_vec" ("MemoryId", "Embedding")
-                        VALUES (@memoryId, @embedding)
-                        """;
-
-                    AddParameter(vecCmd, "@memoryId", id);
-
-                    AddParameter(vecCmd, "@embedding", blob);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Written only while the accelerator is live. Without it, any row an earlier build left
+                // for this memory goes instead: it was computed for a memory that has since been retired,
+                // and nothing this process runs can vouch for it.
+                _ = await SagaVectorMirror.UpsertAsync(
+                    connection,
+                    transaction,
+                    id,
+                    embedding,
+                    availability.IsVecAvailable,
+                    cancellationToken).ConfigureAwait(false);
 
                 // The digest is recomputed from the installation's key rather than remembered from the
                 // retirement that created it: nothing here names which retirement a memory's suppression
@@ -447,13 +434,13 @@ internal sealed partial class SagaMemoryStore
                     // merely tolerant: the digest binds content-and-scope, and the two renderings are one
                     // Campaign, so they are two records of the same rejection.
                     //
-                    // The pair is canonicalized inside SuppressionDigests rather than here, and that is
-                    // the part this once got wrong. campaignId below is read out of the memory row, which
-                    // the version-5 sweep may not have reached; handing that on unchanged made the pair
-                    // one digest twice and released nothing at all whenever the two ends of the digest
-                    // disagreed about the spelling.
+                    // The pair is canonicalized inside SagaRetirementSuppression.Digests rather than
+                    // here, and that is the part this once got wrong. campaignId below is read out of the
+                    // memory row, which the version-5 sweep may not have reached; handing that on
+                    // unchanged made the pair one digest twice and released nothing at all whenever the
+                    // two ends of the digest disagreed about the spelling.
                     (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
-                        SuppressionDigests(suppressionKey, scopeKind, campaignId, content);
+                        SagaRetirementSuppression.Digests(suppressionKey, scopeKind, campaignId, content);
 
                     await using DbCommand releaseCmd = connection.CreateCommand();
 
@@ -495,7 +482,17 @@ internal sealed partial class SagaMemoryStore
             cancellationToken);
     }
 
-    public Task<SagaCurationOutcome> CorrectAsync(
+    /// <remarks>
+    /// A correction is an operator write, so the erasure chokepoint never refuses it. When its new content
+    /// is content the operator erased in this memory's own scope, the write makes that identity live
+    /// again and releases its fingerprint in the same transaction (spec §5.6). The key is a copy of the
+    /// latch taken before the transaction, never a credential read.
+    ///
+    /// <para>A correction runs under ordinary API authority, which a host-tools-tainted installation
+    /// does not refuse, while release requires authority it does. So where release authority would not
+    /// be issued the correction still lands but lifts nothing and reports <see langword="false"/>.</para>
+    /// </remarks>
+    public async Task<SagaCurationOutcome> CorrectAsync(
         string id,
         byte[] expectedContentDigest,
         string content,
@@ -520,7 +517,11 @@ internal sealed partial class SagaMemoryStore
                 $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting correct to avoid corrupting the vec0 index.""");
         }
 
-        return SqliteBusyRetry.ExecuteAsync(
+        bool releasePermitted = MemoryErasureFingerprintRelease.OperatorMayRelease(releaseAuthority);
+
+        using MemoryErasureKey? erasureKey = releasePermitted ? erasureKeys.TryCopyLatched() : null;
+
+        return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -614,6 +615,29 @@ internal sealed partial class SagaMemoryStore
                     _ = await contentCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
+                // The identity the new content takes in this row's own stored scope. A stored Campaign
+                // no fingerprint can name is an identity this write cannot check, never a loose match.
+                MemoryErasureIdentity? recreated;
+
+                try
+                {
+                    recreated = SagaErasureWriteGate.SagaIdentity(scopeKind, campaignId, content);
+                }
+                catch (FormatException)
+                {
+                    recreated = null;
+                }
+
+                bool? released = releasePermitted
+                    ? await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                        (SqliteConnection)connection,
+                        (SqliteTransaction)transaction,
+                        MemoryReviewStore.Saga,
+                        recreated,
+                        erasureKey,
+                        cancellationToken).ConfigureAwait(false)
+                    : false;
+
                 byte[] blob = EmbeddingBlobCodec.Encode(embedding);
 
                 await using (DbCommand embeddingCmd = connection.CreateCommand())
@@ -646,24 +670,15 @@ internal sealed partial class SagaMemoryStore
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText =
-                        """
-                        INSERT OR REPLACE INTO "saga_memory_embeddings_vec" ("MemoryId", "Embedding")
-                        VALUES (@memoryId, @embedding)
-                        """;
-
-                    AddParameter(vecCmd, "@memoryId", id);
-
-                    AddParameter(vecCmd, "@embedding", blob);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Written only while the accelerator is live. Without it, the old vector goes instead:
+                // it describes text this memory no longer holds.
+                _ = await SagaVectorMirror.UpsertAsync(
+                    connection,
+                    transaction,
+                    id,
+                    embedding,
+                    availability.IsVecAvailable,
+                    cancellationToken).ConfigureAwait(false);
 
                 // The same ungated pair RetireAsync and ReinstateAsync write, and for the same reason:
                 // the record that the operator corrected this memory is evidence rather than retrieval.
@@ -705,9 +720,12 @@ internal sealed partial class SagaMemoryStore
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, pinnedAtUtc));
+                return new SagaCurationOutcome(
+                    SagaCurationOutcomeKind.Applied,
+                    new SagaMemoryLifecycle(null, pinnedAtUtc),
+                    released);
             },
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
     public Task<SagaCurationOutcome> SetPinAsync(

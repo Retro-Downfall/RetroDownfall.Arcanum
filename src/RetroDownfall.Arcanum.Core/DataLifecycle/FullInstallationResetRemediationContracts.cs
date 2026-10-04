@@ -1,7 +1,5 @@
 using System.Buffers.Binary;
 
-using System.Buffers.Text;
-
 using System.Security.Cryptography;
 
 using System.Text;
@@ -122,7 +120,7 @@ public static class FullInstallationResetRemediationAttestationDigest
                 FullInstallationResetRemediationPreimage.Build(attestation);
 
             if (preimageResult.IsFailure
-                || !FullInstallationResetRemediationPreimage.TryDecodeCanonicalBase64Url(
+                || !CanonicalBase64Url.TryDecodeBounded(
                     attestation.SignatureBase64Url,
                     SignatureBytes,
                     SignatureBytes,
@@ -457,12 +455,12 @@ public sealed class FullInstallationResetRemediationAttestationVerifier(
                 || !FullInstallationResetRemediationAction.IsExpected(
                     attestation.RemediationActionDigest)
                 || !MatchesEvidence(attestation, currentInstallationId, matchedPair)
-                || !FullInstallationResetRemediationPreimage.TryDecodeCanonicalBase64Url(
+                || !CanonicalBase64Url.TryDecodeBounded(
                     attestation.SignatureBase64Url,
                     FullInstallationResetRemediationAttestationDigest.SignatureBytes,
                     FullInstallationResetRemediationAttestationDigest.SignatureBytes,
                     out signature)
-                || !FullInstallationResetRemediationPreimage.TryDecodeCanonicalBase64Url(
+                || !CanonicalBase64Url.TryDecodeBounded(
                     attestation.NonceBase64Url,
                     FullInstallationResetRemediationPreimage.MinimumNonceBytes,
                     FullInstallationResetRemediationPreimage.MaximumNonceBytes,
@@ -903,7 +901,7 @@ internal static class FullInstallationResetRemediationPreimage
         try
         {
 
-            if (!TryDecodeCanonicalBase64Url(
+            if (!CanonicalBase64Url.TryDecodeBounded(
                     attestation.NonceBase64Url,
                     MinimumNonceBytes,
                     MaximumNonceBytes,
@@ -978,87 +976,6 @@ internal static class FullInstallationResetRemediationPreimage
             CryptographicOperations.ZeroMemory(nonce);
 
             CryptographicOperations.ZeroMemory(issuer);
-
-        }
-
-    }
-
-    internal static bool TryDecodeCanonicalBase64Url(
-        string? value,
-        int minimumBytes,
-        int maximumBytes,
-        out byte[] decoded)
-    {
-
-        decoded = [];
-
-        if (string.IsNullOrEmpty(value)
-            || value.Length > Base64Url.GetEncodedLength(maximumBytes))
-        {
-
-            return false;
-
-        }
-
-        foreach (char character in value)
-        {
-
-            if (character is not (>= 'A' and <= 'Z'
-                or >= 'a' and <= 'z'
-                or >= '0' and <= '9'
-                or '-'
-                or '_'))
-            {
-
-                return false;
-
-            }
-
-        }
-
-        byte[] buffer = new byte[Base64Url.GetMaxDecodedLength(value.Length)];
-
-        try
-        {
-
-            if (!Base64Url.TryDecodeFromChars(value, buffer, out int written)
-                || written < minimumBytes
-                || written > maximumBytes)
-            {
-
-                return false;
-
-            }
-
-            byte[] exact = buffer[..written];
-
-            if (!string.Equals(
-                    Base64Url.EncodeToString(exact),
-                    value,
-                    StringComparison.Ordinal))
-            {
-
-                CryptographicOperations.ZeroMemory(exact);
-
-                return false;
-
-            }
-
-            decoded = exact;
-
-            return true;
-
-        }
-        catch (FormatException)
-        {
-
-            return false;
-
-        }
-        finally
-        {
-
-            CryptographicOperations.ZeroMemory(buffer);
 
         }
 

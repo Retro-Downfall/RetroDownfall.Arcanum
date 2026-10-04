@@ -11,9 +11,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </summary>
 /// <remarks>
 /// One immediate transaction per acknowledgement, because the subject's ordinal allocation, its
-/// counters, its rolling chain head, and the receipt row have to move together. Allocating an
-/// ordinal outside the transaction that inserts the row is how two parallel provider attempts end up
-/// claiming the same one, and the chain digest then commits to a sequence that never happened.
+/// counters, its rolling chain head, the receipt row, and the receipt's fold into
+/// <c>external_disclosure_state</c> have to move together. Allocating an ordinal outside the
+/// transaction that inserts the row is how two parallel provider attempts end up claiming the same
+/// one, and the chain digest then commits to a sequence that never happened.
 /// </remarks>
 internal interface ICovenantDisclosureTransactionWriter
 {
@@ -131,6 +132,17 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
             allocated,
             category,
             chain,
+            cancellationToken).ConfigureAwait(false);
+
+        // The receipt is counted in its bucket by the transaction that writes it, so no committed
+        // receipt is ever missing from the joined state. The tail it folds is normally just this one
+        // receipt; a longer tail is history from before the live fold, and a fold that throws takes
+        // the acknowledgement down with it.
+        await ExternalDisclosureStateFold.FoldSubjectTailAsync(
+            connection,
+            transaction,
+            CovenantDisclosureSubject.From(draft),
+            ExternalDisclosureFoldOrigin.Live,
             cancellationToken).ConfigureAwait(false);
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

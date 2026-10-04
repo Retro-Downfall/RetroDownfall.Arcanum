@@ -230,6 +230,7 @@ public sealed class CovenantArtifactErasureAuthorityTests
     [InlineData(CovenantExclusiveOperation.CampaignPathMutation)]
     [InlineData(CovenantExclusiveOperation.CampaignDelete)]
     [InlineData(CovenantExclusiveOperation.ProtectedSessionTransfer)]
+    [InlineData(CovenantExclusiveOperation.CovenantEntryErasure)]
     public void Exclusive_authority_rejects_every_scoped_operation_without_touching_a_lease(
         CovenantExclusiveOperation operation)
     {

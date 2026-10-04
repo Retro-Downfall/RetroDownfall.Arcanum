@@ -314,6 +314,93 @@ public sealed class CovenantDisclosureWriterTests
 
     }
 
+    /// <summary>
+    /// A republication that keeps the dataset and the canonical tier's health does not fail the first open
+    /// it overlaps. Every committed write that moves the search position, and every maintenance batch,
+    /// republishes availability, so this overlap is ordinary, and a refusal here closes the writer until
+    /// the next reopen.
+    /// </summary>
+    [Fact]
+    public async Task First_lazy_open_survives_an_availability_republication_that_keeps_its_dataset()
+    {
+
+        await using WriterHarness harness = await WriterHarness.CreateAsync(productionAvailability: true);
+
+        harness.FreshConnections.BlockNextOpen();
+
+        Task<Result<CovenantDisclosureReceipt>> opening = Task.Run(() => harness.AcknowledgeAsync(1));
+
+        await harness.FreshConnections.OpenBlocked;
+
+        CovenantAvailabilitySnapshot before = harness.PublishedAvailability!.Current;
+
+        _ = harness.PublishedAvailability.PublishPersistedState(
+            harness.DatasetGeneration,
+            canonicalSequence: 1,
+            coreCampaignDeletionSequence: 0,
+            appliedDatasetGeneration: harness.DatasetGeneration,
+            appliedSequence: 1,
+            appliedCampaignDeletionSequence: 0,
+            before.AcceleratorEpoch,
+            CovenantFtsSynchronizationState.Synchronized,
+            rebuildRequired: false,
+            CovenantHealthTransition.AcceleratorSynchronization);
+
+        Assert.NotSame(before, harness.PublishedAvailability.Current);
+
+        harness.FreshConnections.AllowOpen();
+
+        Result<CovenantDisclosureReceipt> acknowledged = await opening;
+
+        Assert.True(acknowledged.IsSuccess, acknowledged.IsFailure ? acknowledged.Error.Message : null);
+
+        Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
+
+        Assert.Single(harness.FreshConnections.Opened);
+
+    }
+
+    /// <summary>
+    /// The first open still refuses, and stays closed, when the dataset it verified is replaced or the
+    /// canonical tier stops being healthy while it opens.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task First_lazy_open_still_refuses_a_dataset_or_canonical_health_that_changes_while_it_opens(
+        bool replaceDataset)
+    {
+
+        await using WriterHarness harness = await WriterHarness.CreateAsync();
+
+        harness.FreshConnections.BlockNextOpen();
+
+        Task<Result<CovenantDisclosureReceipt>> opening = Task.Run(() => harness.AcknowledgeAsync(1));
+
+        await harness.FreshConnections.OpenBlocked;
+
+        harness.Availability!.Publish(
+            replaceDataset ? CovenantCapabilityState.Healthy : CovenantCapabilityState.Unavailable,
+            replaceDataset ? Guid.NewGuid() : harness.DatasetGeneration);
+
+        harness.FreshConnections.AllowOpen();
+
+        Result<CovenantDisclosureReceipt> acknowledged = await opening;
+
+        Assert.True(acknowledged.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, acknowledged.Error.Code);
+
+        SqliteConnection candidate = Assert.Single(harness.FreshConnections.Opened);
+
+        Assert.Equal(ConnectionState.Closed, candidate.State);
+
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
+
+        Assert.True((await harness.AcknowledgeAsync(2)).IsFailure);
+
+    }
+
     [Fact]
     public async Task Disposal_is_idempotent_and_waits_for_admitted_work_before_closing_the_handle()
     {

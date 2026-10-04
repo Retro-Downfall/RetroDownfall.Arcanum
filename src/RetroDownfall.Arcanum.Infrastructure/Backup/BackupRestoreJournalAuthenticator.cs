@@ -1594,99 +1594,14 @@ internal static class BackupRestoreJournalAuthenticator
 
         decoded = [];
 
-        if (value is null || value.Length != expectedCharacters || !IsUnpaddedBase64Url(value))
-        {
-
-            return false;
-
-        }
-
-        byte[] buffer = new byte[expectedBytes];
-
-        if (!Base64Url.TryDecodeFromChars(value, buffer, out int written) || written != expectedBytes)
-        {
-
-            return false;
-
-        }
-
-        // Re-encoding is what rejects a noncanonical final character: the decoder tolerates unused
-        // trailing bits, and a token that decodes to the same bytes under two spellings would give one
-        // key two names.
-        if (!string.Equals(Base64Url.EncodeToString(buffer), value, StringComparison.Ordinal))
-        {
-
-            return false;
-
-        }
-
-        decoded = buffer;
-
-        return true;
+        return value is not null
+            && value.Length == expectedCharacters
+            && CanonicalBase64Url.TryDecodeExact(value, expectedBytes, out decoded);
 
     }
 
-    private static bool TryDecodeBounded(string? value, int maximumBytes, out byte[] decoded)
-    {
-
-        decoded = [];
-
-        if (value is null || value.Length == 0 || !IsUnpaddedBase64Url(value))
-        {
-
-            return false;
-
-        }
-
-        // Bound the encoded character count against the largest legal payload before touching a
-        // buffer, then size the buffer from the token rather than from the ceiling — a fixed
-        // maximum-sized allocation per decode would let a one-byte journal cost half a megabyte.
-        if (value.Length > Base64Url.GetEncodedLength(maximumBytes))
-        {
-
-            return false;
-
-        }
-
-        byte[] buffer = new byte[Base64Url.GetMaxDecodedLength(value.Length)];
-
-        if (!Base64Url.TryDecodeFromChars(value, buffer, out int written))
-        {
-
-            return false;
-
-        }
-
-        decoded = buffer[..written];
-
-        return string.Equals(Base64Url.EncodeToString(decoded), value, StringComparison.Ordinal);
-
-    }
-
-    private static bool IsUnpaddedBase64Url(string token)
-    {
-
-        foreach (char value in token)
-        {
-
-            bool allowed = value is >= 'A' and <= 'Z'
-                or >= 'a' and <= 'z'
-                or >= '0' and <= '9'
-                or '-'
-                or '_';
-
-            if (!allowed)
-            {
-
-                return false;
-
-            }
-
-        }
-
-        return token.Length % 4 != 1;
-
-    }
+    private static bool TryDecodeBounded(string? value, int maximumBytes, out byte[] decoded) =>
+        CanonicalBase64Url.TryDecodeBounded(value, 1, maximumBytes, out decoded);
 
     private static int Copy(Span<byte> destination, CovenantDigest digest)
     {

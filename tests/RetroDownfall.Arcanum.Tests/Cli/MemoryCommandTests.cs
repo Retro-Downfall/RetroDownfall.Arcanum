@@ -2,6 +2,8 @@ using System.Net;
 
 using System.Text.Json;
 
+using System.Text.RegularExpressions;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +21,8 @@ using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
+
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -101,8 +105,62 @@ public sealed class MemoryCommandTests
 
         Assert.Contains(retired ? "pinned: 2026-09-21 01:02:03Z" : "pinned: not pinned", lexicon, StringComparison.Ordinal);
 
-        Assert.Equal("Visible Saga\n  Saga visible content\n  Provenance: Saga source\n  Retention: Saga retention",
+        Assert.Equal("Visible Saga\n  Saga visible content\n  Provenance: Saga source\n  Retention: Saga retention\n  Retrieval: unknown; retired: unknown; pinned: unknown",
             result.Output.Split("[saga] ", StringSplitOptions.None)[1].Trim().ReplaceLineEndings("\n"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Generic_plain_search_identifies_saga_lifecycle(bool retired)
+    {
+        MemorySearchResponse payload = new("visible", MemorySearchScope.Saga,
+        [
+            new(
+                MemorySearchScope.Saga,
+                "Visible Saga",
+                "Saga visible content",
+                "Saga source",
+                "Saga retention",
+                "saga",
+                SagaLifecycle: new SagaMemoryLifecycle(
+                    retired ? new DateTimeOffset(2026, 9, 20, 12, 34, 56, TimeSpan.Zero) : null,
+                    new DateTimeOffset(2026, 9, 21, 1, 2, 3, TimeSpan.Zero)),
+                SagaEligibility: retired ? SagaRetrievalEligibility.Retired : SagaRetrievalEligibility.Eligible),
+        ]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string sagaBlock = result.Output.Split("[saga] ", StringSplitOptions.None)[1];
+
+        Assert.Contains(retired
+            ? "Retrieval: Retired; retired: 2026-09-20 12:34:56Z; pinned: 2026-09-21 01:02:03Z"
+            : "Retrieval: Eligible; retired: not retired; pinned: 2026-09-21 01:02:03Z", sagaBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Generic_plain_search_does_not_infer_eligibility_from_missing_saga_metadata()
+    {
+        MemorySearchResponse payload = new("visible", MemorySearchScope.Saga,
+            [new(MemorySearchScope.Saga, "Legacy Saga", "Saga visible content", "Saga source", "Saga retention", "legacy")]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("Retrieval: unknown; retired: unknown; pinned: unknown", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Eligible", result.Output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -423,15 +481,25 @@ public sealed class MemoryCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/memory/lexicon/Operator", request.RequestUri!.AbsolutePath);
+
+        // Spectre wraps long lines on the console the harness captures, so the sentence is read with
+        // its whitespace collapsed rather than at the column the wrap happened to choose.
+        string output = Regex.Replace(result.Output, @"\s+", " ");
+
+        Assert.Contains("was deleted, not erased", output, StringComparison.Ordinal);
+
+        Assert.Contains("arcanum memory lexicon erase", output, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [Theory]
+    [InlineData("delete")]
+    [InlineData("erase")]
 
-    public void Memory_has_no_generic_delete_command()
+    public void Memory_has_no_generic_delete_command(string verb)
     {
         RecordingHandler handler = new();
 
-        CliTestResult result = RunCommand(handler, ["memory", "delete", "anything"]);
+        CliTestResult result = RunCommand(handler, ["memory", verb, "anything"]);
 
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 

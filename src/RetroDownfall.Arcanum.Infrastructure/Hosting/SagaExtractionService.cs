@@ -52,6 +52,13 @@ internal enum SagaExtractionOutcome : byte
 
     DeferredForMaintenance = 3,
 
+    /// <summary>
+    /// Saga erasure fingerprints exist and the erasure key is not available, so the page was deferred
+    /// before the extraction model call. It waits on its own delay and never charges the retry ladder:
+    /// a missing key is not a failing provider, and the work must survive until an operator restores it.
+    /// </summary>
+    DeferredForErasureKey = 4,
+
 }
 
 internal sealed record SagaExtractionAttemptResult(
@@ -114,6 +121,8 @@ public sealed class SagaExtractionService : BackgroundService
 
     private const int MaximumAutomaticRetryAttempts = 5;
 
+    private static readonly TimeSpan ErasureKeyDeferralDelay = TimeSpan.FromMinutes(1);
+
     private const string ExtractionSystemPrompt =
         """
         You are the Saga Keeper, responsible for maintaining the long-term memory
@@ -158,6 +167,20 @@ public sealed class SagaExtractionService : BackgroundService
         get => _retryBaseDelay;
 
         init => _retryBaseDelay = value;
+    }
+
+    private readonly TimeSpan _erasureKeyDeferralDelay = ErasureKeyDeferralDelay;
+
+    /// <summary>
+    /// How long a page deferred for the erasure key waits before it asks again. There is no
+    /// configuration key for it; tests shrink it so a deferral can be watched without real-time waits.
+    /// </summary>
+    internal TimeSpan ErasureKeyDeferralDelayForTests
+    {
+
+        get => _erasureKeyDeferralDelay;
+
+        init => _erasureKeyDeferralDelay = value;
     }
 
     internal IReadOnlyCollection<SagaExtractionRequest> PendingRequestsForTests =>
@@ -604,6 +627,23 @@ public sealed class SagaExtractionService : BackgroundService
 
                 }
 
+                if (attempt.Outcome == SagaExtractionOutcome.DeferredForErasureKey)
+                {
+
+                    _logger.LogWarning(
+                        "Saga extraction for session {SessionId} deferred: Saga erasure fingerprints exist and the erasure key is not available.",
+                        sessionId);
+
+                    // Keeps the pending key and its segments exactly as the Retry branch does during
+                    // backoff, but never asks NextRetryDelay: the ladder is for failing providers, and a
+                    // key an operator restores after the ladder's last rung must not find this work
+                    // abandoned.
+                    ScheduleRetry(sessionId, _erasureKeyDeferralDelay, stoppingToken);
+
+                    continue;
+
+                }
+
                 if (attempt.Outcome == SagaExtractionOutcome.Retry)
                 {
 
@@ -926,6 +966,8 @@ public sealed class SagaExtractionService : BackgroundService
 
         ISagaMemoryStore store = services.GetRequiredService<ISagaMemoryStore>();
 
+        SagaErasureWriteGate erasureGate = services.GetRequiredService<SagaErasureWriteGate>();
+
         SagaExtractionCursor? cursor = await store.GetExtractionCursorAsync(
             sessionId,
             cancellationToken).ConfigureAwait(false);
@@ -1046,6 +1088,24 @@ public sealed class SagaExtractionService : BackgroundService
 
             }
 
+            // Before the model call, and with no transaction open: while Saga fingerprints exist and the
+            // key cannot be read, extraction cannot know which conclusions it may write, so it pays for
+            // nothing and defers the whole page. The context carries the key through the page's
+            // embedding checks and is disposed with the page.
+            Result<MemoryErasureGuardContext> erasurePrepared =
+                await erasureGate.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
+            if (erasurePrepared.IsFailure)
+            {
+
+                return new SagaExtractionAttemptResult(
+                    SagaExtractionOutcome.DeferredForErasureKey,
+                    sourceSegment);
+
+            }
+
+            using MemoryErasureGuardContext erasureContext = erasurePrepared.Value;
+
             if (!workLease.TryBeginExternalEffectGroup(
                     out IGrimoireExternalEffectGroup? effectGroup))
             {
@@ -1145,6 +1205,8 @@ public sealed class SagaExtractionService : BackgroundService
 
             List<SagaExtractionPreparedCandidate> preparedCandidates = [];
 
+            int withheldBeforeEmbedding = 0;
+
             foreach (SagaExtractionCandidate memory in memories)
             {
 
@@ -1181,6 +1243,20 @@ public sealed class SagaExtractionService : BackgroundService
 
                 }
 
+                // Checked on the trimmed text, which is exactly what the insert would receive. A candidate
+                // an operator erased in this scope is never sent to the embedding provider again; the
+                // insert chokepoint would refuse it anyway, so skipping it here loses nothing.
+                if (await erasureGate
+                        .IsWithheldAsync(erasureContext, sessionId, trimmed, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+
+                    withheldBeforeEmbedding++;
+
+                    continue;
+
+                }
+
                 Result<Embedding<float>> embedResult = await weave.EmbedAsync(trimmed, cancellationToken).ConfigureAwait(false);
 
                 preparedCandidates.Add(
@@ -1197,7 +1273,9 @@ public sealed class SagaExtractionService : BackgroundService
 
             int insertedCount = 0;
 
-            int suppressedCount = 0;
+            // A candidate withheld before embedding is the same deliberate answer an insert-time
+            // suppression is, so it counts as this page's progress from the start.
+            int suppressedCount = withheldBeforeEmbedding;
 
             int eligibleCount = 0;
 
@@ -1277,13 +1355,13 @@ public sealed class SagaExtractionService : BackgroundService
                 if (outcome == SagaMemoryWriteOutcome.Suppressed)
                 {
 
-                    // A deliberate rejection, not a failure: the operator already retired an
+                    // A deliberate rejection, not a failure: the operator already retired or erased an
                     // equivalent conclusion in this scope, so extraction must not re-add it. The
                     // cursor still advances past this page below -- treating this like a failure
                     // would put the same page on the retry ladder forever, since the next attempt
                     // would be refused identically.
                     _logger.LogInformation(
-                        "Saga extraction for session {SessionId} did not write a memory because the operator already retired an equivalent conclusion.",
+                        "Saga extraction for session {SessionId} did not write a memory because the operator already retired or erased an equivalent conclusion.",
                         sessionId);
 
                     suppressedCount++;

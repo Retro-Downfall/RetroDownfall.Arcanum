@@ -146,7 +146,15 @@ internal static class CovenantCapabilityFixtures
                     : CovenantLaneHeadProbe.NotFound(scope, lane, normalizedKey, keyEpoch: 1)));
         }
 
-        public void SetPresent(string normalizedKey, long revision) =>
+        /// <summary>
+        /// A live Proposed head, optionally pinned by the operator or classified by the store's erasure
+        /// check, the two answers a staging handler must refuse before it stages.
+        /// </summary>
+        public void SetPresent(
+            string normalizedKey,
+            long revision,
+            bool pinned = false,
+            CovenantAgentErasureState agentErasure = CovenantAgentErasureState.Clear) =>
             Heads[normalizedKey] = new CovenantLaneHeadProbe(
                 CovenantOperationScope.ForCampaign(CovenantTask6Fixture.CampaignId),
                 CovenantLane.Proposed,
@@ -157,7 +165,9 @@ internal static class CovenantCapabilityFixtures
                 revision,
                 CovenantOrigin.AgentProposed,
                 CompiledByteCost: 32,
-                KeyEpoch: 1);
+                KeyEpoch: 1,
+                IsPinned: pinned,
+                AgentErasure: agentErasure);
 
         public void SetRetired(string normalizedKey, long revision) =>
             Heads[normalizedKey] = new CovenantLaneHeadProbe(

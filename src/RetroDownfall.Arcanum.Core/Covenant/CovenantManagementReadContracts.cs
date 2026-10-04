@@ -101,7 +101,8 @@ public sealed record CovenantListQuery(
 public sealed record CovenantDetailQuery(CovenantOperationScope Scope, string NormalizedKey);
 
 /// <summary>
-/// One scoped key with both lane heads and the current provenance of each.
+/// One scoped key with both lane heads, the current provenance of each, and each lane's curation
+/// state, all read in one snapshot.
 /// </summary>
 public sealed record CovenantDetail(
     CovenantOperationScope Scope,
@@ -111,7 +112,9 @@ public sealed record CovenantDetail(
     CovenantHeadItem? ProposedHead,
     long KeyEpoch,
     Guid DatasetGeneration,
-    long CanonicalSearchSequence);
+    long CanonicalSearchSequence,
+    CovenantCurationStateDto ConfirmedCuration,
+    CovenantCurationStateDto ProposedCuration);
 
 /// <summary>
 /// A descending page of one entry lane's immutable versions.
@@ -275,7 +278,7 @@ public sealed record CovenantMutationEffectQuery(
 /// The compiled fragment travels because an operator approving a retirement reads the content, not a
 /// hash of it. The pin travels because a pinned head must be refused before a Ward is raised at all:
 /// asking somebody to approve what the write authority will refuse anyway is asking them to authorize
-/// nothing.
+/// nothing. The erasure classification travels for the same reason, and is refused the same way.
 /// </remarks>
 public sealed record CovenantRetirementTarget(
     Guid EntryId,
@@ -287,7 +290,14 @@ public sealed record CovenantRetirementTarget(
     CovenantDigest RenderedHash,
     bool GlobalFallbackApplies,
     long KeyEpoch,
-    bool IsPinned);
+    bool IsPinned,
+    CovenantAgentErasureState AgentErasure = CovenantAgentErasureState.Clear)
+{
+
+    /// <summary>Whether the operator erased this exact scoped key, so an agent may not retire it.</summary>
+    public bool IsAgentWithheld => AgentErasure == CovenantAgentErasureState.Withheld;
+
+}
 
 /// <summary>
 /// The subject one curation preflight measures, before its key epoch is known.

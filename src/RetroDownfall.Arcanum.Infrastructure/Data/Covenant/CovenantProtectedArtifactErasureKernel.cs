@@ -7,7 +7,6 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
-using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -20,7 +19,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 ///
 /// <para><c>ExistsConditionally</c> marks a table no schema file installs — the sqlite-vec mirrors,
 /// which are present only where that accelerator built them. Such a target names its table unquoted
-/// so a consumer can probe <c>sqlite_master</c> for it before deleting.</para>
+/// so <see cref="SagaVectorMirror"/> can classify it from <c>sqlite_master</c> before anything reads
+/// or deletes from it.</para>
+///
+/// <para><see cref="CountBy"/> and <see cref="DeleteBy"/> share one predicate on purpose. A plan's
+/// count is only a promise about its delete while the two select the same rows.</para>
 /// </remarks>
 internal sealed record CovenantArtifactPurgeTarget(
     string Table,
@@ -30,17 +33,18 @@ internal sealed record CovenantArtifactPurgeTarget(
     int? RequiredFromCoreVersion = null)
 {
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
-    internal string DeleteBy(string parameter)
-    {
-        string predicate = AnnalStore is { } store
+    internal string DeleteBy(string parameter) => $"DELETE FROM {Table} WHERE {Predicate(parameter)};";
+
+    /// <summary>This target's row count, over exactly the rows <see cref="DeleteBy"/> removes.</summary>
+    internal string CountBy(string parameter) => $"SELECT count(*) FROM {Table} WHERE {Predicate(parameter)};";
+
+    private string Predicate(string parameter) =>
+        AnnalStore is { } store
             ? AnnalsErasurePlan.ForSubjectQuery(
                 store,
                 $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}")
                 .Single(step => string.Equals(step.Table, Table, StringComparison.Ordinal)).Predicate
             : CovenantIdentitySql.Keyed(KeyColumn, parameter);
-
-        return $"DELETE FROM {Table} WHERE {predicate};";
-    }
 }
 
 /// <summary>
@@ -153,8 +157,14 @@ internal static class CovenantArtifactPurgePlans
     /// Inside the erasure boundary because the mirror stores the embedding itself, not a pointer to
     /// it: leaving it behind would keep Covenant-derived content reachable through the vector search
     /// path after a purge reported success. No schema file installs these tables — the accelerator
-    /// creates them where it is present — so every consumer probes for the table before it deletes,
-    /// which is the same guard the retention pruner uses on the same two tables.
+    /// creates them where it is present — so <see cref="CovenantArtifactPlanRunner"/> classifies the
+    /// table inside the caller's transaction before it counts or deletes: a plain table is purged
+    /// whatever the process's accelerator flag says, and a legacy <c>vec0</c> virtual table, which this
+    /// runtime cannot open, is skipped rather than failing the operation. The tally reports the skip,
+    /// and only an erase records it, on its receipt as <c>VectorIndexScrubUnverified</c>; this kernel's
+    /// retention purge and the staged restore purge skip it without failing the item and keep no
+    /// record of it. A plan carries at most one such mirror, because a tally reports one
+    /// classification.
     /// </remarks>
     private static CovenantArtifactPurgeTarget VectorMirror(string table, string keyColumn) =>
         new(table, keyColumn, ExistsConditionally: true);
@@ -341,13 +351,19 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
     }
 
     /// <summary>
-    /// Deletes projections, then the artifact, then the label, and repairs what the rule requires.
+    /// Deletes the current pointer when the rule repairs it and redacts the shadowed column, then the
+    /// projections and the artifact, then the label, and repairs what the rule requires.
     /// </summary>
     /// <remarks>
     /// The order is the one the schema guards already assume: projections point at the artifact, the
     /// artifact is what the label's owner index names, and the current pointer cascades from the
-    /// artifact. Removing the label first would leave content nothing admits is tainted, which is the
-    /// exact state a purge exists to make impossible.
+    /// artifact, so the pointer goes before it. Removing the label first would leave content nothing
+    /// admits is tainted, which is the exact state a purge exists to make impossible.
+    ///
+    /// <para>The pointer and redaction run before the projections rather than between them and the
+    /// artifact, so the projections and the artifact can run as one plan through
+    /// <see cref="CovenantArtifactPlanRunner"/>. That reorders nothing real: no plan has both
+    /// projections and a pointer or redaction, and a structural test keeps it that way.</para>
     /// </remarks>
     private async Task ApplyPlanAsync(
         SqliteConnection connection,
@@ -358,29 +374,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         CancellationToken cancellationToken)
     {
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(item.Kind);
-
-        foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
-        {
-            if (projection.RequiredFromCoreVersion is { } requiredVersion
-                && await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < requiredVersion)
-            {
-                continue;
-            }
-
-            if (projection.ExistsConditionally
-                && !await TableExistsAsync(connection, transaction, projection.Table, cancellationToken)
-                    .ConfigureAwait(false))
-            {
-                continue;
-            }
-
-            await ExecuteAsync(
-                connection,
-                transaction,
-                projection.DeleteBy("$artifactKey"),
-                item,
-                cancellationToken).ConfigureAwait(false);
-        }
 
         if (rule.RepairsCurrentPointer && plan.CurrentPointerTable is { } pointer)
         {
@@ -397,15 +390,13 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             await ExecuteAsync(connection, transaction, redaction, item, cancellationToken).ConfigureAwait(false);
         }
 
-        if (plan.Artifact is { } artifact)
-        {
-            await ExecuteAsync(
-                connection,
-                transaction,
-                artifact.DeleteBy("$artifactKey"),
-                item,
-                cancellationToken).ConfigureAwait(false);
-        }
+        _ = await CovenantArtifactPlanRunner.RunAsync(
+            connection,
+            transaction,
+            item.Kind,
+            CovenantIdentitySql.Key(item.ArtifactId),
+            CovenantArtifactPlanMode.Delete,
+            cancellationToken).ConfigureAwait(false);
 
         // The label is the one table whose identities have a single writer. ArtifactSensitivityLedger
         // is the sole INSERT into artifact_sensitivity and spells every identity the way Format does,
@@ -634,39 +625,6 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             item.SessionId is { } key ? CovenantIdentitySql.Key(key) : DBNull.Value);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Whether a conditionally installed table is present in this database.
-    /// </summary>
-    /// <remarks>
-    /// Read inside the erasure transaction, and against <c>sqlite_master</c> rather than against a
-    /// process-wide accelerator flag. Whether the vector mirrors hold rows is a property of the
-    /// database in front of this kernel, not of whether the current process loaded an accelerator: a
-    /// build with the accelerator off would skip a mirror an earlier build filled, and content a
-    /// purge skipped is content a purge left behind. It is the same guard the retention pruner uses
-    /// over the same two tables, and it matches a vec0 virtual table, which <c>sqlite_master</c>
-    /// records as an ordinary <c>table</c>.
-    /// </remarks>
-    private static async Task<bool> TableExistsAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string table,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        command.CommandText = """
-            SELECT 1 FROM sqlite_master WHERE name = $table AND type IN ('table', 'view') LIMIT 1;
-            """;
-
-        _ = command.Parameters.AddWithValue("$table", table);
-
-        object? found = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-
-        return found is not null && found != DBNull.Value;
     }
 
     private static Result<CovenantArtifactErasureProgress> Stalled(CovenantErasureBlocker blocker) =>

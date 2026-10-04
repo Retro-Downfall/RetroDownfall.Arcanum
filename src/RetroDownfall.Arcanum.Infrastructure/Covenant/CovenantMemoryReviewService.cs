@@ -9,6 +9,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -16,13 +17,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// <summary>
 /// Reviews exact immutable Covenant versions through one generation-bound, scoped queue.
 /// </summary>
+/// <remarks>
+/// A <c>Correct</c> is an operator write of its key's Confirmed content, so it releases any erasure
+/// fingerprint still recorded for that exact scope and key in the review's own transaction, with the key
+/// the review read from the latch before <c>BEGIN</c>, and reports it on the item. Every other action, and
+/// every replay, releases nothing.
+/// </remarks>
 internal sealed class CovenantMemoryReviewService(
     ICovenantConnectionSource connections,
     ICovenantCompiler compiler,
     IMemoryReviewTokenCodec tokenCodec,
     CovenantMutationKernel mutationKernel,
     CovenantCurationKernel curationKernel,
-    TimeProvider timeProvider) : ICovenantMemoryReviewService
+    TimeProvider timeProvider,
+    CovenantAvailabilityRepublisher availabilityRepublisher) : ICovenantMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
@@ -311,6 +319,13 @@ internal sealed class CovenantMemoryReviewService(
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        // A correction commits an operator set of the item's key, which releases that key's erasure
+        // fingerprint in its scope; the plan says so before the operator approves it. The key is read
+        // from the latch before BEGIN, exactly as apply reads it, so the two answer alike.
+        using CovenantAgentErasureGate erasureGate = request.Action == MemoryReviewAction.Correct
+            ? mutationKernel.CaptureErasureGate()
+            : CovenantAgentErasureGate.None;
+
         await using SqliteTransaction transaction = (SqliteTransaction)await connection
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -366,7 +381,18 @@ internal sealed class CovenantMemoryReviewService(
                 return error;
             }
 
-            items[index] = PlanItem(row!);
+            items[index] = PlanItem(row!) with
+            {
+                ReleasesErasureFingerprint = request.Action == MemoryReviewAction.Correct
+                    ? await MemoryErasureFingerprintRelease.WouldReleaseAsync(
+                        connection,
+                        transaction,
+                        MemoryReviewStore.Covenant,
+                        MemoryErasureIdentity.ForCovenant(row!.Scope, row.CampaignId, row.Key),
+                        erasureGate.Key,
+                        cancellationToken).ConfigureAwait(false)
+                    : false,
+            };
         }
 
         MemoryReviewDigest requestDigest = OrderedRequestDigest(request);
@@ -499,6 +525,11 @@ internal sealed class CovenantMemoryReviewService(
             return InvalidToken;
         }
 
+        // Read from the latch before BEGIN, never inside it, and disposed only after the transaction
+        // ends. Review decisions are operator intents, which the kernel never refuses through it; a
+        // correction reads its key to release the fingerprint of the identity it writes.
+        using CovenantAgentErasureGate erasureGate = mutationKernel.CaptureErasureGate();
+
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
         ReplayLookup racedReplay = await ReadReplayAsync(
@@ -580,6 +611,7 @@ internal sealed class CovenantMemoryReviewService(
         {
             Result<AppliedDecision> decision = await ApplyDecisionAsync(
                 kernelTransaction,
+                erasureGate,
                 state,
                 writeLease.Snapshot,
                 preparedRequest,
@@ -653,6 +685,12 @@ internal sealed class CovenantMemoryReviewService(
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        // After COMMIT, under the caller's write lease. A decision that went through the mutation kernel
+        // advanced the canonical search sequence; one that only curated republishes the unchanged tuple.
+        await availabilityRepublisher
+            .RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
+            .ConfigureAwait(false);
 
         return new MemoryReviewBulkResultDto(
             MemoryReviewStore.Covenant,
@@ -1317,6 +1355,7 @@ internal sealed class CovenantMemoryReviewService(
 
     private async ValueTask<Result<AppliedDecision>> ApplyDecisionAsync(
         CovenantMutationTransaction transaction,
+        CovenantAgentErasureGate erasureGate,
         CanonicalState state,
         CovenantOperationLeaseSnapshot lease,
         CovenantReviewBulkPrepareRequest request,
@@ -1328,6 +1367,7 @@ internal sealed class CovenantMemoryReviewService(
     {
         Guid? resultingVersionId = null;
         long? autoAcknowledgedEventSequence = null;
+        bool? releasedErasureFingerprint = false;
         string outcome = Outcome(request.Action);
 
         switch (request.Action)
@@ -1350,6 +1390,7 @@ internal sealed class CovenantMemoryReviewService(
 
                 Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
                     transaction,
+                    erasureGate,
                     state,
                     lease,
                     request,
@@ -1375,6 +1416,17 @@ internal sealed class CovenantMemoryReviewService(
                     return IntegrityFailure;
                 }
 
+                if (mutation.Value.Kind is CovenantMutationKind.OperatorSet && !mutation.Value.Replayed)
+                {
+                    releasedErasureFingerprint = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                        transaction.Connection,
+                        transaction.Transaction,
+                        MemoryReviewStore.Covenant,
+                        MemoryErasureIdentity.ForCovenant(target.Scope, target.CampaignId, target.Key),
+                        erasureGate.Key,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 if (resultingVersionId is { } correctedVersion)
                 {
                     autoAcknowledgedEventSequence = await ReadReviewEventSequenceAsync(
@@ -1391,6 +1443,7 @@ internal sealed class CovenantMemoryReviewService(
             {
                 Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
                     transaction,
+                    erasureGate,
                     state,
                     lease,
                     request,
@@ -1446,13 +1499,15 @@ internal sealed class CovenantMemoryReviewService(
             Canonical(target.EntryId),
             Canonical(target.VersionId),
             outcome,
-            resultingVersionId is { } resulting ? Canonical(resulting) : null);
+            resultingVersionId is { } resulting ? Canonical(resulting) : null,
+            releasedErasureFingerprint);
 
         return new AppliedDecision(ordinal, target, result, autoAcknowledgedEventSequence);
     }
 
     private async ValueTask<Result<CovenantMutationReceipt>> ApplyMutationAsync(
         CovenantMutationTransaction transaction,
+        CovenantAgentErasureGate erasureGate,
         CanonicalState state,
         CovenantOperationLeaseSnapshot lease,
         CovenantReviewBulkPrepareRequest request,
@@ -1463,7 +1518,7 @@ internal sealed class CovenantMemoryReviewService(
         DateTimeOffset committedAt,
         CancellationToken cancellationToken)
     {
-        long keyEpoch = await ReadKeyEpochAsync(transaction, target.Key, cancellationToken)
+        CovenantKeyEpochPair epochs = await CovenantKeyEpochs.ReadAsync(transaction, target.Key, cancellationToken)
             .ConfigureAwait(false);
 
         long? registryEpoch = target.Scope == CovenantScope.Global
@@ -1473,7 +1528,7 @@ internal sealed class CovenantMemoryReviewService(
         CovenantOperatorMutationBinding binding = new(
             state.DatasetGeneration,
             checked((ulong)lease.AuthorityEpoch),
-            keyEpoch,
+            epochs.Dependency,
             registryEpoch);
 
         Guid mutationId = DerivedMutationId(request.RequestId, ordinal, "mutation");
@@ -1512,7 +1567,7 @@ internal sealed class CovenantMemoryReviewService(
             ImmutableArray.Create(intent.Value));
 
         Result<IReadOnlyList<CovenantMutationReceipt>> applied = await mutationKernel
-            .ApplyBatchAsync(batch, transaction, cancellationToken)
+            .ApplyBatchAsync(batch, transaction, erasureGate, cancellationToken)
             .ConfigureAwait(false);
 
         if (applied.IsFailure)
@@ -1534,14 +1589,18 @@ internal sealed class CovenantMemoryReviewService(
         DateTimeOffset committedAt,
         CancellationToken cancellationToken)
     {
-        long keyEpoch = await ReadKeyEpochAsync(transaction, target.Key, cancellationToken)
+        // Both epochs are read inside the write transaction and both are stated. The kernel compares
+        // the dependency epoch and checks the binding epoch it reads against the one asserted here, so
+        // the curation head this pin is measured against below is the one the kernel then writes.
+        CovenantKeyEpochPair epochs = await CovenantKeyEpochs.ReadAsync(transaction, target.Key, cancellationToken)
             .ConfigureAwait(false);
 
         CovenantCurationSubject subject = new(
             OperationScope(target.Scope, target.CampaignId),
             new CovenantKey(target.Key),
             target.Lane,
-            keyEpoch);
+            epochs.Dependency,
+            epochs.Binding);
 
         long revision = await ReadCurationRevisionAsync(transaction, subject, cancellationToken)
             .ConfigureAwait(false);
@@ -1576,19 +1635,6 @@ internal sealed class CovenantMemoryReviewService(
         return await curationKernel.ApplyAsync(commit, transaction, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask<long> ReadKeyEpochAsync(
-        CovenantMutationTransaction transaction,
-        string normalizedKey,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = transaction.CreateCommand();
-        command.CommandText =
-            "SELECT COALESCE(MAX(KeyEpoch), 0) FROM covenant_key_epochs WHERE NormalizedKey = $key;";
-        Bind(command, "$key", normalizedKey);
-        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
     private static async ValueTask<long> ReadCampaignRegistryEpochAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
@@ -1599,6 +1645,14 @@ internal sealed class CovenantMemoryReviewService(
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
+    /// <summary>
+    /// The revision of the subject's current curation head, or zero when it has none.
+    /// </summary>
+    /// <remarks>
+    /// Looked up by the binding epoch, which is the epoch a curation head is recorded under. The
+    /// dependency epoch moves on every write to the key, so a head sought by it would be missed after
+    /// the first such write, and the pin or unpin would then be refused as a revision conflict.
+    /// </remarks>
     private static async ValueTask<long> ReadCurationRevisionAsync(
         CovenantMutationTransaction transaction,
         CovenantCurationSubject subject,
@@ -1616,7 +1670,11 @@ internal sealed class CovenantMemoryReviewService(
         Bind(command, "$campaign", CanonicalCampaign(subject.Scope.CampaignId));
         Bind(command, "$key", subject.NormalizedKey.Value);
         Bind(command, "$lane", (int)subject.Lane);
-        Bind(command, "$epoch", subject.KeyEpoch);
+        Bind(
+            command,
+            "$epoch",
+            subject.KeyBindingEpoch
+                ?? throw new InvalidOperationException("A curation revision is read under a resolved binding epoch."));
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }

@@ -1211,6 +1211,8 @@ public static class ApiBootstrapper
 
         apiGroup.MapLexiconCurationEndpoints();
 
+        apiGroup.MapMemoryErasureEndpoints();
+
         apiGroup.MapSpellEndpoints();
 
         apiGroup.MapSpellAuthoringEndpoints();

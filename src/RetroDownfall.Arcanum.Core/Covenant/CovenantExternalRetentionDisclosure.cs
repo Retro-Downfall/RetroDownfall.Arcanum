@@ -72,8 +72,13 @@ public static class CovenantExternalRetentionDisclosure
     /// <summary>
     /// What an operator is told before anything is destroyed, and what makes the report honest.
     /// </summary>
+    /// <remarks>
+    /// Selective erasure is named because the three erase verbs write this sentence too: removing one
+    /// Saga memory, Lexicon entry or Covenant entry locally revokes nothing a provider or a backup
+    /// already holds, exactly as the wider destroy surfaces cannot.
+    /// </remarks>
     public const string DestructiveOperationText =
-        "Local disable, reset, protected-state purge, family reinitialize, and factory erasure "
+        "Local disable, reset, selective erasure, protected-state purge, family reinitialize, and factory erasure "
             + "cannot revoke content retained in provider logs or automatic prompt caches, "
             + "encrypted backup copies, unmanaged files, or other nonrevocable disclosures. "
             + "Review each configured provider's retention and deletion documentation and "

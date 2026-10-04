@@ -235,9 +235,6 @@ public sealed class CovenantProtectedFinalizationTests
         public Task SaveCompletedExchangeAsync( string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
         public Task<Session?> GetSessionAsync( Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

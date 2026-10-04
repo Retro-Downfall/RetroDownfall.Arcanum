@@ -459,6 +459,13 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A backup must not close a Campaign scope.");
 
+        public ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+            CovenantOperationScope entryScope,
+            bool reclaimsKey,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A backup must not erase a Covenant entry.");
+
         public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
             ProtectedTransferScope scope,
             CovenantExclusiveRecoveryOwner owner,

@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -138,7 +139,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         string name = args.Name.Trim();
 
-        if (IsProtectedDaemonStateName(name))
+        if (LexiconDaemonStateNames.Is(name))
         {
             return ToolError(
                 "delete_lexicon cannot remove Unseen Servant daemon_state entries; clear them via daemon job removal or Lexicon admin tooling.");
@@ -153,6 +154,26 @@ internal sealed partial class ArcanumInternalToolServer
             // Deletion is aimed at the tier the turn writes to, so a Forbidden Art cast inside one
             // Campaign can never take the installation's entity of the same name with it.
             LexiconScope lexiconScope = await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false);
+
+            // Retired and pinned entries are the operator's to manage, so they are refused before any
+            // purge can erase one. The agent-origin delete below decides again inside its transaction.
+            Result<LexiconAgentDeletionTarget?> target = await lexicon.FindAgentDeletionTargetAsync(
+                name, lexiconScope, cancellationToken).ConfigureAwait(false);
+
+            if (target.IsFailure)
+            {
+                return ToolError(target.Error.Message);
+            }
+
+            if (target.Value is { IsRetired: true })
+            {
+                return ToolError(LexiconAgentRefusals.RetiredDeletion);
+            }
+
+            if (target.Value is { IsPinned: true })
+            {
+                return ToolError(LexiconAgentRefusals.OperatorManaged);
+            }
 
             bool purgedIdentity = false;
 
@@ -189,10 +210,17 @@ internal sealed partial class ArcanumInternalToolServer
                 }
             }
 
+            // A purged identity skips the agent-origin delete and its in-transaction lifecycle check, so on
+            // this branch the pre-check above is the only lifecycle guard. An agent cannot reach it: a tool
+            // call's scope never carries the sensitivity-purge authority the HTTP endpoint filter
+            // publishes, so the purger refuses a labelled target as Covenant.ForbiddenAuthority and hands
+            // an unlabelled one back to the ordinary delete below. Granting agents purge authority would
+            // need the lifecycle check moved into the purge's own transaction.
             Result<bool> result = purgedIdentity ? Result<bool>.Success(true) : await lexicon
                 .DeleteByNameAsync(
                     name,
                     lexiconScope,
+                    LexiconDeletionOrigin.Agent,
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -225,9 +253,6 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("An internal error occurred during tool execution.");
         }
     }
-
-    private static bool IsProtectedDaemonStateName(string name) =>
-        name.StartsWith("daemon_state:", StringComparison.OrdinalIgnoreCase);
 
     private async Task<McpToolsCallResultWire> ExecuteSearchArchivesAsync(
         JsonElement arguments,

@@ -106,6 +106,70 @@ public sealed class SagaEndpointTests
 
     }
 
+    /// <summary>
+    /// Paging the listing by limit and offset gives every memory exactly once, and memories that share
+    /// an instant are listed in identity order, which is the order the bulk-delete walk follows.
+    /// </summary>
+    /// <remarks>
+    /// Written out of identity order, so the order the rows were stored in is not the order they sort in.
+    /// Every filter the listing offers is paged too: each one is a different query, and the tie-break has
+    /// to be in all of them, not only in the unfiltered one.
+    /// </remarks>
+    [SkippableFact]
+    public async Task List_PagesMemoriesSharingOneInstantExactlyOnceInIdentityOrder()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid session = Guid.NewGuid();
+
+        DateTimeOffset tie = new(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
+
+        for (int step = 0; step < 31; step++)
+        {
+
+            int index = step * 7 % 31;
+
+            DateTimeOffset createdAt = index < 3 ? tie.AddMinutes(1) : index < 28 ? tie : tie.AddMinutes(-1);
+
+            await SeedMemoryAsync(factory, $"mem-{index:D2}", $"ward-stone {index}", session, createdAt: createdAt);
+
+        }
+
+        string[] expected =
+        [
+            .. Enumerable.Range(0, 31)
+                .OrderByDescending(static index => index < 3 ? 2 : index < 28 ? 1 : 0)
+                .ThenByDescending(static index => $"mem-{index:D2}", StringComparer.Ordinal)
+                .Select(static index => $"mem-{index:D2}"),
+        ];
+
+        foreach (string filter in new[] { string.Empty, "&q=ward-stone", $"&sessionId={session:D}" })
+        {
+
+            List<string> paged = [];
+
+            for (int offset = 0; offset < expected.Length; offset += 6)
+            {
+
+                HttpResponseMessage response = await client.GetAsync($"/api/saga?limit=6&offset={offset}{filter}");
+
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                paged.AddRange((await ReadListAsync(response)).Select(static memory => memory.Id));
+
+            }
+
+            Assert.Equal(expected, paged);
+
+        }
+
+    }
+
     [SkippableFact]
     public async Task List_QueryTooLong_Returns400()
     {
@@ -619,7 +683,8 @@ public sealed class SagaEndpointTests
         string id,
         string content,
         Guid? sessionId,
-        float[]? vector = null)
+        float[]? vector = null,
+        DateTimeOffset? createdAt = null)
     {
 
         using IServiceScope scope = factory.Services.CreateScope();
@@ -629,7 +694,7 @@ public sealed class SagaEndpointTests
         _ = await store.InsertAsync(
             id,
             content,
-            DateTimeOffset.UtcNow,
+            createdAt ?? DateTimeOffset.UtcNow,
             sessionId,
             tags: null,
             source: "extraction",

@@ -111,9 +111,11 @@
         "context sources",
         "context tools",
         "memory covenant correct",
+        "memory covenant erase",
         "memory covenant list",
         "memory covenant mask",
         "memory covenant pin",
+        "memory covenant release",
         "memory covenant retire",
         "memory covenant review list",
         "memory covenant search",
@@ -122,12 +124,15 @@
         "memory covenant unmask",
         "memory covenant unpin",
         "memory lexicon correct",
+        "memory lexicon erase",
         "memory lexicon pin",
         "memory lexicon reinstate",
+        "memory lexicon release",
         "memory lexicon retire",
         "memory lexicon review list",
         "memory lexicon show",
         "memory lexicon unpin",
+        "memory saga release",
         "memory saga review list",
         "run"
       ]
@@ -151,6 +156,7 @@
         "memory lexicon correct",
         "memory lexicon review apply",
         "memory saga correct",
+        "memory saga release",
         "memory saga review apply"
       ]
     },
@@ -2555,7 +2561,7 @@
         {
           "path": "saga delete",
           "name": "delete",
-          "description": "Delete a single Saga memory.",
+          "description": "Delete a single Saga memory without erasing it.",
           "runnable": true,
           "aliases": [],
           "arguments": [
@@ -2830,7 +2836,7 @@
                 {
                   "name": "--target-version",
                   "aliases": [],
-                  "description": "The version identity being corrected, as \u0060show --history\u0060 reports it.",
+                  "description": "The version identity being corrected, as \u0060show\u0060 reports it.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -2839,7 +2845,7 @@
                 {
                   "name": "--target-hash",
                   "aliases": [],
-                  "description": "The compiled hash of the version being corrected, as \u0060show\u0060 reports it.",
+                  "description": "The rendered hash of the version being corrected, as \u0060show\u0060 reports it.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3087,6 +3093,74 @@
               "commands": []
             },
             {
+              "path": "memory covenant erase",
+              "name": "erase",
+              "description": "Erase one preference entry for good, every version in both lanes, so agents cannot propose its key again in that scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant erase preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory covenant release",
+              "name": "release",
+              "description": "Release one key\u0027s erasure fingerprint in exactly one scope, so agents may propose that key there again.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant release preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"
+              ],
+              "commands": []
+            },
+            {
               "path": "memory covenant pin",
               "name": "pin",
               "description": "Mark one preference durable, so the agent may not write over it or retire it.",
@@ -3129,7 +3203,7 @@
                 {
                   "name": "--expected-revision",
                   "aliases": [],
-                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "description": "The curation revision \u0060show\u0060 reports for this lane. Zero is an uncurated subject.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3184,7 +3258,7 @@
                 {
                   "name": "--expected-revision",
                   "aliases": [],
-                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "description": "The curation revision \u0060show\u0060 reports for this lane. Zero is an uncurated subject.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3239,7 +3313,7 @@
                 {
                   "name": "--expected-revision",
                   "aliases": [],
-                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "description": "The curation revision \u0060show\u0060 reports for this lane. Zero is an uncurated subject.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3294,7 +3368,7 @@
                 {
                   "name": "--expected-revision",
                   "aliases": [],
-                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "description": "The curation revision \u0060show\u0060 reports for this lane. Zero is an uncurated subject.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3480,7 +3554,7 @@
             {
               "path": "memory lexicon delete",
               "name": "delete",
-              "description": "Delete one explicitly named Lexicon entity.",
+              "description": "Delete one explicitly named Lexicon entity without erasing it.",
               "runnable": true,
               "aliases": [],
               "arguments": [
@@ -3760,6 +3834,74 @@
                 "arcanum memory lexicon unpin Operator"
               ],
               "commands": []
+            },
+            {
+              "path": "memory lexicon erase",
+              "name": "erase",
+              "description": "Erase one exact Lexicon entry for good, so extraction and agents cannot write its name again in that scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon erase Operator"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory lexicon release",
+              "name": "release",
+              "description": "Release one exact Lexicon name\u0027s erasure fingerprint, so extraction and agents may write it again in that scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon release Operator"
+              ],
+              "commands": []
             }
           ]
         },
@@ -3941,6 +4083,84 @@
               "commands": []
             },
             {
+              "path": "memory saga erase",
+              "name": "erase",
+              "description": "Erase one Saga memory and its identical-content twins for good, so extraction cannot write that content again in its scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "id",
+                  "description": "Saga memory ID.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-content-hash",
+                  "aliases": [],
+                  "description": "The content hash \u0027memory saga show\u0027 printed for the text you read. Omit to use the hash shown now.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory saga erase 7c9e6679-7425-40de-944b-e07fc1f90ae7"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory saga release",
+              "name": "release",
+              "description": "Release the erasure fingerprint of one Saga content in one exact scope, so extraction may write it again there.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--file",
+                  "aliases": [
+                    "-f"
+                  ],
+                  "description": "Read the erased content from this file, or use - for stdin (requires --yes). Sent exactly as read.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Alone it means Campaign scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--scope",
+                  "aliases": [],
+                  "description": "global, campaign, unresolved, or unclassified. Omit for Global, or for Campaign when --campaign is given.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory saga release --file erased.txt",
+                "arcanum memory saga release --file erased.txt --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"
+              ],
+              "commands": []
+            },
+            {
               "path": "memory saga review",
               "name": "review",
               "description": "Review newly written Saga versions without gating their normal eligibility.",
@@ -4029,6 +4249,58 @@
                   "commands": []
                 }
               ]
+            }
+          ]
+        },
+        {
+          "path": "memory erasure",
+          "name": "erasure",
+          "description": "Inspect and administer erasure fingerprints and receipts across the memory stores.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "memory erasure status",
+              "name": "status",
+              "description": "Show the erasure key\u0027s state and each store\u0027s fingerprint, unverifiable and receipt counts.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [
+                "arcanum memory erasure status",
+                "arcanum memory erasure status --json"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory erasure scrub",
+              "name": "scrub",
+              "description": "Retry the write-ahead-log checkpoint erasures left pending, and report what it verified.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [
+                "arcanum memory erasure scrub"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory erasure reset-key",
+              "name": "reset-key",
+              "description": "Discard the erasure evidence the current key cannot verify, creating a key when none exists.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [
+                "arcanum memory erasure reset-key"
+              ],
+              "commands": []
             }
           ]
         }

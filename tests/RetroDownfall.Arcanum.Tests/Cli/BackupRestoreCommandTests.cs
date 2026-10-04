@@ -98,6 +98,140 @@ public sealed class BackupRestoreCommandTests
 
     }
 
+    /// <summary>
+    /// A rehearsal says what the destination's erasure evidence is, because a restore that would remove
+    /// archived items, or that is blocked because it cannot prove what was erased, should say so before
+    /// it is run. A plan that did not read the evidence says nothing about it.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "present",
+        "Erasure evidence: present (1 Saga, 0 Lexicon, 0 Covenant fingerprints; 1 receipts); archived items that match are removed before commit")]
+    [InlineData("none", "Erasure evidence: none")]
+    [InlineData("refused", "Erasure evidence: could not be proven; this restore is blocked")]
+    [InlineData("unread", null)]
+    public void A_dry_run_renders_the_destination_erasure_evidence(string evidence, string? expected)
+    {
+
+        FakeRestoreService restore = new()
+        {
+
+            ErasureEvidence = evidence switch
+            {
+                "present" => new BackupRestoreErasureEvidenceSummary(BackupRestoreErasureEvidenceStatus.Present, 1, 0, 0, 1),
+                "none" => new BackupRestoreErasureEvidenceSummary(BackupRestoreErasureEvidenceStatus.None, 0, 0, 0, 0),
+                "refused" => new BackupRestoreErasureEvidenceSummary(BackupRestoreErasureEvidenceStatus.Refused, 1, 0, 0, 1),
+                _ => null,
+            },
+
+        };
+
+        ServiceCollection services = CreateServices(
+            restore,
+            new FakeBackupPassphraseReader("restore secret".ToCharArray()));
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "backup",
+            "restore",
+            "/tmp/sample.arcbackup",
+            "--dry-run");
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        string[] rendered =
+        [
+            .. result.Output
+                .Split('\n')
+                .Select(static line => line.TrimEnd('\r'))
+                .Where(static line => line.Contains("Erasure evidence", StringComparison.Ordinal)),
+        ];
+
+        if (expected is null)
+        {
+
+            Assert.Empty(rendered);
+
+        }
+        else
+        {
+
+            Assert.Equal(expected, Assert.Single(rendered));
+
+        }
+
+    }
+
+    /// <summary>
+    /// A restore that applied this installation's erasure evidence says what it removed, joined and
+    /// dropped, in counts only, and whether the local scrub is proven. One that did not apply it says
+    /// nothing about it.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "applied",
+        "Erasure applied: removed 1 Saga memories, 0 Lexicon entries, 0 Covenant entries and 0 retirement pairs; joined 1 fingerprints and 1 receipts; dropped 0 archive rows; local scrub verified")]
+    [InlineData(
+        "pending",
+        "Erasure applied: removed 0 Saga memories, 2 Lexicon entries, 1 Covenant entries and 3 retirement pairs; joined 4 fingerprints and 5 receipts; dropped 6 archive rows; local scrub pending")]
+    [InlineData(
+        "nothing",
+        "Erasure applied: removed 0 Saga memories, 0 Lexicon entries, 0 Covenant entries and 0 retirement pairs; joined 0 fingerprints and 0 receipts; dropped 0 archive rows; local scrub not applicable")]
+    [InlineData("absent", null)]
+    public void A_restore_result_renders_the_erasure_application(string application, string? expected)
+    {
+
+        FakeRestoreService restore = new()
+        {
+
+            ErasureApplication = application switch
+            {
+                "applied" => new BackupRestoreErasureApplication(1, 0, 0, 0, 1, 1, 0, BackupRestoreErasureScrubStatus.Verified),
+                "pending" => new BackupRestoreErasureApplication(0, 2, 1, 3, 4, 5, 6, BackupRestoreErasureScrubStatus.ScrubPending),
+                "nothing" => new BackupRestoreErasureApplication(0, 0, 0, 0, 0, 0, 0, BackupRestoreErasureScrubStatus.NotApplicable),
+                _ => null,
+            },
+
+        };
+
+        ServiceCollection services = CreateServices(
+            restore,
+            new FakeBackupPassphraseReader("restore secret".ToCharArray()));
+
+        CliTestResult result = CliTestHarness.Run(
+            services,
+            "backup",
+            "restore",
+            "/tmp/sample.arcbackup",
+            "--yes");
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.NotNull(restore.LastRestoreRequest);
+
+        string[] rendered =
+        [
+            .. result.Output
+                .Split('\n')
+                .Select(static line => line.TrimEnd('\r'))
+                .Where(static line => line.Contains("Erasure applied", StringComparison.Ordinal)),
+        ];
+
+        if (expected is null)
+        {
+
+            Assert.Empty(rendered);
+
+        }
+        else
+        {
+
+            Assert.Equal(expected, Assert.Single(rendered));
+
+        }
+
+    }
+
     [Fact]
     public void A_non_destructive_mode_forwards_typed_options_without_a_destructive_confirmation()
     {
@@ -644,6 +778,10 @@ public sealed class BackupRestoreCommandTests
 
         public BackupVerifyIssue[] Issues { get; init; } = [];
 
+        public BackupRestoreErasureEvidenceSummary? ErasureEvidence { get; init; }
+
+        public BackupRestoreErasureApplication? ErasureApplication { get; init; }
+
         public BackupRestoreRequest? LastPlanRequest { get; private set; }
 
         public BackupRestoreRequest? LastRestoreRequest { get; private set; }
@@ -686,7 +824,7 @@ public sealed class BackupRestoreCommandTests
                     SafetyBackupPath: null,
                     Plan(request),
                     Manifest: null,
-                    new BackupRestoreReconciliation(1, 1, 0, 0, 0, 0, []),
+                    new BackupRestoreReconciliation(1, 1, 0, 0, 0, 0, [], ErasureApplication),
                     [new BackupRestorePhaseRecord(BackupRestorePhase.Commit, "committed")],
                     Issues));
 
@@ -715,7 +853,7 @@ public sealed class BackupRestoreCommandTests
 
         }
 
-        private static BackupRestorePlan Plan(BackupRestoreRequest request) =>
+        private BackupRestorePlan Plan(BackupRestoreRequest request) =>
             new(
                 new DateTimeOffset(2026, 8, 6, 9, 0, 0, TimeSpan.Zero),
                 request.ArchivePath,
@@ -743,7 +881,8 @@ public sealed class BackupRestoreCommandTests
                 RequiresConfirmation: true,
                 SafetyBackupPlanned: request.CreateSafetyBackup,
                 Warnings: [],
-                Blockers: []);
+                Blockers: [],
+                DestinationErasureEvidence: ErasureEvidence);
 
     }
 

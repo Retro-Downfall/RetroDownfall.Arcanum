@@ -69,14 +69,15 @@ internal static class MemoryEndpoints
 
     private const string AttachmentIndexRetention = "Derived and rebuildable from bound attachment versions; removed with the attachment or index reset.";
 
-    private const string CovenantRetention =
-        "Durable immutable versions until an operator retires the entry or a Covenant reset, family "
-            + "reinitialize, or factory erasure removes it. Content already sent to a provider is "
-            + "outside every local erasure path.";
+    private const string LexiconRetention =
+        "Durable until explicitly deleted, erased, or reset, or pruned by an enabled `lexicon-entries` "
+            + "retention rule; pinned entries are exempt from pruning, and retirement keeps an entry "
+            + "inspectable but out of matching.";
 
-    private const string LexiconRetention = "Durable until that explicitly named Lexicon entity is deleted.";
-
-    private const string SagaRetention = "Durable associative memory until that Saga memory is explicitly deleted.";
+    private const string SagaRetention =
+        "Durable until explicitly deleted, erased, or reset, or pruned by an enabled `saga-memories` "
+            + "retention rule; pinned memories are exempt from pruning, and retirement keeps a memory "
+            + "inspectable but out of retrieval.";
 
     private const string WorkspaceRetention = "Derived and rebuildable from registered workspace files; not session memory.";
 
@@ -299,6 +300,12 @@ internal static class MemoryEndpoints
 
             bool hasSession = status.Value.SessionId is not null;
 
+            // What a turn in this scope can reach, not what is stored: status counts the rows, and a
+            // retired, unembedded, or other-Campaign memory is a row no turn can recall.
+            bool sagaRetrievable = stores["Saga"].Enabled
+                && await context.RequestServices.GetRequiredService<ISagaMemoryStore>()
+                    .AnyRetrievableAsync(scope, context.RequestAborted).ConfigureAwait(false);
+
             MemoryEligibilityDto[] eligibility =
             [
                 Explain(
@@ -333,7 +340,7 @@ internal static class MemoryEndpoints
                     "Lexicon entities are candidates when the current prompt matches their names or facts; inspection does not promote new facts."),
                 Explain(
                     stores["Saga"],
-                    stores["Saga"].Enabled && stores["Saga"].Count > 0,
+                    sagaRetrievable,
                     "Saga memories are candidates when semantic retrieval for the current prompt selects them; they remain distinct from attachments and Lexicon. "
                     + MemoryCampaignScopeReport.Describe(scope).Detail),
                 Explain(
@@ -1248,8 +1255,11 @@ internal static class MemoryEndpoints
     {
         MemoryCampaignScopeDto reported = MemoryCampaignScopeReport.Describe(scope);
 
-        SagaMemoryDto[] memories = await store
-            .ListAsync(
+        // The listing's own rows, so a retired memory is a hit exactly as a live one is; each carries
+        // its lifecycle and whether an embedding survives, read in the same statement, so the
+        // eligibility reported beside it describes the instant the row was read.
+        SagaMemoryCurationRow[] rows = await store
+            .ListCurationRowsAsync(
                 query,
                 sessionId,
                 scope,
@@ -1258,8 +1268,10 @@ internal static class MemoryEndpoints
                 cancellationToken)
             .ConfigureAwait(false);
 
-        foreach (SagaMemoryDto memory in memories)
+        foreach (SagaMemoryCurationRow row in rows)
         {
+            SagaMemoryDto memory = row.Memory;
+
             string provenance = memory.SessionId is null
                 ? "Saga memory with no originating session"
                 : $"Saga memory from session {memory.SessionId.Value:D}";
@@ -1275,17 +1287,27 @@ internal static class MemoryEndpoints
             }
 
             // Per memory, so a result set spanning scopes is readable: the row says which Campaign owns
-            // it, and the block on it says which scope this search drew from.
+            // it, and the block on it says which scope this search drew from. An unresolved row is listed
+            // only while Campaign scoping is off -- the listing narrows by the ownership a turn ranks by
+            // whenever scoping is on -- and a turn then ranks it like any other, so the text says when it
+            // would be withheld rather than claiming it is withheld now.
             provenance += memory.ScopeKind switch
             {
                 SagaMemoryScopeKind.Campaign => $"; campaign {memory.ScopeCampaignId:D}",
 
                 SagaMemoryScopeKind.Global => "; installation-scoped",
 
-                SagaMemoryScopeKind.LegacyUnresolved => "; ownership unresolved, retrievable nowhere",
+                SagaMemoryScopeKind.LegacyUnresolved => "; ownership unresolved, withheld from turns while Campaign scoping is on",
 
                 _ => "; ownership not yet classified",
             };
+
+            // Last, so it reads as the verdict on everything before it: the row is still here, and no
+            // turn can recall it.
+            if (row.Lifecycle.RetiredAtUtc is not null)
+            {
+                provenance += "; retired";
+            }
 
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Saga,
@@ -1297,7 +1319,9 @@ internal static class MemoryEndpoints
                 reported,
                 Action: new MemorySearchActionDto(
                     MemorySearchActionKind.ShowSagaMemory,
-                    Saga: new MemorySagaTargetDto(memory.Id))));
+                    Saga: new MemorySagaTargetDto(memory.Id)),
+                SagaLifecycle: row.Lifecycle,
+                SagaEligibility: SagaRetrievalEligibilityClassifier.Classify(row, scope.IsEnforced)));
         }
     }
 

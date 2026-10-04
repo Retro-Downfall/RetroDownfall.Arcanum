@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 
+using RetroDownfall.Arcanum.Core.Memory;
+
 namespace RetroDownfall.Arcanum.Core.Covenant;
 
 /// <summary>
@@ -98,6 +100,10 @@ public static class CovenantPublicContractInventory
 
     private const string SessionBinding = Namespace + nameof(ISessionCampaignBindingService);
 
+    private const string EntryErasure = "RetroDownfall.Arcanum.Core.Memory." + nameof(ICovenantEntryErasureService);
+
+    private const string ErasureRelease = "RetroDownfall.Arcanum.Core.Memory." + nameof(IMemoryErasureRelease);
+
     /// <summary>Every service port a public Covenant shape crosses.</summary>
     public static ImmutableArray<CovenantServicePort> Ports { get; } =
     [
@@ -119,6 +125,14 @@ public static class CovenantPublicContractInventory
 
         new(SessionBinding,
             "One port for the single immutable resolution a legacy Session is allowed."),
+
+        new(EntryErasure,
+            "One port for preparing and applying a Covenant entry's hard erasure, which drains covered "
+            + "turns through its own exclusive closure and never shares a path with release."),
+
+        new(ErasureRelease,
+            "One store-neutral release port, so Saga, Lexicon and Covenant fingerprints are lifted by one "
+            + "operator-only path that never creates the erasure key."),
     ];
 
     /// <summary>
@@ -189,8 +203,11 @@ public static class CovenantPublicContractInventory
         new(Namespace + nameof(CovenantSourcesDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
             "Complete by construction, with the recomputed digest returned beside the stored one."),
 
+        new(Namespace + nameof(CovenantCurationStateDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
+            "One lane's pin, mask and curation revision at the key's binding epoch; an uncurated lane reads as none."),
+
         new(Namespace + nameof(CovenantDetailDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
-            "Both lane heads plus the key epoch a later mutation has to match."),
+            "Both lane heads, the key epoch, and each lane's curation state; never content."),
 
         new(Namespace + nameof(CovenantExplainSectionDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
             "Rendered content only under the existing showContent gate plus clean read authority."),
@@ -221,7 +238,7 @@ public static class CovenantPublicContractInventory
             "Optimistic concurrency plus the bound preflight token, with the mutation id as the sole replay key."),
 
         new(Namespace + nameof(CovenantCorrectPrepareRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, Mutation,
-            "Names the exact version, branch, revision and compiled hash a correction believes it replaces."),
+            "Names the exact version, branch, revision and rendered hash a correction believes it replaces."),
 
         new(Namespace + nameof(CovenantCorrectRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, Mutation,
             "Repeats the prepared target beside the bound token, so the server compares all three statements of it."),
@@ -318,6 +335,17 @@ public static class CovenantPublicContractInventory
 
         new(Namespace + nameof(SessionCampaignBindingResultDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, SessionBinding,
             "The one immutable choice, and whether this call is the one that made it."),
+
+        // Entry erasure.
+        new(Namespace + nameof(CovenantErasePrepareRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, EntryErasure,
+            "Names the exact entry and both lane heads from show, so the erase binds what the operator saw and never the key's content."),
+
+        new(Namespace + nameof(CovenantEraseRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, EntryErasure,
+            "Repeats the prepared fields beside the bound token, with the mutation id as the sole replay key."),
+
+        // Erasure release.
+        new(Namespace + nameof(CovenantErasureReleaseRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, ErasureRelease,
+            "Names one exact scope and an already well-formed key, so a release lifts exactly the identity an erase recorded and folds nothing."),
 
         // Durable recovery payloads. These cross no port and belong to Infrastructure.
         new(InfrastructureNamespace + "CovenantIndexRebuildCheckpointV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",

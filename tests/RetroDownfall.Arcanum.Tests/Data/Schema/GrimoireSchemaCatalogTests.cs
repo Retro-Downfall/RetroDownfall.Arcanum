@@ -20,6 +20,28 @@ public sealed class GrimoireSchemaCatalogTests
         Assert.Equal(GrimoireSchemaCategory.Tables, provenance.Category);
     }
 
+    [Fact]
+    public void Erasure_evidence_is_installed_with_the_core_tables()
+    {
+        foreach (string table in (string[])
+            ["memory_erasure_fingerprints", "memory_erasure_receipts", "memory_erasure_receipt_subjects"])
+        {
+            GrimoireSchemaObject definition = Assert.Single(
+                GrimoireSchemaCatalog.AllObjects, item => item.Name == table);
+
+            Assert.Equal(GrimoireSchemaTransactionTier.Core, definition.TransactionTier);
+
+            Assert.Equal(GrimoireSchemaCategory.Tables, definition.Category);
+        }
+
+        GrimoireSchemaObject guard = Assert.Single(
+            GrimoireSchemaCatalog.AllObjects, static item => item.Name == "memory_erasure_receipts_guard_update");
+
+        Assert.Equal(GrimoireSchemaTransactionTier.Core, guard.TransactionTier);
+
+        Assert.Equal(GrimoireSchemaCategory.Triggers, guard.Category);
+    }
+
 
     [Fact]
     public void Catalog_is_populated_from_the_embedded_glob()

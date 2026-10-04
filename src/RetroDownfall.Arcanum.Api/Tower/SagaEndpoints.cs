@@ -283,6 +283,10 @@ internal static class SagaEndpoints
 
                 }
 
+                // The store asks the labelled-artifact guard again inside its own transaction, after the
+                // purge dispatch above, and raises LabeledArtifactRefusalException when a label has been
+                // written since. The central exception handler answers it with the guard's own error, so a
+                // label that cannot be read is a 503 and one written since the dispatch is a 403.
                 bool deleted = await store.DeleteAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
                 if (!deleted)
@@ -353,6 +357,8 @@ internal static class SagaEndpoints
 
                 }
 
+                // A label written since the dispatch above is refused inside the store's own transaction,
+                // and the central exception handler answers it with the guard's own error.
                 await store.DeleteAllAsync(ctx.RequestAborted).ConfigureAwait(false);
 
                 return Results.NoContent();
@@ -390,11 +396,17 @@ internal static class SagaEndpoints
     /// boundary.
     /// </summary>
     /// <remarks>
-    /// The offset walk is deliberately re-read per page rather than snapshotted whole: a bulk delete on
-    /// a large Saga would otherwise hold a list in memory whose size the operator never bounded. Each
-    /// page is a stable list of identities that were examined before anything was removed, which is the
-    /// property that makes "no unexamined labelled row leaves through a set-based call" true rather than
-    /// intended (§10.20.2).
+    /// The walk is deliberately re-read per page rather than snapshotted whole: a bulk delete on a large
+    /// Saga would otherwise hold a list in memory whose size the operator never bounded. Each page is a
+    /// stable list of identities that were examined before anything was removed, which is the property
+    /// that makes "no unexamined labelled row leaves through a set-based call" true rather than intended
+    /// (§10.20.2).
+    ///
+    /// <para>A page is the memories after the last position the previous page returned, in one total
+    /// order, not a count of rows to skip. Dispatching a page removes the labelled rows on it, so a count
+    /// would slide the rows behind them up into the gap and past the walk; a position is unaffected by
+    /// what has since been removed, never revisits a removed row, and reads an unlabelled row exactly
+    /// once.</para>
     /// </remarks>
     private static async Task<Result<CovenantSensitivePurgeOutcome>> PurgeEveryLabeledSagaAsync(
         ISagaMemoryStore store,
@@ -408,15 +420,15 @@ internal static class SagaEndpoints
 
         CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
 
-        int offset = 0;
+        SagaMemoryPosition? after = null;
 
         while (true)
         {
 
             // Deliberately unscoped: erasure has to reach every memory, including the ones no turn in
             // any Campaign can currently retrieve.
-            SagaMemoryDto[] page = await store
-                .ListAsync(null, null, MemoryScope.Installation, PageSize, offset, cancellationToken)
+            SagaMemoryPosition[] page = await store
+                .ListPositionsAfterAsync(after, PageSize, cancellationToken)
                 .ConfigureAwait(false);
 
             if (page.Length == 0)
@@ -429,7 +441,7 @@ internal static class SagaEndpoints
             Guid[] identities =
             [
                 .. page
-                    .Select(static memory => Guid.TryParse(memory.Id, out Guid parsed) ? parsed : Guid.Empty)
+                    .Select(static position => Guid.TryParse(position.Id, out Guid parsed) ? parsed : Guid.Empty)
                     .Where(static parsed => parsed != Guid.Empty),
             ];
 
@@ -461,9 +473,11 @@ internal static class SagaEndpoints
 
             }
 
-            // The cursor advances by the page it read rather than by what it purged: a purged row is
-            // gone, so advancing by the purged count would skip the rows that slid into its place.
-            offset += page.Length;
+            // The cursor is the last row this page read, whether or not it was purged and whether or not
+            // its identity could be dispatched. The next page is whatever follows that position, so a row
+            // the purge removed leaves nothing for the walk to slide past, and a row it left stays behind
+            // the cursor and is not read again.
+            after = page[^1];
 
         }
 

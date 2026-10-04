@@ -1,12 +1,20 @@
 using System.Text.Json;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
+using RetroDownfall.Arcanum.Cli.UX;
+
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -20,7 +28,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 /// prepare-then-commit protocol, and the CLI's job is to show an operator what a mutation would do
 /// and let them decline it.
 ///
-/// <para>Both mutating verbs prepare first and print the server's own measurement — the compiled hash,
+/// <para>Both mutating verbs prepare first and print the server's own measurement — the rendered hash,
 /// the framed byte cost, the affected-Campaign count — before asking for confirmation. Printing what
 /// the client believes would defeat the point: the whole reason the token exists is that the server's
 /// measurement is the one being committed.</para>
@@ -29,7 +37,8 @@ public sealed class CovenantCommands(
     ArcanumApiClient apiClient,
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
-    ICliInvocationContext invocationContext)
+    ICliInvocationContext invocationContext,
+    IOptions<ArcanumSettings> settings)
 {
 
     /// <summary>
@@ -40,6 +49,13 @@ public sealed class CovenantCommands(
     /// many round trips a long history costs.
     /// </remarks>
     private const int PageSize = 50;
+
+    /// <summary>
+    /// What an operator is told when the host holds erasure fingerprints it could not check, so whether
+    /// a write released one is unknown: the command that can say is named rather than guessed at.
+    /// </summary>
+    private const string UncheckedFingerprints =
+        "Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.";
 
     /// <summary>
     /// Writes one standing preference the operator wants honored.
@@ -184,7 +200,7 @@ public sealed class CovenantCommands(
     }
 
     /// <summary>
-    /// Corrects one preference, naming the exact version, revision and compiled hash it replaces.
+    /// Corrects one preference, naming the exact version, revision and rendered hash it replaces.
     /// </summary>
     /// <remarks>
     /// The three target values come off <c>show</c>, which is where an operator reads the preference
@@ -610,6 +626,13 @@ public sealed class CovenantCommands(
 
         }
 
+        // A host older than the curation members leaves them out, and the source-generated reader
+        // leaves an absent member null. The human rendering reads that as uncurated rather than failing
+        // on every key; the JSON payload passes the absence through, because its members are optional.
+        CovenantCurationStateDto confirmedCuration = detail.Value.ConfirmedCuration ?? CovenantCurationStateDto.None;
+
+        CovenantCurationStateDto proposedCuration = detail.Value.ProposedCuration ?? CovenantCurationStateDto.None;
+
         if (invocationContext.Options.Json)
         {
 
@@ -646,7 +669,9 @@ public sealed class CovenantCommands(
                     detail.Value.Confirmed is null ? null : Project(detail.Value.Confirmed),
                     detail.Value.Proposed is null ? null : Project(detail.Value.Proposed),
                     detail.Value.KeyEpoch,
-                    [.. versions]),
+                    [.. versions],
+                    detail.Value.ConfirmedCuration,
+                    detail.Value.ProposedCuration),
                 CliJsonContext.Default.CovenantShowPayload);
 
             return (int)CliExitCode.Success;
@@ -658,13 +683,26 @@ public sealed class CovenantCommands(
 
             dispatcher.WritePayload($"No Covenant entry under '{key}' in that scope.");
 
+            // A scope can curate a key it holds no entry for: a Campaign mask over a Global key is
+            // exactly that, and stopping at "no entry" would hide the one fact the operator came to
+            // check. A key nobody curated here still answers with the one line.
+            if (confirmedCuration != CovenantCurationStateDto.None
+                || proposedCuration != CovenantCurationStateDto.None)
+            {
+
+                WriteHead("Confirmed", null, confirmedCuration);
+
+                WriteHead("Proposed", null, proposedCuration);
+
+            }
+
             return (int)CliExitCode.Success;
 
         }
 
-        WriteHead("Confirmed", detail.Value.Confirmed);
+        WriteHead("Confirmed", detail.Value.Confirmed, confirmedCuration);
 
-        WriteHead("Proposed", detail.Value.Proposed);
+        WriteHead("Proposed", detail.Value.Proposed, proposedCuration);
 
         if (!history)
         {
@@ -722,9 +760,10 @@ public sealed class CovenantCommands(
     /// </summary>
     /// <remarks>
     /// Operation, origin, and mutation identity are printed beside the revision because those are the
-    /// three fields that answer "who changed this preference, and when". The authored content is not
-    /// printed and is not in the payload: a history is a record of changes, not a second way to read
-    /// what a key says.
+    /// three fields that answer "who changed this preference, and when". Each version's identity and
+    /// rendered hash are printed too, because they are what <c>correct</c> names. The authored content
+    /// is not printed and is not in the payload: a history is a record of changes, not a second way to
+    /// read what a key says.
     /// </remarks>
     private async Task<int> WriteHistoryAsync(
         Guid entryId,
@@ -749,9 +788,9 @@ public sealed class CovenantCommands(
         {
 
             dispatcher.WritePayload(
-                $"  revision {version.LaneRevision}  {version.Operation}  {version.Origin}  "
-                + $"{version.CompiledByteCost} bytes  mutation {version.MutationId}  "
-                + $"{version.CreatedAtUtc:u}");
+                $"  revision {version.LaneRevision}  version {version.VersionId:D}  {version.Operation}  "
+                + $"{version.Origin}  {version.CompiledByteCost} bytes  hash {version.RenderedHash ?? "none"}  "
+                + $"mutation {version.MutationId}  {version.CreatedAtUtc:u}");
 
         }
 
@@ -807,15 +846,32 @@ public sealed class CovenantCommands(
 
     }
 
-    private void WriteHead(string label, CovenantHeadDto? head)
+    /// <summary>
+    /// Prints one lane: its exact head identity, then its curation.
+    /// </summary>
+    /// <remarks>
+    /// The version identity and rendered hash are what <c>correct</c> names, so an operator reads them
+    /// here rather than having to ask for a history. Nothing a key says is printed: <c>show</c> is a
+    /// record of what exists, not a way to read it.
+    ///
+    /// <para>The curation line is printed whether or not the lane has a head, because a lane can be
+    /// curated with nothing written to it — a Campaign mask over a Global key has no head in that
+    /// Campaign — and its curation revision is what a curation verb's <c>--expected-revision</c>
+    /// names.</para>
+    /// </remarks>
+    private void WriteHead(string label, CovenantHeadDto? head, CovenantCurationStateDto curation)
     {
 
         // An absent lane is reported, not skipped. "There is no Proposed entry" and "I did not look"
         // are different answers, and silence would read as the second.
         dispatcher.WritePayload(head is null
             ? $"{label}: none"
-            : $"{label}: revision {head.LaneRevision}, {head.CompiledByteCost} bytes, {head.Origin}, "
-                + $"updated {head.UpdatedAtUtc:u}");
+            : $"{label}: version {head.VersionId:D}, revision {head.LaneRevision}, {head.Lifecycle}, {head.Origin}, "
+                + $"{head.CompiledByteCost} bytes, hash {head.RenderedHash ?? "none"}, updated {head.UpdatedAtUtc:u}");
+
+        dispatcher.WritePayload(
+            $"  Curation: {(curation.IsPinned ? "pinned" : "not pinned")}, "
+            + $"{(curation.IsMasked ? "masked" : "not masked")}, curation revision {curation.Revision}");
 
     }
 
@@ -829,8 +885,9 @@ public sealed class CovenantCommands(
     /// promised <c>revision</c> and <c>byteCost</c> — close enough to look right and wrong at every
     /// member a caller reads.
     ///
-    /// <para>The authored hashes, provenance counts and creation timestamp are wire detail the CLI
-    /// payload does not carry. What survives is what the reference lists.</para>
+    /// <para>The rendered hash is carried, because it is what <c>correct --target-hash</c> names. The
+    /// authored hash, provenance counts and creation timestamp are wire detail the CLI payload does
+    /// not carry. What survives is what the reference lists.</para>
     /// </remarks>
     private static CovenantEntryPayload Project(CovenantHeadDto head) =>
         new(
@@ -846,7 +903,8 @@ public sealed class CovenantCommands(
             head.CompiledByteCost,
             head.Shadow,
             head.Materialization,
-            head.UpdatedAtUtc);
+            head.UpdatedAtUtc,
+            head.RenderedHash);
 
     /// <summary>
     /// Refuses a write the commit would refuse, before the operator is asked to approve it.
@@ -943,6 +1001,24 @@ public sealed class CovenantCommands(
 
             }
 
+            // Releasing a fingerprint is the unsafe direction, so it is part of what is approved.
+            switch (preflight.Effect.ReleasesErasureFingerprint)
+            {
+
+                case true:
+
+                    dispatcher.WritePayload("  Releases an erasure fingerprint: agents may write this key in this scope again.");
+
+                    break;
+
+                case null:
+
+                    dispatcher.WritePayload($"  {UncheckedFingerprints}");
+
+                    break;
+
+            }
+
         }
 
         return await confirmationPrompt
@@ -958,7 +1034,7 @@ public sealed class CovenantCommands(
     /// Stdout under <c>--json</c> belongs to the one document a script parses, and the result is that
     /// document — so the plan travels beside the question it belongs to, exactly as the backup-restore
     /// statement does. Publishing it at all is what keeps the server's own measurement on the record
-    /// for an unattended run: <c>--yes</c> answers the question, it does not make the compiled hash,
+    /// for an unattended run: <c>--yes</c> answers the question, it does not make the rendered hash,
     /// the framed cost, and the affected-Campaign count stop mattering.
     ///
     /// <para>Every number is the preflight's. A client that recomputed one would be publishing a
@@ -981,7 +1057,8 @@ public sealed class CovenantCommands(
                     preflight.Effect.AffectedCampaignCount,
                     preflight.Effect.ExamplesTruncated,
                     preflight.Effect.AppliesToFutureCampaigns,
-                    preflight.ExpiresAtUtc),
+                    preflight.ExpiresAtUtc,
+                    preflight.Effect.ReleasesErasureFingerprint),
                 CliJsonContext.Default.CovenantMutationPlanPayload));
 
     private int WriteMutation(Result<CovenantMutationResultDto> committed)
@@ -1007,7 +1084,8 @@ public sealed class CovenantCommands(
                     committed.Value.NormalizedKey,
                     committed.Value.Lane,
                     committed.Value.ResultingLaneRevision,
-                    committed.Value.Replayed),
+                    committed.Value.Replayed,
+                    committed.Value.ReleasedErasureFingerprint),
                 CliJsonContext.Default.CovenantMutationResultPayload);
 
             return (int)CliExitCode.Success;
@@ -1017,6 +1095,23 @@ public sealed class CovenantCommands(
         dispatcher.WritePayload(committed.Value.Replayed
             ? $"Already applied: '{committed.Value.NormalizedKey}' is at revision {committed.Value.ResultingLaneRevision}."
             : $"{committed.Value.Outcome}: '{committed.Value.NormalizedKey}' is now revision {committed.Value.ResultingLaneRevision}.");
+
+        switch (committed.Value.ReleasedErasureFingerprint)
+        {
+
+            case true:
+
+                dispatcher.WritePayload("Released an erasure fingerprint for this key.");
+
+                break;
+
+            case null:
+
+                dispatcher.WritePayload(UncheckedFingerprints);
+
+                break;
+
+        }
 
         return (int)CliExitCode.Success;
 
@@ -1121,6 +1216,307 @@ public sealed class CovenantCommands(
         return (int)CliExitCode.Success;
 
     }
+
+    /// <summary>
+    /// Erases one Covenant entry — every version in both lanes — in exactly one scope.
+    /// </summary>
+    /// <remarks>
+    /// The entry and both lane heads come off <c>show</c> and are forwarded unchanged, so the erase is
+    /// a statement about the entry the host just reported rather than about whatever is current when
+    /// the apply lands. A key with no entry in that scope stops here: there is nothing to prepare, and
+    /// a prepare would only be refused.
+    ///
+    /// <para>The preflight is rendered, then the external disclosure, then the drain and key-reclaim
+    /// costs the plan carries, all before the question. Under <c>--json</c> every one of those lines
+    /// goes to the diagnostic stream and stdout carries exactly one document: the result, the
+    /// cancellation payload, or the error envelope.</para>
+    /// </remarks>
+    public async Task<int> Erase(
+        string key,
+        Guid? campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        CovenantScope scope = campaignId is null ? CovenantScope.Global : CovenantScope.Campaign;
+
+        Result<CovenantDetailDto> detail = await apiClient
+            .ShowCovenantAsync(new CovenantDetailRequest(scope, campaignId, key), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (detail.IsFailure)
+        {
+
+            return Fail(detail.Error, (CliExitCode)CliFailureExit.ExitCode(detail.Error));
+
+        }
+
+        if (detail.Value.EntryId is not { } entryId)
+        {
+
+            return Fail(
+                new Error(ErrorCodes.Covenant.NotFound, $"Covenant key '{key}' has no entry to erase in this scope."),
+                CliExitCode.GenericError);
+
+        }
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        CovenantErasePrepareRequest request = new(
+            detail.Value.Scope,
+            detail.Value.CampaignId,
+            detail.Value.Key,
+            entryId,
+            Expectation(detail.Value.Confirmed),
+            Expectation(detail.Value.Proposed),
+            mutationId);
+
+        Result<MemoryErasurePreflightDto> prepared = await apiClient
+            .PrepareCovenantErasureAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (prepared.IsFailure)
+        {
+
+            return Fail(prepared.Error, (CliExitCode)CliFailureExit.ExitCode(prepared.Error));
+
+        }
+
+        MemoryErasureRenderer.WritePreflight(dispatcher, prepared.Value, invocationContext.Options.Json);
+
+        DisclosureWriter.WriteErasure(prepared.Value.External);
+
+        string scopeText = campaignId is { } campaign ? $"Campaign {campaign:D}" : "Global";
+
+        if (!invocationContext.Options.Yes
+            && !await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    $"Erase every version in both lanes of '{key}' in the {scopeText} scope? This cannot be undone.",
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            dispatcher.WriteDiagnostic($"{MemoryReviewStore.Covenant} erasure cancelled.");
+
+            if (invocationContext.Options.Json)
+            {
+
+                dispatcher.WriteJson(
+                    new MemoryErasureCancellationPayload("erase", MemoryReviewStore.Covenant, mutationId, Cancelled: true),
+                    CliJsonContext.Default.MemoryErasureCancellationPayload);
+
+            }
+
+            return (int)CliExitCode.Success;
+
+        }
+
+        // A cancellation that lands before the apply is sent cancels an erase that never started, and
+        // must not claim otherwise.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<MemoryErasureResultDto> erased;
+
+        try
+        {
+
+            erased = await apiClient
+                .EraseCovenantEntryAsync(
+                    new CovenantEraseRequest(
+                        request.Scope,
+                        request.CampaignId,
+                        request.Key,
+                        request.EntryId,
+                        request.Confirmed,
+                        request.Proposed,
+                        request.MutationId,
+                        prepared.Value.PreflightToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // The host completes the erase's disposition whatever the caller does, so Ctrl-C after the
+            // request went out keeps the cancellation exit and says the erase may still have happened.
+            MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
+
+            throw;
+
+        }
+
+        if (erased.IsFailure)
+        {
+
+            int failed = Fail(erased.Error, (CliExitCode)CliFailureExit.ExitCode(erased.Error));
+
+            if (ArcanumApiClient.ErasureOutcomeUnknown(erased.Error))
+            {
+
+                MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
+
+            }
+
+            return failed;
+
+        }
+
+        if (invocationContext.Options.Json)
+        {
+
+            dispatcher.WriteJson(erased.Value, ArcanumJsonContext.Default.MemoryErasureResultDto);
+
+        }
+        else
+        {
+
+            MemoryErasureRenderer.WriteResult(dispatcher, erased.Value);
+
+        }
+
+        return (int)CliExitCode.Success;
+
+    }
+
+    /// <summary>
+    /// Releases the erasure fingerprint of one Covenant key in exactly one scope, so agents may propose
+    /// that key there again.
+    /// </summary>
+    /// <remarks>
+    /// The key is positional, as on every Covenant verb, and must already be well formed: the host
+    /// refuses rather than folds any other spelling, so the CLI refuses it the same way before asking.
+    /// An omitted <c>--campaign</c> is the Global scope. Release is the unsafe direction, so the warning
+    /// is written before the question in every mode and <c>--yes</c> answers the question without
+    /// skipping it.
+    /// </remarks>
+    public async Task<int> Release(
+        string key,
+        Guid? campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        CovenantErasureReleaseRequest request = new(
+            campaignId is null ? CovenantScope.Global : CovenantScope.Campaign,
+            campaignId,
+            key);
+
+        if (request.Validate() is { IsFailure: true } invalid)
+        {
+
+            return Fail(invalid.Error, CliExitCode.ConfigurationError);
+
+        }
+
+        string scopeText = campaignId is { } campaign ? $"Campaign {campaign:D}" : "Global";
+
+        MemoryErasureRenderer.WriteReleasePlan(
+            dispatcher,
+            MemoryReviewStore.Covenant,
+            scopeText,
+            $"the Covenant key '{key}'",
+            invocationContext.Options.Json);
+
+        if (!invocationContext.Options.Yes
+            && !await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    $"Release the Covenant erasure fingerprint for '{key}' in the {scopeText} scope?",
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            dispatcher.WriteDiagnostic($"{MemoryReviewStore.Covenant} release cancelled; nothing was released.");
+
+            if (invocationContext.Options.Json)
+            {
+
+                dispatcher.WriteJson(
+                    new MemoryErasureCancellationPayload("release", MemoryReviewStore.Covenant, MutationId: null, Cancelled: true),
+                    CliJsonContext.Default.MemoryErasureCancellationPayload);
+
+            }
+
+            return (int)CliExitCode.Success;
+
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        bool resent = false;
+
+        Result<MemoryErasureReleaseResultDto> released;
+
+        try
+        {
+
+            released = await apiClient
+                .ReleaseCovenantErasureAsync(request, cancellationToken, () => resent = true)
+                .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            MemoryCommands.WriteUnconfirmedRelease(dispatcher);
+
+            throw;
+
+        }
+
+        if (released.IsFailure)
+        {
+
+            int failed = Fail(released.Error, (CliExitCode)CliFailureExit.ExitCode(released.Error));
+
+            MemoryCommands.WriteReleaseRefusalGuidance(dispatcher, released.Error);
+
+            if (resent)
+            {
+
+                MemoryErasureRenderer.WriteResent(dispatcher, "release");
+
+            }
+
+            return failed;
+
+        }
+
+        if (invocationContext.Options.Json)
+        {
+
+            dispatcher.WriteJson(released.Value, ArcanumJsonContext.Default.MemoryErasureReleaseResultDto);
+
+        }
+        else
+        {
+
+            MemoryErasureRenderer.WriteReleaseResult(dispatcher, released.Value);
+
+        }
+
+        if (resent)
+        {
+
+            // The answer just rendered describes the resend: the first attempt may already have released.
+            MemoryErasureRenderer.WriteResent(dispatcher, "release");
+
+        }
+
+        return (int)CliExitCode.Success;
+
+    }
+
+    /// <summary>The exact lane head an erase requires still to be current, or none for an empty lane.</summary>
+    private static CovenantEraseHeadExpectation? Expectation(CovenantHeadDto? head) =>
+        head is null ? null : new CovenantEraseHeadExpectation(head.VersionId, head.LaneRevision);
+
+    /// <summary>
+    /// The shared disclosure writer, built from this command's own dispatcher and settings.
+    /// </summary>
+    /// <remarks>
+    /// Built here rather than injected: the writer is internal and this class is public, so a
+    /// constructor parameter of the writer's type would not compile.
+    /// </remarks>
+    private CovenantExternalRetentionDisclosureWriter DisclosureWriter => new(dispatcher, settings);
 
     private int Fail(Error error, CliExitCode exitCode)
     {

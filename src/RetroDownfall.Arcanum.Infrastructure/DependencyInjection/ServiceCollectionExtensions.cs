@@ -299,6 +299,8 @@ public static class ServiceCollectionExtensions
 
         services.AddCampaignPathIdentity();
 
+        services.AddMemoryErasureKeyring();
+
         services.AddCovenantPersistence();
 
         services.AddDbContext<ArcanumDbContext>((sp, options) =>
@@ -327,10 +329,10 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ISessionAttachmentStore>(),
                 sp.GetRequiredService<ILogger<GrimoireRepository>>(),
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
-                sp.GetService<ISessionAttachmentIndexMaintenance>(),
                 sp.GetService<CovenantMutationKernel>(),
+                sp.GetService<CovenantAvailabilityRepublisher>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-                sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
+                sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -655,6 +657,8 @@ public static class ServiceCollectionExtensions
     {
         services.AddArcanumClientMutationCoordination();
 
+        services.AddMemoryErasureKeyring();
+
         services.TryAddSingleton(BackupStatePaths.Default);
 
         services.TryAddSingleton<BackupInventoryPlanner>();
@@ -695,6 +699,10 @@ public static class ServiceCollectionExtensions
                 serviceProvider.GetRequiredService<IBackupService>,
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 serviceProvider.GetRequiredService<GrimoireSchemaInstaller>(),
+
+                // The read-only port alone: a restore reads the destination's erasure key and never
+                // creates one, and it is resolved whether or not the Covenant arm is composed below.
+                serviceProvider.GetRequiredService<IMemoryErasureKeyProvider>(),
                 new BackupRestoreServiceOptions
                 {
                     EmbeddingDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
@@ -1033,20 +1041,46 @@ public static class ServiceCollectionExtensions
 
         services.AddCampaignPathIdentity();
 
+        services.AddMemoryErasureKeyring();
+
+        // Only the host may create the erasure key: erase prepare and reset-key are its callers, and
+        // neither runs in the CLI or restore container.
+        services.TryAddSingleton<IMemoryErasureKeyCreator>(
+            static sp => sp.GetRequiredService<MemoryErasureKeyring>());
+
         services.AddCovenantPersistence();
+
+        // Host only, like the Saga and Lexicon erases: prepare may create the erasure key, and only the
+        // host may. One scoped instance answers both the erase port and the preparer whose installation
+        // read lease the prepare route's protected response holds; it runs on the scope's own Covenant
+        // connection.
+        services.AddScoped(static sp => new CovenantEntryErasureService(
+            sp.GetRequiredService<ICovenantConnectionSource>(),
+            sp.GetRequiredService<IMemoryErasureKeyCreator>(),
+            sp.GetRequiredService<IMemoryErasureKeyProvider>(),
+            sp.GetRequiredService<ICovenantEnvelopeCodec>(),
+            sp.GetRequiredService<MemoryErasureScrubber>(),
+            sp.GetRequiredService<ICovenantOperationGate>(),
+            sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
+
+        services.AddScoped<ICovenantEntryErasureService>(
+            static sp => sp.GetRequiredService<CovenantEntryErasureService>());
+
+        services.AddScoped<ICovenantEntryErasurePreparer>(
+            static sp => sp.GetRequiredService<CovenantEntryErasureService>());
 
         services.AddScoped<IDivinationService, DivinationService>();
         services.AddScoped(
             static sp => new EmbeddingsResetService(
                 sp.GetRequiredService<ArcanumDbContext>(),
-                sp.GetRequiredService<WeaveIndexAvailability>(),
                 sp,
                 sp.GetRequiredService<ICovenantSensitiveArtifactPurger>()));
         services.AddScoped<ITapestryStore, TapestryStore>();
         services.AddScoped<SessionAttachmentIndexRepository>();
         services.AddScoped<ISessionAttachmentIndexWriter>(
-            static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());
-        services.AddScoped<ISessionAttachmentIndexMaintenance>(
             static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());
         services.AddScoped<SessionAttachmentIndexProcessor>();
         services.AddScoped<ISessionAttachmentRetrievalService, SessionAttachmentRetrievalService>();
@@ -1359,12 +1393,39 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+        // Same lifetime and DbContext as the store: extraction's page gate and pre-embed check ask
+        // the store's own connection what the insert chokepoint will later decide.
+        services.AddScoped<SagaErasureWriteGate>();
+
         // Same lifetime as ISagaMemoryStore: this wraps that store's DbContext-backed calls directly,
         // and a service scoped any looser would hold that DbContext across a boundary the store itself
         // does not.
         services.AddScoped<ISagaCurationService, SagaCurationService>();
 
         services.AddScoped<ISagaMemoryReviewService, SagaMemoryReviewService>();
+
+        // Host only: the erase creates the erasure key on first use, and only the host may. Scoped with
+        // the store, because it runs on the same DbContext connection the insert chokepoint uses.
+        services.AddScoped<ISagaMemoryErasureService>(static provider =>
+            new SagaMemoryErasureService(
+                provider.GetRequiredService<ArcanumDbContext>(),
+                provider.GetRequiredService<IMemoryErasureKeyCreator>(),
+                provider.GetRequiredService<IMemoryErasureKeyProvider>(),
+                provider.GetRequiredService<IMemoryErasureTokenCodec>(),
+                provider.GetRequiredService<MemoryErasureScrubber>(),
+                provider.GetRequiredService<ICovenantOperationGate>(),
+                provider.GetRequiredService<IOperatorAuthorityContextIssuer>(),
+                provider.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
+
+        // Host only, beside the erase services: release reads the key through the provider alone and
+        // never creates it, on the same DbContext connection the write chokepoints use.
+        services.AddScoped<IMemoryErasureRelease, MemoryErasureRelease>();
+
+        // Host only, beside release: status, the scrub retry and key reset, on the same DbContext
+        // connection. Key reset reaches the keyring as itself, because it is the one surface besides
+        // erase prepare that may create the key, and status asks the keyring's metadata-only probe.
+        services.AddScoped<IMemoryErasureAdministration, MemoryErasureAdministration>();
 
         services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
 
@@ -1376,6 +1437,19 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILexiconMemoryReviewService>(provider => provider.GetRequiredService<LexiconService>());
 
+        // Host only, like the Saga erase: prepare creates the erasure key on first use, and only the host
+        // may. The service activator hands these to LexiconService, whose erase verbs answer unavailable
+        // in any container that does not compose them.
+        services.AddScoped(static provider => new LexiconErasureDependencies(
+            provider.GetRequiredService<IMemoryErasureKeyCreator>(),
+            provider.GetRequiredService<IMemoryErasureTokenCodec>(),
+            provider.GetRequiredService<MemoryErasureScrubber>(),
+            provider.GetRequiredService<ICovenantOperationGate>(),
+            provider.GetRequiredService<IOperatorAuthorityContextIssuer>(),
+            provider.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddScoped<ILexiconErasureService>(provider => provider.GetRequiredService<LexiconService>());
+
         services.AddScoped<IAnnalsStore, AnnalsStore>();
 
         // One owner for the Campaign-scoped-memory gate, so retrieval and every inspection surface
@@ -1384,8 +1458,23 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(TimeProvider.System);
 
-        services.AddSingleton<IMemoryReviewTokenCodec>(static provider =>
+        // One codec behind both token families, over the host clock: the erasure preflight times it
+        // reports are stamped by the same clock that bounds the token.
+        services.AddSingleton(static provider =>
             new MemoryReviewTokenCodec(provider.GetRequiredService<TimeProvider>()));
+
+        services.AddSingleton<IMemoryReviewTokenCodec>(static provider =>
+            provider.GetRequiredService<MemoryReviewTokenCodec>());
+
+        services.AddSingleton<IMemoryErasureTokenCodec>(static provider =>
+            provider.GetRequiredService<MemoryReviewTokenCodec>());
+
+        // The post-commit erasure scrub opens its own unpooled read-write connection per attempt, so
+        // one instance serves every erase.
+        services.AddSingleton(static provider =>
+            new MemoryErasureScrubber(
+                provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                provider.GetRequiredService<ILogger<MemoryErasureScrubber>>()));
 
         // An explicit factory rather than a type registration: the Covenant mutation kernel is
         // internal, so the composed constructor cannot be reached by a reflective activator.
@@ -1395,10 +1484,10 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ISessionAttachmentStore>(),
                 sp.GetRequiredService<ILogger<GrimoireRepository>>(),
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
-                sp.GetService<ISessionAttachmentIndexMaintenance>(),
                 sp.GetService<CovenantMutationKernel>(),
+                sp.GetService<CovenantAvailabilityRepublisher>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-                sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
+                sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -1792,6 +1881,29 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// The one erasure keyring and its read-only port, for every container that runs a chokepoint,
+    /// release, status, or restore.
+    /// </summary>
+    /// <remarks>
+    /// Every registration is a try-add, because the CLI stack composes both the Grimoire and backup
+    /// registrations and the host composes backup inside infrastructure: each container still holds
+    /// exactly one keyring and so one latch. The creator port is not registered here; only
+    /// <see cref="AddArcanumInfrastructure"/> adds it. Composition performs no credential I/O.
+    /// </remarks>
+    private static IServiceCollection AddMemoryErasureKeyring(this IServiceCollection services)
+    {
+        services.TryAddSingleton<IOsCredentialStore>(TestCredentialStorePolicy.Create);
+
+        services.TryAddSingleton(
+            static sp => new MemoryErasureKeyring(sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.TryAddSingleton<IMemoryErasureKeyProvider>(
+            static sp => sp.GetRequiredService<MemoryErasureKeyring>());
+
+        return services;
+    }
+
+    /// <summary>
     /// The Covenant persistence boundary: one gate, one store, one mutation kernel, one quota guard,
     /// one search index, and the single-writer workers behind them.
     /// </summary>
@@ -1820,6 +1932,13 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ICovenantAvailability>(
             static sp => sp.GetRequiredService<CovenantAvailability>());
+
+        // Every writer of the persisted search tuple inside a serving host republishes through this one
+        // instance after its commit, so the snapshot follows the database without a restart.
+        services.AddSingleton(
+            static sp => new CovenantAvailabilityRepublisher(
+                sp.GetRequiredService<CovenantAvailability>(),
+                sp.GetRequiredService<ILogger<CovenantAvailabilityRepublisher>>()));
 
         services.AddSingleton(
             static sp => new CovenantAuthoritySnapshotProvider(
@@ -1897,7 +2016,9 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
         services.AddScoped<ICovenantStore>(
-            static sp => new CovenantStore(sp.GetRequiredService<ICovenantConnectionSource>()));
+            static sp => new CovenantStore(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<IMemoryErasureKeyProvider>()));
 
         // Registered unconditionally, because the policy itself is what decides whether this
         // installation has a Covenant arm at all. A conditional registration would make "the feature
@@ -1933,7 +2054,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantMutationKernel>(),
             sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped<ICovenantMemoryReviewService>(static sp => new CovenantMemoryReviewService(
             sp.GetRequiredService<ICovenantConnectionSource>(),
@@ -1941,7 +2063,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IMemoryReviewTokenCodec>(),
             sp.GetRequiredService<CovenantMutationKernel>(),
             sp.GetRequiredService<CovenantCurationKernel>(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped<ICovenantContextProvider>(
             static sp => new CovenantContextProvider(
@@ -2060,7 +2183,9 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
 
         services.AddScoped(
-            static sp => new CovenantMutationKernel(sp.GetRequiredService<CovenantQuotaGuard>()));
+            static sp => new CovenantMutationKernel(
+                sp.GetRequiredService<CovenantQuotaGuard>(),
+                sp.GetRequiredService<IMemoryErasureKeyProvider>()));
 
         // No quota guard: a curation change appends no compiled content and joins no Section, so there
         // is no capacity for it to consume and nothing for a guard to measure.
@@ -2084,7 +2209,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped(
             static sp => new CovenantIndexRebuilder(
                 sp.GetRequiredService<ICovenantConnectionSource>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         return services.AddCovenantErasureAndMaintenance();
     }
@@ -2116,10 +2242,17 @@ public static class ServiceCollectionExtensions
 
         // One scope per request, so the object a filter publishes into is the same one the purger reads
         // and there is nothing process-wide two requests could race on.
-        services.AddScoped<ICovenantLabeledArtifactGuard>(
+        //
+        // One guard behind two interfaces. The Core form is what a caller outside the database layer sees;
+        // the transaction forms name an ADO.NET transaction and live on an Infrastructure interface so Core
+        // does not. Both resolve to the same scoped instance.
+        services.AddScoped<ICovenantLabeledArtifactTransactionGuard>(
             static sp => new CovenantLabeledArtifactGuard(
                 sp.GetRequiredService<IArtifactSensitivityLedger>(),
-                sp.GetRequiredService<ICovenantConnectionSource>()));
+                sp.GetRequiredService<ILogger<CovenantLabeledArtifactGuard>>()));
+
+        services.AddScoped<ICovenantLabeledArtifactGuard>(
+            static sp => sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>());
 
         services.AddScoped<CovenantSensitivePurgeAuthorityScope>();
 
@@ -2310,13 +2443,15 @@ public static class ServiceCollectionExtensions
             static sp => new CovenantOwnerCleanupCoordinator(
                 sp.GetRequiredService<ICovenantOperationGate>(),
                 sp.GetRequiredService<ICovenantConnectionSource>(),
-                sp.GetRequiredService<CovenantCleanupWorker>()));
+                sp.GetRequiredService<CovenantCleanupWorker>(),
+                sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped(
             static sp => new CovenantSearchOutboxCoordinator(
                 sp.GetRequiredService<ICovenantOperationGate>(),
                 sp.GetRequiredService<ICovenantConnectionSource>(),
-                sp.GetRequiredService<CovenantSearchOutboxWorker>()));
+                sp.GetRequiredService<CovenantSearchOutboxWorker>(),
+                sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped(
             static sp => new CovenantTurnReceiptCompactionCoordinator(

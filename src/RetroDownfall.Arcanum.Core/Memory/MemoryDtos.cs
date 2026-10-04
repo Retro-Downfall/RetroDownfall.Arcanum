@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Core.Memory;
 
@@ -125,7 +126,9 @@ public sealed record MemorySearchResultDto(
     MemoryCampaignScopeDto? CampaignScope = null,
     LexiconEntryLifecycle? LexiconLifecycle = null,
     LexiconRetrievalEligibility? LexiconEligibility = null,
-    MemorySearchActionDto? Action = null);
+    MemorySearchActionDto? Action = null,
+    SagaMemoryLifecycle? SagaLifecycle = null,
+    SagaRetrievalEligibility? SagaEligibility = null);
 
 /// <summary>
 /// What one scope contributed, and whether it had more to give. Scopes are consulted in order against

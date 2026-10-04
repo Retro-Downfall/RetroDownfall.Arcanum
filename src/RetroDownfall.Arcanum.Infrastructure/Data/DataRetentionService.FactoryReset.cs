@@ -237,13 +237,21 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             excludedOperationId).ConfigureAwait(false);
 
-        return FinalizePlan(
+        DataRetentionPlan plan = FinalizePlan(
             request,
             items,
             [],
             conflicts,
             items.Count == 0 ? [] : ["factory-reset"],
             requiresConfirmation: true);
+
+        // Attached after the identity is fixed and never as an item: a factory reset leaves erasure
+        // evidence in force, so the preview reports what remains rather than proposing to remove it, and
+        // a release between two previews changes nothing this plan would do.
+        (DataRetentionMemoryErasureInventory memoryErasure, _) =
+            await ReadMemoryErasureInventoryAsync(cancellationToken).ConfigureAwait(false);
+
+        return plan with { MemoryErasure = memoryErasure };
     }
 
     private async Task<DataRetentionApplyResult> ApplyFactoryResetAsync(
@@ -1010,6 +1018,17 @@ internal sealed partial class DataRetentionService
         string table,
         CancellationToken cancellationToken)
     {
+        // A vector mirror is classified rather than probed, because a legacy virtual one also passes
+        // the probe below and cannot be deleted from here.
+        if (SagaVectorMirror.IsMirrorName(table))
+        {
+            return await IsPlainVectorMirrorAsync(
+                connection,
+                transaction,
+                table,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;

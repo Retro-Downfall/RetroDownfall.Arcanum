@@ -6,9 +6,13 @@ using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -59,7 +63,30 @@ internal static class CovenantRetentionSeed
     /// <summary>The exact number of nonrevocable possible attempts this seed folds.</summary>
     internal const long PossibleDisclosures = 3;
 
+    /// <summary>The origin installation every seeded disclosure receipt carries.</summary>
+    internal static readonly Guid DisclosureOrigin = Guid.Parse("ffffffff-6666-4666-8666-ffffffffffff");
+
+    /// <summary>The one turn every seeded disclosure belongs to.</summary>
+    internal static readonly Guid DisclosureSubject = Guid.Parse("ffffffff-7777-4777-8777-ffffffffffff");
+
     private const string Iso = "2026-01-01T00:00:00.0000000Z";
+
+    /// <summary><see cref="Iso"/> in Unix milliseconds, the clock a disclosure draft carries.</summary>
+    private const long DisclosureTimestamp = 1_767_225_600_000;
+
+    private static readonly Guid DisclosureBootId = Guid.Parse("ffffffff-8888-4888-8888-ffffffffffff");
+
+    private static readonly GenerationProvenance DisclosureProvenance =
+        GenerationProvenance.CreateExact([CovenantTask6Fixture.DatasetGeneration]);
+
+    private static readonly ProviderCallSensitivity DisclosureSensitivity = new(
+        ContentSensitivity.CovenantDerived,
+        DisclosureProvenance,
+        CovenantDigests.Sensitivity(new SensitivityDigestInput(
+            ContentSensitivity.CovenantDerived,
+            DisclosureProvenance.Mode,
+            DisclosureProvenance.ExactGenerationIds,
+            DisclosureProvenance.BloomBits)));
 
     /// <summary>
     /// Seeds the family.
@@ -372,54 +399,70 @@ internal static class CovenantRetentionSeed
 
     }
 
+    /// <summary>
+    /// Records the family's disclosures through the production journal, so the accounting a retention
+    /// report reads is the accounting the live fold produced.
+    /// </summary>
+    /// <remarks>
+    /// Three provider dispatches leave nonrevocably, which is exactly what the destructive-operation
+    /// copy is a statement about. The tool use stays on this machine's own process and is locally
+    /// revocable, so it is deliberately outside the possible-attempt count: including it would inflate
+    /// the number an operator weighs with disclosures Arcanum can still undo.
+    ///
+    /// <para>Hand-written receipts and buckets would describe accounting the product never produced,
+    /// and a report reading them would pass whether or not the fold ran.</para>
+    /// </remarks>
     private static async Task SeedDisclosureAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
 
-        await ExecuteAsync(
-            connection,
-            """
-            INSERT INTO external_disclosure_receipts (
-                OriginInstallationId, SubjectKind, SubjectId, SubjectOrdinal, EffectCategoryCode,
-                CategoryPhysicalAttemptOrdinal, EffectIdentityDigest, DestinationCode,
-                RevocabilityCode, DestinationDigest, SensitivityCode,
-                GenerationProvenanceModeCode, ExactGenerationIds, GenerationBloom, DisclosedAtUtc)
-            VALUES ($origin, 2, $subject, 1, 4, 1, zeroblob(32), 1, 2, zeroblob(32), 1,
-                    1, $generations, NULL, $now);
-            """,
-            cancellationToken,
-            ("$origin", "ffffffff-6666-4666-8666-ffffffffffff"),
-            ("$subject", "ffffffff-7777-4777-8777-ffffffffffff"),
-            ("$generations", Enumerable.Repeat((byte)7, 16).ToArray()),
-            ("$now", Iso));
+        CovenantDisclosureTransactionWriter journal = new(DisclosureBootId);
 
-        // Nonrevocable: exactly what the destructive-operation copy is a statement about.
-        await ExecuteAsync(
-            connection,
-            """
-            INSERT INTO external_disclosure_state (
-                DestinationCode, RevocabilityCode, CountKindCode, EverOccurred, JoinedCount,
-                MaxDisclosedAtUtcTicks, EvidenceBloom, UpdatedAtUtc)
-            VALUES (1, 2, 1, 1, 3, 638000000000000000, $bloom, $now);
-            """,
-            cancellationToken,
-            ("$bloom", Enumerable.Repeat((byte)9, 32).ToArray()),
-            ("$now", Iso));
+        (byte Effect, CovenantDisclosureEffectCategory Category, CovenantEgressDestination Destination,
+            CovenantDisclosureRevocability Revocability)[] disclosures =
+        [
+            (0x01, CovenantDisclosureEffectCategory.ProviderDispatch, CovenantEgressDestination.Provider,
+                CovenantDisclosureRevocability.Nonrevocable),
+            (0x02, CovenantDisclosureEffectCategory.ProviderDispatch, CovenantEgressDestination.Provider,
+                CovenantDisclosureRevocability.Nonrevocable),
+            (0x03, CovenantDisclosureEffectCategory.ProviderDispatch, CovenantEgressDestination.Provider,
+                CovenantDisclosureRevocability.Nonrevocable),
+            (0x04, CovenantDisclosureEffectCategory.McpToolUse, CovenantEgressDestination.Process,
+                CovenantDisclosureRevocability.LocallyRevocable),
+        ];
 
-        // Locally revocable, and therefore deliberately outside the possible-attempt count: including
-        // it would inflate the number an operator weighs with disclosures Arcanum can still undo.
-        await ExecuteAsync(
-            connection,
-            """
-            INSERT INTO external_disclosure_state (
-                DestinationCode, RevocabilityCode, CountKindCode, EverOccurred, JoinedCount,
-                MaxDisclosedAtUtcTicks, EvidenceBloom, UpdatedAtUtc)
-            VALUES (2, 1, 1, 1, 11, 638000000000000000, $bloom, $now);
-            """,
-            cancellationToken,
-            ("$bloom", Enumerable.Repeat((byte)5, 32).ToArray()),
-            ("$now", Iso));
+        foreach ((byte effect, CovenantDisclosureEffectCategory category, CovenantEgressDestination destination,
+                     CovenantDisclosureRevocability revocability) in disclosures)
+        {
+
+            Result<CovenantDisclosureReceipt> acknowledged = await journal.AcknowledgeAsync(
+                connection,
+                new CovenantDisclosureDraft(
+                    DisclosureOrigin,
+                    CovenantDisclosureSubjectKind.Turn,
+                    DisclosureSubject,
+                    new CovenantDigest([.. Enumerable.Repeat(effect, CovenantLimits.DigestBytes)]),
+                    destination,
+                    revocability,
+                    CovenantTask6Fixture.D(80),
+                    DisclosureSensitivity.Digest,
+                    null,
+                    CovenantTask6Fixture.D(82),
+                    null,
+                    DisclosureTimestamp),
+                category,
+                DisclosureSensitivity,
+                cancellationToken);
+
+            if (acknowledged.IsFailure)
+            {
+
+                throw new InvalidOperationException(acknowledged.Error.Message);
+
+            }
+
+        }
 
     }
 

@@ -92,6 +92,8 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
 
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM annal_heads;"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
+
     }
 
     [SkippableFact]
@@ -119,6 +121,8 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM annal_versions;"));
 
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM annal_heads;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
 
     }
 
@@ -171,6 +175,8 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
 
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
+
     }
 
     /// <summary>
@@ -193,6 +199,8 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
         Assert.True(await afterDisable.DeleteAsync("mem-stranded", CancellationToken.None));
 
         Assert.Equal(0, await CountClaimsAsync(1, "mem-stranded"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
 
     }
 
@@ -219,14 +227,16 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
     private ILexiconService CreateLexiconService(bool annals) =>
         new LexiconService(
             _db!,
             NullLogger<LexiconService>.Instance,
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings { Features = new FeatureSettings { Annals = annals } }));
+                new ArcanumSettings { Features = new FeatureSettings { Annals = annals } }),
+            MemoryErasureTestKeys.Isolated());
 
     private Task<int> CountClaimsAsync(int subjectStoreCode, string subjectId) =>
         CountAsync(

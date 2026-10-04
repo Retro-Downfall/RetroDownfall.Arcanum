@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -24,6 +25,8 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+
+using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
@@ -286,6 +289,67 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                 "CampaignId",
                 CancellationToken.None));
 
+    }
+
+    /// <summary>
+    /// A memory written while version 12's sweep is still pending needs no erasure key: the recorded
+    /// Core version is below 13, so the store holds no evidence to guard against.
+    /// </summary>
+    /// <remarks>
+    /// Built the way an upgrade produces it, as the version-5 case above is: install version 11, then
+    /// hand the installer the shipped chain once. Version 12 declares a backfill, so that one call
+    /// commits its DDL and stops with 11 recorded, and the evidence table does not exist yet. The case
+    /// asserts that state before it writes, and then proves the write never asked the credential store.
+    /// </remarks>
+    [Fact]
+    public async Task A_memory_written_while_the_version_twelve_sweep_is_pending_needs_no_erasure_key()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            CoreSchemaVersionElevenFixture.ChainSet(),
+            TestDimensions,
+            CancellationToken.None);
+
+        Assert.Equal(11, installed.Core.SchemaVersion);
+
+        // One call, which leaves version 12's DDL committed and its sweep still pending.
+        GrimoireSchemaInstallResult upgraded = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection,
+            GrimoireSchemaVersionChains.Default,
+            TestDimensions,
+            CancellationToken.None);
+
+        Assert.Equal(11, upgraded.Core.SchemaVersion);
+
+        Assert.Null(await ScalarStringAsync(
+            connection,
+            "SELECT name FROM sqlite_master WHERE name = 'memory_erasure_fingerprints';"));
+
+        CountingOsCredentialStore credentials = new(new InMemoryOsCredentialStore());
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        await using ArcanumDbContext db = CreateContext(file);
+
+        SagaMemoryWriteOutcome outcome = await CreateStore(db, keyring).InsertAsync(
+            Guid.NewGuid().ToString(),
+            "a conclusion drawn while version twelve drains",
+            DateTimeOffset.UtcNow,
+            sessionId: null,
+            tags: null,
+            source: "test",
+            new float[TestDimensions],
+            CancellationToken.None);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
+
+        Assert.Equal(1, await CountAsync(connection, "SELECT COUNT(*) FROM saga_memories;"));
+
+        Assert.Equal(0, credentials.Calls);
     }
 
     /// <summary>
@@ -575,7 +639,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     }
 
-    private static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
+    internal static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
     {
 
         string id = Guid.NewGuid().ToString();
@@ -596,7 +660,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     }
 
-    private static SagaMemoryStore CreateStore(ArcanumDbContext db) =>
+    internal static SagaMemoryStore CreateStore(ArcanumDbContext db, IMemoryErasureKeyProvider? erasureKeys = null) =>
         new(
             db,
             new WeaveIndexAvailability(),
@@ -607,7 +671,8 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
                     },
-                }));
+                }),
+            erasureKeys ?? MemoryErasureTestKeys.Isolated());
 
     private static async Task<int> CountAsync(SqliteConnection connection, string sql)
     {

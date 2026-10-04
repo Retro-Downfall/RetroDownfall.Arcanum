@@ -18,6 +18,8 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 /// <summary>
@@ -280,6 +282,56 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
     }
 
     [Fact]
+    public void Restore_journal_key_with_unused_trailing_bits_set_is_a_typed_integrity_failure_not_an_exception()
+    {
+
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        BackupRestoreJournalKeyProvider keys = new(_credentials);
+
+        using BackupRestoreJournalKeyLease created = Value(
+            keys.CreateOrOpen(_lock, _guarded, profile));
+
+        string account = ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount(profile.AccountSuffix);
+
+        string stored = _credentials.TryGet(ArcanumCredentialIdentity.Service, account).Value!;
+
+        // Forty-three characters of the alphabet, so every length and alphabet guard passes and only a
+        // canonical decode can tell this from the key itself. The framework's throwing decoder raises
+        // FormatException here instead of reporting failure, and a credential-store value that was
+        // corrupted or tampered with must be a refusal, not a crash in the pre-database bootstrap.
+        string noncanonical = NonCanonicalBase64Url.WithUnusedBitSet(stored);
+
+        Assert.Equal(stored.Length, noncanonical.Length);
+
+        _ = _credentials.Set(ArcanumCredentialIdentity.Service, account, noncanonical);
+
+        Result<BackupRestoreJournalKeyLease> opened = keys.OpenExisting(profile);
+
+        Assert.True(opened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, opened.Error.Code);
+
+        Result<BackupRestoreJournalKeyLease> reopened = keys.CreateOrOpen(_lock, _guarded, profile);
+
+        Assert.True(reopened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
+
+        Result<bool> present = keys.IsPresent(profile);
+
+        Assert.True(present.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, present.Error.Code);
+
+        // Refused rather than repaired: the stored spelling is exactly what it was.
+        Assert.Equal(
+            noncanonical,
+            _credentials.TryGet(ArcanumCredentialIdentity.Service, account).Value);
+
+    }
+
+    [Fact]
     public void Restore_journal_key_recovery_never_creates_or_substitutes_a_missing_key()
     {
 
@@ -427,6 +479,80 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.True(
             recovered.IsFailure,
             "A tampered " + field + " must be a typed blocker, not a recoverable journal.");
+
+        Assert.NotEqual(ErrorCodes.Covenant.NotFound, recovered.Error.Code);
+
+    }
+
+    [Fact]
+    public void Restore_journal_envelope_with_noncanonical_trailing_bits_or_an_impossible_length_is_a_typed_blocker_not_an_exception()
+    {
+
+        JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
+
+        BackupRestoreJournalEnvelopeV2 envelope = fixture.Publication.Envelope;
+
+        // The control: the untouched envelope opens, so each refusal below is the encoding and nothing
+        // else about the envelope.
+        using (BackupRestoreJournalKeyLease control = BackupRestoreJournalKeyLease.Mint([.. fixture.Key]))
+        {
+
+            Assert.True(
+                BackupRestoreJournalAuthenticator.Open(
+                    control,
+                    envelope.ProfileNamespaceDigest,
+                    envelope.InstallationId,
+                    envelope).IsSuccess);
+
+        }
+
+        // The tag is sixteen bytes, so its twenty-two characters end in a final character with four
+        // unused bits. Setting one is a spelling no encoder writes and the framework's throwing decoder
+        // answers with FormatException. The ciphertext cut to one character past a group boundary is a
+        // length no decoder can read at all. Either one arrives from a corrupted or tampered journal
+        // file, and has to be the same typed blocker as any other tamper.
+        foreach (BackupRestoreJournalEnvelopeV2 tampered in
+                 (BackupRestoreJournalEnvelopeV2[])
+                 [
+                     envelope with
+                     {
+                         AuthenticationTagBase64Url =
+                             NonCanonicalBase64Url.WithUnusedBitSet(envelope.AuthenticationTagBase64Url),
+                     },
+                     envelope with
+                     {
+                         CiphertextBase64Url =
+                             NonCanonicalBase64Url.WithAnImpossibleLength(envelope.CiphertextBase64Url),
+                     },
+                 ])
+        {
+
+            using BackupRestoreJournalKeyLease lease = BackupRestoreJournalKeyLease.Mint([.. fixture.Key]);
+
+            Result<BackupRestoreJournalPayloadV2> opened = BackupRestoreJournalAuthenticator.Open(
+                lease,
+                envelope.ProfileNamespaceDigest,
+                envelope.InstallationId,
+                tampered);
+
+            Assert.True(opened.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, opened.Error.Code);
+
+        }
+
+        // And through the recovery that reads the file, which must block rather than fault.
+        WriteJournalFile(
+            fixture.Publication.Location.StagingRoot,
+            envelope with
+            {
+                AuthenticationTagBase64Url =
+                    NonCanonicalBase64Url.WithUnusedBitSet(envelope.AuthenticationTagBase64Url),
+            });
+
+        Result<BackupRestoreJournalRecoveryState> recovered = Recover(fixture);
+
+        Assert.True(recovered.IsFailure);
 
         Assert.NotEqual(ErrorCodes.Covenant.NotFound, recovered.Error.Code);
 

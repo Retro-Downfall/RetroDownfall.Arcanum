@@ -113,7 +113,11 @@ internal static class SqliteBusyRetry
         }
     }
 
-    private static bool IsBusyOrLocked(Exception exception)
+    /// <summary>
+    /// Whether a failure is SQLite's busy or locked answer, which a retry can clear. A cancellation is never
+    /// one, whatever it wraps.
+    /// </summary>
+    internal static bool IsBusyOrLocked(Exception exception)
     {
         if (exception is OperationCanceledException)
         {

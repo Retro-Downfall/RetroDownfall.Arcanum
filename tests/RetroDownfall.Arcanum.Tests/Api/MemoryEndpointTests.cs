@@ -2,7 +2,15 @@ using System.Net;
 
 using System.Net.Http.Json;
 
+using System.Reflection;
+
 using System.Text.Json;
+
+using Microsoft.Data.Sqlite;
+
+using Microsoft.EntityFrameworkCore;
+
+using Microsoft.Extensions.AI;
 
 using Microsoft.Extensions.DependencyInjection;
 
@@ -101,6 +109,225 @@ public sealed class MemoryEndpointTests
         ApiResponse<MemoryExplainDto>? active = await ReadAsync(reinstated, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
 
         Assert.True(EligibleSource(active!.Data!, "Lexicon"));
+    }
+
+    /// <summary>
+    /// A Saga hit says whether a turn can still recall it, beside the text an operator found: the
+    /// listing reads memory rows, so a retired memory matches a search exactly as a live one does.
+    /// </summary>
+    /// <remarks>
+    /// Both memories are written through the store's own insert and curated through the mapped routes,
+    /// so the lifecycle a hit carries is the one production recorded, not one the test stated.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Search_marks_retired_Saga_hits_with_lifecycle_and_eligibility()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateSagaEnabledFactory();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedSagaMemoryAsync(factory, "mem-live", "operator likes tea", sessionId: null);
+
+        await SeedSagaMemoryAsync(factory, "mem-retired", "operator likes tea", sessionId: null);
+
+        using HttpResponseMessage pinned = await client.PostAsync("/api/memory/saga/mem-live/pin", content: null);
+
+        Assert.Equal(HttpStatusCode.OK, pinned.StatusCode);
+
+        await RetireSagaMemoryAsync(client, "mem-retired");
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("tea", MemorySearchScope.Saga),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<MemorySearchResponse>? envelope = JsonSerializer.Deserialize(
+            body,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        MemorySearchResultDto live = Assert.Single(envelope!.Data!.Results, static hit => hit.SourceId == "mem-live");
+
+        MemorySearchResultDto retired = Assert.Single(envelope.Data.Results, static hit => hit.SourceId == "mem-retired");
+
+        Assert.Equal(SagaRetrievalEligibility.Eligible, live.SagaEligibility);
+
+        Assert.NotNull(live.SagaLifecycle!.PinnedAtUtc);
+
+        Assert.Null(live.SagaLifecycle.RetiredAtUtc);
+
+        Assert.Equal(SagaRetrievalEligibility.Retired, retired.SagaEligibility);
+
+        Assert.NotNull(retired.SagaLifecycle!.RetiredAtUtc);
+
+        Assert.Contains("\"sagaEligibility\":\"Retired\"", body, StringComparison.Ordinal);
+
+        Assert.EndsWith("; retired", retired.Provenance, StringComparison.Ordinal);
+
+        Assert.False(live.Provenance.EndsWith("; retired", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Explain reports Saga as a next-turn source only when a turn in this scope could actually reach
+    /// a memory: one that is not retired, still has an embedding, and is owned by this scope.
+    /// </summary>
+    /// <remarks>
+    /// Status keeps counting what is stored, so the two answers diverge on purpose once a memory is
+    /// retired: the row is still there, and no turn can recall it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Explain_excludes_retired_and_out_of_scope_Saga_rows()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using (ArcanumWebApplicationFactory factory = CreateSagaEnabledFactory())
+        {
+            using HttpClient client = factory.CreateAuthenticatedClient();
+
+            await SeedSagaMemoryAsync(factory, "mem-global", "an installation-scoped conclusion", sessionId: null);
+
+            Assert.True(await SagaExplainEligibleAsync(client, sessionId: null));
+
+            await RetireSagaMemoryAsync(client, "mem-global");
+
+            Assert.False(await SagaExplainEligibleAsync(client, sessionId: null));
+
+            using HttpResponseMessage statusResponse = await client.GetAsync("/api/memory/status");
+
+            ApiResponse<MemoryStatusDto>? status = await ReadAsync(
+                statusResponse,
+                ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+            Assert.Equal(1, Assert.Single(status!.Data!.Stores, static store => store.Name == "Saga").Count);
+        }
+
+        Guid campaignA = new("A0000000-0000-4000-8000-0000000000E1");
+
+        Guid campaignB = new("B0000000-0000-4000-8000-0000000000E2");
+
+        await using (ArcanumWebApplicationFactory scoped = CreateSagaEnabledFactory(campaignScopedMemory: true))
+        {
+            using HttpClient client = scoped.CreateAuthenticatedClient();
+
+            Guid sessionA = await SeedCampaignSessionAsync(scoped, campaignA);
+
+            Guid sessionB = await SeedCampaignSessionAsync(scoped, campaignB);
+
+            await SeedSagaMemoryAsync(scoped, "mem-b", "campaign B concluded something", sessionB);
+
+            Assert.False(await SagaExplainEligibleAsync(client, sessionA));
+
+            await SeedSagaMemoryAsync(scoped, "mem-global", "an installation-scoped conclusion", sessionId: null);
+
+            Assert.True(await SagaExplainEligibleAsync(client, sessionA));
+        }
+    }
+
+    /// <summary>
+    /// A memory whose row survives but whose embedding does not is something no turn can rank, and
+    /// both explain and search have to say so, while status keeps counting the row.
+    /// </summary>
+    /// <remarks>
+    /// Retiring a memory removes its embedding in the same transaction, so the retirement cases cannot
+    /// tell "retired" from "embedding gone"; this case removes only the embedding. It does so through
+    /// the restore worker that drops vectors taken under another width, which is how a real
+    /// installation reaches this state, rather than by deleting a row on the test's own account.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Explain_and_search_report_a_Saga_memory_whose_embedding_is_gone()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateSagaEnabledFactory();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedSagaMemoryAsync(factory, "mem-unembedded", "operator likes tea", sessionId: null);
+
+        Assert.True(await SagaExplainEligibleAsync(client, sessionId: null));
+
+        await DropSagaEmbeddingsTakenUnderAnotherWidthAsync(factory);
+
+        Assert.False(await SagaExplainEligibleAsync(client, sessionId: null));
+
+        using HttpResponseMessage statusResponse = await client.GetAsync("/api/memory/status");
+
+        ApiResponse<MemoryStatusDto>? status = await ReadAsync(
+            statusResponse,
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.Equal(1, Assert.Single(status!.Data!.Stores, static store => store.Name == "Saga").Count);
+
+        MemorySearchResultDto hit = Assert.Single(await SearchSagaAsync(client, "tea"));
+
+        Assert.Equal("mem-unembedded", hit.SourceId);
+
+        Assert.Equal(SagaRetrievalEligibility.EmbeddingMissing, hit.SagaEligibility);
+
+        Assert.Null(hit.SagaLifecycle!.RetiredAtUtc);
+    }
+
+    /// <summary>
+    /// Whether a memory nobody resolved the ownership of can be recalled depends on whether Campaign
+    /// scoping is on, and every surface has to give the answer retrieval would.
+    /// </summary>
+    /// <remarks>
+    /// With scoping off a turn ranks every embedded memory whoever owns it, so the memory is
+    /// <c>Eligible</c> on the detail route and in search, and explain counts it. With scoping on it is
+    /// retrievable nowhere: the detail route says <c>OwnershipUnresolved</c>, search, which lists by the
+    /// same ownership a turn ranks by, does not return it, and explain does not count it.
+    ///
+    /// <para>The Session exists with no binding row, which is the state the scope classifier reads as
+    /// "ownership never resolved"; the memory is written through the store's own insert.</para>
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unresolved_ownership_is_reported_the_way_retrieval_treats_it(bool campaignScopedMemory)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateSagaEnabledFactory(campaignScopedMemory);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid unbound = await SeedUnboundSessionAsync(factory);
+
+        await SeedSagaMemoryAsync(factory, "mem-unresolved", "operator likes tea", unbound);
+
+        using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-unresolved");
+
+        ApiResponse<SagaMemoryDetail>? detail = await ReadAsync(shown, ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail);
+
+        Assert.Equal(SagaMemoryScopeKind.LegacyUnresolved, detail!.Data!.Memory.ScopeKind);
+
+        MemorySearchResultDto[] hits = await SearchSagaAsync(client, "tea");
+
+        if (campaignScopedMemory)
+        {
+            Assert.Equal(SagaRetrievalEligibility.OwnershipUnresolved, detail.Data.Eligibility);
+
+            Assert.DoesNotContain(hits, static hit => hit.SourceId == "mem-unresolved");
+
+            Assert.False(await SagaExplainEligibleAsync(client, sessionId: null));
+        }
+        else
+        {
+            Assert.Equal(SagaRetrievalEligibility.Eligible, detail.Data.Eligibility);
+
+            MemorySearchResultDto hit = Assert.Single(hits);
+
+            Assert.Equal(SagaRetrievalEligibility.Eligible, hit.SagaEligibility);
+
+            Assert.DoesNotContain("retrievable nowhere", hit.Provenance, StringComparison.Ordinal);
+
+            Assert.True(await SagaExplainEligibleAsync(client, sessionId: null));
+        }
     }
 
     [SkippableTheory]
@@ -359,6 +586,61 @@ public sealed class MemoryEndpointTests
 
         Assert.All(envelope.Data.Stores, static store => Assert.False(string.IsNullOrWhiteSpace(store.Retention)));
 
+    }
+
+    /// <summary>
+    /// The retention sentence a store reports names every way its rows actually leave, not only the
+    /// one that existed when the sentence was first written.
+    /// </summary>
+    /// <remarks>
+    /// <para>Both stores used to say "explicitly deleted" and nothing else, which stopped being true
+    /// twice over: an operator can erase a memory or an entry, leaving a fingerprint instead of a
+    /// row, and an enabled retention rule prunes unpinned rows without anyone naming them. A reader
+    /// who trusts the sentence would not look for the pin that exempts a row from the second or for
+    /// the verb that performs the first.</para>
+    /// <para>The Covenant has no row in this listing, so its dead constant has no business remaining
+    /// in the endpoint class: a sentence nothing reads is one more place for the next change to
+    /// leave stale.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Memory_sources_state_each_store_retention_honestly()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage sourced = await client.GetAsync("/api/memory/sources");
+
+        Assert.Equal(HttpStatusCode.OK, sourced.StatusCode);
+
+        ApiResponse<MemorySourcesDto>? sources = await ReadAsync(
+            sourced,
+            ArcanumJsonContext.Default.ApiResponseMemorySourcesDto);
+
+        Assert.NotNull(sources?.Data);
+
+        string saga = Assert.Single(sources.Data.Sources, static source => source.Name == "Saga").Retention;
+
+        Assert.Contains("erased", saga, StringComparison.Ordinal);
+
+        Assert.Contains("saga-memories", saga, StringComparison.Ordinal);
+
+        Assert.Contains("pinned", saga, StringComparison.Ordinal);
+
+        Assert.Contains("explicitly", saga, StringComparison.Ordinal);
+
+        string lexicon = Assert.Single(sources.Data.Sources, static source => source.Name == "Lexicon").Retention;
+
+        Assert.Contains("erased", lexicon, StringComparison.Ordinal);
+
+        Assert.Contains("lexicon-entries", lexicon, StringComparison.Ordinal);
+
+        Assert.Contains("explicitly", lexicon, StringComparison.Ordinal);
+
+        Assert.Null(
+            typeof(MemoryEndpoints).GetField(
+                "CovenantRetention",
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic));
     }
 
     /// <summary>
@@ -1145,6 +1427,47 @@ public sealed class MemoryEndpointTests
 
     }
 
+    /// <summary>
+    /// The Covenant status block says an operator can erase an entry, and says what no local erasure
+    /// can reach.
+    /// </summary>
+    /// <remarks>
+    /// The sentence used to end at "retires the entry", which is the tombstone that keeps history
+    /// readable, so an operator who read only status would conclude the Covenant has no way to forget
+    /// something. The second clause is the other half of the same honesty: erasure removes the local
+    /// rows, and a provider that already received the content is outside it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Covenant_status_states_that_an_operator_can_erase_an_entry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using CovenantCanonicalFixture covenant =
+            await CovenantCanonicalFixture.CreateAsync(CancellationToken.None);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = static settings => settings with
+            {
+                Features = settings.Features with { Covenant = true },
+            },
+            ServiceOverrides = services =>
+            {
+                services.RemoveAll<ICovenantManagementService>();
+
+                services.AddSingleton(Management(covenant));
+            },
+        };
+
+        CovenantStatusDto? status = await CovenantStatusAsync(factory);
+
+        Assert.NotNull(status);
+
+        Assert.Contains("until an operator erases the entry", status.Retention, StringComparison.Ordinal);
+
+        Assert.Contains("outside every local erasure path", status.Retention, StringComparison.Ordinal);
+    }
+
     private static async Task<CovenantStatusDto?> CovenantStatusAsync(ArcanumWebApplicationFactory factory)
     {
 
@@ -1214,6 +1537,306 @@ public sealed class MemoryEndpointTests
 
     }
 
+    /// <summary>Matches ArcanumSettingClamps.EmbeddingsDimensions' 64-dimension floor.</summary>
+    private const int SagaTestDimensions = 64;
+
+    /// <summary>A host with Saga and embeddings on, answering one fixed vector for every text.</summary>
+    private static ArcanumWebApplicationFactory CreateSagaEnabledFactory(bool campaignScopedMemory = false) =>
+        new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Features = settings.Features with
+                {
+                    Embeddings = true,
+                    Saga = true,
+                    CampaignScopedMemory = campaignScopedMemory,
+                },
+                Integrations = settings.Integrations with
+                {
+                    Embeddings = settings.Integrations.Embeddings with
+                    {
+                        Provider = "test",
+                        Model = "test-embed",
+                        Dimensions = SagaTestDimensions,
+                    },
+                },
+            },
+            ServiceOverrides = static services =>
+            {
+
+                services.RemoveAll<IWeaveService>();
+
+                services.AddSingleton<IWeaveService>(new FixedVectorWeaveService());
+
+            },
+        };
+
+    /// <summary>Writes a memory through the store's own insert, so its scope is the one production derives.</summary>
+    private static async Task SeedSagaMemoryAsync(
+        ArcanumWebApplicationFactory factory,
+        string id,
+        string content,
+        Guid? sessionId)
+    {
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ISagaMemoryStore store = scope.ServiceProvider.GetRequiredService<ISagaMemoryStore>();
+
+        SagaMemoryWriteOutcome outcome = await store.InsertAsync(
+            id,
+            content,
+            DateTimeOffset.UtcNow,
+            sessionId,
+            tags: null,
+            source: "extraction",
+            FixedVectorWeaveService.Vector(),
+            CancellationToken.None);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
+
+    }
+
+    /// <summary>Retires a memory through the mapped routes, quoting the digest the detail route publishes.</summary>
+    private static async Task RetireSagaMemoryAsync(HttpClient client, string id)
+    {
+
+        using HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{id}");
+
+        ApiResponse<SagaMemoryDetail>? detail = await ReadAsync(shown, ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail);
+
+        using StringContent request = new(
+            JsonSerializer.Serialize(
+                new SagaRetireRequest(detail!.Data!.ContentHash),
+                ArcanumJsonContext.Default.SagaRetireRequest),
+            System.Text.Encoding.UTF8,
+            "application/json");
+
+        using HttpResponseMessage retired = await client.PostAsync($"/api/memory/saga/{id}/retire", request);
+
+        Assert.Equal(HttpStatusCode.OK, retired.StatusCode);
+
+    }
+
+    private static async Task<MemorySearchResultDto[]> SearchSagaAsync(HttpClient client, string query)
+    {
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest(query, MemorySearchScope.Saga),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        return envelope!.Data!.Results;
+
+    }
+
+    /// <summary>
+    /// Empties the Saga embedding table the way a restore does when an archive was embedded under
+    /// another width, leaving every <c>saga_memories</c> row where it was.
+    /// </summary>
+    private static async Task DropSagaEmbeddingsTakenUnderAnotherWidthAsync(ArcanumWebApplicationFactory factory)
+    {
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        long removed = await RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
+            connection,
+            SagaTestDimensions + 1,
+            CancellationToken.None);
+
+        // The seeded memory's vector and nothing else; an arrangement that removed nothing would leave
+        // every assertion after it describing a memory that never lost its embedding.
+        Assert.Equal(1L, removed);
+
+    }
+
+    /// <summary>
+    /// A Session with no binding row, which the Saga scope classifier reads as "ownership never
+    /// resolved", so a memory written under it is <see cref="SagaMemoryScopeKind.LegacyUnresolved"/>.
+    /// </summary>
+    private static async Task<Guid> SeedUnboundSessionAsync(ArcanumWebApplicationFactory factory)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ($id, NULL, 'active', $now, $now);
+            """,
+            ("$id", sessionId.ToString("D").ToUpperInvariant()),
+            ("$now", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+                .ToString("o", System.Globalization.CultureInfo.InvariantCulture)));
+
+        return sessionId;
+
+    }
+
+    private static async Task<bool> SagaExplainEligibleAsync(HttpClient client, Guid? sessionId)
+    {
+
+        using HttpResponseMessage response = await client.GetAsync(
+            sessionId is { } id ? $"/api/memory/explain/{id:D}" : "/api/memory/explain");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemoryExplainDto>? explain = await ReadAsync(response, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        return EligibleSource(explain!.Data!, "Saga");
+
+    }
+
+    /// <summary>
+    /// A Campaign and a Session bound to it, in the canonical spelling every production writer renders,
+    /// with the binding written under the same authorization scope production borrows.
+    /// </summary>
+    private static async Task<Guid> SeedCampaignSessionAsync(
+        ArcanumWebApplicationFactory factory,
+        Guid campaignId)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        string now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+            .ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        string canonicalCampaign = campaignId.ToString("D").ToUpperInvariant();
+
+        string canonicalSession = sessionId.ToString("D").ToUpperInvariant();
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT OR IGNORE INTO "Campaigns"
+                ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+            VALUES ($id, $name, $name, $path, 0, '{}', $now, $now);
+            """,
+            ("$id", canonicalCampaign),
+            ("$name", campaignId.ToString("N")),
+            ("$path", $"/campaigns/{campaignId:N}"),
+            ("$now", now));
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ($id, $campaignId, 'active', $now, $now);
+            """,
+            ("$id", canonicalSession),
+            ("$campaignId", canonicalCampaign),
+            ("$now", now));
+
+        using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance
+            .Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+            VALUES ($id, 2, $campaignId, $now);
+            """,
+            ("$id", canonicalSession),
+            ("$campaignId", canonicalCampaign),
+            ("$now", now));
+
+        return sessionId;
+
+    }
+
+    private static async Task ExecuteAsync(
+        SqliteConnection connection,
+        string sql,
+        params (string Name, object Value)[] parameters)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        foreach ((string name, object value) in parameters)
+        {
+
+            _ = command.Parameters.AddWithValue(name, value);
+
+        }
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    /// <summary>Answers one fixed vector for every text, so similarity is not what a case here is about.</summary>
+    private sealed class FixedVectorWeaveService : IWeaveService
+    {
+
+        public bool IsAvailable => true;
+
+        public static float[] Vector()
+        {
+
+            float[] vector = new float[SagaTestDimensions];
+
+            vector[0] = 1f;
+
+            return vector;
+
+        }
+
+        public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<Embedding<float>>.Success(new Embedding<float>(Vector())));
+
+        public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by the memory inspection routes.");
+
+        public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by the memory inspection routes.");
+
+    }
+
     /// <summary>
     /// Answers <c>ListAsync</c> with whatever page size it is asked for, up to a fixed corpus size,
     /// and records that size. Stands in for a mature Saga corpus so the endpoint's own bound is what
@@ -1254,6 +1877,30 @@ public sealed class MemoryEndpointTests
             return Task.FromResult(memories);
 
         }
+
+        public async Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
+            string? query,
+            Guid? sessionId,
+            MemoryScope scope,
+            int limit,
+            int offset,
+            CancellationToken cancellationToken)
+        {
+
+            SagaMemoryDto[] memories = await ListAsync(query, sessionId, scope, limit, offset, cancellationToken);
+
+            return
+            [
+                .. memories.Select(static memory => new SagaMemoryCurationRow(
+                    memory,
+                    new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc),
+                    HasEmbedding: true)),
+            ];
+
+        }
+
+        public Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
 
         public Task<SagaMemoryWriteOutcome> InsertAsync(
             string id,

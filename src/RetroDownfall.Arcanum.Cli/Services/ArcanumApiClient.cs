@@ -182,7 +182,8 @@ public sealed partial class ArcanumApiClient(
         CancellationToken cancellationToken,
         string httpClientName = RequestHttpClientName,
         string? idempotencyKey = null,
-        bool retryResponseBodyIOExceptionOnce = false)
+        bool retryResponseBodyIOExceptionOnce = false,
+        Action? onResponseBodyRetry = null)
     {
         HttpClient client = httpClientFactory.CreateClient(httpClientName);
 
@@ -252,6 +253,9 @@ public sealed partial class ArcanumApiClient(
                 {
                     retriedResponseBody = true;
 
+                    // The answer that is about to come back describes the resend, not the first send.
+                    onResponseBodyRetry?.Invoke();
+
                     continue;
                 }
 
@@ -305,7 +309,8 @@ public sealed partial class ArcanumApiClient(
         CancellationToken cancellationToken,
         string httpClientName = RequestHttpClientName,
         string? idempotencyKey = null,
-        bool retryResponseBodyIOExceptionOnce = false)
+        bool retryResponseBodyIOExceptionOnce = false,
+        Action? onResponseBodyRetry = null)
     {
         return await SendRequestAsync(
             method,
@@ -344,7 +349,8 @@ public sealed partial class ArcanumApiClient(
             cancellationToken,
             httpClientName,
             idempotencyKey,
-            retryResponseBodyIOExceptionOnce).ConfigureAwait(false);
+            retryResponseBodyIOExceptionOnce,
+            onResponseBodyRetry).ConfigureAwait(false);
     }
 
     private async Task<Result<T>> SendRequestAsync<T>(

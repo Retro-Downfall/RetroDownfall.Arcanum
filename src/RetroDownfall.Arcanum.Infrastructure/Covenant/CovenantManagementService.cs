@@ -132,6 +132,10 @@ internal sealed class CovenantManagementService(
             return cursor.Error;
         }
 
+        // One read of the published tier state serves the query and the health report it returns, so the
+        // rows and the report describe the same tier.
+        CovenantCapabilityState accelerator = availability.Current.Accelerator;
+
         CovenantSearchQuery query = new(
             compiled.Value,
             request.Scope,
@@ -139,7 +143,8 @@ internal sealed class CovenantManagementService(
             request.Lane,
             request.Lifecycle,
             request.EffectiveLimit,
-            cursor.Value?.Keyset);
+            cursor.Value?.Keyset,
+            accelerator);
 
         Result<CovenantSearchPage> searched = await availableSearchIndex
             .SearchAsync(query, readLease, cancellationToken)
@@ -206,13 +211,14 @@ internal sealed class CovenantManagementService(
                 next)) : null,
             Hex(filterDigest),
             new CovenantSearchHealthDto(
-                page.ExecutionMode is CovenantSearchExecutionMode.Fts
-                    ? CovenantSearchHealthState.Healthy
-                    : page.Guidance is CovenantSearchRebuildGuidance.WaitForSynchronization
-                        ? CovenantSearchHealthState.Synchronizing
-                        : page.Guidance is CovenantSearchRebuildGuidance.AcceleratorUnavailable
-                            ? CovenantSearchHealthState.Unavailable
-                            : CovenantSearchHealthState.Degraded,
+                // The same rule status applies, over the same published tier state the query was answered
+                // under. A page answered from the index is the synchronized case, and one that was not is
+                // waiting on the outbox or on a rebuild, which status calls synchronizing too, unless the
+                // tier itself is degraded, which status reports as degraded.
+                CovenantSearchHealthRule.State(
+                    acceleratorUnavailable: page.Guidance is CovenantSearchRebuildGuidance.AcceleratorUnavailable,
+                    acceleratorDegraded: accelerator is CovenantCapabilityState.Degraded,
+                    synchronized: page.ExecutionMode is CovenantSearchExecutionMode.Fts),
                 page.ExecutionMode,
                 page.Guidance),
             page.Truncated || page.NextKeyset is not null,
@@ -271,7 +277,9 @@ internal sealed class CovenantManagementService(
             // sources route reports their leaves. Folding an unbounded read into a lookup would make
             // one key's detail cost depend on how much the agent attached to it.
             ConfirmedSources: null,
-            ProposedSources: null);
+            ProposedSources: null,
+            detail.Value.ConfirmedCuration,
+            detail.Value.ProposedCuration);
 
     }
 
@@ -582,20 +590,17 @@ internal sealed class CovenantManagementService(
     /// The four states search can actually be in, from the published availability snapshot.
     /// </summary>
     /// <remarks>
-    /// Derived rather than named, and derived here rather than at each caller. This DTO is frozen and
-    /// reaches an operator through the API, the CLI, and the ordinary memory status block alike; a
-    /// second producer computing its own answer would give one contract four fields that mean
-    /// different things depending on which of them replied.
+    /// Derived rather than named, and derived by <see cref="CovenantSearchHealthRule"/> rather than at each
+    /// caller. This DTO is frozen and reaches an operator through the API, the CLI, and the ordinary memory
+    /// status block alike, and a search page carries the same one; a second producer computing its own
+    /// answer would give one contract several fields that mean different things depending on which of
+    /// them replied.
     /// </remarks>
     private static CovenantSearchHealthState SearchHealth(CovenantAvailabilitySnapshot snapshot) =>
-        snapshot.Accelerator switch
-        {
-            CovenantCapabilityState.Unavailable => CovenantSearchHealthState.Unavailable,
-            CovenantCapabilityState.Degraded => CovenantSearchHealthState.Degraded,
-            _ => snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
-                ? CovenantSearchHealthState.Healthy
-                : CovenantSearchHealthState.Synchronizing,
-        };
+        CovenantSearchHealthRule.State(
+            acceleratorUnavailable: snapshot.Accelerator is CovenantCapabilityState.Unavailable,
+            acceleratorDegraded: snapshot.Accelerator is CovenantCapabilityState.Degraded,
+            synchronized: snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized);
 
     /// <summary>
     /// How the next query would run, by the same rule the store itself applies.
@@ -615,17 +620,22 @@ internal sealed class CovenantManagementService(
     /// The one remediation this snapshot actually calls for, most specific first.
     /// </summary>
     /// <remarks>
-    /// Order matters. An unavailable accelerator cannot be waited out, so reporting "wait for
-    /// synchronization" there would send an operator to sit through a state that will never change.
+    /// <see cref="CovenantSearchHealthRule.Guidance"/> decides, and a search page asks the same function
+    /// with the facts it was answered from, so the two routes agree on a state. The order it applies, and
+    /// why, is documented there: an unavailable accelerator cannot be waited out, a synchronized snapshot
+    /// asks for nothing even while a fresh installation's recorded rebuild is still owed, a published
+    /// tuple for this dataset means the outbox will carry search the rest of the way, and only without
+    /// one does the recorded rebuild decide, which includes a restore that kept its heads: the outbox will
+    /// not adopt a projection it cannot replay those heads onto.
     /// </remarks>
     private static CovenantSearchRebuildGuidance RebuildGuidance(CovenantAvailabilitySnapshot snapshot) =>
-        snapshot.Accelerator is CovenantCapabilityState.Unavailable
-            ? CovenantSearchRebuildGuidance.AcceleratorUnavailable
-            : snapshot.RebuildRequired
-                ? CovenantSearchRebuildGuidance.RebuildRequired
-                : snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
-                    ? CovenantSearchRebuildGuidance.None
-                    : CovenantSearchRebuildGuidance.WaitForSynchronization;
+        CovenantSearchHealthRule.Guidance(
+            acceleratorUnavailable: snapshot.Accelerator is CovenantCapabilityState.Unavailable,
+            synchronized: snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized,
+            outboxCanContinue: snapshot.Accelerator is CovenantCapabilityState.Healthy
+                && snapshot.DatasetGeneration is { } dataset
+                && snapshot.AppliedDatasetGeneration == dataset,
+            rebuildOwed: snapshot.RebuildRequired);
 
     private static CovenantExplainDto Explain(
         CovenantExplainRequest request,
@@ -746,8 +756,9 @@ internal sealed class CovenantManagementService(
 
     /// <summary>The retention sentence every Covenant surface reports, in one place.</summary>
     private const string CovenantRetentionSummary =
-        "Durable immutable versions until an operator retires the entry or a Covenant reset, family "
-        + "reinitialize, or installation erasure removes it.";
+        "Durable immutable versions until an operator erases the entry, its Campaign is deleted, or a "
+        + "Covenant reset, family reinitialize, or installation erasure removes it; retirement keeps "
+        + "history inspectable. Content already sent to a provider is outside every local erasure path.";
 
     private static CovenantSourcesDto Sources(CovenantSourcePage page) =>
         new(

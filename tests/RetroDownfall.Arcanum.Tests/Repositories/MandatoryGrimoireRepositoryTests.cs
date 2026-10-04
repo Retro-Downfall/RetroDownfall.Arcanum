@@ -1953,8 +1953,8 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
-            attachmentIndex: null,
             covenantKernel: null,
+            availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(db),
             FixtureLabeledArtifactGuard.For(db));
 

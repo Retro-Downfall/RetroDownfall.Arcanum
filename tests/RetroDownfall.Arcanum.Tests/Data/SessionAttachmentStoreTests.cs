@@ -2287,7 +2287,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task DeleteRowsForSession_under_gate_then_TryDeleteSessionDirectory_clears_all()
+    public async Task TryDeleteSessionDirectory_clears_the_directory_and_the_bytes_a_persisted_attachment_wrote()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -2311,23 +2311,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         Assert.True(File.Exists(Path.Combine(_attachmentsRoot, record.RelativePath)));
 
-        using (IDisposable gate = await _store.AcquireSessionGateAsync(sessionId))
-        {
-            await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
-                await _db!.Database.BeginTransactionAsync();
-
-            await _store.DeleteRowsForSessionInAmbientTransactionAsync(sessionId);
-
-            await tx.CommitAsync();
-        }
-
         Assert.True(_store.TryDeleteSessionDirectory(sessionId));
 
-        Assert.Null(await _store.GetByIdAsync(record.Id));
-
-        Assert.Empty(await _store.ListBoundAsync(sessionId));
-
         Assert.False(Directory.Exists(sessionDir));
+
+        Assert.False(File.Exists(Path.Combine(_attachmentsRoot, record.RelativePath)));
     }
 
     [SkippableFact]

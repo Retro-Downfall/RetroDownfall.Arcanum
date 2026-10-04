@@ -21,6 +21,35 @@ public enum CovenantLaneHeadPresence : byte
 }
 
 /// <summary>
+/// What erasure evidence says about an agent authoring one exact scoped key.
+/// </summary>
+/// <remarks>
+/// In-process only: it rides on the staging probes so a handler can refuse before it stages, and it is
+/// never serialized. <see cref="Withheld"/> is answered exactly as a pin is, so an agent cannot tell an
+/// erased key from a pinned one. The two key states are store-level facts and carry no identity: a
+/// store whose evidence cannot be verified withholds every agent write, whatever the key.
+/// </remarks>
+public enum CovenantAgentErasureState : byte
+{
+
+    /// <summary>No evidence names this identity, or the store holds no Covenant evidence at all.</summary>
+    Clear = 1,
+
+    /// <summary>The operator erased this exact identity in this exact scope.</summary>
+    Withheld = 2,
+
+    /// <summary>The store holds Covenant evidence and the latched key is not in hand to check it.</summary>
+    KeyUnavailable = 3,
+
+    /// <summary>
+    /// The store holds Covenant evidence that no present key can verify: the key is absent, or the
+    /// evidence was recorded under another one.
+    /// </summary>
+    KeyLost = 4,
+
+}
+
+/// <summary>
 /// One bounded, index-only answer about a scoped lane head.
 /// </summary>
 /// <remarks>
@@ -45,8 +74,18 @@ public sealed record CovenantLaneHeadProbe(
     /// publication transaction is what actually enforces the pin — this is the early answer that keeps
     /// a refused proposal from costing the turn the answer it was carrying.
     /// </remarks>
-    bool IsPinned = false)
+    bool IsPinned = false,
+
+    /// <summary>What erasure evidence says about an agent authoring this scoped key.</summary>
+    /// <remarks>
+    /// Classified inside the probe's own read, from the latched key alone, for the same early refusal
+    /// the pin gets. The write authority classifies again inside the publication transaction.
+    /// </remarks>
+    CovenantAgentErasureState AgentErasure = CovenantAgentErasureState.Clear)
 {
+
+    /// <summary>Whether the operator erased this exact scoped key, so an agent may not author it.</summary>
+    public bool IsAgentWithheld => AgentErasure == CovenantAgentErasureState.Withheld;
 
     /// <summary>
     /// The absent answer for a key that has no row in this scope and lane at all.

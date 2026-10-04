@@ -769,6 +769,8 @@ public sealed class LexiconCurationEndpointTests
 
         public ValueTask<Result<CovenantCampaignExclusiveLease>> AcquireCampaignExclusiveAsync(Guid campaignId, CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) => throw new NotSupportedException();
 
+        public ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(CovenantOperationScope entryScope, bool reclaimsKey, CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(ProtectedTransferScope scope, CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) => throw new NotSupportedException();

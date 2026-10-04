@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -346,6 +347,94 @@ public sealed class CovenantPersistedAvailabilityPublisherTests : IAsyncLifetime
         Assert.Null(availability.Current.DatasetGeneration);
 
         Assert.Equal(before, availability.Current.Generation);
+
+    }
+
+    /// <summary>
+    /// An in-host republication that cannot read the committed tuple publishes nothing, throws nothing
+    /// into the writer whose transaction already committed, and logs one content-free warning.
+    /// </summary>
+    /// <remarks>
+    /// The writer's own result has to stand: its rows are durable whatever the snapshot says. The next
+    /// maintenance pass republishes after every batch it commits, and bootstrap republishes on restart,
+    /// so the stale publication this leaves behind is corrected without anyone acting on the warning.
+    /// </remarks>
+    [Fact]
+    public async Task A_republication_that_cannot_read_is_logged_without_content_and_never_thrown()
+    {
+
+        CovenantAvailability availability = new();
+
+        CovenantAvailabilitySnapshot before = availability.Current;
+
+        TestCapturingLogger<CovenantAvailabilityRepublisher> logger = new();
+
+        // Never opened, so the read throws rather than answering.
+        await using SqliteConnection unopened = new("Data Source=:memory:");
+
+        await using SqliteCommand probe = unopened.CreateCommand();
+
+        string failure = Assert.Throws<InvalidOperationException>(() => probe.ExecuteReader()).Message;
+
+        await new CovenantAvailabilityRepublisher(availability, logger).RepublishAsync(
+            unopened,
+            CovenantHealthTransition.AcceleratorSynchronization);
+
+        Assert.Same(before, availability.Current);
+
+        TestLogEntry entry = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, entry.Level);
+
+        Assert.Null(entry.Exception);
+
+        Assert.Contains(nameof(CovenantHealthTransition.AcceleratorSynchronization), entry.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(failure, entry.Message, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A republication whose read fails inside SQLite is logged as well. The publisher's own read
+    /// absorbs that failure and reports that it published nothing, so the republisher has to treat
+    /// "nothing published" after a committed write as the failure it is.
+    /// </summary>
+    [Fact]
+    public async Task A_republication_whose_read_fails_inside_sqlite_is_logged_without_content()
+    {
+
+        CovenantAvailability availability = new();
+
+        CovenantAvailabilitySnapshot before = availability.Current;
+
+        TestCapturingLogger<CovenantAvailabilityRepublisher> logger = new();
+
+        // Open, but holding no Covenant tier, so the read reaches SQLite and fails there.
+        await using SqliteConnection empty = new("Data Source=:memory:");
+
+        await empty.OpenAsync(CancellationToken.None);
+
+        await using SqliteCommand probe = empty.CreateCommand();
+
+        probe.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
+
+        string failure = Assert.Throws<SqliteException>(() => probe.ExecuteScalar()).Message;
+
+        await new CovenantAvailabilityRepublisher(availability, logger).RepublishAsync(
+            empty,
+            CovenantHealthTransition.OwnerCleanup);
+
+        Assert.Same(before, availability.Current);
+
+        TestLogEntry entry = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, entry.Level);
+
+        Assert.Null(entry.Exception);
+
+        Assert.Contains(nameof(CovenantHealthTransition.OwnerCleanup), entry.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(failure, entry.Message, StringComparison.Ordinal);
 
     }
 

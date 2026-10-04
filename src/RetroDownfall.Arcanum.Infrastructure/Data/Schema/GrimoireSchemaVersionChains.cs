@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 12 and declares eleven steps, Covenant canonical is at version 5 and declares four,
+/// Core is at version 13 and declares twelve steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -84,8 +84,21 @@ internal static class GrimoireSchemaVersionChains
     /// legacy and snapshot Annals hashes, and preserves content-free attachment coordinates by
     /// Annals version. Its atomic step replaces every Lexicon FTS trigger and rebuilds the search
     /// projection from active rows alone.</para>
+    ///
+    /// <para>Version 12 adds the Annals review queue: one review event per head change, recorded by
+    /// triggers on <c>annal_heads</c>, with decision receipts and per-scope review markers. Its bounded
+    /// sweep records an event for every head that already existed, so the queue starts with the
+    /// installation's current memories rather than only the ones written after the upgrade.</para>
+    ///
+    /// <para>Version 13 adds erasure evidence: content-free erasure fingerprints, erasure receipts with
+    /// their subject digests, and a guard that lets a receipt only clear its WAL checkpoint reason and
+    /// become Verified once no reason remains. It also indexes the disclosure subjects whose receipts
+    /// have not been folded yet, turns on FTS5 secure delete for <c>lexicon_fts</c>, and merges that
+    /// index once so tokens left by earlier deletes are gone. The step declares no sweep: every new
+    /// table starts empty, and the index, the setting and the merge all complete inside the step's own
+    /// transaction.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 12;
+    internal const int CoreSchemaVersion = 13;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -94,8 +107,22 @@ internal static class GrimoireSchemaVersionChains
     /// <c>covenant_versions</c> so new AgentApproved retirements can carry no Ward receipt while every
     /// historical Ward-backed tuple remains unchanged. Version 4 canonicalizes the authoritative
     /// Covenant tier's inherited instant text under its own failure domain.
+    ///
+    /// <para>Version 5 adds the Covenant review queue: one review event per head change, recorded by
+    /// triggers on <c>covenant_heads</c>, with decision receipts and per-scope review markers. Its bounded
+    /// sweep records an event for every head that already existed.</para>
+    ///
+    /// <para>Version 6 prepares the tier for erasing one entry. It gives <c>covenant_key_epochs</c> a
+    /// fixed binding epoch, <c>IncarnationEpoch</c>, which every existing key row takes from its current
+    /// <c>KeyEpoch</c> so live curation stays live, and which a key row created afterwards starts at 0; a
+    /// guard makes it immutable. It gives <c>covenant_mutation_receipts</c> the entry each receipt
+    /// resolved, with an index. It purges the curation a pre-fix family reset left behind: rows at a
+    /// nonzero epoch whose key has no epoch row. It admits the entry-erasure authorization in the delete
+    /// guards on an entry's closure and on the search outbox, and adds delete guards to
+    /// <c>covenant_key_epochs</c> and <c>covenant_curation_heads</c>. The step declares no sweep: the
+    /// backfill and the purge are single statements inside the step's own transaction.</para>
     /// </remarks>
-    internal const int CovenantCanonicalSchemaVersion = 5;
+    internal const int CovenantCanonicalSchemaVersion = 6;
 
     /// <summary>The version of Covenant's inspection index this binary declares.</summary>
     internal const int CovenantAcceleratorSchemaVersion = 1;
@@ -187,6 +214,13 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 12)] =
                 "A42B44B75CC2EA1E3D8E1949A37EE82D6D4D4DB37AA3335F732A54788DC9FF0B",
 
+            // Captured from the normalized Core version-12 head before any version-13 head edit.
+            // CoreSchemaVersionTwelveFixture removes the memory_erasure_ objects, freezes the three
+            // disclosure tables whose text version 13 changes, and proves this literal still names
+            // version 12. Its frozen copies also keep the raw version-1 to version-5 pins still.
+            [(GrimoireSchemaTransactionTier.Core, 13)] =
+                "616E371CA834F78D84C484E4918C4124F8399686B17E1E8D497557303C08063B",
+
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture
             // reconstructs that tree by removing those objects from the shipped list and a test hashes
@@ -210,6 +244,14 @@ internal static class GrimoireSchemaVersionChains
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 5)] =
                 "7E7B7B2B590EA4A4D4EEA8A0C463E813319BECA7E07750CAF51258F5BA35C6A2",
+
+            // Captured from the raw Covenant canonical version-5 head before any version-6 head edit.
+            // This tier still publishes the raw computation, so the pin does too.
+            // CovenantCanonicalSchemaVersionFiveFixture removes the three objects version 6 added,
+            // freezes the thirteen objects whose text version 6 changes, and proves this literal still
+            // names version 5. Its frozen copies also keep the older canonical pins still.
+            [(GrimoireSchemaTransactionTier.CovenantCanonical, 6)] =
+                "E4C4284B895BBBE50515D18FAC6066348D73C3A7D166F434B96BA675697DA925",
         };
 
     /// <summary>The sweep each step depends on, keyed the same way.</summary>

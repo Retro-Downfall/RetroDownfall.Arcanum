@@ -39,7 +39,7 @@ public static class CovenantOperatorCurationFactory
             requestDigest,
             binding.DatasetGeneration,
             binding.OperatorAuthorityEpoch,
-            NormalizedKeyDependencyEpoch: checked((ulong)subject.KeyEpoch),
+            NormalizedKeyDependencyEpoch: checked((ulong)subject.KeyDependencyEpoch),
             checked((ulong)binding.ExpectedKeyEpoch),
             CampaignRegistryEpoch: null,
             preflightBodyDigest,
@@ -82,12 +82,19 @@ public static class CovenantOperatorCurationFactory
     }
 
     /// <summary>
-    /// The request digest a commit recomputes from its own fields, with no token in hand.
+    /// The request digest of one curation change: its identity, kind, subject, and expected revision.
     /// </summary>
     /// <remarks>
-    /// Exposed so the commit path can resolve an already-committed identity before it decodes a token
-    /// at all. A client that lost its response and retried after the token expired then receives its
-    /// committed answer rather than a stale-token refusal for work that already happened.
+    /// The digest binds the subject's dependency epoch, and a commit request does not carry one. A
+    /// first commit takes it from the authenticated preflight token. A replay takes it from the
+    /// receipt that commit wrote, which stores it for exactly this purpose, so an already-committed
+    /// identity is resolved before any token is decoded. A client that lost its response and retried
+    /// after the token expired then receives its committed answer rather than a stale-token refusal
+    /// for work that already happened.
+    ///
+    /// <para>The binding epoch is deliberately not an input. It is resolved by the kernel under the
+    /// write lock, after the digest exists, and a digest that bound it could not be computed by the
+    /// preflight that has to show it to the operator first.</para>
     /// </remarks>
     public static CovenantDigest RequestDigest(
         Guid mutationId,
@@ -105,7 +112,7 @@ public static class CovenantOperatorCurationFactory
             subject.Scope.CampaignId,
             subject.NormalizedKey,
             subject.Lane,
-            checked((ulong)subject.KeyEpoch),
+            checked((ulong)subject.KeyDependencyEpoch),
             checked((ulong)expectedRevision)));
 
     }

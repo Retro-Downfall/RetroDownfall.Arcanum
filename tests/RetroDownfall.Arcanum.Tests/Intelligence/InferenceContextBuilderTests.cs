@@ -316,9 +316,6 @@ public sealed class InferenceContextBuilderTests
         public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
-        public Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
         public Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 

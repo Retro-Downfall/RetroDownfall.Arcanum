@@ -54,6 +54,8 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(1, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
+
     }
 
     /// <summary>
@@ -193,6 +195,8 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CountTableRowsAsync("annal_claims"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
+
     }
 
     /// <summary>
@@ -252,6 +256,8 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
+
     }
 
     /// <summary>
@@ -283,6 +289,8 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountAnnalClaimsAsync(1, ownedByB));
 
         Assert.Equal(1, await CountAnnalClaimsAsync(1, installationScoped));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
 
     }
 
@@ -345,6 +353,8 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountTableRowsAsync("annal_versions"));
 
         Assert.Equal(0, await CountTableRowsAsync("annal_heads"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
 
     }
 

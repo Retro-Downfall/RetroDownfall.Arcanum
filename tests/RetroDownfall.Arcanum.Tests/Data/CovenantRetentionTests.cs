@@ -4,7 +4,13 @@ using Microsoft.EntityFrameworkCore;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Cli.Infrastructure;
+
+using RetroDownfall.Arcanum.Cli.UX;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -27,6 +33,8 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
 using System.Text.Json;
+
+using System.Text.Json.Serialization.Metadata;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -178,7 +186,9 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         Assert.Equal(29, (int)RetentionDataClass.Annals);
 
-        Assert.Equal(30, Enum.GetValues<RetentionDataClass>().Length);
+        Assert.Equal(30, (int)RetentionDataClass.MemoryErasureEvidence);
+
+        Assert.Equal(31, Enum.GetValues<RetentionDataClass>().Length);
 
         Assert.Equal(0, (int)MemoryResetScope.Entry);
 
@@ -471,6 +481,239 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.DoesNotContain("a protected summary", serializedPlan, StringComparison.Ordinal);
 
         Assert.DoesNotContain(CovenantRetentionSeed.SessionId, serializedPlan, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The seed's disclosure accounting comes from the production journal and its live fold, not from
+    /// rows written by hand, so every retention report above is reading what the product produced.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Seeded_disclosure_accounting_is_produced_by_the_live_journal_fold()
+    {
+
+        RequireSqlCipher();
+
+        await SeedCovenantFamilyAsync(CancellationToken.None);
+
+        Assert.Equal(
+            4,
+            await ScalarAsync(
+                "SELECT COUNT(*) FROM external_disclosure_receipts",
+                CancellationToken.None));
+
+        Assert.Equal(
+            4,
+            await ScalarAsync(
+                """
+                SELECT LastFoldedOrdinal
+                FROM disclosure_subject_state
+                WHERE SubjectId = 'ffffffff-7777-4777-8777-ffffffffffff'
+                    AND LastFoldedOrdinal = LastAllocatedOrdinal;
+                """,
+                CancellationToken.None));
+
+        List<CovenantDisclosureState> buckets = await ExternalDisclosureStateStore.ReadAllAsync(
+            (SqliteConnection)_db!.Database.GetDbConnection(),
+            null,
+            CancellationToken.None);
+
+        (CovenantEgressDestination, CovenantDisclosureRevocability, CovenantDisclosureCountKind, ulong)[] expected =
+        [
+            (CovenantEgressDestination.Provider, CovenantDisclosureRevocability.Nonrevocable,
+                CovenantDisclosureCountKind.Exact, 3ul),
+            (CovenantEgressDestination.Process, CovenantDisclosureRevocability.LocallyRevocable,
+                CovenantDisclosureCountKind.Exact, 1ul),
+        ];
+
+        Assert.Equal(
+            expected,
+            buckets
+                .Select(static bucket => (bucket.Destination, bucket.Revocability, bucket.CountKind, bucket.Count))
+                .OrderBy(static bucket => bucket.Destination)
+                .ToArray());
+
+    }
+
+    /// <summary>
+    /// The reset preview an operator reads before confirming names the receipts this installation
+    /// recorded. Before the live fold, those receipts reached no bucket, and the CLI told the operator
+    /// that nothing nonrevocable had ever left.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Reset_preview_rendered_by_the_cli_counts_live_receipts_instead_of_denying_disclosure()
+    {
+
+        RequireSqlCipher();
+
+        await SeedCovenantFamilyAsync(CancellationToken.None);
+
+        IDataRetentionService service = CreateService(covenantGate: new RecordingCovenantOperationGate());
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant),
+            CancellationToken.None);
+
+        DataRetentionPlan received = Assert.IsType<DataRetentionPlan>(JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(plan, ArcanumJsonContext.Default.DataRetentionPlan),
+            ArcanumJsonContext.Default.DataRetentionPlan));
+
+        DiagnosticRecorder recorder = new();
+
+        new CovenantExternalRetentionDisclosureWriter(recorder, Options.Create(new ArcanumSettings()))
+            .Write(received.Covenant);
+
+        Assert.Contains(
+            "This installation's own receipts record exactly 3 physical attempts that could have carried "
+                + "protected content out of it. Nothing this reset does can revoke any of them.",
+            recorder.Diagnostics);
+
+        Assert.DoesNotContain(
+            recorder.Diagnostics,
+            static line => line.Contains("record no nonrevocable disclosure", StringComparison.Ordinal));
+
+    }
+
+    /// <summary>
+    /// The reset inventory counts through the canonical content list, and that list holds the curation
+    /// tables. An installation whose only Covenant rows are a pin still has something a reset would
+    /// delete, and a preview that reported nothing there would hide it from the operator.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Covenant_reset_plan_and_status_count_a_pin_on_an_installation_that_holds_no_entry()
+    {
+
+        RequireSqlCipher();
+
+        IDataRetentionService service = CreateService(
+            covenantGate: new RecordingCovenantOperationGate());
+
+        DataRetentionRequest reset = new(
+            DataRetentionOperation.ResetMemory,
+            MemoryScope: MemoryResetScope.Covenant);
+
+        DataRetentionPlan empty = await service.PlanAsync(
+            reset,
+            CancellationToken.None);
+
+        Assert.Equal(0, Assert.IsType<DataRetentionCovenantInventory>(empty.Covenant).Rows);
+
+        Assert.DoesNotContain(empty.Items, item => item.DataClass is RetentionDataClass.Covenant);
+
+        await SeedCurationPinAsync(CancellationToken.None);
+
+        Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM covenant_entries", CancellationToken.None));
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            reset,
+            CancellationToken.None);
+
+        // The pin's version, the head that points at it, and its receipt.
+        Assert.Equal(3, Assert.IsType<DataRetentionCovenantInventory>(plan.Covenant).Rows);
+
+        DataRetentionPlanItem planned = Assert.Single(
+            plan.Items,
+            item => item.DataClass is RetentionDataClass.Covenant);
+
+        Assert.Equal(3, planned.DerivedRecords);
+
+        Assert.NotEqual(empty.PlanId, plan.PlanId);
+
+        DataRetentionStatus status = await service.GetStatusAsync(
+            CancellationToken.None);
+
+        Assert.Equal(3, Assert.IsType<DataRetentionCovenantInventory>(status.Covenant).Rows);
+
+        Assert.Equal(
+            3,
+            Assert.Single(status.Items, item => item.DataClass is RetentionDataClass.Covenant).Rows);
+
+    }
+
+    /// <summary>
+    /// The inventory's row count is the canonical content list summed, plus the accelerator projection
+    /// and the three core support tables. Computed here from the list itself, so an inventory that kept
+    /// a list of its own and dropped a table the seed fills would stop agreeing.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Covenant_inventory_rows_are_the_canonical_content_list_summed_with_its_support_tables()
+    {
+
+        RequireSqlCipher();
+
+        await SeedCovenantFamilyAsync(CancellationToken.None);
+
+        await SeedCurationPinAsync(CancellationToken.None);
+
+        long canonical = 0;
+
+        int populated = 0;
+
+        foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
+        {
+
+            long rows = await ScalarAsync(
+                $"SELECT COUNT(*) FROM \"{table}\"",
+                CancellationToken.None);
+
+            canonical += rows;
+
+            populated += rows > 0 ? 1 : 0;
+
+        }
+
+        // The seed has to reach enough of the list for the sum to mean something.
+        Assert.True(populated >= 8, $"Only {populated} canonical content tables hold a row.");
+
+        long support = 0;
+
+        foreach (string table in (string[])
+                 [
+                     "covenant_search_documents",
+                     "artifact_sensitivity",
+                     "assistant_entry_erasure_receipts",
+                     "external_disclosure_receipts",
+                 ])
+        {
+
+            if (await ScalarAsync(
+                    $"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{table}'",
+                    CancellationToken.None) == 1)
+            {
+
+                support += await ScalarAsync(
+                    $"SELECT COUNT(*) FROM \"{table}\"",
+                    CancellationToken.None);
+
+            }
+
+        }
+
+        IDataRetentionService service = CreateService(
+            covenantGate: new RecordingCovenantOperationGate());
+
+        DataRetentionStatus status = await service.GetStatusAsync(
+            CancellationToken.None);
+
+        Assert.Equal(
+            canonical + support,
+            Assert.IsType<DataRetentionCovenantInventory>(status.Covenant).Rows);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant),
+            CancellationToken.None);
+
+        Assert.Equal(
+            canonical + support,
+            Assert.Single(plan.Items, item => item.DataClass is RetentionDataClass.Covenant).DerivedRecords);
 
     }
 
@@ -1065,6 +1308,7 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                            GenerationProvenanceModeCode, ExactGenerationIds, GenerationBloom, DisclosedAtUtc
                     FROM external_disclosure_receipts
                     WHERE SubjectId = 'ffffffff-7777-4777-8777-ffffffffffff'
+                    ORDER BY SubjectOrdinal DESC
                     LIMIT 1;
                     """,
                     cancellationToken);
@@ -1363,5 +1607,76 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         CancellationToken cancellationToken,
         bool sessionAgedOut = false) =>
         await CovenantRetentionSeed.SeedAsync(_db!, cancellationToken, sessionAgedOut);
+
+    /// <summary>
+    /// Seeds one Global pin of a key that has no entry, no head and no epoch row: its version, the head
+    /// that points at it, and its receipt.
+    /// </summary>
+    /// <remarks>
+    /// A keyless pin is a state production reaches: an operator may pin a key before anything has been
+    /// written under it. All three rows carry epoch 0, which is what a key with no epoch row reads as.
+    /// </remarks>
+    private async Task SeedCurationPinAsync(CancellationToken cancellationToken)
+    {
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(cancellationToken);
+
+        }
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO covenant_curation_versions (
+                CurationVersionId, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                CurationKindCode, Revision, PredecessorVersionId, MutationId,
+                RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, CreatedAtUtc)
+            VALUES ('curation-1', 1, NULL, 'pinned/only', 1, 0, 1, 1, NULL, 'curation-mutation-1',
+                    zeroblob(32), zeroblob(32), zeroblob(32), '2026-01-01T00:00:00.0000000Z');
+
+            INSERT INTO covenant_curation_heads (
+                ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                IsPinned, IsMasked, CurrentVersionId, CurrentRevision, UpdatedAtUtc)
+            VALUES (1, NULL, 'pinned/only', 1, 0, 1, 0, 'curation-1', 1, '2026-01-01T00:00:00.0000000Z');
+
+            INSERT INTO covenant_curation_receipts (
+                MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest,
+                CurationKindCode, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                OutcomeCode, ResultingVersionId, ResultingRevision, ResponseReceiptDigest, CommittedAtUtc)
+            VALUES ('curation-mutation-1', zeroblob(32), zeroblob(32), zeroblob(32),
+                    1, 1, NULL, 'pinned/only', 1, 0, 1, 'curation-1', 1, zeroblob(32),
+                    '2026-01-01T00:00:00.0000000Z');
+            """,
+            cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Records the diagnostic stream the disclosure writer prints to, and refuses any other write: the
+    /// disclosure is never payload.
+    /// </summary>
+    private sealed class DiagnosticRecorder : IConsoleDispatcher
+    {
+
+        public List<string> Diagnostics { get; } = [];
+
+        public void WriteDiagnostic(string value) => Diagnostics.Add(value);
+
+        public void WritePayload(string value) => throw new InvalidOperationException(value);
+
+        public void WriteVerbose(string value) => throw new InvalidOperationException(value);
+
+        public void WriteJson<T>(T value, JsonTypeInfo<T> typeInfo) =>
+            throw new InvalidOperationException(typeInfo.Type.Name);
+
+        public void WriteJson(JsonElement value) => throw new InvalidOperationException(value.ToString());
+
+        public void BeginJsonStream() => throw new InvalidOperationException();
+
+    }
 
 }

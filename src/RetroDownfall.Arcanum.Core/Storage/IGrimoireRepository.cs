@@ -118,8 +118,6 @@ public interface IGrimoireRepository
         string modelUsed,
         CancellationToken cancellationToken = default);
 
-    Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default);
-
     Task<Session?> GetSessionAsync(
         Guid id,
         CancellationToken cancellationToken = default);

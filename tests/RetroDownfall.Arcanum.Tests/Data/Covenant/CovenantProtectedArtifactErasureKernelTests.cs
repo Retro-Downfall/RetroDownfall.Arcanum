@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -81,10 +82,14 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
         Guid labelId = await fixture.SeedLabelAsync(artifactId, SensitiveArtifactKind.Lexicon, sessionId: null);
 
+        // The Saga memory is the subject of the Saga claim below, which shares the entry's identity so a
+        // purge that ignored the store code would take it. It exists so that claim describes a row, the
+        // way every claim a production writer opens does.
         await fixture.ExecuteAsync(
             $"""
              INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
              VALUES ('{Format(artifactId)}', 'n', 'n', 'Person', '[]', '', '2026-08-16T00:00:00Z');
+             INSERT INTO saga_memories (Id, Content, CreatedAt) VALUES ('{artifactId:D}', 'c', '2026-08-16T00:00:00Z');
              INSERT INTO annal_claims (ClaimId, SubjectStoreCode, SubjectId, CreatedAtUtc)
              VALUES ('lexicon-claim', 2, '{artifactId:N}', '2026-08-16T00:00:00Z'),
                     ('saga-claim', 1, '{artifactId:D}', '2026-08-16T00:00:00Z');
@@ -156,6 +161,10 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM annal_heads;"));
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM annal_versions;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(fixture.Connection);
 
     }
 
@@ -635,6 +644,8 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
                  """);
 
         }
+
+        internal SqliteConnection Connection => _database.Connection;
 
         internal Task ExecuteAsync(string sql) => _database.ExecuteAsync(sql, Token);
 

@@ -231,6 +231,51 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A pin or a mask is recorded against a key's epoch row, and the purge deletes that row. The
+    /// curation leaves in the same transaction, so nothing is left bound to epoch 0 for the restored
+    /// installation's next key of that name to inherit.
+    /// </summary>
+    [Fact]
+    public async Task A_purge_removes_a_keys_curation_together_with_its_epoch_row()
+    {
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedCanonicalFamilyAsync();
+
+        await SeedCurationAsync();
+
+        Assert.Equal(1, await CountAsync("covenant_key_epochs"));
+
+        Assert.Equal(1, await CountAsync("covenant_curation_heads"));
+
+        Assert.Equal(1, await CountAsync("covenant_curation_versions"));
+
+        Assert.Equal(1, await CountAsync("covenant_curation_receipts"));
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsSuccess, Describe(receipt));
+
+        // The production list, whole. It is the list the purge deleted through, so a canonical table
+        // added later is covered here without this file naming it.
+        foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
+        {
+
+            Assert.Equal(0, await CountAsync(table));
+
+        }
+
+        BackupRestoreProtectedStatePurgeReceipt purge =
+            Assert.IsType<BackupRestoreProtectedStatePurgeReceipt>(receipt.Value.ProtectedStatePurge);
+
+        // The three rows the family seed writes, and the pin's version, head and receipt.
+        Assert.Equal(6UL, purge.CanonicalRows);
+
+    }
+
     [Fact]
     public async Task A_purge_empties_a_referenced_entry_graph_child_first()
     {
@@ -307,6 +352,116 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_label_whose_content_row_is_already_gone_counts_no_removed_artifact()
+    {
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        // A label with no artifact row behind it: the label goes, and nothing may be reported as the
+        // content that went with it.
+        await SeedLabelAsync(SummaryLabelId, SummaryArtifactId, SensitiveArtifactKind.Summary, sessionId: null);
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsSuccess, Describe(receipt));
+
+        BackupRestoreProtectedStatePurgeReceipt purge =
+            Assert.IsType<BackupRestoreProtectedStatePurgeReceipt>(receipt.Value.ProtectedStatePurge);
+
+        Assert.Equal(1UL, purge.RemovedLabels);
+
+        Assert.Equal(0UL, purge.RemovedArtifacts);
+
+    }
+
+    [Fact]
+    public async Task A_label_whose_identity_normalises_to_nothing_is_refused_after_the_transaction_rolls_back()
+    {
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedProtectedSummaryAsync();
+
+        // An identity with no characters left once normalised. A predicate keyed by it could match any
+        // blank-keyed content row, so the purge must refuse rather than delete under it.
+        await SeedLabelAsync(
+            "dddddddd-4444-4444-8444-dddddddddddd",
+            string.Empty,
+            SensitiveArtifactKind.Summary,
+            LedgerSessionId);
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, receipt.Error.Code);
+
+        Assert.Equal(2, await CountAsync("artifact_sensitivity"));
+
+        Assert.Equal(1, await CountAsync("session_summary_artifacts"));
+
+        Assert.Equal(1, await CountAsync("session_summary_state"));
+
+        Assert.Equal(
+            1,
+            await _staged.ScalarLongAsync(
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Summary\" IS NOT NULL;",
+                CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A refusal is made before any label's statements run, so it holds whatever the caller then does with
+    /// its transaction. The rows are counted inside the transaction, before anything is rolled back.
+    /// </summary>
+    /// <remarks>
+    /// The label that cannot be named sorts after a valid one, because labels run in kind order. A refusal
+    /// reached in the middle of that walk would have already purged the first, and the caller's rollback
+    /// would be all that undid it.
+    /// </remarks>
+    [Fact]
+    public async Task A_label_whose_identity_normalises_to_nothing_is_refused_before_anything_is_deleted()
+    {
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedProtectedSummaryAsync();
+
+        await SeedLabelAsync(
+            "dddddddd-4444-4444-8444-dddddddddddd",
+            string.Empty,
+            SensitiveArtifactKind.SessionTitle,
+            LedgerSessionId);
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await _staged.Connection.BeginTransactionAsync(CancellationToken.None);
+
+        Result<BackupRestoreProtectedStatePurgeReceipt> purged = await BackupRestoreProtectedStatePurger.PurgeStagedAsync(
+            _staged.Connection,
+            transaction,
+            CovenantSqliteConnectionInitializer.Instance,
+            TimeProvider.System,
+            CancellationToken.None);
+
+        Assert.True(purged.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, purged.Error.Code);
+
+        Assert.Equal(2, await CountInAsync(transaction, "artifact_sensitivity"));
+
+        Assert.Equal(1, await CountInAsync(transaction, "session_summary_artifacts"));
+
+        Assert.Equal(1, await CountInAsync(transaction, "session_summary_state"));
+
+        Assert.Equal(1, await CountInAsync(transaction, "\"Sessions\" WHERE \"Summary\" IS NOT NULL"));
+
+        await transaction.RollbackAsync(CancellationToken.None);
+
+    }
+
+    [Fact]
     public async Task A_purged_Session_still_bars_a_cached_replay()
     {
 
@@ -348,10 +503,12 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
         await SeedDisclosureReceiptAsync();
 
+        // The disclosure join is the erasure-evidence step's, and it commits before the Covenant arm runs.
+        await JoinDisclosureAsTheEvidenceStepDoesAsync([Bucket(count: 12, CovenantDisclosureCountKind.LowerBound)]);
+
         Result<BackupCovenantRestoreReconciliationReceipt> receipt = await ReconcileAsync(
             purgeProtectedState: true,
-            destinationAuthority: Tainted(DestinationIdentity, epoch: 7),
-            disclosure: [Bucket(count: 12, CovenantDisclosureCountKind.LowerBound)]);
+            destinationAuthority: Tainted(DestinationIdentity, epoch: 7));
 
         Assert.True(receipt.IsSuccess, Describe(receipt));
 
@@ -553,6 +710,22 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     private Task<long> CountAsync(string table) =>
         _staged.ScalarLongAsync($"SELECT COUNT(*) FROM {table};", CancellationToken.None);
 
+    /// <summary>Counts rows as the open transaction sees them, which a rollback has not yet undone.</summary>
+    private async Task<long> CountInAsync(SqliteTransaction transaction, string tableAndFilter)
+    {
+
+        await using SqliteCommand command = _staged.Connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = $"SELECT COUNT(*) FROM {tableAndFilter};";
+
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+    }
+
     private async Task<Result<BackupCovenantRestoreReconciliationReceipt>> ReconcileAsync(
         bool purgeProtectedState,
         CovenantAuthorityStateRow? destinationAuthority = null,
@@ -586,6 +759,29 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         await transaction.CommitAsync(CancellationToken.None);
 
         return receipt;
+
+    }
+
+    /// <summary>
+    /// Joins the destination's buckets into staging in a transaction of its own, as the restore's
+    /// erasure-evidence step does before the Covenant arm.
+    /// </summary>
+    private async Task JoinDisclosureAsTheEvidenceStepDoesAsync(IReadOnlyList<CovenantDisclosureState> disclosure)
+    {
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await _staged.Connection.BeginTransactionAsync(CancellationToken.None);
+
+        Result<int> joined = await CovenantDisclosureStateJoiner.JoinIntoStagedAsync(
+            _staged.Connection,
+            transaction,
+            disclosure,
+            TimeProvider.System,
+            CancellationToken.None);
+
+        Assert.True(joined.IsSuccess, joined.IsFailure ? joined.Error.Message : null);
+
+        await transaction.CommitAsync(CancellationToken.None);
 
     }
 
@@ -676,6 +872,42 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             SELECT 1, 'entry-1', 1, 'version-1', 1, NULL, 1, 'key', 'authored', 'compiled',
                    DatasetGeneration, 1
             FROM covenant_state;
+            """,
+            CancellationToken.None);
+
+    }
+
+    /// <summary>
+    /// Seeds one pin of the seeded key: its version, the head that points at it, and its receipt.
+    /// </summary>
+    /// <remarks>
+    /// The head and version carry the key's binding epoch, which is 0 for the epoch row the family seed
+    /// writes, and the receipt carries the dependency epoch that row holds.
+    /// </remarks>
+    private async Task SeedCurationAsync()
+    {
+
+        await _staged.ExecuteAsync(
+            """
+            INSERT INTO covenant_curation_versions (
+                CurationVersionId, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                CurationKindCode, Revision, PredecessorVersionId, MutationId,
+                RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, CreatedAtUtc)
+            VALUES ('curation-1', 1, NULL, 'project/goal', 1, 0, 1, 1, NULL, 'curation-mutation-1',
+                    zeroblob(32), zeroblob(32), zeroblob(32), '2026-01-01T00:00:00.0000000Z');
+
+            INSERT INTO covenant_curation_heads (
+                ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                IsPinned, IsMasked, CurrentVersionId, CurrentRevision, UpdatedAtUtc)
+            VALUES (1, NULL, 'project/goal', 1, 0, 1, 0, 'curation-1', 1, '2026-01-01T00:00:00.0000000Z');
+
+            INSERT INTO covenant_curation_receipts (
+                MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest,
+                CurationKindCode, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                OutcomeCode, ResultingVersionId, ResultingRevision, ResponseReceiptDigest, CommittedAtUtc)
+            VALUES ('curation-mutation-1', zeroblob(32), zeroblob(32), zeroblob(32),
+                    1, 1, NULL, 'project/goal', 1, 3, 1, 'curation-1', 1, zeroblob(32),
+                    '2026-01-01T00:00:00.0000000Z');
             """,
             CancellationToken.None);
 

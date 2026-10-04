@@ -448,19 +448,98 @@ public sealed class DocumentationStructureTests
         }
 
         /// <summary>
+        /// Every mapped memory route has a row in the complete API surface table itself.
+        /// </summary>
+        /// <remarks>
+        /// <para>The test above passes when a row exists anywhere in the reference, and the Covenant
+        /// management routes did exactly that: they were in §8.28's contract cell table and in no row
+        /// of the table that is headed "Complete API surface", so a reader who trusts that heading
+        /// could not find fourteen live routes. This one reads only the lines between that heading and
+        /// the next chapter, and only the table's own method and path columns.</para>
+        /// <para>The scope is the memory family because that is where the dedicated management
+        /// surfaces live and the reference deliberately keeps their full shapes elsewhere; the
+        /// whole-reference test still covers every other family.</para>
+        /// </remarks>
+        [Fact]
+        public void Every_mapped_memory_route_has_a_row_in_the_complete_api_surface_table()
+        {
+            _ = factory.CreateAuthenticatedClient();
+
+            EndpointDataSource endpoints = factory.Services.GetRequiredService<EndpointDataSource>();
+
+            HashSet<string> tabled = ReadRoutes(ReadCompleteApiSurfaceLines(), includeContractCells: false);
+
+            List<string> missing = [];
+
+            foreach (RouteEndpoint endpoint in endpoints.Endpoints.OfType<RouteEndpoint>())
+            {
+                string path = NormalizeRoutePattern(endpoint.RoutePattern.RawText ?? string.Empty);
+
+                if (!path.StartsWith("/api/memory/", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                foreach (string method in endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? [])
+                {
+                    string registered = $"{method} {path}";
+
+                    if (!tabled.Contains(registered))
+                    {
+                        missing.Add(registered);
+                    }
+                }
+            }
+
+            Assert.True(
+                missing.Count == 0,
+                "A mapped memory route has no row in the complete API surface table of docs/Arcanum.API.md:"
+                    + global::System.Environment.NewLine
+                    + string.Join(
+                        global::System.Environment.NewLine,
+                        missing.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)));
+        }
+
+        /// <summary>
+        /// The lines of the reference's first chapter: after its heading, up to the next chapter heading.
+        /// </summary>
+        /// <remarks>A <c>### </c> subsection heading does not end the chapter; only a line that begins
+        /// <c>## </c> does.</remarks>
+        private static string[] ReadCompleteApiSurfaceLines()
+        {
+            string[] lines = ReadDocumentLines("Arcanum.API.md");
+
+            int start = Array.FindIndex(
+                lines,
+                line => line.StartsWith("## 1. Complete API surface", StringComparison.Ordinal));
+
+            Assert.True(start >= 0, "docs/Arcanum.API.md has no '## 1. Complete API surface' heading.");
+
+            int end = Array.FindIndex(
+                lines,
+                start + 1,
+                line => line.StartsWith("## ", StringComparison.Ordinal));
+
+            return lines[(start + 1)..(end < 0 ? lines.Length : end)];
+        }
+
+        /// <summary>
         /// Every method/path pair the reference states as a table row, in either of the two row
         /// shapes it uses: the route table's separate method and path columns, and the Covenant
         /// contract table's single backticked method-and-path cell.
         /// </summary>
-        private static HashSet<string> ReadDocumentedRoutes()
+        private static HashSet<string> ReadDocumentedRoutes() =>
+            ReadRoutes(ReadDocumentLines("Arcanum.API.md"), includeContractCells: true);
+
+        private static HashSet<string> ReadRoutes(IEnumerable<string> lines, bool includeContractCells)
         {
             HashSet<string> routes = new(StringComparer.Ordinal);
 
-            foreach (string line in ReadDocumentLines("Arcanum.API.md"))
+            foreach (string line in lines)
             {
                 Match match = DocumentedRouteRow.Match(line);
 
-                if (!match.Success)
+                if (!match.Success && includeContractCells)
                 {
                     match = DocumentedRouteCell.Match(line);
                 }

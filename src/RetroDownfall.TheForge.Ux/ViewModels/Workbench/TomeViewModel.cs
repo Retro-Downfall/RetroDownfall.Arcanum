@@ -546,10 +546,12 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         if (result.Success && result.Data is { } compact)
         {
 
-            MemoryStatusText =
-                $"Compacted: {compact.EntriesRemoved} entries removed ({compact.TokensBefore} → {compact.TokensAfter} tokens).";
-
             await RefreshEntriesAsync(linked.Token).ConfigureAwait(true);
+
+            // The refresh leaves the entry count, or why it could not load one, in the status line, and a
+            // result set before it was overwritten before anyone could read it. The result goes in front
+            // of whatever the refresh said, so neither the count removed nor a stop is lost.
+            MemoryStatusText = $"{DescribeCompaction(compact)} {MemoryStatusText}";
 
             return;
 
@@ -973,6 +975,21 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         }
 
         AddMessage(new ChatMessageViewModel(entry.Role, entry.Content, entryId: entry.Id, isPinned: entry.IsPinned));
+
+    }
+
+    /// <summary>
+    /// The compaction result in one line, with the stop beside the count when the host ended it early.
+    /// </summary>
+    private static string DescribeCompaction(CompactResult compact)
+    {
+
+        string summary =
+            $"Compacted: {compact.EntriesRemoved} entries removed ({compact.TokensBefore} → {compact.TokensAfter} tokens).";
+
+        return compact.StoppedBy is { } code
+            ? $"{summary} Stopped early on {code}; the rest of the selected entries were left unchanged."
+            : summary;
 
     }
 

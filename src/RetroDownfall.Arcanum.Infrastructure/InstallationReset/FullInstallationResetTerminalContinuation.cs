@@ -626,44 +626,59 @@ internal sealed class FullInstallationResetTerminalContinuation(
     /// Proves that nothing survives for a new installation to inherit an identity from.
     /// </summary>
     /// <remarks>
-    /// Three of the four families are database state and are covered by the absence of the database
+    /// Three of the five families are database state and are covered by the absence of the database
     /// file itself, which the caller has already observed: the Campaign path-identity registry, the
     /// authority state carrying the authority and recovery-envelope epochs, and the installation
-    /// identity the authority row named. The fourth, the Campaign root-identity key, is an OS
-    /// credential whose documented lifetime is "regenerated only by a full installation reset" — so a
-    /// reset that left it in place would hand the next installation the key that turns a physical
-    /// directory into an opaque Campaign root identity, and every root registered afterwards would
-    /// derive the same identity the erased installation used.
+    /// identity the authority row named. The other two are OS credentials whose documented lifetime
+    /// ends only at a full installation reset. The Campaign root-identity key turns a physical
+    /// directory into an opaque Campaign root identity, so a reset that left it in place would let
+    /// every root registered afterwards derive the same identity the erased installation used. The
+    /// memory-erasure fingerprint key keys every erasure fingerprint, so a reset that left it in place
+    /// would let the next installation still recognise the erased installation's evidence.
     /// </remarks>
     private Result VerifyIdentitiesRotated()
     {
 
-        try
+        foreach (string account in (string[])
+                 [
+                     ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount,
+                     ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount,
+                 ])
         {
 
-            OsCredentialStoreResult campaignRootIdentity = _credentialStore.TryGet(
-                ArcanumCredentialIdentity.Service,
-                ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount);
+            try
+            {
 
-            return campaignRootIdentity.Status is OsCredentialStoreStatus.NotFound
-                ? Result.Success()
-                : Result.Failure(new Error(
-                    ErrorCodes.Covenant.ManualRecoveryRequired,
-                    "An identity a full installation reset must rotate is still present."));
+                OsCredentialStoreResult identity = _credentialStore.TryGet(
+                    ArcanumCredentialIdentity.Service,
+                    account);
+
+                if (identity.Status is not OsCredentialStoreStatus.NotFound)
+                {
+
+                    return Result.Failure(new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "An identity a full installation reset must rotate is still present."));
+
+                }
+
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or UnauthorizedAccessException
+                    or InvalidOperationException
+                    or NotSupportedException)
+            {
+
+                return Result.Failure(new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "An identity a full installation reset must rotate could not be read."));
+
+            }
 
         }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException)
-        {
 
-            return Result.Failure(new Error(
-                ErrorCodes.Covenant.Unavailable,
-                "An identity a full installation reset must rotate could not be read."));
-
-        }
+        return Result.Success();
 
     }
 

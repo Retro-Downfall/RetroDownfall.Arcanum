@@ -720,6 +720,19 @@ internal sealed partial class DataRetentionService
         CancellationToken cancellationToken)
     {
 
+        // A vector mirror is classified rather than probed, because a legacy virtual one also passes
+        // the probe below and cannot be counted or deleted from here.
+        if (SagaVectorMirror.IsMirrorName(table))
+        {
+
+            return await IsPlainVectorMirrorAsync(
+                connection,
+                transaction,
+                table,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;

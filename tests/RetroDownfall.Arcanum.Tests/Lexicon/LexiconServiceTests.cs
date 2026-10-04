@@ -135,7 +135,8 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         _service = new LexiconService(
             _db,
             NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
 

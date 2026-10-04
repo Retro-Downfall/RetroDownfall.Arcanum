@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
@@ -64,12 +65,17 @@ internal static class EmbeddingsResetEndpoints
                         .ConfigureAwait(false);
 
                 }
-                catch (InvalidOperationException blocked)
+                catch (InvalidOperationException blocked) when (blocked is not LabeledArtifactRefusalException)
                 {
 
                     // A protected artifact the shared kernel refused to erase. Reported rather than
                     // swallowed: the ordinary truncation did not run, so the operator's embeddings are
                     // still there and telling them the reset succeeded would be false.
+                    //
+                    // The guard's typed refusal derives from InvalidOperationException and is deliberately
+                    // not caught here. The central exception handler answers it through the mapper, so the
+                    // status follows the guard's own code: a label table that cannot be read is
+                    // Covenant.Unavailable, the Grimoire's to repair, and never an artifact to erase by hand.
                     return Results.Json(
                         ApiResponse<EmbeddingsResetResult>.FromResult(
                             Result<EmbeddingsResetResult>.Failure(

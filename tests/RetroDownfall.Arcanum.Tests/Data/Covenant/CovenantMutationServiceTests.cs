@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Tests.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -339,10 +341,11 @@ public sealed class CovenantMutationServiceTests
             new CovenantCompiler(),
             new StubEnvelopeCodec(),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
-            clock);
+            clock,
+            DetachedAvailabilityRepublisher.Create());
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
@@ -390,10 +393,11 @@ public sealed class CovenantMutationServiceTests
             new CovenantCompiler(),
             new CovenantEnvelopeCodec(keys, clock),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
-            clock);
+            clock,
+            DetachedAvailabilityRepublisher.Create());
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
@@ -449,6 +453,266 @@ public sealed class CovenantMutationServiceTests
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
 
         Assert.Equal(CovenantMutationOutcome.Applied, committed.Value.Outcome);
+
+    }
+
+    /// <summary>
+    /// Receipt first, under the codec a host actually runs. The production codec refuses an expired
+    /// token at decode, so a replay that decoded before it looked for its receipt would answer a
+    /// committed change with a stale-token refusal.
+    /// </summary>
+    [Fact]
+    public async Task A_curation_replay_after_the_token_expired_returns_the_committed_receipt_under_the_real_codec()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        using CovenantEnvelopeMasterKeyProvider keys = new();
+
+        SteppingTimeProvider clock = new();
+
+        CovenantMutationService service = RealCodecService(fixture, keys, clock);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantCurationRequest request = await PrepareCurationAsync(service, gate, CovenantCurationKind.Pin);
+
+        Result<CovenantCurationResultDto> first = await CurateAsync(service, gate, request);
+
+        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : string.Empty);
+
+        Assert.False(first.Value.Replayed);
+
+        clock.Advance(TimeSpan.FromMinutes(6));
+
+        Result<CovenantCurationResultDto> replayed = await CurateAsync(service, gate, request);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? replayed.Error.Message : string.Empty);
+
+        Assert.True(replayed.Value.Replayed);
+
+        Assert.Equal(first.Value.ResultingVersionId, replayed.Value.ResultingVersionId);
+
+        Assert.True(replayed.Value.IsPinned);
+
+    }
+
+    /// <summary>
+    /// The receipt answers only the request it was written for. Reusing its identity with any field
+    /// changed is a conflict, and it stays a conflict after the token that carried it has expired.
+    /// </summary>
+    [Fact]
+    public async Task A_curation_replay_with_changed_fields_is_an_idempotency_conflict_after_expiry()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        using CovenantEnvelopeMasterKeyProvider keys = new();
+
+        SteppingTimeProvider clock = new();
+
+        CovenantMutationService service = RealCodecService(fixture, keys, clock);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantCurationRequest request = await PrepareCurationAsync(service, gate, CovenantCurationKind.Pin);
+
+        Result<CovenantCurationResultDto> first = await CurateAsync(service, gate, request);
+
+        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : string.Empty);
+
+        clock.Advance(TimeSpan.FromMinutes(6));
+
+        Result<CovenantCurationResultDto> conflicted = await CurateAsync(
+            service,
+            gate,
+            request with { ExpectedRevision = 1 });
+
+        Assert.True(conflicted.IsFailure);
+
+        Assert.Equal("Security.IdempotencyConflict", conflicted.Error.Code);
+
+        Assert.Equal(1L, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_curation_receipts;"));
+
+    }
+
+    /// <summary>
+    /// A replay reports what the subject's curation is now. The operator wrote the key again after
+    /// pinning it, which moves the dependency epoch the receipt recorded and leaves the pin in place.
+    /// </summary>
+    [Fact]
+    public async Task A_curation_replay_reports_the_current_state_after_the_key_epoch_moved()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        using CovenantEnvelopeMasterKeyProvider keys = new();
+
+        SteppingTimeProvider clock = new();
+
+        CovenantMutationService service = RealCodecService(fixture, keys, clock);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await SetAsync(service, gate, "Run build commands from the repository root.", expectedRevision: 0);
+
+        CovenantCurationRequest request = await PrepareCurationAsync(service, gate, CovenantCurationKind.Pin);
+
+        Result<CovenantCurationResultDto> first = await CurateAsync(service, gate, request);
+
+        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : string.Empty);
+
+        await SetAsync(service, gate, "Run build commands from the tools directory.", expectedRevision: 1);
+
+        Assert.Equal(
+            2L,
+            await CountAsync(
+                fixture,
+                "SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = 'preference.builds';"));
+
+        Result<CovenantCurationResultDto> replayed = await CurateAsync(service, gate, request);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? replayed.Error.Message : string.Empty);
+
+        Assert.True(replayed.Value.Replayed);
+
+        Assert.True(replayed.Value.IsPinned);
+
+        Assert.Equal(first.Value.ResultingVersionId, replayed.Value.ResultingVersionId);
+
+    }
+
+    /// <summary>Composes the service on the production keyed codec and the service's own clock.</summary>
+    private static CovenantMutationService RealCodecService(
+        CovenantCanonicalFixture fixture,
+        CovenantEnvelopeMasterKeyProvider keys,
+        SteppingTimeProvider clock)
+    {
+
+        Assert.True(CovenantEnvelopeRuntimeTestHarness.Initialize(
+            keys,
+            Encoding.UTF8.GetBytes("covenant-mutation-service-master-key"),
+            new CovenantEnvelopeBootstrapKeyInput(
+                Installation,
+                masterKeyVersion: 1,
+                canonicalEnvelopeEpoch: 1,
+                recoveryEnvelopeEpoch: 1,
+                DatasetGeneration)).IsSuccess);
+
+        return new CovenantMutationService(
+            fixture.Store,
+            new CovenantCompiler(),
+            new CovenantEnvelopeCodec(keys, clock),
+            new FixedCovenantConnectionSource(fixture.Connection),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
+            new CovenantCurationKernel(),
+            new StubAuthority(),
+            clock,
+            DetachedAvailabilityRepublisher.Create());
+
+    }
+
+    /// <summary>Prepares one Global curation change and builds the commit that carries its token.</summary>
+    private static async Task<CovenantCurationRequest> PrepareCurationAsync(
+        CovenantMutationService service,
+        CovenantOperationGate gate,
+        CovenantCurationKind kind)
+    {
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        await using CovenantInstallationReadLease read =
+            (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantCurationPreflightDto> prepared = await service.PrepareCurationAsync(
+            new CovenantCurationPrepareRequest(
+                kind,
+                CovenantScope.Global,
+                null,
+                "preference.builds",
+                CovenantLane.Confirmed,
+                ExpectedRevision: 0,
+                mutationId),
+            read,
+            Token);
+
+        Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+        return new CovenantCurationRequest(
+            kind,
+            CovenantScope.Global,
+            null,
+            "preference.builds",
+            CovenantLane.Confirmed,
+            ExpectedRevision: 0,
+            mutationId,
+            prepared.Value.PreflightToken);
+
+    }
+
+    private static async Task<Result<CovenantCurationResultDto>> CurateAsync(
+        CovenantMutationService service,
+        CovenantOperationGate gate,
+        CovenantCurationRequest request)
+    {
+
+        await using CovenantWriteLease write =
+            (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
+
+        return await service.CurateAsync(request, write, Token);
+
+    }
+
+    /// <summary>Writes the Global key through the production prepare-and-commit path.</summary>
+    private static async Task SetAsync(
+        CovenantMutationService service,
+        CovenantOperationGate gate,
+        string content,
+        long expectedRevision)
+    {
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        string preflight;
+
+        await using (CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value)
+        {
+
+            Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
+                new CovenantSetPrepareRequest(
+                    CovenantScope.Global,
+                    null,
+                    "preference.builds",
+                    content,
+                    expectedRevision,
+                    mutationId,
+                    Reactivate: false),
+                read,
+                Token);
+
+            Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+            preflight = prepared.Value.PreflightToken;
+
+        }
+
+        await using CovenantWriteLease write =
+            (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = await service.SetAsync(
+            new CovenantSetRequest(
+                CovenantScope.Global,
+                null,
+                "preference.builds",
+                content,
+                expectedRevision,
+                mutationId,
+                Reactivate: false,
+                preflight),
+            write,
+            Token);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
 
     }
 
@@ -522,10 +786,11 @@ public sealed class CovenantMutationServiceTests
             new CovenantCompiler(),
             new StubEnvelopeCodec(),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
-            TimeProvider.System);
+            TimeProvider.System,
+            DetachedAvailabilityRepublisher.Create());
 
     private static async Task<long> CountAsync(CovenantCanonicalFixture fixture, string sql)
     {
@@ -599,6 +864,8 @@ public sealed class CovenantMutationServiceTests
 
         public override DateTimeOffset GetUtcNow() =>
             new(Interlocked.Add(ref _ticks, TimeSpan.TicksPerSecond), TimeSpan.Zero);
+
+        internal void Advance(TimeSpan amount) => _ = Interlocked.Add(ref _ticks, amount.Ticks);
 
     }
 

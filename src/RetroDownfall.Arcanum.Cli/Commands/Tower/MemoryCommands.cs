@@ -1,5 +1,7 @@
 using System.Globalization;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -7,6 +9,8 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Cli.UX;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Lexicon;
 
@@ -27,6 +31,7 @@ public sealed partial class MemoryCommands(
     IThemePalette themePalette,
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
+    IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -370,7 +375,14 @@ public sealed partial class MemoryCommands(
 
             if (match.Scope == MemorySearchScope.Lexicon)
             {
-                dispatcher.WritePayload($"  {LexiconLifecycleText(match.LexiconLifecycle, match.LexiconEligibility)}");
+                dispatcher.WritePayload(
+                    $"  {LifecycleText(match.LexiconLifecycle is not null, match.LexiconLifecycle?.RetiredAtUtc, match.LexiconLifecycle?.PinnedAtUtc, match.LexiconEligibility?.ToString())}");
+            }
+
+            if (match.Scope == MemorySearchScope.Saga)
+            {
+                dispatcher.WritePayload(
+                    $"  {LifecycleText(match.SagaLifecycle is not null, match.SagaLifecycle?.RetiredAtUtc, match.SagaLifecycle?.PinnedAtUtc, match.SagaEligibility?.ToString())}");
             }
 
             if (match.Action is { } action)
@@ -514,7 +526,8 @@ public sealed partial class MemoryCommands(
 
         }
 
-        dispatcher.WritePayload($"Lexicon entity '{name}' was deleted.");
+        dispatcher.WritePayload(
+            $"Lexicon entity '{name}' was deleted, not erased; use 'arcanum memory lexicon erase' to erase and suppress.");
 
         return 0;
 
@@ -575,17 +588,31 @@ public sealed partial class MemoryCommands(
         dispatcher.WritePayload(
             $"{entry.Name} [{entry.Type}] {facts} (updated {entry.UpdatedAt:u})");
 
-        dispatcher.WritePayload($"  {LexiconLifecycleText(new(entry.RetiredAtUtc, entry.PinnedAtUtc), entry.Eligibility)}");
+        dispatcher.WritePayload(
+            $"  {LifecycleText(true, entry.RetiredAtUtc, entry.PinnedAtUtc, entry.Eligibility.ToString())}");
 
     }
 
-    private static string LexiconLifecycleText(LexiconEntryLifecycle? lifecycle, LexiconRetrievalEligibility? eligibility)
+    /// <summary>
+    /// One memory's retrieval line, the same for every store that reports a lifecycle.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="known"/> is whether the host sent a lifecycle at all. A host that predates it
+    /// sends neither timestamp, and "unknown" is the only honest reading of that; printing "not
+    /// retired" would infer a state nobody reported. Eligibility is passed as text for the same reason:
+    /// an absent value prints "unknown" rather than any member's name.
+    /// </remarks>
+    private static string LifecycleText(
+        bool known,
+        DateTimeOffset? retiredAtUtc,
+        DateTimeOffset? pinnedAtUtc,
+        string? eligibility)
     {
-        string retired = lifecycle is null ? "unknown" : Stamp(lifecycle.RetiredAtUtc) ?? "not retired";
+        string retired = known ? Stamp(retiredAtUtc) ?? "not retired" : "unknown";
 
-        string pinned = lifecycle is null ? "unknown" : Stamp(lifecycle.PinnedAtUtc) ?? "not pinned";
+        string pinned = known ? Stamp(pinnedAtUtc) ?? "not pinned" : "unknown";
 
-        return $"Retrieval: {eligibility?.ToString() ?? "unknown"}; retired: {retired}; pinned: {pinned}";
+        return $"Retrieval: {eligibility ?? "unknown"}; retired: {retired}; pinned: {pinned}";
     }
 
     private async Task<SessionResolution> ResolveOptionalSessionAsync(

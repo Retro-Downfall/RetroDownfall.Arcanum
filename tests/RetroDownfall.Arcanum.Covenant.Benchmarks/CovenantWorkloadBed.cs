@@ -6,6 +6,8 @@ using System.Text;
 
 using Microsoft.Data.Sqlite;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Performance;
@@ -25,6 +27,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Covenant.Benchmarks;
 
@@ -51,6 +55,12 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
     private readonly string _directory;
 
     private readonly SqliteConnection _connection;
+
+    /// <summary>
+    /// One erasure keyring for the store and the kernel, as the host's singleton is. This installation
+    /// erases nothing, so it is never asked for a key.
+    /// </summary>
+    private readonly MemoryErasureKeyring _erasureKeys = new(new InMemoryOsCredentialStore());
 
     private CovenantWorkloadBed(string directory, SqliteConnection connection)
     {
@@ -180,7 +190,7 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
     private void Compose()
     {
 
-        Store = new CovenantStore(new FixedConnectionSource(_connection));
+        Store = new CovenantStore(new FixedConnectionSource(_connection), _erasureKeys);
 
         CovenantRuntimeGenerationProvider runtime = new();
 
@@ -228,10 +238,14 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             new CovenantCompiler(),
             codec,
             new FixedConnectionSource(_connection),
-            new CovenantMutationKernel(new CovenantQuotaGuard(CovenantSqliteConnectionInitializer.Instance)),
+            new CovenantMutationKernel(new CovenantQuotaGuard(CovenantSqliteConnectionInitializer.Instance), _erasureKeys),
             new CovenantCurationKernel(),
             Authority,
-            TimeProvider.System);
+            TimeProvider.System,
+
+            // Detached from the bed's own availability, which the bed controls, while still paying the
+            // post-commit read every operator write makes.
+            new CovenantAvailabilityRepublisher(new CovenantAvailability(), NullLogger<CovenantAvailabilityRepublisher>.Instance));
 
         Management = new CovenantManagementService(
             Store,
@@ -437,6 +451,8 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+
+        _erasureKeys.Dispose();
 
         await _connection.DisposeAsync().ConfigureAwait(false);
 

@@ -556,7 +556,8 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
     private async Task<ClaimRow> ReadClaimAsync(string memoryId)
     {

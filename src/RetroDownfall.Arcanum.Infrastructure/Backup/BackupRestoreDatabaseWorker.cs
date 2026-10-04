@@ -433,8 +433,8 @@ internal static class BackupRestoreDatabaseWorker
     ///
     /// <para>The deletes stay keyed and one at a time: a mirror is a <c>vec0</c> virtual table on
     /// builds that have the accelerator, and the keyed delete is its surface — the same shape the live
-    /// erasure kernel and the retention service use. Guarded by an existence check, so a build without
-    /// the accelerator is untouched.</para>
+    /// erasure kernel and the retention service use. Guarded by a classification of the mirror, so a
+    /// build without the accelerator never opens a legacy virtual mirror and still sweeps a plain one.</para>
     ///
     /// <para>Written against "has no base row" rather than "was in the batch just deleted", so a
     /// snapshot that already arrived inconsistent converges too. The base pass runs after the
@@ -448,7 +448,11 @@ internal static class BackupRestoreDatabaseWorker
         CancellationToken cancellationToken)
     {
 
-        if (!await TableExistsAsync(connection, mirror, cancellationToken).ConfigureAwait(false))
+        // Classified rather than probed for existence: a legacy vec0 virtual table also has a row in
+        // sqlite_master, and this runtime has no module to read or delete from it with, so sweeping it
+        // would fail the whole restore. Its rows are skipped, and a plain mirror is swept.
+        if (await SagaVectorMirror.ClassifyAsync(connection, null, mirror, cancellationToken).ConfigureAwait(false)
+            is not SagaVectorMirrorKind.PlainTable)
         {
 
             return;

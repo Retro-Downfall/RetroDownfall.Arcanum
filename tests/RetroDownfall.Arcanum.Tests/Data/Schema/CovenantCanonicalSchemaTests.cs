@@ -70,6 +70,25 @@ public sealed class CovenantCanonicalSchemaTests
     ];
 
     /// <summary>
+    /// The guarded tables an entry erasure empties for its entry, in an order that deletes every child
+    /// before its parent. The outbox is guarded separately, under its own authorization set.
+    /// </summary>
+    private static readonly string[] EntryClosureTables =
+    [
+        "covenant_version_attachment_provenance",
+        "covenant_versions",
+        "covenant_entries",
+        "covenant_mutation_receipts",
+        "covenant_curation_heads",
+        "covenant_curation_versions",
+        "covenant_curation_receipts",
+        "covenant_key_epochs",
+    ];
+
+    /// <summary>The theory row that opens no authorization at all.</summary>
+    private const string NoAuthorization = "None";
+
+    /// <summary>
     /// A fixed instant rather than the clock, so a failure diff is a real difference and not a
     /// timestamp that moved between two runs.
     /// </summary>
@@ -78,6 +97,18 @@ public sealed class CovenantCanonicalSchemaTests
 
     private static readonly string LaterTimestamp =
         new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero).ToString("o", CultureInfo.InvariantCulture);
+
+    public static TheoryData<string> AuthorizationsOutsideTheEntryClosure =>
+        AuthorizationsExcept(
+            CovenantSqliteAuthorizationKind.OwnerCleanup,
+            CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance,
+            CovenantSqliteAuthorizationKind.CovenantEntryErasure);
+
+    public static TheoryData<string> AuthorizationsOutsideTheOutbox =>
+        AuthorizationsExcept(
+            CovenantSqliteAuthorizationKind.AcceleratorSynchronization,
+            CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance,
+            CovenantSqliteAuthorizationKind.CovenantEntryErasure);
 
     [Fact]
     public void Canonical_catalog_contains_every_declared_table()
@@ -951,6 +982,288 @@ public sealed class CovenantCanonicalSchemaTests
     }
 
     /// <summary>
+    /// Entry erasure takes an entry and everything that names it in one transaction, so every guard on
+    /// that closure admits it beside owner cleanup and family maintenance. Those two keep working
+    /// through the same guards, which is what keeps Campaign cleanup, family reset, factory erasure and
+    /// the restore purger working.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(CovenantSqliteAuthorizationKind.OwnerCleanup))]
+    [InlineData(nameof(CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance))]
+    [InlineData(nameof(CovenantSqliteAuthorizationKind.CovenantEntryErasure))]
+    public async Task Every_entry_closure_delete_guard_admits_cleanup_family_maintenance_and_entry_erasure(
+        string kind)
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await SeedEntryClosureAsync(database);
+
+        using (CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance.Authorize(
+            database.Connection,
+            Enum.Parse<CovenantSqliteAuthorizationKind>(kind)))
+        {
+
+            // Foreign-key safe order: provenance points at the version, the version at the entry, and a
+            // curation head at its curation version.
+            foreach (string table in EntryClosureTables)
+            {
+
+                await database.ExecuteAsync($"DELETE FROM {table};", CancellationToken.None);
+
+            }
+
+        }
+
+        foreach (string table in EntryClosureTables)
+        {
+
+            Assert.Equal(
+                0L,
+                await database.ScalarLongAsync($"SELECT COUNT(*) FROM {table};", CancellationToken.None));
+
+        }
+
+    }
+
+    /// <summary>
+    /// The closure's guards open for the three authorizations above and for nothing else. Every other
+    /// code a connection can be granted, and no grant at all, still aborts each delete and leaves the
+    /// rows in place.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(AuthorizationsOutsideTheEntryClosure))]
+    public async Task No_other_authorization_opens_an_entry_closure_delete_guard(string kind)
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await SeedEntryClosureAsync(database);
+
+        using (AuthorizeUnlessNone(database, kind))
+        {
+
+            foreach (string table in EntryClosureTables)
+            {
+
+                SqliteException refused = await AssertRaisesAsync(database, $"DELETE FROM {table};");
+
+                Assert.Contains(
+                    $"{table} delete requires an authorized cleanup scope.",
+                    refused.Message,
+                    StringComparison.Ordinal);
+
+            }
+
+        }
+
+        foreach (string table in EntryClosureTables)
+        {
+
+            Assert.Equal(
+                1L,
+                await database.ScalarLongAsync($"SELECT COUNT(*) FROM {table};", CancellationToken.None));
+
+        }
+
+    }
+
+    /// <summary>
+    /// The outbox keeps its own authorization set: the synchronization worker, family maintenance, and
+    /// now entry erasure, which removes the erased entry's pending deltas. Owner cleanup still does not
+    /// reach it.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(CovenantSqliteAuthorizationKind.AcceleratorSynchronization))]
+    [InlineData(nameof(CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance))]
+    [InlineData(nameof(CovenantSqliteAuthorizationKind.CovenantEntryErasure))]
+    public async Task The_outbox_admits_synchronization_family_maintenance_and_entry_erasure(string kind)
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await database.ExecuteAsync(InsertOutboxRow(), CancellationToken.None);
+
+        using (CovenantSqliteConnectionInitializer.Instance.Authorize(
+            database.Connection,
+            CovenantSqliteAuthorizationKind.OwnerCleanup))
+        {
+
+            SqliteException refused = await AssertRaisesAsync(database, "DELETE FROM covenant_search_outbox;");
+
+            Assert.Contains("authorized synchronization scope", refused.Message, StringComparison.Ordinal);
+
+        }
+
+        Assert.Equal(
+            1L,
+            await database.ScalarLongAsync("SELECT COUNT(*) FROM covenant_search_outbox;", CancellationToken.None));
+
+        using (CovenantSqliteConnectionInitializer.Instance.Authorize(
+            database.Connection,
+            Enum.Parse<CovenantSqliteAuthorizationKind>(kind)))
+        {
+
+            await database.ExecuteAsync("DELETE FROM covenant_search_outbox;", CancellationToken.None);
+
+        }
+
+        Assert.Equal(
+            0L,
+            await database.ScalarLongAsync("SELECT COUNT(*) FROM covenant_search_outbox;", CancellationToken.None));
+
+    }
+
+    [Theory]
+    [MemberData(nameof(AuthorizationsOutsideTheOutbox))]
+    public async Task No_other_authorization_opens_the_outbox_delete_guard(string kind)
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await database.ExecuteAsync(InsertOutboxRow(), CancellationToken.None);
+
+        using (AuthorizeUnlessNone(database, kind))
+        {
+
+            SqliteException refused = await AssertRaisesAsync(database, "DELETE FROM covenant_search_outbox;");
+
+            Assert.Contains("authorized synchronization scope", refused.Message, StringComparison.Ordinal);
+
+        }
+
+        Assert.Equal(
+            1L,
+            await database.ScalarLongAsync("SELECT COUNT(*) FROM covenant_search_outbox;", CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// The key-epoch row and the curation head had no delete guard before version 6. Both now leave only
+    /// through an authorization something had to open by name, like the rest of the closure.
+    /// </summary>
+    [Fact]
+    public async Task Key_epoch_and_curation_head_deletes_require_an_authorized_scope()
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await database.ExecuteAsync(InsertKeyEpoch("guarded.key", 4), CancellationToken.None);
+
+        await database.ExecuteAsync(InsertCurationSubject("guarded.key", 4), CancellationToken.None);
+
+        SqliteException epoch = await AssertRaisesAsync(database, "DELETE FROM covenant_key_epochs;");
+
+        Assert.Contains(
+            "covenant_key_epochs delete requires an authorized cleanup scope.",
+            epoch.Message,
+            StringComparison.Ordinal);
+
+        SqliteException head = await AssertRaisesAsync(database, "DELETE FROM covenant_curation_heads;");
+
+        Assert.Contains(
+            "covenant_curation_heads delete requires an authorized cleanup scope.",
+            head.Message,
+            StringComparison.Ordinal);
+
+        Assert.Equal(
+            1L,
+            await database.ScalarLongAsync(
+                "SELECT COUNT(*) FROM covenant_key_epochs WHERE NormalizedKey = 'guarded.key' AND KeyEpoch = 4;",
+                CancellationToken.None));
+
+        Assert.Equal(
+            1L,
+            await database.ScalarLongAsync(
+                "SELECT COUNT(*) FROM covenant_curation_heads WHERE NormalizedKey = 'guarded.key' AND IsPinned = 1;",
+                CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// Entry erasure is narrower than owner cleanup: turn receipts describe turns, not entries, and the
+    /// new code does not reach them.
+    /// </summary>
+    [Fact]
+    public async Task Entry_erasure_does_not_open_turn_receipts()
+    {
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await database.ExecuteAsync(InsertTurnReceipt(), CancellationToken.None);
+
+        using (CovenantSqliteConnectionInitializer.Instance.Authorize(
+            database.Connection,
+            CovenantSqliteAuthorizationKind.CovenantEntryErasure))
+        {
+
+            SqliteException refused = await AssertRaisesAsync(database, "DELETE FROM covenant_turn_receipts;");
+
+            Assert.Contains("authorized cleanup scope", refused.Message, StringComparison.Ordinal);
+
+        }
+
+        Assert.Equal(
+            1L,
+            await database.ScalarLongAsync("SELECT COUNT(*) FROM covenant_turn_receipts;", CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// The entry-erasure function is named by the nine canonical delete guards and by nothing else in
+    /// any tier, so the code cannot open a Core guard or a canonical guard outside the entry's closure.
+    /// </summary>
+    [Fact]
+    public void Only_the_nine_canonical_delete_guards_name_the_entry_erasure_function()
+    {
+
+        GrimoireSchemaObject[] naming =
+        [
+            .. GrimoireSchemaCatalog.AllObjects
+                .Where(static definition => definition.Sql.Contains(
+                    "arcanum_covenant_entry_erasure_authorized",
+                    StringComparison.Ordinal)),
+        ];
+
+        Assert.All(
+            naming,
+            static definition => Assert.Equal(GrimoireSchemaTransactionTier.CovenantCanonical, definition.TransactionTier));
+
+        Assert.Equal(
+            [
+                "covenant_curation_heads_guard_delete",
+                "covenant_curation_receipts_guard_delete",
+                "covenant_curation_versions_guard_delete",
+                "covenant_entries_guard_delete",
+                "covenant_key_epochs_guard_delete",
+                "covenant_mutation_receipts_guard_delete",
+                "covenant_search_outbox_guard_delete",
+                "covenant_version_attachment_provenance_guard_delete",
+                "covenant_versions_guard_delete",
+            ],
+            naming.Select(static definition => definition.Name).Order(StringComparer.Ordinal));
+
+    }
+
+    /// <summary>
     /// A fresh dataset starts at canonical sequence zero with a null applied FTS tuple and
     /// <c>FullRebuildRequired</c>, because an accelerator that has never been built is behind by
     /// definition. Reinstalling verifies the singleton and changes nothing: the dataset generation
@@ -1058,17 +1371,25 @@ public sealed class CovenantCanonicalSchemaTests
 
         Assert.Equal(1L, await ReadKeyEpochAsync(database, "epoch.key"));
 
+        // A key row created by a head starts its binding epoch at zero, the value a key with no row
+        // reads as, so curation recorded before the key existed stays bound to it.
+        Assert.Equal(0L, await ReadIncarnationEpochAsync(database, "epoch.key"));
+
         await database.ExecuteAsync(
             $"UPDATE covenant_heads SET UpdatedAtUtc = '{LaterTimestamp}' WHERE EntryId = '{entryId}' AND LaneCode = 1;",
             CancellationToken.None);
 
         Assert.Equal(2L, await ReadKeyEpochAsync(database, "epoch.key"));
 
+        Assert.Equal(0L, await ReadIncarnationEpochAsync(database, "epoch.key"));
+
         await database.ExecuteAsync(
             $"DELETE FROM covenant_heads WHERE EntryId = '{entryId}' AND LaneCode = 1;",
             CancellationToken.None);
 
         Assert.Equal(3L, await ReadKeyEpochAsync(database, "epoch.key"));
+
+        Assert.Equal(0L, await ReadIncarnationEpochAsync(database, "epoch.key"));
 
         SqliteException rewound = await AssertRaisesAsync(
             database,
@@ -1077,6 +1398,20 @@ public sealed class CovenantCanonicalSchemaTests
         Assert.Contains("can only advance", rewound.Message, StringComparison.Ordinal);
 
         Assert.Equal(3L, await ReadKeyEpochAsync(database, "epoch.key"));
+
+        // The dependency epoch advances in the same statement, so only the binding guard can refuse it.
+        SqliteException rebound = await AssertRaisesAsync(
+            database,
+            "UPDATE covenant_key_epochs SET KeyEpoch = KeyEpoch + 1, IncarnationEpoch = 7 WHERE NormalizedKey = 'epoch.key';");
+
+        Assert.Contains(
+            "A covenant key binding epoch is fixed when its epoch row is created.",
+            rebound.Message,
+            StringComparison.Ordinal);
+
+        Assert.Equal(3L, await ReadKeyEpochAsync(database, "epoch.key"));
+
+        Assert.Equal(0L, await ReadIncarnationEpochAsync(database, "epoch.key"));
 
     }
 
@@ -1098,6 +1433,134 @@ public sealed class CovenantCanonicalSchemaTests
         await database.ScalarLongAsync(
             $"SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{normalizedKey}';",
             CancellationToken.None);
+
+    private static async Task<long> ReadIncarnationEpochAsync(
+        CovenantSchemaScratchDatabase database,
+        string normalizedKey) =>
+        await database.ScalarLongAsync(
+            $"SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{normalizedKey}';",
+            CancellationToken.None);
+
+    /// <summary>
+    /// Writes one row into every table of an entry's erasure closure: the entry, its version and
+    /// provenance leaf, a mutation receipt, a pinned curation subject, and the key's epoch row.
+    /// </summary>
+    private static async Task SeedEntryClosureAsync(CovenantSchemaScratchDatabase database)
+    {
+
+        string entryId = NewId();
+
+        string versionId = NewId();
+
+        await database.ExecuteAsync(
+            InsertEntry(entryId, scopeCode: 2, campaignId: NewId(), normalizedKey: "erased.key"),
+            CancellationToken.None);
+
+        await database.ExecuteAsync(
+            InsertVersion(versionId, entryId, laneCode: 1, laneRevision: 1, operationCode: 1, compiledByteCost: 32),
+            CancellationToken.None);
+
+        await database.ExecuteAsync(InsertProvenance(versionId), CancellationToken.None);
+
+        await database.ExecuteAsync(InsertMutationReceipt(), CancellationToken.None);
+
+        await database.ExecuteAsync(InsertKeyEpoch("erased.key", 2), CancellationToken.None);
+
+        await database.ExecuteAsync(InsertCurationSubject("erased.key", 2), CancellationToken.None);
+
+    }
+
+    /// <summary>
+    /// Every authorization kind, and no grant at all, except the ones named. The set is read from the
+    /// enum, so a kind added later is refused here until a guard is deliberately widened to admit it.
+    /// </summary>
+    private static TheoryData<string> AuthorizationsExcept(params CovenantSqliteAuthorizationKind[] admitted)
+    {
+
+        TheoryData<string> data = new() { NoAuthorization };
+
+        foreach (CovenantSqliteAuthorizationKind kind in Enum.GetValues<CovenantSqliteAuthorizationKind>())
+        {
+
+            if (!admitted.Contains(kind))
+            {
+
+                data.Add(kind.ToString());
+
+            }
+
+        }
+
+        return data;
+
+    }
+
+    /// <summary>
+    /// Grants the named kind through the core both entry points end at.
+    /// </summary>
+    /// <remarks>
+    /// The general entry point refuses restore-staging sanitization, but the sealed restore-staging
+    /// capability grants it through this same core on a staged Grimoire that carries the canonical tier.
+    /// Going through the core is what lets the refusal theories cover that kind too.
+    /// </remarks>
+    private static CovenantSqliteAuthorizationScope? AuthorizeUnlessNone(
+        CovenantSchemaScratchDatabase database,
+        string kind) =>
+        kind == NoAuthorization
+            ? null
+            : CovenantSqliteConnectionInitializer.Instance.AuthorizeCore(
+                database.Connection,
+                Enum.Parse<CovenantSqliteAuthorizationKind>(kind));
+
+    private static string InsertKeyEpoch(string normalizedKey, long keyEpoch) =>
+        $"""
+        INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc)
+        VALUES ({Quote(normalizedKey)}, {keyEpoch}, {Quote(Timestamp)});
+        """;
+
+    /// <summary>
+    /// One pinned Global Confirmed curation subject at <paramref name="keyEpoch"/>: its first curation
+    /// version, the head that points at it, and the Applied receipt that recorded it.
+    /// </summary>
+    private static string InsertCurationSubject(string normalizedKey, long keyEpoch)
+    {
+
+        string versionId = NewId();
+
+        string mutationId = NewId();
+
+        return $"""
+        INSERT INTO covenant_curation_versions (
+            CurationVersionId, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch, CurationKindCode,
+            Revision, PredecessorVersionId, MutationId, RequestIdempotencyDigest, AuthorizationDigest,
+            FinalMutationDigest, CreatedAtUtc)
+        VALUES (
+            {Quote(versionId)}, 1, NULL, {Quote(normalizedKey)}, 1, {keyEpoch}, 1,
+            1, NULL, {Quote(mutationId)}, randomblob(32), randomblob(32),
+            randomblob(32), {Quote(Timestamp)});
+
+        INSERT INTO covenant_curation_heads (
+            ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch, IsPinned, IsMasked, CurrentVersionId,
+            CurrentRevision, UpdatedAtUtc)
+        VALUES (1, NULL, {Quote(normalizedKey)}, 1, {keyEpoch}, 1, 0, {Quote(versionId)}, 1, {Quote(Timestamp)});
+
+        INSERT INTO covenant_curation_receipts (
+            MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, CurationKindCode,
+            ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch, OutcomeCode, ResultingVersionId,
+            ResultingRevision, ResponseReceiptDigest, CommittedAtUtc)
+        VALUES (
+            {Quote(mutationId)}, randomblob(32), randomblob(32), randomblob(32), 1,
+            1, NULL, {Quote(normalizedKey)}, 1, {keyEpoch}, 1, {Quote(versionId)},
+            1, randomblob(32), {Quote(Timestamp)});
+        """;
+
+    }
+
+    private static string InsertOutboxRow() =>
+        $"""
+        INSERT INTO covenant_search_outbox (SearchSequence, Ordinal, SearchRowId, EntryId, LaneCode, DesiredVersionId)
+        VALUES (1, 0, 1, {Quote(NewId())}, 1, {Quote(NewId())});
+        """;
 
     private static async Task<SqliteException> AssertRaisesAsync(
         CovenantSchemaScratchDatabase database,

@@ -34,8 +34,6 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
     private readonly IOptionsSnapshot<ArcanumSettings> _arcOptions;
 
-    private readonly ISessionAttachmentIndexMaintenance? _attachmentIndex;
-
     /// <summary>
     /// The Covenant publisher, absent in hosts that compose no Covenant tier.
     /// </summary>
@@ -47,6 +45,12 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     private readonly CovenantMutationKernel? _covenantKernel;
 
     /// <summary>
+    /// Republishes Covenant availability after a turn commit that published a batch, and is composed
+    /// wherever the kernel is.
+    /// </summary>
+    private readonly CovenantAvailabilityRepublisher? _availabilityRepublisher;
+
+    /// <summary>
     /// The labelled-artifact check every raw delete on this repository passes first.
     /// </summary>
     /// <remarks>
@@ -56,7 +60,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     /// documented it as live. A guard whose absence is representable is a guard some composition will
     /// eventually be missing, and nothing about that composition will look wrong.
     /// </remarks>
-    private readonly ICovenantLabeledArtifactGuard _labeledArtifactGuard;
+    private readonly ICovenantLabeledArtifactTransactionGuard _labeledArtifactGuard;
 
     /// <summary>
     /// The durable finalization-guard capacity ledger.
@@ -92,10 +96,10 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         ISessionAttachmentStore attachments,
         ILogger<GrimoireRepository> logger,
         IOptionsSnapshot<ArcanumSettings> arcOptions,
-        ISessionAttachmentIndexMaintenance? attachmentIndex,
         CovenantMutationKernel? covenantKernel,
+        CovenantAvailabilityRepublisher? availabilityRepublisher,
         IGrimoireOrdinaryConnectionFactory connections,
-        ICovenantLabeledArtifactGuard labeledArtifactGuard)
+        ICovenantLabeledArtifactTransactionGuard labeledArtifactGuard)
     {
         _db = db;
 
@@ -109,9 +113,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         _arcOptions = arcOptions;
 
-        _attachmentIndex = attachmentIndex;
-
         _covenantKernel = covenantKernel;
+
+        _availabilityRepublisher = availabilityRepublisher;
 
         _labeledArtifactGuard = labeledArtifactGuard;
 
@@ -544,147 +548,6 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
     }
 
-    public async Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
-    {
-        using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
-
-        using IDisposable attachmentGate = await _attachments
-            .AcquireSessionGateAsync(sessionId, cancellationToken)
-            .ConfigureAwait(false);
-
-        await using var tx = await _db.Database
-            .BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (_attachmentIndex is not null)
-        {
-            await _attachmentIndex.DeleteForSessionInAmbientTransactionAsync(
-                sessionId,
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        await SqliteBusyRetry.ExecuteAsync(
-            () => _attachments.DeleteRowsForSessionInAmbientTransactionAsync(sessionId, cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-
-        await DeleteEntryEmbeddingsForSessionInAmbientTransactionAsync(
-            sessionId,
-            cancellationToken).ConfigureAwait(false);
-
-        await SqliteBusyRetry.ExecuteAsync(
-            () => ExecuteNonQueryAsync(
-                """
-                DELETE FROM "Entries"
-                WHERE "SessionId" = $sessionId;
-                """,
-                command => GrimoireEntitySql.AddParameter(
-                    command,
-                    "$sessionId",
-                    GrimoireEntitySql.Format(sessionId)),
-                cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-
-        int removed = await DeleteSessionRowInAmbientTransactionAsync(
-            sessionId,
-            cancellationToken).ConfigureAwait(false);
-
-        await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!_attachments.TryDeleteSessionDirectory(sessionId))
-        {
-            _logger.LogWarning(
-                "Purged session {SessionId} from Grimoire but attachment directory cleanup failed; reconcile will retry.",
-                sessionId);
-        }
-
-        return removed;
-    }
-
-    /// <summary>
-    /// Removes the Session row itself, under the retention authorization its cascade requires.
-    /// </summary>
-    /// <remarks>
-    /// The Session owns its row in the turn capacity ledger, and that row leaves only through an
-    /// authorized retention or capacity transaction. Its delete guard begins denied on every
-    /// connection, including a pooled one handed back out, so the parent delete has to hold the
-    /// scope itself. The scope covers the delete alone and is released before the caller commits,
-    /// so nothing later in this transaction inherits it.
-    /// </remarks>
-    private async Task<int> DeleteSessionRowInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
-                    _db,
-                    """
-                    DELETE FROM "Sessions"
-                    WHERE "Id" = $sessionId;
-                    """,
-                    cancellationToken).ConfigureAwait(false);
-
-                GrimoireEntitySql.AddParameter(
-                    command,
-                    "$sessionId",
-                    GrimoireEntitySql.Format(sessionId));
-
-                using CovenantSqliteAuthorizationScope retention =
-                    CovenantSqliteConnectionInitializer.Instance.Authorize(
-                        command.Connection!,
-                        CovenantSqliteAuthorizationKind.SessionRetention);
-
-                return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            },
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task DeleteEntryEmbeddingsForSessionInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        IDbContextTransaction? ambient = _db.Database.CurrentTransaction;
-
-        if (ambient is null)
-        {
-            throw new InvalidOperationException("Entry embedding purge requires an ambient transaction.");
-        }
-
-        foreach (string table in new[] { "entry_embeddings_vec", "entry_embeddings" })
-        {
-            await using SqliteCommand exists = await GrimoireSqlCommandFactory.CreateAsync(
-                _db,
-                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = $table LIMIT 1;",
-                cancellationToken).ConfigureAwait(false);
-
-            GrimoireEntitySql.AddParameter(exists, "$table", table);
-
-            if (await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
-            {
-                continue;
-            }
-
-            await using SqliteCommand delete = await GrimoireSqlCommandFactory.CreateAsync(
-                _db,
-                $"""
-                DELETE FROM "{table}"
-                WHERE lower(replace("EntryId", '-', '')) IN (
-                    SELECT lower(replace(CAST("Id" AS TEXT), '-', ''))
-                    FROM "Entries"
-                    WHERE lower(replace(CAST("SessionId" AS TEXT), '-', '')) = @sessionId
-                )
-                """,
-                cancellationToken).ConfigureAwait(false);
-
-            GrimoireEntitySql.AddParameter(delete, "@sessionId", sessionId.ToString("N"));
-
-            _ = await SqliteBusyRetry.ExecuteAsync(
-                () => delete.ExecuteNonQueryAsync(cancellationToken),
-                cancellationToken).ConfigureAwait(false);
-        }
-    }
-
     public async Task<Session?> GetSessionAsync(
         Guid id,
         CancellationToken cancellationToken = default)
@@ -816,31 +679,37 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid entryId,
         CancellationToken cancellationToken = default)
     {
-        // The guard, not the purge. This method is reachable from anywhere in the process, and a caller
-        // that skipped the sensitivity purge boundary would remove a labelled Entry without appending
-        // its erasure receipt — leaving a finalization guard pointing at nothing, which is the one
-        // integrity state that cannot be told apart from data loss (§10.20.2).
-        Result unlabeled = await _labeledArtifactGuard
-            .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (unlabeled.IsFailure)
-        {
-            throw new InvalidOperationException(unlabeled.Error.Message);
-        }
-
         using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         using IDisposable attachmentGate = await _attachments
             .AcquireSessionGateAsync(sessionId, cancellationToken)
             .ConfigureAwait(false);
 
+        // The provider opens this with BEGIN IMMEDIATE, so the write lock is held from here on and every
+        // label writer waits behind it.
         await using var tx = await _db.Database
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
 
         try
         {
+            // The guard, not the purge. This method is reachable from anywhere in the process, and a caller
+            // that skipped the sensitivity purge boundary would remove a labelled Entry without appending
+            // its erasure receipt — leaving a finalization guard pointing at nothing, which is the one
+            // integrity state that cannot be told apart from data loss (§10.20.2). Asked inside the
+            // transaction, ahead of its first write, so no label can be committed between the answer and
+            // the delete; a refusal rolls the transaction back untouched.
+            var guardTransaction = tx.GetDbTransaction();
+
+            Result unlabeled = await _labeledArtifactGuard
+                .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, guardTransaction.Connection!, guardTransaction, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (unlabeled.IsFailure)
+            {
+                throw new LabeledArtifactRefusalException(unlabeled.Error);
+            }
+
             Entry? entry = await ReadEntryAsync(sessionId, entryId, cancellationToken)
                 .ConfigureAwait(false);
 

@@ -496,6 +496,125 @@ public sealed class CovenantMemoryReviewServiceTests
         Assert.Equal(ErrorCodes.MemoryReview.IntegrityFailure, corruptReplay.Error.Code);
     }
 
+    /// <summary>
+    /// A review correction is an operator write of an identity's Confirmed content. When a fingerprint
+    /// for its exact scope and key is still recorded, as a re-creation made while no key was latched
+    /// leaves one, the correction releases it in the review's own transaction with the key the review
+    /// captured before <c>BEGIN</c>, and says so on the item. Without a latched key it cannot check, and
+    /// says that instead. A fingerprint of the same key in Global is another identity, so a Campaign
+    /// correction leaves it. A replay answers from its receipt and released nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task A_review_correction_releases_only_its_own_scopes_fingerprint_and_only_with_a_latched_key(
+        bool keyLatched,
+        bool erasedInGlobal)
+    {
+        const string key = "response.detail";
+
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync(withErasureEvidence: true);
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        _ = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            key,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Use moderate detail.",
+            Token);
+
+        MemoryErasureIdentity identity = erasedInGlobal
+            ? MemoryErasureIdentity.ForCovenant(CovenantScope.Global, null, key)
+            : MemoryErasureIdentity.ForCovenant(CovenantScope.Campaign, CampaignOne, key);
+
+        bool? expected = erasedInGlobal ? false : keyLatched ? true : null;
+
+        // A latched key is the review's to use; one created and read by another keyring leaves this
+        // process's latch unresolved.
+        using (MemoryErasureKey erasureKey = keyLatched
+            ? runtime.Fixture.ErasureKeys.OpenOrCreate(evidenceRowsExist: false).Key!
+            : MemoryErasureTestKeys.CreateKey(runtime.Fixture.Credentials))
+        {
+            await MemoryErasureTestKeys.SeedFingerprintAsync(runtime.Fixture.Connection, erasureKey, identity, Token);
+        }
+
+        CovenantReviewPageDto page;
+
+        await using (CovenantReadLease listLease = runtime.ReadLease())
+        {
+            page = (await runtime.Service.ListAsync(
+                new CovenantReviewListRequest(
+                    CovenantScope.Campaign,
+                    CampaignOne,
+                    CovenantLane.Confirmed,
+                    MemoryReviewLimits.MaxPageSize,
+                    Cursor: null),
+                listLease,
+                Token)).Value;
+        }
+
+        CovenantReviewItemDto observed = Assert.Single(page.Items);
+
+        CovenantReviewBulkPrepareRequest correction = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Campaign,
+            CampaignOne,
+            CovenantLane.Confirmed,
+            MemoryReviewAction.Correct,
+            [new CovenantReviewDecision(observed.ObservationToken, "Use concise detail.")]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        await using (CovenantReadLease prepareLease = runtime.ReadLease())
+        {
+            plan = (await runtime.Service.PrepareAsync(correction, prepareLease, Token)).Value;
+        }
+
+        // The plan discloses, before the question, exactly what the apply will do.
+        Assert.Equal(expected, Assert.Single(plan.Items).ReleasesErasureFingerprint);
+
+        MemoryReviewBulkResultDto first;
+
+        await using (CovenantWriteLease writeLease = runtime.WriteLease())
+        {
+            Result<MemoryReviewBulkResultDto> applied = await runtime.Service.ApplyAsync(
+                new CovenantReviewBulkApplyRequest(correction, plan.PreparedPlanToken),
+                writeLease,
+                Token);
+
+            Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+            first = applied.Value;
+        }
+
+        MemoryReviewBulkItemResultDto corrected = Assert.Single(first.Items);
+
+        Assert.Equal("Corrected", corrected.Outcome);
+
+        Assert.Equal(expected, corrected.ReleasedErasureFingerprint);
+
+        Assert.Equal(
+            expected is true ? 0L : 1L,
+            await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM memory_erasure_fingerprints;"));
+
+        await using CovenantWriteLease replayLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> replayed = await runtime.Service.ApplyAsync(
+            new CovenantReviewBulkApplyRequest(correction, plan.PreparedPlanToken),
+            replayLease,
+            Token);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? replayed.Error.Message : string.Empty);
+
+        Assert.True(replayed.Value.Replayed);
+
+        Assert.False(Assert.Single(replayed.Value.Items).ReleasedErasureFingerprint);
+    }
+
     [Fact]
     public async Task Identical_correction_is_acknowledged_as_no_change_without_a_replacement()
     {
@@ -1012,6 +1131,156 @@ public sealed class CovenantMemoryReviewServiceTests
         }
     }
 
+    /// <summary>
+    /// A pin applied from the review queue is the same pin the curation verbs apply: its head records
+    /// the key's binding epoch, which a later write to the key leaves alone, and its receipt records
+    /// the dependency epoch the change was committed against.
+    /// </summary>
+    [Fact]
+    public async Task A_review_pin_binds_the_key_binding_epoch()
+    {
+        const string Key = "pin.binding";
+
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        SeededHead first = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "stable",
+            Token);
+
+        SeededHead second = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "stable, and said twice",
+            Token,
+            entryId: first.EntryId,
+            laneRevision: 2,
+            predecessorVersionId: first.VersionId);
+
+        long bindingEpoch = await ScalarAsync(
+            runtime.Fixture.Connection,
+            $"SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';");
+
+        Assert.Equal(0L, bindingEpoch);
+
+        Assert.Equal(2L, await DependencyEpochAsync(runtime, Key));
+
+        MemoryReviewBulkResultDto pinned = await ApplyLifecycleAsync(runtime, MemoryReviewAction.Pin);
+
+        Assert.Equal("Pinned", Assert.Single(pinned.Items).Outcome);
+
+        Assert.Equal(bindingEpoch, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT KeyEpoch FROM covenant_curation_heads;"));
+
+        Assert.Equal(bindingEpoch, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT KeyEpoch FROM covenant_curation_versions;"));
+
+        Assert.Equal(2L, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT KeyEpoch FROM covenant_curation_receipts;"));
+
+        // A third write moves the dependency epoch and queues a fresh review event. The unpin that
+        // follows has to find the pin it is lifting, which it can only do through the binding epoch.
+        _ = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "stable, and said a third time",
+            Token,
+            entryId: first.EntryId,
+            laneRevision: 3,
+            predecessorVersionId: second.VersionId);
+
+        Assert.Equal(3L, await DependencyEpochAsync(runtime, Key));
+
+        MemoryReviewBulkResultDto unpinned = await ApplyLifecycleAsync(runtime, MemoryReviewAction.Unpin);
+
+        Assert.Equal("Unpinned", Assert.Single(unpinned.Items).Outcome);
+
+        Assert.Equal(1L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_curation_heads;"));
+
+        Assert.Equal(0L, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT IsPinned FROM covenant_curation_heads;"));
+
+        Assert.Equal(2L, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT CurrentRevision FROM covenant_curation_heads;"));
+
+        Assert.Equal(3L, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT KeyEpoch FROM covenant_curation_receipts WHERE ResultingRevision = 2;"));
+    }
+
+    private static Task<long> DependencyEpochAsync(ReviewRuntime runtime, string key) =>
+        ScalarAsync(
+            runtime.Fixture.Connection,
+            $"SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{key}';");
+
+    /// <summary>Observes the one queued Confirmed item, then prepares and applies one lifecycle action.</summary>
+    private static async Task<MemoryReviewBulkResultDto> ApplyLifecycleAsync(
+        ReviewRuntime runtime,
+        MemoryReviewAction action)
+    {
+        CovenantReviewItemDto observed;
+
+        await using (CovenantReadLease listLease = runtime.ReadLease())
+        {
+            observed = Assert.Single((await runtime.Service.ListAsync(
+                new CovenantReviewListRequest(
+                    CovenantScope.Campaign,
+                    CampaignOne,
+                    CovenantLane.Confirmed,
+                    MemoryReviewLimits.MaxPageSize,
+                    Cursor: null),
+                listLease,
+                Token)).Value.Items);
+        }
+
+        CovenantReviewBulkPrepareRequest request = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Campaign,
+            CampaignOne,
+            CovenantLane.Confirmed,
+            action,
+            [new CovenantReviewDecision(observed.ObservationToken, null)]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        await using (CovenantReadLease prepareLease = runtime.ReadLease())
+        {
+            Result<MemoryReviewBulkPlanDto> prepared = await runtime.Service.PrepareAsync(request, prepareLease, Token);
+
+            Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+            plan = prepared.Value;
+        }
+
+        await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> applied = await runtime.Service.ApplyAsync(
+            new CovenantReviewBulkApplyRequest(request, plan.PreparedPlanToken),
+            writeLease,
+            Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        return applied.Value;
+    }
+
     [Theory]
     [InlineData("store", ErrorCodes.MemoryReview.InvalidToken)]
     [InlineData("dataset", ErrorCodes.MemoryReview.StaleObservation)]
@@ -1204,9 +1473,15 @@ public sealed class CovenantMemoryReviewServiceTests
 
         private Guid DatasetGeneration { get; }
 
-        internal static async Task<ReviewRuntime> CreateAsync()
+        /// <param name="withErasureEvidence">
+        /// Gives the catalog the erasure fingerprint table and builds the kernel over the fixture's own
+        /// keyring, so the review captures the latch the suite drives.
+        /// </param>
+        internal static async Task<ReviewRuntime> CreateAsync(bool withErasureEvidence = false)
         {
-            CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+            CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
+                Token,
+                withErasureEvidence: withErasureEvidence);
             Guid dataset = await fixture.ReadDatasetGenerationAsync(Token);
             FakeTimeProvider time = new();
             MemoryReviewTokenCodec codec = new(time);
@@ -1215,9 +1490,12 @@ public sealed class CovenantMemoryReviewServiceTests
                 new FixedCovenantConnectionSource(fixture.Connection),
                 new CovenantCompiler(),
                 codec,
-                new CovenantMutationKernel(),
+                new CovenantMutationKernel(
+                    new CovenantQuotaGuard(),
+                    withErasureEvidence ? fixture.ErasureKeys : MemoryErasureTestKeys.Isolated()),
                 new CovenantCurationKernel(),
-                time);
+                time,
+                DetachedAvailabilityRepublisher.Create());
 
             return new ReviewRuntime(fixture, service, codec, dataset, time);
         }

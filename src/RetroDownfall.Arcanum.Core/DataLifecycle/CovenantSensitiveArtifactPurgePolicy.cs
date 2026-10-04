@@ -195,8 +195,9 @@ public static class CovenantSensitiveArtifactPurgePolicy
             PreservesFinalizationAndClaimEvidence: false,
             PreservesReplayDenialEvidence: false,
             Policy:
-                "Delete the Saga row, its embedding and FTS projections, its provenance, and its label in "
-                + "one transaction."),
+                "Delete the Saga row, its embedding and vector-mirror projections, its attachment provenance, "
+                + "its Annals claim with every version, head, dependency edge, review event, and review "
+                + "decision receipt, and its label in one transaction."),
 
         new(
             SensitiveArtifactKind.Lexicon,
@@ -210,8 +211,9 @@ public static class CovenantSensitiveArtifactPurgePolicy
             PreservesFinalizationAndClaimEvidence: false,
             PreservesReplayDenialEvidence: false,
             Policy:
-                "Delete the Lexicon row, its facts and FTS projections, its provenance, and its label in "
-                + "one transaction."),
+                "Delete the Lexicon row, its facts and FTS projection, its current and historical fact "
+                + "provenance, its Annals claim with every version, head, dependency edge, review event, and "
+                + "review decision receipt, and its label in one transaction."),
 
         new(
             SensitiveArtifactKind.Embedding,
