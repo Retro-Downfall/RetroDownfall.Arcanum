@@ -370,8 +370,12 @@ jobs:
             # bash 3.2 (the macOS runner shell) treats "${PRE_ARGS[@]}" as an unbound
             # variable under `set -u` when the array is empty — which is exactly the case
             # for a non-prerelease version. Use the same guard the shell scripts use.
+            # --target pins the draft to the commit this run built. Without it a draft points at the
+            # default branch's head at creation time, so publishing it later would tag whatever
+            # landed after the build instead of the commit whose binaries it carries.
             gh release create "$TAG" "${ASSETS[@]}" \
               --draft \
+              --target "$GITHUB_SHA" \
               ${PRE_ARGS[@]+"${PRE_ARGS[@]}"} \
               --title "$TAG" \
               --notes-file "$NOTES_FILE"

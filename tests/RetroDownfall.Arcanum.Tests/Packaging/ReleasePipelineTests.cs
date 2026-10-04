@@ -542,6 +542,52 @@ public sealed class ReleasePipelineTests
     }
 
     /// <summary>
+    /// A draft release holds a tag name and a target commit and writes neither into the repository
+    /// until it is published. Created without <c>--target</c> the draft points at the default
+    /// branch's head at that moment, so publishing it later tags whatever landed after the build
+    /// instead of the commit whose binaries the release carries.
+    /// </summary>
+    [Fact]
+    public void Every_gh_release_create_names_its_target_commit()
+    {
+        List<string> offenders = [];
+
+        int creates = 0;
+
+        foreach (string workflow in WorkflowFiles())
+        {
+            string folded = string.Join(
+                '\n',
+                ShellScriptLines(File.ReadAllLines(workflow)).Select(static line => line.Text))
+                .Replace("\\\n", " ", StringComparison.Ordinal);
+
+            foreach (string command in folded.Split('\n'))
+            {
+                if (!command.Contains("gh release create", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                creates++;
+
+                if (!command.Contains("--target \"$GITHUB_SHA\"", StringComparison.Ordinal))
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}: {command.Trim()}");
+                }
+            }
+        }
+
+        Assert.True(creates >= 2, "Expected both release workflows to create a draft release.");
+
+        Assert.True(
+            offenders.Count == 0,
+            "A gh release create does not pass --target \"$GITHUB_SHA\", so publishing the draft would "
+            + "tag the default branch's head instead of the built commit:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
     /// <c>notarytool submit --wait</c> blocks for as long as Apple takes to answer. With no bound a
     /// stalled submission holds the signing keychain and the macOS runner until the job ceiling, and
     /// reads as a slow release rather than a failed one.
