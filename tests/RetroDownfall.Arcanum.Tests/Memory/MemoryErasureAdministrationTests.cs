@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Annals;
@@ -303,6 +304,130 @@ public sealed class MemoryErasureAdministrationTests
     }
 
     /// <summary>
+    /// A key reset discards the receipts whose scrub was still pending on the write-ahead log, so the scrub
+    /// route has nothing left to retry for them. The reset therefore runs one checked checkpoint itself after
+    /// its commit, the same one the scrub runs, and logs its outcome without content.
+    /// </summary>
+    /// <remarks>
+    /// The checkpoint never fails a reset that has already committed: one that is busy or unavailable, or
+    /// that faults, is logged as such and the reset still answers success.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("Truncated")]
+    [InlineData("Busy")]
+    [InlineData("Unavailable")]
+    [InlineData("throws")]
+    public async Task Reset_key_runs_one_checked_checkpoint_after_it_discards_a_receipt_still_pending_on_the_log(string answer)
+    {
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ErasureHarness harness = await ErasureHarness.CreateAsync(credentials);
+
+        string content = "The ferry leaves at the second bell.";
+
+        string memory = await harness.InsertAsync(content);
+
+        await using (await harness.HoldReaderAsync())
+        {
+            MemoryErasureResultDto erased = await harness.EraseAsync(memory);
+
+            Assert.Equal<MemoryErasureScrubPendingReason>([MemoryErasureScrubPendingReason.WalCheckpointPending], erased.Local.PendingReasons);
+        }
+
+        Assert.Equal(1, (await harness.Administration().GetStatusAsync(Token)).Value.PendingScrubReceipts);
+
+        // The key's item is gone, so the receipt's evidence is unverifiable and the reset discards it.
+        _ = credentials.Delete(ArcanumCredentialIdentity.Service, Account);
+
+        int checkpoints = 0;
+
+        TestCapturingLogger<MemoryErasureAdministration> log = new();
+
+        MemoryErasureAdministration admin = harness.Administration(
+            _ =>
+            {
+                checkpoints++;
+
+                return answer == "throws"
+                    ? throw new IOException("the log could not be checkpointed")
+                    : Task.FromResult(Enum.Parse<MemoryErasureWalCheckpointAttempt>(answer));
+            },
+            log);
+
+        MemoryErasureKeyResetPreflightDto prepared = (await admin.PrepareKeyResetAsync(Token)).Value;
+
+        Assert.Equal(MemoryErasureKeyStatus.Lost, prepared.KeyStatus);
+
+        Assert.Equal(0, checkpoints);
+
+        Result<MemoryErasureKeyResetResultDto> reset = await admin.ResetKeyAsync(new(prepared.PreflightToken), Token);
+
+        Assert.True(reset.IsSuccess, reset.IsFailure ? reset.Error.Message : null);
+
+        Assert.Equal(new MemoryErasureKeyResetResultDto(MemoryErasureKeyStatus.Present, 1, 1, KeyCreated: true), reset.Value);
+
+        Assert.Equal(1, checkpoints);
+
+        // The debt went with the receipt, which is why the reset has to checkpoint for it.
+        Assert.Equal(0, (await admin.GetStatusAsync(Token)).Value.PendingScrubReceipts);
+
+        string expected = answer == "throws" ? nameof(MemoryErasureWalCheckpointAttempt.Unavailable) : answer;
+
+        TestLogEntry line = Assert.Single(
+            log.Entries,
+            static entry => entry.Message.Contains("checkpoint attempt", StringComparison.Ordinal));
+
+        Assert.Contains(expected, line.Message, StringComparison.Ordinal);
+
+        Assert.All(
+            log.Entries,
+            entry =>
+            {
+                Assert.DoesNotContain(content, entry.Message, StringComparison.Ordinal);
+
+                Assert.DoesNotContain(memory, entry.Message, StringComparison.Ordinal);
+            });
+    }
+
+    /// <summary>
+    /// A reset that discards nothing still pending on the log has nothing to checkpoint for, so it runs no
+    /// checkpoint: a receipt that was already verified left the log when it was.
+    /// </summary>
+    [SkippableFact]
+    public async Task Reset_key_runs_no_checkpoint_when_nothing_it_discards_was_pending_on_the_log()
+    {
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ErasureHarness harness = await ErasureHarness.CreateAsync(credentials);
+
+        MemoryErasureResultDto erased = await harness.EraseAsync(await harness.InsertAsync("The ferry leaves at the second bell."));
+
+        Assert.Empty(erased.Local.PendingReasons);
+
+        _ = credentials.Delete(ArcanumCredentialIdentity.Service, Account);
+
+        int checkpoints = 0;
+
+        MemoryErasureAdministration admin = harness.Administration(
+            _ =>
+            {
+                checkpoints++;
+
+                return Task.FromResult(MemoryErasureWalCheckpointAttempt.Truncated);
+            });
+
+        MemoryErasureKeyResetPreflightDto prepared = (await admin.PrepareKeyResetAsync(Token)).Value;
+
+        Result<MemoryErasureKeyResetResultDto> reset = await admin.ResetKeyAsync(new(prepared.PreflightToken), Token);
+
+        Assert.True(reset.IsSuccess, reset.IsFailure ? reset.Error.Message : null);
+
+        Assert.Equal(1, reset.Value.ReceiptsDiscarded);
+
+        Assert.Equal(0, checkpoints);
+    }
+
+    /// <summary>
     /// A reset creates a key only when it writes one. Here another caller, such as a first erase on an
     /// installation with no evidence, writes the key between the reset's own read and its create path,
     /// so the reset finds that key, keeps it, and does not claim to have created it.
@@ -463,6 +588,11 @@ public sealed class MemoryErasureAdministrationTests
         internal MemoryErasureAdministration Administration(
             Func<CancellationToken, Task<MemoryErasureWalCheckpointAttempt>> checkpoint) =>
             new(Harness.Context, Keyring, Codec, Scrubber, NullLogger<MemoryErasureAdministration>.Instance, checkpoint);
+
+        internal MemoryErasureAdministration Administration(
+            Func<CancellationToken, Task<MemoryErasureWalCheckpointAttempt>> checkpoint,
+            ILogger<MemoryErasureAdministration> logger) =>
+            new(Harness.Context, Keyring, Codec, Scrubber, logger, checkpoint);
 
         /// <summary>Writes one Global memory through the store's own insert, and requires that it landed.</summary>
         internal async Task<string> InsertAsync(string content)

@@ -301,7 +301,7 @@ internal sealed class MemoryErasureAdministration(
 
         byte[] keyId = key.KeyId.ToArray();
 
-        (long Fingerprints, long Receipts)? discarded = await SqliteBusyRetry.ExecuteAsync<(long Fingerprints, long Receipts)?>(
+        (long Fingerprints, long Receipts, bool WalPendingDiscarded)? discarded = await SqliteBusyRetry.ExecuteAsync<(long Fingerprints, long Receipts, bool WalPendingDiscarded)?>(
             async () =>
             {
                 await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
@@ -315,7 +315,7 @@ internal sealed class MemoryErasureAdministration(
                 {
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
-                    return (0, 0);
+                    return (0, 0, false);
                 }
 
                 // Store by store: rows that moved between stores are a different reset, whatever the totals.
@@ -326,13 +326,23 @@ internal sealed class MemoryErasureAdministration(
                     return null;
                 }
 
+                // Which receipts are still pending on the log, before and after, so the reset can tell whether
+                // it discarded the debt of one: nothing else will retry a receipt that is gone.
+                IReadOnlyList<Guid> pendingBefore = await MemoryErasureEvidence
+                    .ReadWalPendingAsync(connection, transaction, cancellationToken)
+                    .ConfigureAwait(false);
+
                 (long Fingerprints, long Receipts) deleted = await MemoryErasureEvidence
                     .DeleteUnverifiableAsync(connection, transaction, keyId, cancellationToken)
                     .ConfigureAwait(false);
 
+                IReadOnlyList<Guid> pendingAfter = await MemoryErasureEvidence
+                    .ReadWalPendingAsync(connection, transaction, cancellationToken)
+                    .ConfigureAwait(false);
+
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                return deleted;
+                return (deleted.Fingerprints, deleted.Receipts, pendingBefore.Any(id => !pendingAfter.Contains(id)));
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -347,7 +357,40 @@ internal sealed class MemoryErasureAdministration(
             counts.Receipts,
             created);
 
+        if (counts.WalPendingDiscarded)
+        {
+            await CheckpointAfterResetAsync().ConfigureAwait(false);
+        }
+
         return new MemoryErasureKeyResetResultDto(MemoryErasureKeyStatus.Present, counts.Fingerprints, counts.Receipts, created);
+    }
+
+    /// <summary>
+    /// The one checked checkpoint a reset runs after its commit, when it discarded a receipt that was still
+    /// pending on the write-ahead log, with the outcome logged and never returned.
+    /// </summary>
+    /// <remarks>
+    /// The discarded receipt was the only thing tracking that scrub, so without this the erased frames could
+    /// sit in the log with nothing left to retry them. It is the same checkpoint the scrub runs, after the
+    /// commit and with <see cref="CancellationToken.None"/>, so it can never fail a reset that has already
+    /// committed: a busy or unavailable checkpoint, or one that faults, is reported as what it was. A
+    /// checkpoint that was busy changes nothing, and the log is truncated by the next one that finds no
+    /// reader.
+    /// </remarks>
+    private async Task CheckpointAfterResetAsync()
+    {
+        MemoryErasureWalCheckpointAttempt attempt;
+
+        try
+        {
+            attempt = await _checkpoint(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            attempt = MemoryErasureWalCheckpointAttempt.Unavailable;
+        }
+
+        logger.LogInformation("Erasure key reset write-ahead-log checkpoint attempt: {WalCheckpointAttempt}.", attempt);
     }
 
     private static bool HasRows(MemoryErasureEvidenceCounts counts) =>
