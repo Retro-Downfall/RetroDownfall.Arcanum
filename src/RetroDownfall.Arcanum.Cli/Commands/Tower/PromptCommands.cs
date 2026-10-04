@@ -746,9 +746,23 @@ public sealed class PromptCommands(
 
         try
         {
-            json = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
+            CappedTextRead read = await CappedInputReader
+                .ReadFileAsync(file, CappedInputReader.MaxAuthoredBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read.TooLarge)
+            {
+                CliErrorOutput.WriteMarkupLine(
+                    themePalette.ErrorMarkup(
+                        Markup.Escape(
+                            CappedInputReader.TooLargeMessage($"File '{file}'", CappedInputReader.MaxAuthoredBytes))));
+
+                return 1;
+            }
+
+            json = read.Text;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
 

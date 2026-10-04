@@ -602,6 +602,15 @@ public sealed class MemoryLexiconCurationCommandTests
         }
 
         public override Task<string> ReadToEndAsync(CancellationToken cancellationToken) => Task.FromResult(ReadToEnd());
+
+        // The authored-content reader is capped, so it reads in chunks rather than to the end; the
+        // fault has to arrive on that read for the conversion under test to be exercised at all.
+        public override int Read(char[] buffer, int index, int count)
+        {
+            _ = ReadToEnd();
+
+            return 0;
+        }
     }
 
     private sealed class ObservingDispatcher(IConsoleDispatcher inner, RecordingPrompt prompt) : IConsoleDispatcher
