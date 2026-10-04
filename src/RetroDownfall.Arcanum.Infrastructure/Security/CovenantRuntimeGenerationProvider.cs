@@ -9,9 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 internal interface ICovenantRuntimeGenerationProvider
 {
-
     CovenantRuntimeGenerationState Current { get; }
-
 }
 
 /// <summary>
@@ -20,7 +18,6 @@ internal interface ICovenantRuntimeGenerationProvider
 internal sealed class CovenantRuntimeGenerationProvider
     : ICovenantRuntimeGenerationProvider, IDisposable
 {
-
     private readonly Lock _sync = new();
 
     private readonly ICovenantRuntimePublicationCheckpoint _publicationCheckpoint;
@@ -51,7 +48,6 @@ internal sealed class CovenantRuntimeGenerationProvider
         CovenantAuthoritySnapshot authority,
         CovenantAvailabilitySnapshot availability)
     {
-
         ArgumentNullException.ThrowIfNull(expected);
 
         ArgumentNullException.ThrowIfNull(prepared);
@@ -62,53 +58,42 @@ internal sealed class CovenantRuntimeGenerationProvider
 
         lock (_sync)
         {
-
             ObjectDisposedException.ThrowIf(_disposed, this);
 
             if (!ReferenceEquals(_current, expected)
                 || !ReferenceEquals(expected.Availability, availability))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "Covenant runtime state changed before bootstrap initialization.");
-
             }
 
             if (expected.Keys is not null || expected.AuthoritySlot is not null)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "Covenant runtime authority has already been initialized.");
-
             }
 
             if (!prepared.IsOwnedBy(this))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "The prepared Covenant key generation belongs to another runtime holder.");
-
             }
 
             if (!prepared.Matches(authority, availability))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The prepared Covenant key generation does not match its bootstrap authority and availability.");
-
             }
 
             CovenantEnvelopeKeyGeneration keys = prepared.Take();
 
             CovenantAuthoritySnapshot stamped = authority with
             {
-
                 RuntimeAuthorityGeneration = expected.RuntimeAuthorityGeneration,
-
             };
 
             _current = new CovenantRuntimeGenerationState(
@@ -121,9 +106,7 @@ internal sealed class CovenantRuntimeGenerationProvider
                 availability);
 
             return Result.Success();
-
         }
-
     }
 
     internal Result PublishCommitted(
@@ -132,7 +115,6 @@ internal sealed class CovenantRuntimeGenerationProvider
         CovenantCommittedAuthorityTransition transition,
         CovenantAvailabilitySnapshot availability)
     {
-
         ArgumentNullException.ThrowIfNull(expected);
 
         ArgumentNullException.ThrowIfNull(prepared);
@@ -143,53 +125,42 @@ internal sealed class CovenantRuntimeGenerationProvider
 
         lock (_sync)
         {
-
             ObjectDisposedException.ThrowIf(_disposed, this);
 
             if (!ReferenceEquals(_current, expected))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "Covenant runtime state changed before final publication.");
-
             }
 
             if (!prepared.IsOwnedBy(this))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "The prepared Covenant key generation belongs to another runtime holder.");
-
             }
 
             if (!prepared.Matches(transition))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The prepared Covenant key generation does not match its committed transition.");
-
             }
 
-            if (!ReferenceEquals(expected.Availability, _current.Availability)
-                || transition.Capability.ExpectedGeneration != expected.Availability.Generation)
+            // _current is expected here (checked above), so only the generation can disagree.
+            if (transition.Capability.ExpectedGeneration != expected.Availability.Generation)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "The committed capability no longer follows the captured runtime state.");
-
             }
 
             if (!MatchesCapability(availability, transition.Capability))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The committed availability tuple does not match its capability transition.");
-
             }
 
             long runtimeGeneration = checked(expected.RuntimeAuthorityGeneration + 1);
@@ -218,32 +189,24 @@ internal sealed class CovenantRuntimeGenerationProvider
 
             try
             {
-
                 ObservePublication(CovenantRuntimePublicationStep.CommittedAfterSwap);
-
             }
             finally
             {
-
                 expected.Keys?.Dispose();
-
             }
 
             return Result.Success();
-
         }
-
     }
 
     internal CovenantAvailabilitySnapshot PublishAvailability(
         Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> mutate)
     {
-
         ArgumentNullException.ThrowIfNull(mutate);
 
         lock (_sync)
         {
-
             ObjectDisposedException.ThrowIf(_disposed, this);
 
             CovenantRuntimeGenerationState current = _current;
@@ -253,17 +216,13 @@ internal sealed class CovenantRuntimeGenerationProvider
             if (current.AuthoritySlot is not null
                 && candidate.DatasetGeneration != current.Availability.DatasetGeneration)
             {
-
                 throw new InvalidOperationException(
                     "An availability-only publication cannot change the initialized Covenant dataset generation.");
-
             }
 
             CovenantAvailabilitySnapshot next = candidate with
             {
-
                 Generation = current.Availability.Generation + 1,
-
             };
 
             ObservePublication(CovenantRuntimePublicationStep.AvailabilityBeforeSwap);
@@ -273,35 +232,27 @@ internal sealed class CovenantRuntimeGenerationProvider
             ObservePublication(CovenantRuntimePublicationStep.AvailabilityAfterSwap);
 
             return next;
-
         }
-
     }
 
     internal Result RetireAuthorityGeneration(
         long observedRuntimeAuthorityGeneration,
         CovenantExclusiveRecoveryOwner recoveryOwner)
     {
-
         if (!recoveryOwner.IsValid)
         {
-
             throw new ArgumentException("A retired runtime generation requires an exact recovery owner.", nameof(recoveryOwner));
-
         }
 
         lock (_sync)
         {
-
             ObjectDisposedException.ThrowIf(_disposed, this);
 
             CovenantRuntimeGenerationState current = _current;
 
             if (current.RuntimeAuthorityGeneration != observedRuntimeAuthorityGeneration)
             {
-
                 return Result.Success();
-
             }
 
             long retiredGeneration = checked(current.RuntimeAuthorityGeneration + 1);
@@ -322,9 +273,7 @@ internal sealed class CovenantRuntimeGenerationProvider
             current.Keys?.Dispose();
 
             return Result.Success();
-
         }
-
     }
 
     private static bool MatchesCapability(
@@ -374,33 +323,23 @@ internal sealed class CovenantRuntimeGenerationProvider
     /// </remarks>
     private void ObservePublication(CovenantRuntimePublicationStep step)
     {
-
         try
         {
-
             _publicationCheckpoint.Reached(step);
-
         }
         catch (Exception)
         {
-
             // Observation is non-authoritative and must never alter publication Result semantics.
-
         }
-
     }
 
     public void Dispose()
     {
-
         lock (_sync)
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
             _disposed = true;
@@ -408,11 +347,8 @@ internal sealed class CovenantRuntimeGenerationProvider
             _current.Keys?.Dispose();
 
             _current = CovenantRuntimeGenerationState.Initial;
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -426,14 +362,11 @@ internal sealed class CovenantRuntimeGenerationProvider
 /// </remarks>
 internal interface ICovenantRuntimePublicationCheckpoint
 {
-
     void Reached(CovenantRuntimePublicationStep step);
-
 }
 
 internal enum CovenantRuntimePublicationStep : byte
 {
-
     CommittedBeforeSwap = 1,
 
     CommittedAfterSwap = 2,
@@ -441,23 +374,18 @@ internal enum CovenantRuntimePublicationStep : byte
     AvailabilityBeforeSwap = 3,
 
     AvailabilityAfterSwap = 4,
-
 }
 
 internal static class CovenantRuntimePublicationCheckpoint
 {
-
     internal static ICovenantRuntimePublicationCheckpoint None { get; } = new NoOpCheckpoint();
 
     private sealed class NoOpCheckpoint : ICovenantRuntimePublicationCheckpoint
     {
-
         public void Reached(CovenantRuntimePublicationStep step)
         {
         }
-
     }
-
 }
 
 internal sealed record CovenantRuntimeGenerationState(
@@ -469,7 +397,6 @@ internal sealed record CovenantRuntimeGenerationState(
     CovenantExclusiveRecoveryOwner? RecoveryOwner,
     CovenantAvailabilitySnapshot Availability)
 {
-
     internal static CovenantRuntimeGenerationState Initial { get; } = new(
         RuntimeAuthorityGeneration: 1,
         Keys: null,
@@ -500,5 +427,4 @@ internal sealed record CovenantRuntimeGenerationState(
             AcceleratorDiagnosticCode: ErrorCodes.Covenant.Unavailable));
 
     internal CovenantAuthoritySnapshot? ActiveAuthority => AuthorityRetired ? null : AuthoritySlot;
-
 }
