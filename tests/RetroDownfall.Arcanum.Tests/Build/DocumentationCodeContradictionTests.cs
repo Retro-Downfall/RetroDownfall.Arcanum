@@ -186,6 +186,27 @@ public sealed class DocumentationCodeContradictionTests
         }
     }
 
+    [Fact]
+    public void The_factory_reset_plan_counts_are_documented_as_what_a_standalone_reset_keeps()
+    {
+        foreach (string file in (string[])["Arcanum.API.md", "Arcanum.DESIGN.md"])
+        {
+            string document = ReadDocument(file);
+
+            Assert.DoesNotContain("stays in force after the reset", document, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("will remain in force", document, StringComparison.Ordinal);
+
+            Assert.Contains("standalone factory reset", document, StringComparison.Ordinal);
+        }
+
+        // A global or all-scope installation reset removes the key through the credential catalog.
+        Assert.Contains(
+            "MemoryErasureFingerprintKeyAccount",
+            ReadSource("Infrastructure", "InstallationReset", "InstallationResetCredentialCatalog.cs"),
+            StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
