@@ -348,7 +348,7 @@ public sealed record CovenantCurationRequest(
 /// predecessor, and preserves provenance and sensitivity by construction; what a correction adds is
 /// the binding. The four target fields are what make "I am replacing this" checkable rather than
 /// asserted: a version that has moved, a lane that is not the one an operator authors, a revision that
-/// is no longer current, and a compiled hash that names content the operator never saw are each
+/// is no longer current, and a rendered hash that names content the operator never saw are each
 /// refused before anything is appended.
 ///
 /// <para><paramref name="TargetLane"/> is carried and validated rather than omitted. <c>Set</c> has no

@@ -228,6 +228,22 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("presence byte", section, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void The_core_contract_text_calls_the_hash_a_rendered_hash()
+    {
+        Assert.Contains("rendered hash", ReadDocument("Arcanum.Command.Reference.md"), StringComparison.Ordinal);
+
+        foreach (string[] path in (string[][])
+                 [
+                     ["Core", "Covenant", "CovenantPublicContractInventory.cs"],
+                     ["Core", "Covenant", "CovenantMutationWireContracts.cs"],
+                     ["Core", "Covenant", "CovenantOperatorPreflightBody.cs"],
+                 ])
+        {
+            Assert.DoesNotContain("compiled hash", ReadSource(path), StringComparison.Ordinal);
+        }
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
