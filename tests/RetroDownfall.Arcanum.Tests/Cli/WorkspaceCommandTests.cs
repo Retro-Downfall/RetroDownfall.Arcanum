@@ -120,6 +120,25 @@ public sealed class WorkspaceCommandTests
             body.Path);
     }
 
+    [Theory]
+    [InlineData("1")]
+    [InlineData("99")]
+    [InlineData("campaign,data")]
+    public void Workspace_register_rejects_a_numeric_or_joined_type_without_calling_the_api(string type)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["workspace", "register", "/srv/projects/demo", "--type", type]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--type", result.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
 
     public void Workspace_register_rejects_an_undocumented_type_without_calling_the_api()

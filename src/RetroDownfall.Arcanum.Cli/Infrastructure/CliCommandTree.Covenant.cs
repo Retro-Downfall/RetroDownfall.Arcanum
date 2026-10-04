@@ -4,6 +4,8 @@ using System.CommandLine.Parsing;
 
 using Microsoft.Extensions.DependencyInjection;
 
+using RetroDownfall.Arcanum.Cli.Commands;
+
 using RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -12,7 +14,6 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     /// <summary>
     /// The <c>memory covenant</c> subgroup: the operator's own standing agreement.
     /// </summary>
@@ -27,7 +28,6 @@ internal static partial class CliCommandTree
     /// </remarks>
     private static Command BuildCovenant(IServiceProvider sp)
     {
-
         CovenantCommands handler = sp.GetRequiredService<CovenantCommands>();
 
         MemoryCommands memoryHandler = sp.GetRequiredService<MemoryCommands>();
@@ -343,7 +343,6 @@ internal static partial class CliCommandTree
         covenant.Add(BuildCovenantReview(memoryHandler));
 
         return covenant;
-
     }
 
     /// <summary>
@@ -366,7 +365,6 @@ internal static partial class CliCommandTree
         string description,
         bool campaignRequired)
     {
-
         Command command = new(name, description);
 
         Argument<string> key = new("key") { Description = "The preference key." };
@@ -405,7 +403,6 @@ internal static partial class CliCommandTree
                     ct).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Option<CovenantLane?> LaneOption(string description) =>
@@ -431,30 +428,23 @@ internal static partial class CliCommandTree
     private static TValue? Parse<TValue>(ArgumentResult result, string subject)
         where TValue : struct, Enum
     {
-
         if (result.Tokens.Count == 0)
         {
-
             return null;
-
         }
 
         string value = result.Tokens[0].Value;
 
         // Enum.TryParse accepts any numeric string, including one naming no member at all, so the
         // defined check is what makes this a vocabulary rather than a cast.
-        if (Enum.TryParse(value, ignoreCase: true, out TValue parsed) && Enum.IsDefined(parsed))
+        if (CliEnumInput.TryParseName(value, out TValue parsed))
         {
-
             return parsed;
-
         }
 
         result.AddError(
             $"'{value}' is not a {subject}. Valid values: {string.Join(", ", Enum.GetNames<TValue>())}.");
 
         return null;
-
     }
-
 }

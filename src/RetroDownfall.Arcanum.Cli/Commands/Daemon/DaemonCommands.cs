@@ -263,13 +263,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         string severity,
         out CommLinkSeverity parsedSeverity)
     {
-        parsedSeverity = default;
-
-        string normalized = severity.Trim();
-
-        return normalized.Length > 0
-            && normalized.All(char.IsLetter)
-            && Enum.TryParse(normalized, ignoreCase: true, out parsedSeverity)
-            && Enum.IsDefined(parsedSeverity);
+        return CliEnumInput.TryParseName(severity, out parsedSeverity);
     }
 }

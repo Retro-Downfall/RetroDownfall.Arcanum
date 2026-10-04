@@ -779,8 +779,7 @@ public sealed class WorkspaceCommands(
             return true;
         }
 
-        return Enum.TryParse(value, ignoreCase: true, out type)
-            && Enum.IsDefined(type);
+        return CliEnumInput.TryParseName(value, out type);
     }
 
     private static string InferName(string path)

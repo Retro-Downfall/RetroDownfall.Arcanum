@@ -105,7 +105,7 @@ public sealed partial class MemoryCommands
         string? cursor,
         CancellationToken cancellationToken)
     {
-        if (!Enum.TryParse(lane, ignoreCase: true, out CovenantLane parsedLane)
+        if (!CliEnumInput.TryParseName(lane, out CovenantLane parsedLane)
             || parsedLane is not (CovenantLane.Confirmed or CovenantLane.Proposed))
         {
             return ReviewInputError("--lane must be confirmed or proposed.");

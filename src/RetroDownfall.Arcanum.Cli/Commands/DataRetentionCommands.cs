@@ -549,18 +549,10 @@ internal sealed class DataRetentionCommands(
         string scope,
         out MemoryResetScope parsedScope)
     {
-        parsedScope = default;
-
         string normalized = scope
             .Replace("-", string.Empty, StringComparison.Ordinal)
             .Replace("_", string.Empty, StringComparison.Ordinal);
 
-        return normalized.Length > 0
-            && normalized.All(char.IsLetter)
-            && Enum.TryParse(
-            normalized,
-            ignoreCase: true,
-            out parsedScope)
-            && Enum.IsDefined(parsedScope);
+        return CliEnumInput.TryParseName(normalized, out parsedScope);
     }
 }

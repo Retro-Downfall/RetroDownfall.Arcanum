@@ -80,6 +80,28 @@ public sealed class MemoryCommandTests
         Assert.Empty(result.Error);
     }
 
+    /// <summary>
+    /// <c>Enum.TryParse</c> accepts numeric ordinals, undefined ordinals and comma-joined lists, so
+    /// <c>--scope 99</c> or <c>--scope session,saga</c> used to reach the host as a scope nobody named.
+    /// </summary>
+    [Theory]
+    [InlineData("99")]
+    [InlineData("1")]
+    [InlineData("-1")]
+    [InlineData("session,saga")]
+    public void Search_rejects_a_numeric_scope(string scope)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--scope", scope]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--scope", result.Error, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
