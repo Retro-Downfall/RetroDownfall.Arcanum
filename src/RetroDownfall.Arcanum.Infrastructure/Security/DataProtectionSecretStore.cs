@@ -10,7 +10,7 @@ public sealed class DataProtectionSecretStore(
     IDataProtectionProvider dataProtectionProvider,
     IApiKeyDigestCache apiKeyDigestCache) : ISecretStore, IDisposable
 {
-    internal const int MaxProtectedSecretBytes = 64 * 1024;
+    internal const int MaxProtectedSecretBytes = ProtectedCredentialFile.MaxProtectedSecretBytes;
 
     private const string ProtectorPurpose = "Arcanum.Core.ApiKey";
 
@@ -92,8 +92,9 @@ public sealed class DataProtectionSecretStore(
 
     /// <summary>
     /// Like <see cref="GetGrimoireEncryptionSecretAsync"/> but preserves
-    /// <see cref="SecretStoreReadStatus.Corrupted"/> so callers can refuse a silent
-    /// API-key fallback when the sealed secret is present but undecryptable.
+    /// <see cref="SecretStoreReadStatus.Corrupted"/> and <see cref="SecretStoreReadStatus.Unreadable"/>
+    /// so callers can refuse a silent API-key fallback when the sealed secret is present but
+    /// undecryptable or cannot be read.
     /// </summary>
     public Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync() =>
         ReadProtectedResultAsync(
@@ -153,50 +154,12 @@ public sealed class DataProtectionSecretStore(
 
         try
         {
-            using SecureFileReadResult read = await SecureFileReader
-                .ReadBytesAsync(
-                    path,
-                    MaxProtectedSecretBytes,
-                    CancellationToken.None)
+            // Only undecryptable or empty content is Corrupted and carries the recovery text; a file
+            // that could not be read at all (access denied, I/O error, over the ceiling, linked) is
+            // Unreadable with retry guidance, never the advice to delete it.
+            return await ProtectedCredentialFile
+                .ReadAsync(path, protector, corruptMessage, CancellationToken.None)
                 .ConfigureAwait(false);
-
-            if (read.Status == SecureFileReadStatus.NotFound)
-            {
-                return SecretStoreReadResult.Missing();
-            }
-
-            if (read.Status != SecureFileReadStatus.Success)
-            {
-                return SecretStoreReadResult.Corrupted(corruptMessage);
-            }
-
-            byte[] cipher = read.Bytes.ToArray();
-
-            if (cipher.Length == 0)
-            {
-                CryptographicOperations.ZeroMemory(cipher);
-
-                return SecretStoreReadResult.Corrupted(corruptMessage);
-            }
-
-            try
-            {
-                byte[] plain = protector.Unprotect(cipher);
-
-                string value = Encoding.UTF8.GetString(plain);
-
-                CryptographicOperations.ZeroMemory(plain);
-
-                return SecretStoreReadResult.Ok(value);
-            }
-            catch (CryptographicException)
-            {
-                return SecretStoreReadResult.Corrupted(corruptMessage);
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(cipher);
-            }
         }
         finally
         {

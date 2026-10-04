@@ -197,6 +197,34 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
         Assert.Contains("master API key", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// An unreadable store says nothing about whether a key is in it, so it never authorizes a mint —
+    /// not even with no Grimoire database, where an explicitly corrupt read may regenerate.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Unreadable_key_store_never_regenerates(bool grimoireExists)
+    {
+        RecordingBootstrapSecretStore store = new(
+            SecretStoreReadResult.Unreadable("security.dat exists but could not be read (access denied)."));
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        MasterApiKeyUnavailableException exception =
+            await Assert.ThrowsAsync<MasterApiKeyUnavailableException>(
+                () => ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync(
+                    store,
+                    new ReachableMissingStore(),
+                    cache,
+                    grimoireExists: () => grimoireExists));
+
+        Assert.Equal(0, store.SaveCount);
+        Assert.False(cache.TryGetPresenceDigest(out _));
+        Assert.Contains("could not be read", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("access denied", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Corrupt_key_without_grimoire_allows_safe_regeneration()
     {

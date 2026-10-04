@@ -9,14 +9,12 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("ProcessEnvironment")]
 public sealed class DataProtectionSecretStoreTests : IDisposable
 {
-
     private readonly string _storeDir = Path.Combine(Path.GetTempPath(), $"arcanum-test-{Guid.NewGuid():N}");
 
     private readonly Dictionary<string, string?> _originalEnvironment = new();
 
     public DataProtectionSecretStoreTests()
     {
-
         SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
 
         SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
@@ -26,68 +24,47 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         Directory.CreateDirectory(_storeDir);
 
         DeleteSecurityDat();
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             DeleteSecurityDat();
 
             if (Directory.Exists(_storeDir))
             {
-
                 Directory.Delete(_storeDir, recursive: true);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup.
-
         }
         finally
         {
-
             foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
             {
-
                 global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-
             }
-
         }
-
     }
 
     private static void DeleteSecurityDat()
     {
-
         string path = ArcanumPaths.ApiKeyStoreFile;
 
         try
         {
-
             if (File.Exists(path))
             {
-
                 File.Delete(path);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup.
-
         }
-
     }
 
     private DataProtectionSecretStore CreateStore() =>
@@ -95,19 +72,16 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
 
     private DataProtectionSecretStore CreateStore(IApiKeyDigestCache apiKeyDigestCache)
     {
-
         IDataProtectionProvider dataProtectionProvider = DataProtectionProvider.Create(
             new DirectoryInfo(_storeDir),
             _ => { });
 
         return new DataProtectionSecretStore(dataProtectionProvider, apiKeyDigestCache);
-
     }
 
     [Fact]
     public async Task SaveApiKeyAsync_RoundTrip_ReturnsSameKey()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string apiKey = Guid.NewGuid().ToString("N");
@@ -117,25 +91,21 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         string? result = await store.GetApiKeyAsync();
 
         Assert.Equal(apiKey, result);
-
     }
 
     [Fact]
     public async Task GetApiKeyReadResultAsync_MissingFile_ReturnsMissing()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
 
         Assert.Equal(SecretStoreReadStatus.Missing, result.Status);
-
     }
 
     [Fact]
     public async Task GetApiKeyReadResultAsync_CorruptFile_ReturnsCorrupted()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string path = ArcanumPaths.ApiKeyStoreFile;
@@ -146,25 +116,19 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
 
         try
         {
-
             SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
 
             Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
-
         }
         finally
         {
-
             File.Delete(path);
-
         }
-
     }
 
     [Fact]
     public async Task GetApiKeyReadResultAsync_OversizedFile_FailsClosed()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string path = ArcanumPaths.ApiKeyStoreFile;
@@ -173,21 +137,101 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
 
         await using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
-
             stream.SetLength(DataProtectionSecretStore.MaxProtectedSecretBytes + 1L);
-
         }
+
+        SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
+
+        // Over the ceiling says nothing about the content, so it fails closed as unreadable, not as
+        // a corrupt file the operator is told to delete together with the Grimoire.
+        Assert.Equal(SecretStoreReadStatus.Unreadable, result.Status);
+
+        Assert.DoesNotContain("remove both", result.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A transient EACCES/EIO on the store that guards an encrypted database is not corruption. The
+    /// corrupt recovery text tells the operator to remove security.dat and the Grimoire .db; it must
+    /// be reserved for content that genuinely does not decrypt.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_unreadable_file_is_not_reported_as_corrupt()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "chmod 000 is a Unix permission fixture.");
+
+        // Dead once Skip.If has run; kept so the platform analyzer sees the guard.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        await store.SaveApiKeyAsync("unreadable-master-key");
+
+        string path = ArcanumPaths.ApiKeyStoreFile;
+
+        File.SetUnixFileMode(path, UnixFileMode.None);
+
+        try
+        {
+            Skip.If(CanOpenForRead(path), "The current user bypasses file modes (root).");
+
+            SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
+
+            Assert.NotEqual(SecretStoreReadStatus.Corrupted, result.Status);
+
+            Assert.Equal(SecretStoreReadStatus.Unreadable, result.Status);
+
+            Assert.Null(result.Value);
+
+            Assert.NotNull(result.Message);
+
+            Assert.DoesNotContain("remove both", result.Message, StringComparison.Ordinal);
+
+            Assert.Contains("security.dat", result.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    [Fact]
+    public async Task A_file_that_does_not_decrypt_keeps_the_destructive_recovery_guidance()
+    {
+        using DataProtectionSecretStore store = CreateStore();
+
+        string path = ArcanumPaths.ApiKeyStoreFile;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
 
         SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
 
         Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
 
+        Assert.Contains("remove both", result.Message, StringComparison.Ordinal);
+    }
+
+    private static bool CanOpenForRead(string path)
+    {
+        try
+        {
+            using FileStream stream = File.OpenRead(path);
+
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     [Fact]
     public async Task SaveGrimoireEncryptionSecretAsync_RoundTrip_ReturnsSameSecret()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string secret = Guid.NewGuid().ToString("N");
@@ -197,7 +241,6 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         string? result = await store.GetGrimoireEncryptionSecretAsync();
 
         Assert.Equal(secret, result);
-
     }
 
     [Fact]
@@ -238,7 +281,6 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
     [Fact]
     public async Task GetApiKeyAsync_CorruptStore_ReturnsNullRatherThanRawCiphertext()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string path = ArcanumPaths.ApiKeyStoreFile;
@@ -252,25 +294,21 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         Assert.Null(result);
 
         Assert.Equal(SecretStoreReadStatus.Corrupted, (await store.GetApiKeyReadResultAsync()).Status);
-
     }
 
     [Fact]
     public async Task GetApiKeyAsync_MissingStore_ReturnsNull()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string? result = await store.GetApiKeyAsync();
 
         Assert.Null(result);
-
     }
 
     [Fact]
     public async Task GetGrimoireEncryptionSecretAsync_CorruptStore_ReturnsNullRatherThanRawCiphertext()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string path = ArcanumPaths.GrimoireKeyStoreFile;
@@ -286,25 +324,21 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         Assert.Equal(
             SecretStoreReadStatus.Corrupted,
             (await store.GetGrimoireEncryptionSecretReadResultAsync()).Status);
-
     }
 
     [Fact]
     public async Task GetGrimoireEncryptionSecretAsync_MissingStore_ReturnsNull()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string? result = await store.GetGrimoireEncryptionSecretAsync();
 
         Assert.Null(result);
-
     }
 
     [Fact]
     public async Task GetApiKeyReadResultAsync_ZeroLengthFile_FailsClosedAsCorrupted()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string path = ArcanumPaths.ApiKeyStoreFile;
@@ -322,13 +356,11 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         Assert.Null(result.Value);
 
         Assert.Null(await store.GetApiKeyAsync());
-
     }
 
     [Fact]
     public async Task GetGrimoireEncryptionSecretReadResultAsync_ZeroLengthFile_FailsClosedAsCorrupted()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string path = ArcanumPaths.GrimoireKeyStoreFile;
@@ -342,13 +374,11 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
 
         Assert.Null(result.Value);
-
     }
 
     [Fact]
     public async Task WriteProtectedAsync_PathWithNoParentDirectory_RefusesToWrite()
     {
-
         IDataProtector protector = DataProtectionProvider
             .Create(new DirectoryInfo(_storeDir), _ => { })
             .CreateProtector("Arcanum.Tests.RootPathGuard");
@@ -359,13 +389,11 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
             () => DataProtectionSecretStore.WriteProtectedForTestsAsync(rootPath, "secret", protector));
 
         Assert.Contains("Invalid secret store path", exception.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task SaveApiKeyAsync_WhenAtomicReplaceFails_LeavesNoStagedCiphertextBehind()
     {
-
         using DataProtectionSecretStore store = CreateStore();
 
         string path = ArcanumPaths.ApiKeyStoreFile;
@@ -383,7 +411,6 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         Assert.Empty(leftovers);
 
         Assert.True(Directory.Exists(path));
-
     }
 
     // Rotation must drop the cached digest of the retired key. Without the invalidation the
@@ -391,7 +418,6 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
     [Fact]
     public async Task SaveApiKeyAsync_InvalidatesDigestCache()
     {
-
         ApiKeyDigestCache digestCache = new(new FakeTimeProvider());
 
         using DataProtectionSecretStore store = CreateStore(digestCache);
@@ -405,16 +431,12 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         Assert.False(digestCache.TryGetDigest(out byte[]? retiredDigest));
 
         Assert.Null(retiredDigest);
-
     }
 
     private void SetEnvironment(string name, string value)
     {
-
         _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
 
         global::System.Environment.SetEnvironmentVariable(name, value);
-
     }
-
 }

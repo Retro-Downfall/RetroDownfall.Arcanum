@@ -326,7 +326,7 @@ public sealed class FileEncryptionKeyProvider :
             throw;
         }
 
-        if (result.Status == SecretStoreReadStatus.Corrupted)
+        if (result.Status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable)
         {
             _runtimeStatus.PublishUnavailable();
 
@@ -417,7 +417,7 @@ public sealed class FileEncryptionKeyProvider :
                 throw new EncryptedBlobKeyException(MissingRecoveryMessage);
             }
 
-            if (result.Status == SecretStoreReadStatus.Corrupted)
+            if (result.Status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable)
             {
                 throw new EncryptedBlobKeyException(result.Message ?? MissingRecoveryMessage);
             }

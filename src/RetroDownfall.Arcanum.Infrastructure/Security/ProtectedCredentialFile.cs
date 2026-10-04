@@ -18,7 +18,11 @@ internal static class ProtectedCredentialFile
 
     /// <summary>
     /// Returns <see cref="SecretStoreReadStatus.Ok"/> with the decrypted text, which may be blank: the
-    /// caller decides what a blank credential means.
+    /// caller decides what a blank credential means. Only content that is present and does not
+    /// decrypt (or is empty) is <see cref="SecretStoreReadStatus.Corrupted"/> and carries
+    /// <paramref name="corruptMessage"/>; a file that could not be read at all is
+    /// <see cref="SecretStoreReadStatus.Unreadable"/> with retry guidance, because nothing is known
+    /// about its content and the corrupt guidance may tell an operator to delete it.
     /// </summary>
     internal static async Task<SecretStoreReadResult> ReadAsync(
         string path,
@@ -37,7 +41,7 @@ internal static class ProtectedCredentialFile
 
         if (read.Status != SecureFileReadStatus.Success)
         {
-            return SecretStoreReadResult.Corrupted(corruptMessage);
+            return SecretStoreReadResult.Unreadable(UnreadableMessage(path, read.Status));
         }
 
         byte[] cipher = read.Bytes.ToArray();
@@ -70,6 +74,25 @@ internal static class ProtectedCredentialFile
         {
             CryptographicOperations.ZeroMemory(cipher);
         }
+    }
+
+    /// <summary>
+    /// Fixed retry guidance naming only the file and the kind of refusal. Never names a remedy that
+    /// deletes anything: the file may well hold the only copy of a live credential.
+    /// </summary>
+    internal static string UnreadableMessage(string path, SecureFileReadStatus status)
+    {
+        string reason = status switch
+        {
+            SecureFileReadStatus.AccessDenied => "access denied",
+            SecureFileReadStatus.TooLarge => $"larger than the {MaxProtectedSecretBytes / 1024} KiB limit",
+            SecureFileReadStatus.Rejected => "not a single-link regular file",
+            _ => "I/O error",
+        };
+
+        return $"{Path.GetFileName(path)} exists but could not be read ({reason}). It was left unchanged "
+            + "and is not treated as corrupt: make it a regular file owned by the current user with "
+            + "owner-only permissions, then retry. No replacement is generated while it is unreadable.";
     }
 
     internal static async Task WriteAsync(

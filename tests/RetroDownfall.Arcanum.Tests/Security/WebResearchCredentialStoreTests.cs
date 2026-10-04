@@ -276,24 +276,22 @@ public sealed class WebResearchCredentialStoreTests : IDisposable
     [Fact]
     public async Task Oversized_fallback_is_reported_without_unbounded_read()
     {
-
         string path = ArcanumPaths.PerplexityApiKeyStoreFile;
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         await using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
-
             stream.SetLength(WebResearchCredentialStore.MaxProtectedSecretBytes + 1L);
-
         }
 
         using WebResearchCredentialStore store = CreateStore(new UnavailableStore());
 
         SecretStoreReadResult result = await store.GetPerplexityApiKeyReadResultAsync();
 
-        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
-
+        // Over the ceiling is refused without reading it, so its content is unknown: unreadable,
+        // not corrupt.
+        Assert.Equal(SecretStoreReadStatus.Unreadable, result.Status);
     }
 
     [Fact]

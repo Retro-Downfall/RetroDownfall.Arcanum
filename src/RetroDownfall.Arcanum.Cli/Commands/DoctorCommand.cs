@@ -829,7 +829,7 @@ public sealed class DoctorCommand(
             missingExplicit == 0 && corrupt == 0 ? "ok" : "warn",
             $"{present}/{references.Count} credential(s) resolve from an environment reference or "
             + $"the secure store; {missingExplicit} explicit reference(s) are missing; "
-            + $"{corrupt} stored credential(s) are corrupt; values are never shown.");
+            + $"{corrupt} stored credential(s) are corrupt or unreadable; values are never shown.");
     }
 
     /// <summary>
@@ -877,13 +877,15 @@ public sealed class DoctorCommand(
                 environmentVariable,
                 stored.Status == SecretStoreReadStatus.Ok,
                 explicitReference,
-                stored.Status == SecretStoreReadStatus.Corrupted,
+                stored.Status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable,
                 stored.Status switch
                 {
                     SecretStoreReadStatus.Ok => "set in the secure store (value not shown)",
                     SecretStoreReadStatus.Corrupted =>
                         "stored but undecryptable; re-run 'arcanum setup' or "
                         + $"'arcanum key provider set {label}'",
+                    SecretStoreReadStatus.Unreadable =>
+                        "stored but unreadable; make the mirror file an owner-only regular file and retry",
                     _ => "not set",
                 }));
         }
@@ -917,13 +919,15 @@ public sealed class DoctorCommand(
                     environmentVariable,
                     stored.Status == SecretStoreReadStatus.Ok,
                     !string.IsNullOrWhiteSpace(webResearch.CredentialEnvironmentVariable),
-                    stored.Status == SecretStoreReadStatus.Corrupted,
+                    stored.Status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable,
                     stored.Status switch
                     {
                         SecretStoreReadStatus.Ok => "set in the secure store (value not shown)",
                         SecretStoreReadStatus.Corrupted =>
                             "stored but undecryptable; re-run 'arcanum setup' or "
                             + "'arcanum key provider set perplexity'",
+                        SecretStoreReadStatus.Unreadable =>
+                            "stored but unreadable; make the mirror file an owner-only regular file and retry",
                         _ => "not set",
                     }));
             }
