@@ -619,11 +619,26 @@ internal sealed class SagaMemoryErasureService(
                 ? commit(transaction, cancellationToken)
                 : transaction.CommitAsync(cancellationToken)).ConfigureAwait(false);
         }
-        catch (Exception failure) when (failure is not OperationCanceledException && !IsBusy(failure))
+        catch (Exception failure) when (failure is not OperationCanceledException && !SqliteBusyRetry.IsBusyOrLocked(failure))
         {
             // A busy COMMIT left the transaction open, and the retry's first step re-probes the receipt.
             // Anything else may have persisted the frame before it failed, so the outcome is uncertain.
-            throw new UncertainCommitException(failure);
+            // The transaction is rolled back here, where a rollback that fails is recorded rather than
+            // left to replace the commit's own failure on the way out of this method: a COMMIT that
+            // persisted behind the transaction object's back leaves it believing it is still open, and
+            // its rollback on disposal then has nothing to roll back.
+            bool rollbackFailed = false;
+
+            try
+            {
+                await transaction.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                rollbackFailed = true;
+            }
+
+            throw new UncertainCommitException(failure, rollbackFailed);
         }
 
         return new Applied(receipt, Replayed: false);
@@ -652,20 +667,6 @@ internal sealed class SagaMemoryErasureService(
         ExceptionDispatchInfo.Capture(uncertain.InnerException!).Throw();
 
         throw new UnreachableException();
-    }
-
-    /// <summary>Whether a failure is SQLite's busy or locked answer, which the busy retry handles.</summary>
-    private static bool IsBusy(Exception failure)
-    {
-        for (Exception? current = failure; current is not null; current = current.InnerException)
-        {
-            if (current is SqliteException sqlite)
-            {
-                return sqlite.SqliteErrorCode is 5 or 6;
-            }
-        }
-
-        return false;
     }
 
     /// <summary>
@@ -1197,8 +1198,4 @@ internal sealed class SagaMemoryErasureService(
         MemoryErasureEffectFacts Facts);
 
     private sealed record Applied(MemoryErasureReceiptRow Receipt, bool Replayed);
-
-    /// <summary>A <c>COMMIT</c> that failed in a way that may still have persisted.</summary>
-    private sealed class UncertainCommitException(Exception commitFailure)
-        : Exception("The erase's commit failed, and its outcome is settled by its receipt.", commitFailure);
 }

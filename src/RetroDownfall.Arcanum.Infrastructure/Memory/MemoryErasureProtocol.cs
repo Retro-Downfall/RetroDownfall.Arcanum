@@ -190,7 +190,7 @@ internal static class MemoryErasureProtocol
 
         ArgumentNullException.ThrowIfNull(notes);
 
-        if (InsideTransaction(connection))
+        if (MemoryErasureEvidence.InTransaction(connection))
         {
             throw new InvalidOperationException(
                 "An erase is finished only after its transaction commits: the scrub runs outside every transaction of the request.");
@@ -324,16 +324,12 @@ internal static class MemoryErasureProtocol
     /// </summary>
     private static void RequireOutsideTransaction(SqliteConnection connection)
     {
-        if (InsideTransaction(connection))
+        if (MemoryErasureEvidence.InTransaction(connection))
         {
             throw new InvalidOperationException(
                 "Erasure key access can read the OS credential store, which is never read inside a SQLite transaction; open the key before the erase's transaction begins.");
         }
     }
-
-    private static bool InsideTransaction(SqliteConnection connection) =>
-        connection.State == System.Data.ConnectionState.Open
-        && SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) == 0;
 
     private static void RequireStore(MemoryReviewStore store)
     {

@@ -71,6 +71,23 @@ internal sealed record MemoryErasureEvidenceSnapshot(
 }
 
 /// <summary>
+/// A <c>COMMIT</c> that failed in a way that may still have persisted, and whether the rollback that
+/// followed it failed too.
+/// </summary>
+/// <remarks>
+/// Every store's apply raises this for a commit failure that is not SQLite's busy answer, because the
+/// frame can reach the log before the failure is reported. Its caller then reads the receipt back on a
+/// connection of its own: a receipt is an erase that happened, and its absence is the commit's own
+/// failure.
+/// </remarks>
+internal sealed class UncertainCommitException(Exception commitFailure, bool rollbackFailed = false)
+    : Exception("The erase's commit failed, and its outcome is settled by its receipt.", commitFailure)
+{
+    /// <summary>Whether the rollback that followed the failed commit failed as well.</summary>
+    internal bool RollbackFailed { get; } = rollbackFailed;
+}
+
+/// <summary>
 /// The only reader and writer of the erasure evidence tables: fingerprints, receipts, and receipt
 /// subjects.
 /// </summary>
@@ -110,6 +127,18 @@ internal static class MemoryErasureEvidence
     /// <summary>Every store, in code order, which is the order counts are reported in.</summary>
     private static readonly MemoryReviewStore[] Stores =
         [MemoryReviewStore.Covenant, MemoryReviewStore.Saga, MemoryReviewStore.Lexicon];
+
+    /// <summary>
+    /// Whether the connection is inside a transaction, read from its own autocommit state, which a raw
+    /// <c>BEGIN</c> changes as surely as a transaction object does.
+    /// </summary>
+    internal static bool InTransaction(SqliteConnection connection)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        return connection.State == System.Data.ConnectionState.Open
+            && SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) == 0;
+    }
 
     /// <summary>Whether this catalog can hold evidence: Core 13 or later, with the fingerprint table.</summary>
     /// <remarks>
@@ -308,9 +337,7 @@ internal static class MemoryErasureEvidence
 
         ArgumentNullException.ThrowIfNull(subjectDigests);
 
-        if (transaction is null
-            && (connection.State != System.Data.ConnectionState.Open
-                || SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) != 0))
+        if (transaction is null && !InTransaction(connection))
         {
             throw new ArgumentNullException(
                 nameof(transaction),

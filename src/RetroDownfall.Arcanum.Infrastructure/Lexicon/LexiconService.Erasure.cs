@@ -410,7 +410,7 @@ internal sealed partial class LexiconService : ILexiconErasureService
                     () => ApplyErasureInTransactionAsync(connection, application, cancellationToken),
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (ErasureUncertainCommitException uncertain)
+            catch (UncertainCommitException uncertain)
             {
                 // The transaction is closed, so a commit that did not persist has been rolled back. Only
                 // the receipt can say which happened.
@@ -508,13 +508,13 @@ internal sealed partial class LexiconService : ILexiconErasureService
                 ? commit(connection, cancellationToken)
                 : ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT")).ConfigureAwait(false);
         }
-        catch (Exception failure) when (failure is not OperationCanceledException && !IsErasureCommitBusy(failure))
+        catch (Exception failure) when (failure is not OperationCanceledException && !SqliteBusyRetry.IsBusyOrLocked(failure))
         {
             // A busy COMMIT persisted nothing, and the retry's first step re-probes the receipt. Anything
             // else may have persisted the frame before it failed, so the outcome is uncertain.
             await RollbackOpenErasureAsync(connection).ConfigureAwait(false);
 
-            throw new ErasureUncertainCommitException(failure);
+            throw new UncertainCommitException(failure);
         }
         catch
         {
@@ -919,7 +919,7 @@ internal sealed partial class LexiconService : ILexiconErasureService
         MemoryErasureScrubber scrubber,
         Guid mutationId,
         byte[] requestDigest,
-        ErasureUncertainCommitException uncertain)
+        UncertainCommitException uncertain)
     {
         Result<MemoryErasureReceiptRow?> reread = await scrubber
             .ReadCommittedReceiptAsync(mutationId, CancellationToken.None)
@@ -940,24 +940,10 @@ internal sealed partial class LexiconService : ILexiconErasureService
     /// <summary>Rolls back only a transaction that is still open, as a failed commit may or may not leave one.</summary>
     private async Task RollbackOpenErasureAsync(SqliteConnection connection)
     {
-        if (connection.State == ConnectionState.Open && SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) == 0)
+        if (MemoryErasureEvidence.InTransaction(connection))
         {
             await TryRollbackAsync(connection, "erasure").ConfigureAwait(false);
         }
-    }
-
-    /// <summary>Whether a failure is SQLite's busy or locked answer, which the busy retry handles.</summary>
-    private static bool IsErasureCommitBusy(Exception failure)
-    {
-        for (Exception? current = failure; current is not null; current = current.InnerException)
-        {
-            if (current is SqliteException sqlite)
-            {
-                return sqlite.SqliteErrorCode is 5 or 6;
-            }
-        }
-
-        return false;
     }
 
     /// <summary>
@@ -1023,8 +1009,4 @@ internal sealed partial class LexiconService : ILexiconErasureService
         MemoryErasureEffectFacts Facts);
 
     private sealed record ErasureApplied(MemoryErasureReceiptRow Receipt, bool Replayed);
-
-    /// <summary>A <c>COMMIT</c> that failed in a way that may still have persisted.</summary>
-    private sealed class ErasureUncertainCommitException(Exception commitFailure)
-        : Exception("The erase's commit failed, and its outcome is settled by its receipt.", commitFailure);
 }

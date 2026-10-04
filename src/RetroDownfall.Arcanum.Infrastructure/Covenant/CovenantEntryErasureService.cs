@@ -784,7 +784,7 @@ internal sealed class CovenantEntryErasureService(
                 ? commit(transaction, cancellationToken)
                 : transaction.CommitAsync(cancellationToken)).ConfigureAwait(false);
         }
-        catch (Exception failure) when (failure is not OperationCanceledException && !IsBusy(failure))
+        catch (Exception failure) when (failure is not OperationCanceledException && !SqliteBusyRetry.IsBusyOrLocked(failure))
         {
             // A busy COMMIT left the transaction open, and the retry's first step re-probes the receipt.
             // Anything else may have persisted the frame before it failed, so the outcome is uncertain.
@@ -1076,20 +1076,6 @@ internal sealed class CovenantEntryErasureService(
             _ => false,
         };
 
-    /// <summary>Whether a failure is SQLite's busy or locked answer, which the busy retry handles.</summary>
-    private static bool IsBusy(Exception failure)
-    {
-        for (Exception? current = failure; current is not null; current = current.InnerException)
-        {
-            if (current is SqliteException sqlite)
-            {
-                return sqlite.SqliteErrorCode is 5 or 6;
-            }
-        }
-
-        return false;
-    }
-
     /// <summary>The validated request, its operation scope, its normalized key and its erasure identity.</summary>
     private sealed record Target(
         CovenantErasePrepareRequest Request,
@@ -1118,14 +1104,4 @@ internal sealed class CovenantEntryErasureService(
         MemoryErasureEffectFacts Facts);
 
     private sealed record Applied(MemoryErasureReceiptRow Receipt, bool Replayed);
-
-    /// <summary>
-    /// A <c>COMMIT</c> that failed in a way that may still have persisted, and whether the rollback that
-    /// followed it failed too.
-    /// </summary>
-    private sealed class UncertainCommitException(Exception commitFailure, bool rollbackFailed)
-        : Exception("The erase's commit failed, and its outcome is settled by its receipt.", commitFailure)
-    {
-        internal bool RollbackFailed { get; } = rollbackFailed;
-    }
 }

@@ -1042,6 +1042,62 @@ public sealed class SagaErasureEndpointTests
     }
 
     /// <summary>
+    /// A <c>COMMIT</c> that persisted through a statement of its own and then reported a failure leaves the
+    /// transaction object believing it is still open, so its rollback on disposal fails too. That failure
+    /// must not replace the commit's: the receipt is still read back on a connection of its own and the
+    /// committed erase is reported.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_commit_that_persisted_while_the_transaction_still_believes_it_is_open_reports_the_committed_erase()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        UseSeamedService(
+            factory,
+            commit: static async (transaction, cancellationToken) =>
+            {
+                await using (SqliteCommand commit = transaction.Connection!.CreateCommand())
+                {
+                    commit.Transaction = transaction;
+
+                    commit.CommandText = "COMMIT;";
+
+                    _ = await commit.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                throw new SqliteException("disk I/O error", 10);
+            });
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
+
+        SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
+
+        MemoryErasurePreflightDto preflight = await PrepareOkAsync(driver, prepare);
+
+        MemoryErasureResultDto result = await driver.ApplySagaAsync(Apply(prepare, preflight));
+
+        Assert.False(result.Replayed);
+
+        Assert.Equal(prepare.MutationId, result.MutationId);
+
+        Assert.Equal(preflight.EffectDigest, result.EffectDigest);
+
+        Assert.Equal(preflight.Plan.RowsToRemove, result.Local.RemovedRowCount);
+
+        await AssertShowRefusedAsync(client, target, HttpStatusCode.NotFound, ErrorCodes.Saga.NotFound);
+
+        Assert.Equal(1, await ReceiptsAsync(factory, prepare.MutationId));
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
     /// A <c>COMMIT</c> that fails before anything persisted reports the failure and no result: the
     /// receipt is absent on a fresh connection, so nothing is said to have been erased.
     /// </summary>

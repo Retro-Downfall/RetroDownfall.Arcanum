@@ -136,8 +136,7 @@ internal static class MemoryErasureGuard
 
         ArgumentNullException.ThrowIfNull(keys);
 
-        if (connection.State == System.Data.ConnectionState.Open
-            && SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) == 0)
+        if (MemoryErasureEvidence.InTransaction(connection))
         {
             throw new InvalidOperationException(
                 "Erasure guard preparation can read the OS credential store, which is never read inside a SQLite transaction; prepare before the write's transaction begins.");
