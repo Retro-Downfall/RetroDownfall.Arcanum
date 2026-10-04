@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Core.ProvingGrounds;
 public sealed class ProvingGroundsArbiter(
     IArcanumIntelligenceProvider intelligence) : IProvingGroundsArbiter
 {
-
     private static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromSeconds(1);
 
     public async Task<IReadOnlyList<InquisitorVerdict>> AdjudicateAsync(
@@ -117,89 +116,69 @@ public sealed class ProvingGroundsArbiter(
 
         using (document)
         {
-            JsonElement root = document.RootElement;
-
-            if (inquisitor.Schema.ValueKind == JsonValueKind.Undefined
-                || inquisitor.Schema.ValueKind == JsonValueKind.Null)
+            if (inquisitor.Schema.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
             {
                 return new InquisitorVerdict("jsonSchema", inquisitor.Label, true, "Output is valid JSON.");
             }
 
-            if (root.ValueKind != JsonValueKind.Object)
+            // The shared validator is the single definition of the supported keyword set (type,
+            // properties, required, items, enum, additionalProperties); a schema it cannot read is a
+            // failed verdict, never a silent pass.
+            using JsonDocument schemaDocument = JsonDocument.Parse(inquisitor.Schema.GetRawText());
+
+            Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schemaDocument);
+
+            if (parsed.IsFailure)
             {
                 return new InquisitorVerdict(
                     "jsonSchema",
                     inquisitor.Label,
                     false,
-                    "Output JSON root must be an object for schema validation.");
+                    $"Schema is not valid: {parsed.Error.Message}");
             }
 
-            JsonElement schema = inquisitor.Schema;
-
-            if (schema.TryGetProperty("required", out JsonElement required)
-                && required.ValueKind == JsonValueKind.Array)
+            // W3.6: fail closed on a declared type outside the supported set rather than passing it —
+            // an author who declares an unrecognized type must not get a silent green verdict.
+            if (FindUnsupportedType(parsed.Value!) is { } unsupportedType)
             {
-                foreach (JsonElement item in required.EnumerateArray())
-                {
-                    if (item.ValueKind != JsonValueKind.String)
-                    {
-                        continue;
-                    }
-
-                    string? name = item.GetString();
-
-                    if (string.IsNullOrWhiteSpace(name))
-                    {
-                        continue;
-                    }
-
-                    if (!root.TryGetProperty(name, out _))
-                    {
-                        return new InquisitorVerdict(
-                            "jsonSchema",
-                            inquisitor.Label,
-                            false,
-                            $"Required property '{name}' is missing from output JSON.");
-                    }
-                }
+                return new InquisitorVerdict(
+                    "jsonSchema",
+                    inquisitor.Label,
+                    false,
+                    $"Schema declares unsupported type '{unsupportedType}'.");
             }
 
-            if (schema.TryGetProperty("properties", out JsonElement properties)
-                && properties.ValueKind == JsonValueKind.Object)
-            {
-                foreach (JsonProperty property in properties.EnumerateObject())
-                {
-                    if (!property.Value.TryGetProperty("type", out JsonElement typeElement)
-                        || typeElement.ValueKind != JsonValueKind.String)
-                    {
-                        continue;
-                    }
+            ValidationResult validation = JsonSchemaHelper.Validate(output, parsed.Value!);
 
-                    string? expectedType = typeElement.GetString();
-
-                    if (string.IsNullOrWhiteSpace(expectedType))
-                    {
-                        continue;
-                    }
-
-                    if (!root.TryGetProperty(property.Name, out JsonElement valueElement))
-                    {
-                        continue;
-                    }
-
-                    if (!JsonValueMatchesDeclaredType(valueElement, expectedType))
-                    {
-                        return new InquisitorVerdict(
-                            "jsonSchema",
-                            inquisitor.Label,
-                            false,
-                            $"Property '{property.Name}' has type '{DescribeJsonValueKind(valueElement.ValueKind)}' but schema expects '{expectedType}'.");
-                    }
-                }
-            }
-
-            return new InquisitorVerdict("jsonSchema", inquisitor.Label, true, "Output satisfies the lightweight JSON schema subset.");
+            return validation.IsValid
+                ? new InquisitorVerdict("jsonSchema", inquisitor.Label, true, "Output satisfies the JSON schema.")
+                : new InquisitorVerdict(
+                    "jsonSchema",
+                    inquisitor.Label,
+                    false,
+                    string.Join(" ", validation.Errors));
         }
+    }
+
+    private static readonly HashSet<string> SupportedSchemaTypes =
+        new(StringComparer.Ordinal) { "string", "number", "integer", "boolean", "object", "array", "null" };
+
+    private static string? FindUnsupportedType(JsonSchemaDefinition schema)
+    {
+        if (!string.IsNullOrEmpty(schema.Type) && !SupportedSchemaTypes.Contains(schema.Type))
+        {
+            return schema.Type;
+        }
+
+        foreach (JsonSchemaDefinition property in schema.Properties.Values)
+        {
+            if (FindUnsupportedType(property) is { } nested)
+            {
+                return nested;
+            }
+        }
+
+        return schema.Items is null ? null : FindUnsupportedType(schema.Items);
     }
 
     private async Task<InquisitorVerdict> AdjudicateSemanticAsync(
@@ -286,37 +265,6 @@ public sealed class ProvingGroundsArbiter(
         return new InquisitorVerdict("semantic", inquisitor.Label, passed, detail);
     }
 
-    private static bool JsonValueMatchesDeclaredType(JsonElement value, string expectedType)
-    {
-        return expectedType switch
-        {
-            "string" => value.ValueKind == JsonValueKind.String,
-            "number" => value.ValueKind == JsonValueKind.Number,
-            "integer" => value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out _),
-            "boolean" => value.ValueKind == JsonValueKind.True || value.ValueKind == JsonValueKind.False,
-            "object" => value.ValueKind == JsonValueKind.Object,
-            "array" => value.ValueKind == JsonValueKind.Array,
-            "null" => value.ValueKind == JsonValueKind.Null,
-            // W3.6: fail closed on an unrecognized declared type rather than passing it — an author
-            // who declares a type outside the supported subset must not get a silent green verdict.
-            _ => false,
-        };
-    }
-
-    private static string DescribeJsonValueKind(JsonValueKind kind)
-    {
-        return kind switch
-        {
-            JsonValueKind.String => "string",
-            JsonValueKind.Number => "number",
-            JsonValueKind.True or JsonValueKind.False => "boolean",
-            JsonValueKind.Object => "object",
-            JsonValueKind.Array => "array",
-            JsonValueKind.Null => "null",
-            _ => kind.ToString(),
-        };
-    }
-
     private static string Truncate(string value, int maxLength)
     {
         if (value.Length <= maxLength)
@@ -326,5 +274,4 @@ public sealed class ProvingGroundsArbiter(
 
         return value[..Utf8Truncation.SafeCharSliceLength(value, maxLength)] + "...";
     }
-
 }

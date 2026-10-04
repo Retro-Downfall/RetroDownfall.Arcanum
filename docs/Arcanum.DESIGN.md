@@ -4572,7 +4572,7 @@ In-memory `Trial` / `TrialResult` / polymorphic `Inquisitor` (`regex`, `jsonSche
 
 ### 20.3 Key decisions
 
-Semantic judge uses FastModel→DefaultModel; jsonSchema is a lightweight subset (not full draft 2020-12). Industry LLM-test jargon prohibited in identifiers.
+Semantic judge uses FastModel→DefaultModel; jsonSchema delegates to `JsonSchemaHelper` and supports only `type` (an unrecognized type fails), `properties`, `required`, `items`, `enum`, and boolean `additionalProperties` (not full draft 2020-12; other keywords are ignored and an unreadable schema is a failed verdict). Industry LLM-test jargon prohibited in identifiers.
 
 ### 20.4 Error codes
 
