@@ -3,7 +3,6 @@ using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -30,7 +29,7 @@ internal static class CodexEndpoints
     {
         apiGroup.MapGet(
             "/campaigns/{id:guid}/codex",
-            async (Guid id, ICampaignRepository repo, IOptionsSnapshot<ArcanumSettings> settings, HttpContext ctx) =>
+            async (Guid id, ICampaignRepository repo, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -50,7 +49,6 @@ internal static class CodexEndpoints
                 Result<CodexContentDto> codex = await ReadCodexDtoAsync(
                     campaign.Path,
                     Path.Combine(campaign.Path, "CODEX.md"),
-                    settings,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
 
@@ -64,7 +62,6 @@ internal static class CodexEndpoints
                 Guid id,
                 CodexPutRequest? body,
                 ICampaignRepository repo,
-                IOptionsSnapshot<ArcanumSettings> settings,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
@@ -96,7 +93,6 @@ internal static class CodexEndpoints
                     campaign.Path,
                     codexPath,
                     body.Content,
-                    settings,
                     traceId,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
@@ -109,7 +105,6 @@ internal static class CodexEndpoints
                 Result<CodexContentDto> codex = await ReadCodexDtoAsync(
                     campaign.Path,
                     codexPath,
-                    settings,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
 
@@ -149,7 +144,7 @@ internal static class CodexEndpoints
 
         apiGroup.MapGet(
             "/codex",
-            async (HttpContext ctx, IOptionsSnapshot<ArcanumSettings> settings) =>
+            async (HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -158,7 +153,6 @@ internal static class CodexEndpoints
                 Result<CodexContentDto> codex = await ReadCodexDtoAsync(
                     ArcanumPaths.GrimoireDirectory,
                     globalPath,
-                    settings,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
 
@@ -168,7 +162,7 @@ internal static class CodexEndpoints
 
         apiGroup.MapPut(
             "/codex",
-            async (CodexPutRequest? body, IOptionsSnapshot<ArcanumSettings> settings, HttpContext ctx) =>
+            async (CodexPutRequest? body, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -186,7 +180,6 @@ internal static class CodexEndpoints
                     ArcanumPaths.GrimoireDirectory,
                     globalPath,
                     body.Content,
-                    settings,
                     traceId,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
@@ -199,7 +192,6 @@ internal static class CodexEndpoints
                 Result<CodexContentDto> codex = await ReadCodexDtoAsync(
                     ArcanumPaths.GrimoireDirectory,
                     globalPath,
-                    settings,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
 
@@ -269,7 +261,6 @@ internal static class CodexEndpoints
     internal static async Task<Result<CodexContentDto>> ReadCodexDtoAsync(
         string containmentRoot,
         string path,
-        IOptionsSnapshot<ArcanumSettings> settings,
         CancellationToken cancellationToken)
     {
         string fullPath = Path.GetFullPath(path);
@@ -292,13 +283,13 @@ internal static class CodexEndpoints
         string containmentRoot,
         string path,
         string content,
-        IOptionsSnapshot<ArcanumSettings> settings,
         string traceId,
         CancellationToken cancellationToken)
     {
-        // W3.5: use the EFFECTIVE codex cap (min of the codex cap and Workspaces:MaxFileReadSizeBytes)
-        // so the write bound matches the read path — otherwise PUT could accept content the codex
-        // GET / inference read path then refuses.
+        // W3.5: use the EFFECTIVE codex cap (min of the clamped codex cap and the code-owned
+        // workspace read cap, ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes) so the write
+        // bound matches the read path — otherwise PUT could accept content the codex GET /
+        // inference read path then refuses. No setting is consulted.
         long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
         int contentByteCount = Encoding.UTF8.GetByteCount(content);

@@ -1,7 +1,5 @@
 using System.Security.Cryptography;
 
-using Microsoft.Extensions.Options;
-
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;

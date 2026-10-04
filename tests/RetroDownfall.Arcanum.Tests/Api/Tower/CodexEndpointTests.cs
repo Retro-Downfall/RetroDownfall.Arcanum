@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -16,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 /// </summary>
 public sealed class CodexEndpointTests : IDisposable
 {
-
     private readonly string _base;
 
     private readonly string _root;
@@ -25,7 +23,6 @@ public sealed class CodexEndpointTests : IDisposable
 
     public CodexEndpointTests()
     {
-
         _base = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"codex-endpoint-{Guid.NewGuid():N}");
 
         _root = Path.Combine(_base, "campaign");
@@ -35,12 +32,10 @@ public sealed class CodexEndpointTests : IDisposable
         Directory.CreateDirectory(_root);
 
         Directory.CreateDirectory(_outside);
-
     }
 
     public void Dispose()
     {
-
         try
         {
             Directory.Delete(_base, recursive: true);
@@ -49,13 +44,11 @@ public sealed class CodexEndpointTests : IDisposable
         {
             // Best-effort cleanup for temp test directories.
         }
-
     }
 
     [Fact]
     public async Task WriteCodexAsync_symlinked_codex_escaping_the_root_leaves_the_target_untouched()
     {
-
         string target = Path.Combine(_outside, "authorized_keys");
 
         await File.WriteAllTextAsync(target, "original-secret");
@@ -68,20 +61,17 @@ public sealed class CodexEndpointTests : IDisposable
             _root,
             codexPath,
             "attacker-content",
-            CreateSettings(),
             "trace",
             CancellationToken.None);
 
         Assert.Equal("original-secret", await File.ReadAllTextAsync(target));
 
         Assert.NotNull(failure);
-
     }
 
     [Fact]
     public async Task ReadCodexDtoAsync_symlinked_codex_escaping_the_root_does_not_disclose_the_target()
     {
-
         string target = Path.Combine(_outside, "credentials");
 
         await File.WriteAllTextAsync(target, "aws_secret_access_key = hunter2");
@@ -93,26 +83,22 @@ public sealed class CodexEndpointTests : IDisposable
         Result<CodexContentDto> codex = await CodexEndpoints.ReadCodexDtoAsync(
             _root,
             codexPath,
-            CreateSettings(),
             CancellationToken.None);
 
         Assert.True(codex.IsFailure);
 
         Assert.Equal("Codex.PathNotContained", codex.Error.Code);
-
     }
 
     [Fact]
     public async Task WriteCodexAsync_then_ReadCodexDtoAsync_round_trips_a_contained_codex()
     {
-
         string codexPath = Path.Combine(_root, "CODEX.md");
 
         IResult? failure = await CodexEndpoints.WriteCodexAsync(
             _root,
             codexPath,
             "# Codex\n\nSpells go here.",
-            CreateSettings(),
             "trace",
             CancellationToken.None);
 
@@ -121,7 +107,6 @@ public sealed class CodexEndpointTests : IDisposable
         Result<CodexContentDto> codex = await CodexEndpoints.ReadCodexDtoAsync(
             _root,
             codexPath,
-            CreateSettings(),
             CancellationToken.None);
 
         Assert.True(codex.IsSuccess);
@@ -129,17 +114,14 @@ public sealed class CodexEndpointTests : IDisposable
         Assert.True(codex.Value.Exists);
 
         Assert.Equal("# Codex\n\nSpells go here.", codex.Value.Content);
-
     }
 
     [Fact]
     public async Task ReadCodexDtoAsync_reports_a_missing_codex_as_absent_rather_than_failing()
     {
-
         Result<CodexContentDto> codex = await CodexEndpoints.ReadCodexDtoAsync(
             _root,
             Path.Combine(_root, "CODEX.md"),
-            CreateSettings(),
             CancellationToken.None);
 
         Assert.True(codex.IsSuccess);
@@ -147,10 +129,5 @@ public sealed class CodexEndpointTests : IDisposable
         Assert.False(codex.Value.Exists);
 
         Assert.Equal(string.Empty, codex.Value.Content);
-
     }
-
-    private static IOptionsSnapshot<ArcanumSettings> CreateSettings() =>
-        new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings());
-
 }

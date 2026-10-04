@@ -274,7 +274,6 @@ internal static partial class SpellExecutionEndpoints
                 ISpellRepository repo,
                 SpellWorkspaceResolver workspaceResolver,
                 ICampaignRepository campaignRepository,
-                IOptionsSnapshot<ArcanumSettings> settings,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
