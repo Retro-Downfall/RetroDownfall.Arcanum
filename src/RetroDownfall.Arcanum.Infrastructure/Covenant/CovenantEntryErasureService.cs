@@ -73,8 +73,9 @@ internal interface ICovenantEntryErasurePreparer
 /// transaction itself fails, the likeliest shape of a commit that persisted, and this request's
 /// receipt still proves the commit. The scope stays closed, and the erase asks for manual recovery,
 /// whenever neither outcome is proved: a read that cannot be made or throws, or a failed rollback
-/// whose read finds no receipt of this request. The erase publishes no availability, generation or authority transition,
-/// so a commit needs no health publication before it reopens.</para>
+/// whose read finds no receipt of this request. A committed erase appended absent deltas and moved the
+/// canonical search sequence, so after its <c>COMMIT</c>, while it still holds the closure and before the
+/// closure reopens, it republishes <c>CanonicalMutation</c> on the connection that committed.</para>
 ///
 /// <para>The result is built from the receipt only after a commit that succeeded or whose receipt a fresh
 /// connection read back, and only after the closure has reopened, so the write-ahead-log scrub never
