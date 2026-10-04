@@ -57,7 +57,6 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     ICovenantManagedFileErasureKernel managedFiles,
     CovenantSensitivePurgeAuthorityScope authorityScope) : ICovenantSensitiveArtifactPurger
 {
-
     /// <summary>
     /// Replaces the policy's executor for a kind, if set, so a test can reach an executor the policy does
     /// not define: the one way to show that a labelled target nothing can delete is blocked rather than
@@ -69,27 +68,22 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         IReadOnlyList<CovenantSensitivePurgeTarget> targets,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(targets);
 
         if (targets.Count is 0 or > ICovenantSensitiveArtifactPurger.MaxTargets)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 $"A sensitivity purge carries between 1 and {ICovenantSensitiveArtifactPurger.MaxTargets} artifacts.");
-
         }
 
         // Duplicates would be examined twice, and the second look would find the row already gone
         // without being able to tell that from a row somebody else removed.
         if (targets.Select(static target => target.ArtifactId).Distinct().Count() != targets.Count)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "A sensitivity purge cannot name the same artifact twice.");
-
         }
 
         Result<List<LabeledTarget>> resolved = await ResolveLabelsAsync(targets, cancellationToken)
@@ -97,18 +91,14 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
         if (resolved.IsFailure)
         {
-
             return resolved.Error;
-
         }
 
         List<LabeledTarget> labeled = resolved.Value;
 
         if (labeled.Count == 0)
         {
-
             return Unlabeled(targets);
-
         }
 
         // A labelled artifact is the only thing that needs authority, so the check happens here rather
@@ -116,20 +106,16 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         // installation with the feature off fail for want of a context nothing ever issues.
         if (authorityScope.Current is not { } operatorContext)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "Deleting a labelled artifact requires operator authority issued for a sensitivity retention purge.");
-
         }
 
         Result<CovenantOperationScope> owner = ResolveSingleOwner(labeled);
 
         if (owner.IsFailure)
         {
-
             return owner.Error;
-
         }
 
         Result<CovenantWriteLease> lease = await gate
@@ -138,9 +124,7 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
         if (lease.IsFailure)
         {
-
             return lease.Error;
-
         }
 
         await using CovenantWriteLease held = lease.Value;
@@ -150,9 +134,7 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
         if (authority.IsFailure)
         {
-
             return authority.Error;
-
         }
 
         return await ExecuteAsync(
@@ -160,7 +142,6 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
             labeled,
             authority.Value,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -179,12 +160,10 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         IReadOnlyList<CovenantSensitivePurgeTarget> targets,
         CancellationToken cancellationToken)
     {
-
         List<LabeledTarget> labeled = [];
 
         foreach (CovenantSensitivePurgeTarget target in targets)
         {
-
             Result<ArtifactSensitivityLabel?> label = await ReadLabelAsync(
                 target,
                 "The sensitivity labels could not be read, so nothing was deleted.",
@@ -192,22 +171,16 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
             if (label.IsFailure)
             {
-
                 return label.Error;
-
             }
 
             if (label.Value is { } live)
             {
-
                 labeled.Add(new LabeledTarget(target, live));
-
             }
-
         }
 
         return Result<List<LabeledTarget>>.Success(labeled);
-
     }
 
     /// <summary>
@@ -223,22 +196,16 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         string unavailableMessage,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             return await labels
                 .TryReadLabelAsync(target.Kind, target.ArtifactId, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (SqliteException)
         {
-
             return new Error(ErrorCodes.Covenant.Unavailable, unavailableMessage);
-
         }
-
     }
 
     /// <summary>
@@ -252,28 +219,22 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     /// </remarks>
     private static Result<CovenantOperationScope> ResolveSingleOwner(IReadOnlyList<LabeledTarget> labeled)
     {
-
         Guid? campaignId = labeled[0].Label.CampaignId;
 
         foreach (LabeledTarget candidate in labeled)
         {
-
             if (candidate.Label.CampaignId != campaignId)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.InvalidScope,
                     "A sensitivity purge covers exactly one owner scope; these artifacts span more than one.");
-
             }
-
         }
 
         return Result<CovenantOperationScope>.Success(
             campaignId is { } campaign
                 ? CovenantOperationScope.ForCampaign(campaign)
                 : CovenantOperationScope.Global);
-
     }
 
     /// <summary>
@@ -295,18 +256,15 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         CovenantArtifactErasureAuthority authority,
         CancellationToken cancellationToken)
     {
-
         Dictionary<Guid, CovenantSensitivePurgeResult> results = [];
 
         foreach (CovenantSensitivePurgeTarget target in targets)
         {
-
             results[target.ArtifactId] = new CovenantSensitivePurgeResult(
                 target.ArtifactId,
                 target.Kind,
                 CovenantSensitivePurgeDisposition.Unlabeled,
                 CovenantErasureBlocker.None);
-
         }
 
         CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
@@ -326,62 +284,113 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
         CovenantErasureBlocker? stoppedBy = null;
 
-        foreach (LabeledTarget candidate in ordered)
+        bool anyPurged = false;
+
+        for (int index = 0; index < ordered.Count; index++)
         {
+            LabeledTarget candidate = ordered[index];
 
             if (stoppedBy is { } blocker)
             {
-
                 Record(results, candidate, CovenantSensitivePurgeDisposition.Blocked, blocker);
 
                 continue;
-
             }
 
-            // An executor this coordinator does not dispatch is blocked as an integrity failure: nothing here
-            // can delete the artifact, and answering "unlabelled" would hand it to a raw delete.
-            Result<CovenantArtifactErasureProgress> step = ExecutorOf(candidate) switch
+            Result<CovenantArtifactErasureProgress> step;
+
+            Result<(CovenantSensitivePurgeDisposition Disposition, CovenantErasureBlocker Blocker)> classified;
+
+            try
             {
-                CovenantArtifactPurgeExecutor.DatabaseTransaction =>
-                    await ErasePageAsync([candidate], authority, cancellationToken).ConfigureAwait(false),
-                CovenantArtifactPurgeExecutor.ManagedFileKernel =>
-                    await EraseManagedFileAsync(candidate, authority, cancellationToken).ConfigureAwait(false),
-                _ => Result<CovenantArtifactErasureProgress>.Success(
-                    new CovenantArtifactErasureProgress(1, 0, 1, CovenantErasureBlocker.IntegrityFailure)),
-            };
+                // An executor this coordinator does not dispatch is blocked as an integrity failure: nothing
+                // here can delete the artifact, and answering "unlabelled" would hand it to a raw delete.
+                step = ExecutorOf(candidate) switch
+                {
+                    CovenantArtifactPurgeExecutor.DatabaseTransaction =>
+                        await ErasePageAsync([candidate], authority, cancellationToken).ConfigureAwait(false),
+                    CovenantArtifactPurgeExecutor.ManagedFileKernel =>
+                        await EraseManagedFileAsync(candidate, authority, cancellationToken).ConfigureAwait(false),
+                    _ => Result<CovenantArtifactErasureProgress>.Success(
+                        new CovenantArtifactErasureProgress(1, 0, 1, CovenantErasureBlocker.IntegrityFailure)),
+                };
 
-            if (step.IsFailure)
-            {
+                if (step.IsFailure)
+                {
+                    if (anyPurged)
+                    {
+                        return Interrupted(results, ordered, index, progress);
+                    }
 
-                return step.Error;
+                    return step.Error;
+                }
 
+                progress = progress.Add(step.Value);
+
+                classified = await ClassifyAsync(candidate, step.Value, cancellationToken).ConfigureAwait(false);
             }
-
-            progress = progress.Add(step.Value);
-
-            Result<(CovenantSensitivePurgeDisposition Disposition, CovenantErasureBlocker Blocker)> classified =
-                await ClassifyAsync(candidate, step.Value, cancellationToken).ConfigureAwait(false);
+            catch (OperationCanceledException) when (anyPurged)
+            {
+                return Interrupted(results, ordered, index, progress);
+            }
 
             if (classified.IsFailure)
             {
+                if (anyPurged)
+                {
+                    return Interrupted(results, ordered, index, progress);
+                }
 
                 return classified.Error;
-
             }
 
             Record(results, candidate, classified.Value.Disposition, classified.Value.Blocker);
 
-            if (classified.Value.Disposition is CovenantSensitivePurgeDisposition.Blocked)
+            if (classified.Value.Disposition is CovenantSensitivePurgeDisposition.Purged)
             {
-
-                stoppedBy = classified.Value.Blocker;
-
+                anyPurged = true;
             }
 
+            if (classified.Value.Disposition is CovenantSensitivePurgeDisposition.Blocked)
+            {
+                stoppedBy = classified.Value.Blocker;
+            }
         }
 
         return new CovenantSensitivePurgeOutcome([.. results.Values], progress);
+    }
 
+    /// <summary>
+    /// The outcome of a walk that failed or was cancelled after at least one item had already been
+    /// erased.
+    /// </summary>
+    /// <remarks>
+    /// The erased items' transactions have committed, so a bare failure would lose the one fact the
+    /// caller cannot rediscover: that those artifacts are already gone. The items already classified keep
+    /// their dispositions; the failing item and every labelled item after it are recorded
+    /// <see cref="CovenantSensitivePurgeDisposition.Blocked"/> with
+    /// <see cref="CovenantErasureBlocker.StorageUnavailable"/> and are never dispatched, so the caller
+    /// stops and reports, and a retry finds the purged ones unlabelled. A failure before anything was
+    /// erased is still returned as the failure itself, with its own code.
+    /// </remarks>
+    private static CovenantSensitivePurgeOutcome Interrupted(
+        Dictionary<Guid, CovenantSensitivePurgeResult> results,
+        IReadOnlyList<LabeledTarget> ordered,
+        int failedAt,
+        CovenantArtifactErasureProgress progress)
+    {
+        for (int index = failedAt; index < ordered.Count; index++)
+        {
+            Record(
+                results,
+                ordered[index],
+                CovenantSensitivePurgeDisposition.Blocked,
+                CovenantErasureBlocker.StorageUnavailable);
+        }
+
+        return new CovenantSensitivePurgeOutcome(
+            [.. results.Values],
+            progress.Add(new CovenantArtifactErasureProgress(0, 0, 0, CovenantErasureBlocker.StorageUnavailable)));
     }
 
     /// <summary>
@@ -404,21 +413,16 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         CovenantArtifactErasureProgress step,
         CancellationToken cancellationToken)
     {
-
         if (step.IsBlocked)
         {
-
             return Result<(CovenantSensitivePurgeDisposition, CovenantErasureBlocker)>.Success(
                 (CovenantSensitivePurgeDisposition.Blocked, step.Blocker));
-
         }
 
         if (step.ErasedCount == 1)
         {
-
             return Result<(CovenantSensitivePurgeDisposition, CovenantErasureBlocker)>.Success(
                 (CovenantSensitivePurgeDisposition.Purged, CovenantErasureBlocker.None));
-
         }
 
         Result<ArtifactSensitivityLabel?> reread = await ReadLabelAsync(
@@ -428,16 +432,13 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
         if (reread.IsFailure)
         {
-
             return reread.Error;
-
         }
 
         return Result<(CovenantSensitivePurgeDisposition, CovenantErasureBlocker)>.Success(
             reread.Value is null
                 ? (CovenantSensitivePurgeDisposition.Unlabeled, CovenantErasureBlocker.None)
                 : (CovenantSensitivePurgeDisposition.Blocked, CovenantErasureBlocker.AuthorityStale));
-
     }
 
     private async ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageAsync(
@@ -445,22 +446,18 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         CovenantArtifactErasureAuthority authority,
         CancellationToken cancellationToken)
     {
-
         if (availability.Current.DatasetGeneration is not { } datasetGeneration
             || datasetGeneration == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "The Covenant dataset generation is unavailable, so no erasure page can be computed.");
-
         }
 
         List<CovenantProtectedArtifactErasureItem> items = [];
 
         foreach (LabeledTarget candidate in databaseOwned)
         {
-
             items.Add(
                 new CovenantProtectedArtifactErasureItem(
                     candidate.Target.ArtifactId,
@@ -470,7 +467,6 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
                     candidate.Label,
                     candidate.Label.ArtifactContentDigest,
                     candidate.Label.ArtifactRevision));
-
         }
 
         return await artifacts
@@ -479,7 +475,6 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
                 authority,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -496,27 +491,22 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         CovenantArtifactErasureAuthority authority,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantManagedFileErasureIdentity?> source = await ReadManagedSourceAsync(
             file,
             cancellationToken).ConfigureAwait(false);
 
         if (source.IsFailure)
         {
-
             return source.Error;
-
         }
 
         if (source.Value is not { } identity)
         {
-
             // A labelled managed file with no adopted producer has no durable row naming the file the
             // kernel would be authorized to remove. Reporting a manual blocker keeps the label and the
             // file exactly as found rather than guessing at a path.
             return Result<CovenantArtifactErasureProgress>.Success(
                 new CovenantArtifactErasureProgress(1, 0, 1, CovenantErasureBlocker.ManualOwnershipMismatch));
-
         }
 
         return await managedFiles
@@ -525,14 +515,12 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
                 authority,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async Task<Result<CovenantManagedFileErasureIdentity?>> ReadManagedSourceAsync(
         LabeledTarget file,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = await connections
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -540,7 +528,6 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         return await managedFileRequests
             .TryReadWithinAsync(connection, transaction: null, file.Label, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private static void Record(
@@ -572,5 +559,4 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     private sealed record LabeledTarget(
         CovenantSensitivePurgeTarget Target,
         ArtifactSensitivityLabel Label);
-
 }

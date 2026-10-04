@@ -25,7 +25,6 @@ public sealed class EmbeddingsResetService(
     IServiceProvider serviceProvider,
     ICovenantSensitiveArtifactPurger? purger = null)
 {
-
     private readonly IGrimoireOrdinaryConnectionFactory _connections =
         serviceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
@@ -106,25 +105,19 @@ public sealed class EmbeddingsResetService(
     /// </remarks>
     private static List<SensitiveArtifactKind> LabeledKinds(EmbeddingsResetScope scope)
     {
-
         List<SensitiveArtifactKind> kinds = [];
 
         if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Entry)
         {
-
             kinds.Add(SensitiveArtifactKind.Embedding);
-
         }
 
         if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Saga)
         {
-
             kinds.Add(SensitiveArtifactKind.Saga);
-
         }
 
         return kinds;
-
     }
 
     /// <summary>
@@ -150,31 +143,25 @@ public sealed class EmbeddingsResetService(
         EmbeddingsResetScope scope,
         CancellationToken cancellationToken)
     {
-
         List<CovenantSensitivePurgeResult> results = [];
 
         CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
 
         if (purger is null)
         {
-
             return Result<CovenantSensitivePurgeOutcome>.Success(
                 new CovenantSensitivePurgeOutcome(results, progress));
-
         }
 
         foreach (SensitiveArtifactKind kind in LabeledKinds(scope))
         {
-
             Result<CovenantSensitivePurgeOutcome> purgedKind = await PurgeLabeledKindAsync(
                 kind,
                 cancellationToken).ConfigureAwait(false);
 
             if (purgedKind.IsFailure)
             {
-
                 return purgedKind.Error;
-
             }
 
             results.AddRange(purgedKind.Value.Results);
@@ -183,23 +170,18 @@ public sealed class EmbeddingsResetService(
 
             if (purgedKind.Value.IsBlocked)
             {
-
                 break;
-
             }
-
         }
 
         return Result<CovenantSensitivePurgeOutcome>.Success(
             new CovenantSensitivePurgeOutcome(results, progress));
-
     }
 
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeLabeledKindAsync(
         SensitiveArtifactKind kind,
         CancellationToken cancellationToken)
     {
-
         const int PageSize = 128;
 
         List<CovenantSensitivePurgeResult> results = [];
@@ -210,7 +192,6 @@ public sealed class EmbeddingsResetService(
 
         while (true)
         {
-
             List<(Guid ArtifactId, string LabelId)> page = [];
 
             // Counted apart from the page: a row that was read is a row the walk has examined, whether or
@@ -222,11 +203,9 @@ public sealed class EmbeddingsResetService(
             bool unreadableRow = false;
 
             {
-
                 if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
                 {
                     throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
-
                 }
 
                 Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
@@ -238,9 +217,7 @@ public sealed class EmbeddingsResetService(
 
                 if (acquired.IsFailure)
                 {
-
                     return acquired.Error;
-
                 }
 
                 await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
@@ -249,7 +226,6 @@ public sealed class EmbeddingsResetService(
 
                 await using (DbCommand command = connection.CreateCommand())
                 {
-
                     command.CommandText = """
                         SELECT ArtifactId, LabelId
                         FROM artifact_sensitivity
@@ -284,31 +260,24 @@ public sealed class EmbeddingsResetService(
 
                     try
                     {
-
                         await using DbDataReader reader = await command
                             .ExecuteReaderAsync(cancellationToken)
                             .ConfigureAwait(false);
 
                         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                         {
-
                             rowsRead++;
 
                             lastLabelId = reader.GetString(1);
 
                             if (Guid.TryParse(reader.GetString(0), out Guid artifactId))
                             {
-
                                 page.Add((artifactId, lastLabelId));
-
                             }
                             else
                             {
-
                                 unreadableRow = true;
-
                             }
-
                         }
 
                         await GrimoireScopedConsumerTestSeam
@@ -318,11 +287,9 @@ public sealed class EmbeddingsResetService(
                                 page.Count,
                                 cancellationToken)
                             .ConfigureAwait(false);
-
                     }
                     catch (SqliteException)
                     {
-
                         // Not "no label table, so nothing is protected": the table is a Core object at every
                         // schema version, so this is a Grimoire whose protection cannot be checked. The
                         // reset stops here, before the truncation that would remove whatever it never
@@ -334,16 +301,12 @@ public sealed class EmbeddingsResetService(
                                 ErrorCodes.Covenant.Unavailable,
                                 "The sensitivity labels could not be read, so this embeddings reset was "
                                     + "refused before its truncation ran."));
-
                     }
-
                 }
-
             }
 
             if (unreadableRow)
             {
-
                 // A label this walk cannot parse is a label it cannot dispatch, and dropping it let the
                 // truncation that follows remove the artifact it names. The column has no format check, so
                 // this is corruption or tampering, and the Grimoire's protection cannot be shown: the same
@@ -355,14 +318,11 @@ public sealed class EmbeddingsResetService(
                         ErrorCodes.Covenant.Unavailable,
                         "A sensitivity label could not be read, so this embeddings reset was refused "
                             + "before its truncation ran."));
-
             }
 
             if (rowsRead == 0)
             {
-
                 break;
-
             }
 
             cursor = lastLabelId;
@@ -375,9 +335,7 @@ public sealed class EmbeddingsResetService(
 
             if (purged.IsFailure)
             {
-
                 return purged.Error;
-
             }
 
             results.AddRange(purged.Value.Results);
@@ -386,23 +344,18 @@ public sealed class EmbeddingsResetService(
 
             if (purged.Value.IsBlocked)
             {
-
                 break;
-
             }
-
         }
 
         return Result<CovenantSensitivePurgeOutcome>.Success(
             new CovenantSensitivePurgeOutcome(results, progress));
-
     }
 
     public async Task<EmbeddingsResetResult> ResetAsync(
         EmbeddingsResetScope scope,
         CancellationToken cancellationToken = default)
     {
-
         List<string> targets = [];
 
         if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Entry)
@@ -443,19 +396,27 @@ public sealed class EmbeddingsResetService(
 
         if (purged.IsFailure)
         {
-
             // Typed so the route answers the walk's own refusal, not a blanket "erase it by hand": an
             // unreadable label table is the Grimoire's condition to repair, and a stale label is a retry.
             throw new LabeledArtifactRefusalException(purged.Error);
-
         }
 
         if (purged.Value.IsBlocked)
         {
+            // A walk that failed after it had already erased an item comes back blocked as unavailable
+            // rather than as a failure, so its erased items are not lost; it is still the Grimoire's
+            // condition to repair, answered as the failure arm above answers it.
+            if (purged.Value.Results.Any(static result =>
+                    result.Disposition is CovenantSensitivePurgeDisposition.Blocked
+                    && result.Blocker is CovenantErasureBlocker.StorageUnavailable))
+            {
+                throw new LabeledArtifactRefusalException(new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "The sensitivity purge could not finish, so this embeddings reset was stopped before any table was truncated."));
+            }
 
             throw new InvalidOperationException(
                 "A protected artifact selected by this embeddings reset could not be erased and was left unchanged.");
-
         }
 
         Dictionary<string, int> deleted = [];
@@ -463,7 +424,6 @@ public sealed class EmbeddingsResetService(
         await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -476,32 +436,25 @@ public sealed class EmbeddingsResetService(
                 // refusal throws before the first table is touched and the transaction rolls back.
                 foreach (SensitiveArtifactKind kind in LabeledKinds(scope))
                 {
-
                     Result none = await _labeledArtifactGuard
                         .EnsureNoneLabeledAsync(kind, connection, transaction, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (none.IsFailure)
                     {
-
                         throw new LabeledArtifactRefusalException(none.Error);
-
                     }
-
                 }
 
                 foreach (string table in targets)
                 {
-
                     int rows = await DeleteFromTableAsync(connection, transaction, table, cancellationToken).ConfigureAwait(false);
 
                     deleted[table] = rows;
-
                 }
 
                 if (clearsSagaMemories)
                 {
-
                     // In this transaction rather than beside it, and ungated for the reason the store's
                     // own delete gives: a claim written while the Annals was enabled has to stay
                     // removable after it is disabled, or turning the feature off strands records no
@@ -517,16 +470,13 @@ public sealed class EmbeddingsResetService(
                         transaction,
                         AnnalSubjectStore.Saga,
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken).ConfigureAwait(false);
 
         return new EmbeddingsResetResult(deleted);
-
     }
 
     private static async Task<int> DeleteFromTableAsync(
@@ -535,7 +485,6 @@ public sealed class EmbeddingsResetService(
         string table,
         CancellationToken cancellationToken)
     {
-
         // Every vector mirror follows the rule every Saga write follows, read from the catalog rather
         // than the process flag: a plain mirror an earlier build filled is emptied whatever the flag
         // says, because its rows hold the embeddings of the content this reset removes, and a legacy
@@ -543,11 +492,9 @@ public sealed class EmbeddingsResetService(
         // is not there counts zero rows.
         if (table.EndsWith("_vec", StringComparison.Ordinal))
         {
-
             return checked((int)await SagaVectorMirror
                 .DeleteAllAsync(connection, transaction, table, cancellationToken)
                 .ConfigureAwait(false));
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -557,30 +504,23 @@ public sealed class EmbeddingsResetService(
         cmd.CommandText = $"""DELETE FROM "{table}" """;
 
         return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
-
     }
-
 }
 
 public enum EmbeddingsResetScope
 {
-
     All,
 
     Entry,
@@ -592,7 +532,6 @@ public enum EmbeddingsResetScope
     SessionAttachment,
 
     Tapestry,
-
 }
 
 public sealed record EmbeddingsResetResult(Dictionary<string, int> DeletedRowCounts);

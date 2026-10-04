@@ -386,6 +386,116 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
         Assert.Equal([[A]], kernel.Pages);
     }
 
+    /// <summary>
+    /// A kernel failure after an earlier item was already erased still reports that item purged; the
+    /// failing item and every item after it are blocked as unavailable and never dispatched.
+    /// </summary>
+    /// <remarks>
+    /// The erased item's transaction has committed, so returning only the failure would tell the caller
+    /// nothing about it and a route would report the whole page refused while one of its artifacts is
+    /// already gone.
+    /// </remarks>
+    [Fact]
+    public async Task A_failure_after_an_item_was_purged_still_reports_that_item_purged()
+    {
+        Guid[] order = [A, B, C];
+
+        ScriptedLabelLedger ledger = new();
+
+        foreach (Guid id in order)
+        {
+            ledger.Script(id, LabelRead.Of(Label(id, Guid.NewGuid())));
+        }
+
+        ScriptedErasureKernel kernel = new();
+
+        kernel.Script(A, Erased);
+
+        kernel.ScriptFailure(B, new Error(ErrorCodes.Covenant.RevisionConflict, "injected"));
+
+        kernel.Script(C, Erased);
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeAsync(ledger, kernel, order));
+
+        Assert.True(outcome.WasPurged(A));
+
+        Assert.All(
+            outcome.Results.Where(static result => result.ArtifactId != A),
+            static result =>
+            {
+                Assert.Equal(CovenantSensitivePurgeDisposition.Blocked, result.Disposition);
+
+                Assert.Equal(CovenantErasureBlocker.StorageUnavailable, result.Blocker);
+            });
+
+        Assert.Equal([[A], [B]], kernel.Pages);
+
+        Assert.Equal(1, ledger.ReadsOf(C));
+
+        Assert.Equal(CovenantErasureBlocker.StorageUnavailable, outcome.Progress.Blocker);
+
+        // A route that used to answer the failure's 503 still answers Covenant.Unavailable.
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            RetroDownfall.Arcanum.Api.Security.CovenantSensitiveDeletion.BlockedError(outcome).Code);
+    }
+
+    /// <summary>
+    /// A cancellation after an earlier item was already erased still reports that item purged.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_after_an_item_was_purged_still_reports_that_item_purged()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())));
+
+        ledger.Script(B, LabelRead.Of(Label(B, Guid.NewGuid())));
+
+        ScriptedErasureKernel kernel = new();
+
+        kernel.Script(A, Erased);
+
+        kernel.ScriptCancellation(B);
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeAsync(ledger, kernel, A, B));
+
+        Assert.True(outcome.WasPurged(A));
+
+        CovenantSensitivePurgeResult b = outcome.Results.Single(result => result.ArtifactId == B);
+
+        Assert.Equal(CovenantSensitivePurgeDisposition.Blocked, b.Disposition);
+
+        Assert.Equal(CovenantErasureBlocker.StorageUnavailable, b.Blocker);
+    }
+
+    /// <summary>
+    /// A kernel failure before anything was erased is still the failure itself, with its own code.
+    /// </summary>
+    [Fact]
+    public async Task A_failure_before_any_item_was_purged_is_still_a_failure()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())));
+
+        ledger.Script(B, LabelRead.Of(Label(B, Guid.NewGuid())));
+
+        ScriptedErasureKernel kernel = new();
+
+        kernel.ScriptFailure(A, new Error(ErrorCodes.Covenant.RevisionConflict, "injected"));
+
+        kernel.Script(B, Erased);
+
+        Result<CovenantSensitivePurgeOutcome> result = await PurgeAsync(ledger, kernel, A, B);
+
+        Assert.True(result.IsFailure, "Nothing was erased, so the failure itself is the answer.");
+
+        Assert.Equal(ErrorCodes.Covenant.RevisionConflict, result.Error.Code);
+
+        Assert.Equal([[A]], kernel.Pages);
+    }
+
     private static ArtifactSensitivityLabel Label(Guid artifactId, Guid labelId) =>
         CovenantErasureAuthorityFixture.Label(artifactId, labelId, SensitiveArtifactKind.Saga);
 
@@ -536,7 +646,17 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
         /// <summary>The authority the coordinator handed the most recent page.</summary>
         internal CovenantArtifactErasureAuthority? LastAuthority { get; private set; }
 
+        private readonly Dictionary<Guid, Error> _failures = [];
+
+        private readonly HashSet<Guid> _cancellations = [];
+
         internal void Script(Guid artifactId, CovenantArtifactErasureProgress progress) => _answers[artifactId] = progress;
+
+        /// <summary>The page naming this item fails with this error instead of answering.</summary>
+        internal void ScriptFailure(Guid artifactId, Error error) => _failures[artifactId] = error;
+
+        /// <summary>The page naming this item is cancelled instead of answering.</summary>
+        internal void ScriptCancellation(Guid artifactId) => _cancellations.Add(artifactId);
 
         public ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageAsync(
             CovenantProtectedArtifactErasurePage page,
@@ -546,6 +666,19 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
             _pages.Add([.. page.Items.Select(static item => item.ArtifactId)]);
 
             LastAuthority = authority;
+
+            foreach (CovenantProtectedArtifactErasureItem item in page.Items)
+            {
+                if (_cancellations.Contains(item.ArtifactId))
+                {
+                    throw new OperationCanceledException("injected");
+                }
+
+                if (_failures.TryGetValue(item.ArtifactId, out Error failure))
+                {
+                    return ValueTask.FromResult(Result<CovenantArtifactErasureProgress>.Failure(failure));
+                }
+            }
 
             CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
 

@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// </remarks>
 internal static class CovenantSensitiveDeletion
 {
-
     /// <summary>
     /// Dispatches one artifact and reports whether the caller should still delete it itself.
     /// </summary>
@@ -50,17 +49,14 @@ internal static class CovenantSensitiveDeletion
         IReadOnlyList<Guid> artifactIds,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(purger);
 
         ArgumentNullException.ThrowIfNull(artifactIds);
 
         if (artifactIds.Count == 0)
         {
-
             return Result<CovenantSensitivePurgeOutcome>.Success(
                 new CovenantSensitivePurgeOutcome([], CovenantArtifactErasureProgress.Empty));
-
         }
 
         return await purger
@@ -68,7 +64,6 @@ internal static class CovenantSensitiveDeletion
                 [.. artifactIds.Select(id => new CovenantSensitivePurgeTarget(kind, id))],
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -81,7 +76,6 @@ internal static class CovenantSensitiveDeletion
     /// </remarks>
     internal static Error BlockedError(CovenantSensitivePurgeOutcome outcome)
     {
-
         ArgumentNullException.ThrowIfNull(outcome);
 
         CovenantErasureBlocker blocker = outcome.Results
@@ -90,11 +84,18 @@ internal static class CovenantSensitiveDeletion
             ?.Blocker ?? CovenantErasureBlocker.IntegrityFailure;
 
         return new Error(
-            blocker is CovenantErasureBlocker.AuthorityStale
-                ? ErrorCodes.Covenant.StaleSnapshot
-                : ErrorCodes.Covenant.ManualArtifactErasureRequired,
-            "A protected artifact selected by this deletion could not be erased and was left unchanged.");
+            blocker switch
+            {
+                CovenantErasureBlocker.AuthorityStale => ErrorCodes.Covenant.StaleSnapshot,
 
+                // The purger reports a walk that failed after it had already erased an item as a blocked
+                // outcome rather than a failure, so the items it erased are not lost. That is the same
+                // condition a failure answers with Covenant.Unavailable, and it keeps that code and its 503.
+                CovenantErasureBlocker.StorageUnavailable => ErrorCodes.Covenant.Unavailable,
+
+                _ => ErrorCodes.Covenant.ManualArtifactErasureRequired,
+            },
+            "A protected artifact selected by this deletion could not be erased and was left unchanged.");
     }
 
     /// <summary>
@@ -106,18 +107,13 @@ internal static class CovenantSensitiveDeletion
     /// </remarks>
     internal static void MarkProtectedWhenPurged(HttpContext context, CovenantSensitivePurgeOutcome outcome)
     {
-
         ArgumentNullException.ThrowIfNull(context);
 
         ArgumentNullException.ThrowIfNull(outcome);
 
         if (!outcome.AllUnlabeled)
         {
-
             CovenantRequestFeatures.MarkProtectedResponse(context);
-
         }
-
     }
-
 }
