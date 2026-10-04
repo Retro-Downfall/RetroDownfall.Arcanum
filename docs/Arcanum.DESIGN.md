@@ -4745,7 +4745,7 @@ One dequeued request is also one unit of Grimoire admission (§10.20.3), and thi
 
 | Scope kind | Corpus | Leaf identity |
 |---|---|---|
-| `Workspace` | `workspace_file_chunks` for one registered workspace path | `ChunkId` |
+| `Workspace` | `workspace_file_chunks` for one registered workspace path; the scope id is the spelling the indexing scheduler persisted, so retrieval resolves the turn's working directory through `IWorkspaceIndexingService.ResolveIndexedWorkspacePath` exactly as §21.7 codebase retrieval does | `ChunkId` |
 | `SessionAttachment` | `session_attachment_chunks` for one session's latest retrieval scopes | `ChunkId` |
 | `Session` | that session's non-empty `Entries` | `Entry.Id` |
 

@@ -5532,6 +5532,43 @@ public sealed partial class WizardIntelligenceProvider(
             AttachmentSourceAvailability.Available);
 
     /// <summary>
+    /// The scopes a turn's Tapestry retrieval reads: the working directory's workspace tree and the
+    /// session's attachment and history trees, each subject to its participation flag.
+    /// </summary>
+    internal static List<TapestryScope> BuildTapestryScopes(
+        PingRequest request,
+        TapestryEmbeddingSettings tapestry,
+        IWorkspaceIndexingService workspaceIndexing)
+    {
+        List<TapestryScope> scopes = [];
+
+        if (tapestry.WorkspaceTreesEnabled && !string.IsNullOrWhiteSpace(request.WorkingDirectory))
+        {
+            // Resolve through the indexing boundary, as codebase retrieval does: scheduler aliases share
+            // the first persisted spelling, and the Tapestry is keyed by that exact spelling.
+            scopes.Add(new TapestryScope(
+                TapestryScopeKind.Workspace,
+                workspaceIndexing.ResolveIndexedWorkspacePath(
+                    Path.GetFullPath(request.WorkingDirectory.Trim()))));
+        }
+
+        if (request.SessionId is { } sessionId)
+        {
+            if (tapestry.SessionAttachmentTreesEnabled)
+            {
+                scopes.Add(new TapestryScope(TapestryScopeKind.SessionAttachment, sessionId.ToString()));
+            }
+
+            if (tapestry.SessionTreesEnabled)
+            {
+                scopes.Add(new TapestryScope(TapestryScopeKind.Session, sessionId.ToString()));
+            }
+        }
+
+        return scopes;
+    }
+
+    /// <summary>
     /// Retrieves hierarchical context from The Tapestry (DESIGN §21.11) for injection under
     /// <c>### Hierarchical Context (The Tapestry)</c>. Reuses the turn's single query embedding
     /// (see <see cref="ResolveRagQueryEmbeddingAsync"/>) and reads <b>only</b> each scope's current
@@ -5565,27 +5602,7 @@ public sealed partial class WizardIntelligenceProvider(
         {
             TapestryEmbeddingSettings tapestry = embeddings.Tapestry ?? new TapestryEmbeddingSettings();
 
-            List<TapestryScope> scopes = [];
-
-            if (tapestry.WorkspaceTreesEnabled && !string.IsNullOrWhiteSpace(request.WorkingDirectory))
-            {
-                scopes.Add(new TapestryScope(
-                    TapestryScopeKind.Workspace,
-                    Path.GetFullPath(request.WorkingDirectory.Trim())));
-            }
-
-            if (request.SessionId is { } sessionId)
-            {
-                if (tapestry.SessionAttachmentTreesEnabled)
-                {
-                    scopes.Add(new TapestryScope(TapestryScopeKind.SessionAttachment, sessionId.ToString()));
-                }
-
-                if (tapestry.SessionTreesEnabled)
-                {
-                    scopes.Add(new TapestryScope(TapestryScopeKind.Session, sessionId.ToString()));
-                }
-            }
+            List<TapestryScope> scopes = BuildTapestryScopes(request, tapestry, workspaceIndexingService);
 
             if (scopes.Count == 0)
             {
