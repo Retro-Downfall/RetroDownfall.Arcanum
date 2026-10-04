@@ -962,8 +962,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             // Read again rather than trusted from the plan, and before any extraction directory exists:
             // evidence that changed or became unreadable since the plan is caught here, while there is
-            // still nothing to undo. A Present latch is never re-probed, so the key this read holds is the
-            // one the plan proved.
+            // still nothing to undo. A Present latch's key is never read again, so the key this read holds is
+            // the one the plan proved; the read only asks whether that key's item still exists.
             BackupRestoreErasureEvidence erasure = BackupRestoreErasureEvidence.None;
 
             if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)

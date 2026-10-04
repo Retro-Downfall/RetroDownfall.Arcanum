@@ -41,8 +41,10 @@ internal sealed partial class BackupRestoreService
     /// "nothing was erased".</para>
     ///
     /// <para>The key is re-probed unless it is already latched Present. A Present latch is kept for the
-    /// life of the process, so the key a plan proved is the key a later read in the same restore holds.
-    /// The key is always disposed here; only its identifier travels on.</para>
+    /// life of the process, so the key a plan proved is the key a later read in the same restore holds: a
+    /// later read over it reads no secret and never prompts, and asks the store only whether the key's item
+    /// still exists, so a key whose item vanished between plan and execute is refused as missing. The key is
+    /// always disposed here; only its identifier travels on.</para>
     /// </remarks>
     private async Task<BackupRestoreErasureEvidence> ReadDestinationErasureEvidenceAsync(
         CancellationToken cancellationToken) =>

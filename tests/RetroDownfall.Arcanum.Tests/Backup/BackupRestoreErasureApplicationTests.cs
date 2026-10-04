@@ -1745,8 +1745,10 @@ public sealed class BackupRestoreErasureApplicationTests
     }
 
     /// <summary>
-    /// A restore reads the keychain only for its plan-time destination read: the execute-time read, the
-    /// evidence step and the post-commit proof all use the key that read latched, and none creates one.
+    /// A restore reads the key's secret only for its plan-time destination read: the execute-time read, the
+    /// evidence step and the post-commit proof all use the key that read latched, and none creates one. The
+    /// reads after the first ask only whether the key's item still exists, which reads no secret and
+    /// cannot raise a keychain prompt.
     /// </summary>
     [SkippableFact]
     public async Task A_restore_reads_the_keychain_only_for_its_plan_time_destination_read()
@@ -1775,7 +1777,11 @@ public sealed class BackupRestoreErasureApplicationTests
 
         AssertExecuteTimeEvidence(result, saga: 1, lexicon: 0, covenant: 0, receipts: 1);
 
-        Assert.Equal(planOnly.Calls, restoring.Calls);
+        Assert.Equal(1, planOnly.SecretReads);
+
+        Assert.Equal(planOnly.SecretReads, restoring.SecretReads);
+
+        Assert.Equal(planOnly.Calls - planOnly.PresenceProbes, restoring.Calls - restoring.PresenceProbes);
     }
 
     /// <summary>

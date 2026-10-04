@@ -286,8 +286,8 @@ public sealed class BackupRestoreErasureEvidenceReadTests
     /// caught by the re-read at Stage, before any extraction directory exists.
     /// </summary>
     /// <remarks>
-    /// A Present latch is never re-probed, so the execute-time change has to be the Grimoire's
-    /// readability rather than the keychain's.
+    /// A Present latch's key is never read again, and the item it came from still stands, so the
+    /// execute-time change has to be the Grimoire's readability rather than the keychain's.
     /// </remarks>
     [SkippableFact]
     public async Task A_refusal_first_seen_at_execute_stops_before_extraction()

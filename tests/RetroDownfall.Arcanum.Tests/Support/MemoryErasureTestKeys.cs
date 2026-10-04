@@ -65,8 +65,18 @@ internal sealed class CountingOsCredentialStore(InMemoryOsCredentialStore inner)
 {
     private int _calls;
 
+    private int _secretReads;
+
+    private int _presenceProbes;
+
     /// <summary>Every member call so far, whatever it returned.</summary>
     internal int Calls => Volatile.Read(ref _calls);
+
+    /// <summary>The calls that read the secret, which is what can raise a keychain prompt.</summary>
+    internal int SecretReads => Volatile.Read(ref _secretReads);
+
+    /// <summary>The metadata-only calls that asked whether the item exists.</summary>
+    internal int PresenceProbes => Volatile.Read(ref _presenceProbes);
 
     /// <summary>When set, every member answers with this status instead of asking the inner store.</summary>
     internal OsCredentialStoreStatus? FailWith { get; set; }
@@ -84,6 +94,8 @@ internal sealed class CountingOsCredentialStore(InMemoryOsCredentialStore inner)
     public OsCredentialStoreResult TryGet(string service, string account)
     {
         _ = Interlocked.Increment(ref _calls);
+
+        _ = Interlocked.Increment(ref _secretReads);
 
         return FailWith is { } status ? Failed(status) : inner.TryGet(service, account);
     }
@@ -105,6 +117,8 @@ internal sealed class CountingOsCredentialStore(InMemoryOsCredentialStore inner)
     public OsCredentialStoreStatus ProbePresence(string service, string account)
     {
         _ = Interlocked.Increment(ref _calls);
+
+        _ = Interlocked.Increment(ref _presenceProbes);
 
         return FailWith ?? inner.ProbePresence(service, account);
     }
