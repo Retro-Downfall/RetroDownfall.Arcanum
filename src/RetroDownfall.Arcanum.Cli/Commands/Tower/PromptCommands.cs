@@ -19,7 +19,7 @@ public sealed class PromptCommands(
     IThemePalette themePalette,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
@@ -111,12 +111,6 @@ public sealed class PromptCommands(
         Guid promptId;
         if (!CliArgReader.TryParseGuid(id, out promptId))
         {
-            if (resourceCatalog is null)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-                return 1;
-            }
-
             ResourceSelectionResult<PromptSummaryDto> selection = await resourceCatalog
                 .SelectPromptAsync(id, cancellationToken)
                 .ConfigureAwait(false);
@@ -708,12 +702,6 @@ public sealed class PromptCommands(
         if (CliArgReader.TryParseGuid(identifier, out Guid id))
         {
             return (true, false, id, 0);
-        }
-
-        if (resourceCatalog is null)
-        {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-            return (false, false, default, (int)CliExitCode.GenericError);
         }
 
         ResourceSelectionResult<PromptSummaryDto> selection = await resourceCatalog

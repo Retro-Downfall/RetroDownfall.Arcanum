@@ -24,7 +24,7 @@ public sealed class WatchCommands(
     IThemePalette themePalette,
     IConsoleDispatcher dispatcher,
     TimeProvider timeProvider,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     private const string GapWarning =
         "Potential event gap: the stream disconnected and events may have been missed. No replay guarantee is available.";
@@ -513,14 +513,6 @@ public sealed class WatchCommands(
             return new ResourceResolution(true, false, id);
         }
 
-        if (resourceCatalog is null)
-        {
-            dispatcher.WriteDiagnostic(
-                "<SESSION> must be a valid GUID.");
-
-            return default;
-        }
-
         ResourceSelectionResult<SessionSummaryDto> result = await resourceCatalog
             .SelectSessionAsync(identifier, cancellationToken)
             .ConfigureAwait(false);
@@ -535,14 +527,6 @@ public sealed class WatchCommands(
         if (Guid.TryParse(identifier, out Guid id))
         {
             return new ResourceResolution(true, false, id);
-        }
-
-        if (resourceCatalog is null)
-        {
-            dispatcher.WriteDiagnostic(
-                "<APPRENTICE> must be a valid GUID.");
-
-            return default;
         }
 
         ResourceSelectionResult<ApprenticeSummaryDto> result = await resourceCatalog

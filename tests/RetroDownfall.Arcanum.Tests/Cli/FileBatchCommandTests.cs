@@ -10,6 +10,12 @@ using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using RetroDownfall.Arcanum.Api.Intelligence;
+
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+
+using RetroDownfall.Arcanum.Cli.Commands;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -297,6 +303,72 @@ public sealed class FileBatchCommandTests
             document.RootElement.GetProperty("exitCode").GetInt32());
 
         Assert.Contains("invalid", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// R-341: the client preflight shares the host's batch-line rules (endpoint, method, per-record
+    /// limit) instead of restating them, and no longer buffers a record of unknown size to inspect it.
+    /// </summary>
+    [Fact]
+
+    public void Batch_preflight_shares_the_hosts_batch_line_rules()
+    {
+        Assert.Equal("/v1/chat/completions", BatchJsonlRules.SupportedEndpoint);
+
+        Assert.Equal("POST", BatchJsonlRules.RequiredMethod);
+
+        Assert.Equal(
+            BatchJsonlRecordReader.MaxRecordBytes,
+            BatchJsonlRules.MaxRecordBytes);
+    }
+
+    [Fact]
+
+    public async Task Batch_preflight_refuses_a_record_over_the_per_record_limit()
+    {
+        string path = WriteJsonl(
+            "{\"custom_id\":\"a\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"pad\":\""
+            + new string('y', 400)
+            + "\"}}\n");
+
+        try
+        {
+            FileBatchCommands.BatchPreflightResult result = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                maxRecordBytes: 128,
+                CancellationToken.None);
+
+            Assert.False(result.Success);
+
+            Assert.Contains("line 1", result.Message, StringComparison.Ordinal);
+
+            Assert.Contains("128-byte", result.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+
+    public async Task Batch_preflight_accepts_records_at_or_under_the_limit()
+    {
+        string path = WriteJsonl(ValidJsonl);
+
+        try
+        {
+            FileBatchCommands.BatchPreflightResult result = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                maxRecordBytes: 4096,
+                CancellationToken.None);
+
+            Assert.True(result.Success, result.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]

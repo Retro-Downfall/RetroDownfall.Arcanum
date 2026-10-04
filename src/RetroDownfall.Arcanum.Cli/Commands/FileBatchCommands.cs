@@ -1,5 +1,7 @@
 using System.Globalization;
 
+using System.Text;
+
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
@@ -24,8 +26,6 @@ public sealed class FileBatchCommands(
     ICliInvocationContext invocationContext,
     IConfirmationPrompt confirmationPrompt)
 {
-    private const string BatchEndpoint = "/v1/chat/completions";
-
     public async Task<int> UploadFile(
         string path,
         string purpose,
@@ -223,6 +223,7 @@ public sealed class FileBatchCommands(
 
             BatchPreflightResult preflight = await ValidateBatchJsonlAsync(
                     inputFile,
+                    BatchJsonlRules.MaxRecordBytes,
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -579,8 +580,9 @@ public sealed class FileBatchCommands(
                 : '_')
             .ToArray());
 
-    private static async Task<BatchPreflightResult> ValidateBatchJsonlAsync(
+    internal static async Task<BatchPreflightResult> ValidateBatchJsonlAsync(
         string path,
+        long maxRecordBytes,
         CancellationToken cancellationToken)
     {
         HashSet<string> customIds = new(StringComparer.Ordinal);
@@ -601,9 +603,27 @@ public sealed class FileBatchCommands(
 
             int lineNumber = 0;
 
-            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 lineNumber++;
+
+                BoundedLine read = ReadBoundedLine(reader, maxRecordBytes);
+
+                if (read.EndOfInput)
+                {
+                    break;
+                }
+
+                if (read.TooLarge)
+                {
+                    return BatchPreflightResult.Invalid(
+                        $"Batch preflight failed at line {lineNumber}: the record is larger than the "
+                        + $"{maxRecordBytes.ToString(CultureInfo.InvariantCulture)}-byte per-record limit the host applies.");
+                }
+
+                string line = read.Text!;
 
                 if (string.IsNullOrWhiteSpace(line))
                 {
@@ -650,7 +670,7 @@ public sealed class FileBatchCommands(
 
                     string? method = RequiredString(root, "method");
 
-                    if (!string.Equals(method, "POST", StringComparison.Ordinal))
+                    if (!string.Equals(method, BatchJsonlRules.RequiredMethod, StringComparison.Ordinal))
                     {
                         return BatchPreflightResult.Invalid(
                             $"Batch preflight failed at line {lineNumber}: method must be POST.");
@@ -658,10 +678,10 @@ public sealed class FileBatchCommands(
 
                     string? url = RequiredString(root, "url");
 
-                    if (!string.Equals(url, BatchEndpoint, StringComparison.Ordinal))
+                    if (!string.Equals(url, BatchJsonlRules.SupportedEndpoint, StringComparison.Ordinal))
                     {
                         return BatchPreflightResult.Invalid(
-                            $"Batch preflight failed at line {lineNumber}: url must be {BatchEndpoint}.");
+                            $"Batch preflight failed at line {lineNumber}: url must be {BatchJsonlRules.SupportedEndpoint}.");
                     }
 
                     if (!root.TryGetProperty("body", out JsonElement body)
@@ -698,7 +718,57 @@ public sealed class FileBatchCommands(
                 ? value.GetString()
                 : null;
 
-    private sealed record BatchPreflightResult(
+    /// <summary>
+    /// One physical line read without ever holding more than the limit: a record over it is reported, not
+    /// buffered, so a file whose "line" never ends cannot exhaust memory before the preflight judges it.
+    /// </summary>
+    private static BoundedLine ReadBoundedLine(StreamReader reader, long maxRecordBytes)
+    {
+        StringBuilder buffer = new();
+
+        long bytes = 0;
+
+        int next;
+
+        while ((next = reader.Read()) >= 0)
+        {
+            char character = (char)next;
+
+            if (character == '\n')
+            {
+                return new BoundedLine(StripCarriageReturn(buffer), TooLarge: false, EndOfInput: false);
+            }
+
+            // An upper bound on the UTF-8 length of this UTF-16 unit; a surrogate pair counts as two
+            // three-byte units, which only ever over-counts.
+            bytes += character < 0x80 ? 1 : character < 0x800 ? 2 : 3;
+
+            if (bytes > maxRecordBytes)
+            {
+                return new BoundedLine(null, TooLarge: true, EndOfInput: false);
+            }
+
+            buffer.Append(character);
+        }
+
+        return buffer.Length == 0
+            ? new BoundedLine(null, TooLarge: false, EndOfInput: true)
+            : new BoundedLine(StripCarriageReturn(buffer), TooLarge: false, EndOfInput: false);
+    }
+
+    private static string StripCarriageReturn(StringBuilder buffer)
+    {
+        if (buffer.Length > 0 && buffer[^1] == '\r')
+        {
+            buffer.Length--;
+        }
+
+        return buffer.ToString();
+    }
+
+    private readonly record struct BoundedLine(string? Text, bool TooLarge, bool EndOfInput);
+
+    internal sealed record BatchPreflightResult(
         bool Success,
         string? Message)
     {

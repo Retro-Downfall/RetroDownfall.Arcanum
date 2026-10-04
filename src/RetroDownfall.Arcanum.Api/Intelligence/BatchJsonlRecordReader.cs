@@ -49,7 +49,7 @@ internal static class BatchJsonlRecordReader
 {
     internal const int InMemoryByteLimit = 256 * 1024;
 
-    internal const long MaxRecordBytes = 64L * 1024L * 1024L;
+    internal const long MaxRecordBytes = BatchJsonlRules.MaxRecordBytes;
 
     private const int ReadBufferBytes = 64 * 1024;
 
