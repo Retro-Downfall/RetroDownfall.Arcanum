@@ -2010,7 +2010,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(
             static sp => new CovenantOperationGate(
                 sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
-                sp.GetRequiredService<ICovenantCampaignScopeProbe>()));
+                sp.GetRequiredService<ICovenantCampaignScopeProbe>(),
+                logger: sp.GetService<ILogger<CovenantOperationGate>>()));
 
         services.AddSingleton<ICovenantOperationGate>(
             static sp => sp.GetRequiredService<CovenantOperationGate>());
