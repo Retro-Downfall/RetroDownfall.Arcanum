@@ -3416,6 +3416,8 @@ Sensitive paths are restricted to the current user at creation time via `SecureF
 - **Unix:** `File.SetUnixFileMode` — files `600` (`UserRead | UserWrite`), directories `700` (`UserRead | UserWrite | UserExecute`).
 - **Windows:** `File.SetUnixFileMode` throws; owner-only ACL via `FileSystemAccessRule` (`Modify` for files, `FullControl` with inheritance for directories).
 
+Owner-only temp files (`SecureFilePermissions.CreateOwnerOnlyTempFile`, behind every atomic secret write) and the first create of the inference and guardrail audit logs open with an owner-only Unix create mode (`FileStreamOptions.UnixCreateMode` = `600`), so a new file never exists with the umask's group/other bits between its open and the permission repair; the post-hoc `chmod`/ACL stays as belt and braces for a file that already existed.
+
 **Applied on create:** Grimoire `.db`, `arcanum.json`, `cli-context.json`, `cli-session.txt`, preset provenance/rollback/recovery sidecars, Serilog rolling logs (`SecureSerilogFileHooks`), Data Protection secret files, encrypted attachment/upload/batch envelopes and their same-directory ciphertext temps, and owner-only creation of `~/.config/arcanum` and `%ApplicationData%/arcanum/logs/`. Preset sidecar writes verify owner-only permissions on the directory, staged file, and final file and fail closed with a typed write error when verification cannot be established.
 
 **Startup self-check:** `ArcanumSecurityStartupChecks` warns (does not fail) when any checked path, including preset provenance/rollback/recovery state, is group/other-readable on Unix or grants read to `Everyone`/`Users` on Windows. Pre-existing files are not modified automatically — operators can run `arcanum doctor --fix-permissions` to repair the checked paths.

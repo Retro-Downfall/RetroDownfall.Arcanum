@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// </summary>
 public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
 {
-
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     private readonly IOptionsMonitor<ArcanumSettings> _optionsMonitor;
@@ -49,7 +48,6 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
             filePathOverride,
             new ManagedLogMutationGate())
     {
-
     }
 
     internal GuardrailAuditLogger(
@@ -58,7 +56,6 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
         string? filePathOverride,
         IManagedLogMutationGate managedLogMutationGate)
     {
-
         _optionsMonitor = optionsMonitor;
 
         _logger = logger;
@@ -66,12 +63,10 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
         _filePathOverride = filePathOverride;
 
         _managedLogMutationGate = managedLogMutationGate;
-
     }
 
     public async Task LogAsync(GuardrailAuditRecord record, CancellationToken cancellationToken)
     {
-
         GuardrailsAuditLogSettings config =
             _optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
 
@@ -121,16 +116,14 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
 
                 string json = JsonSerializer.Serialize(record, AuditJsonContext.Default.GuardrailAuditRecord);
 
-                await File.AppendAllTextAsync(filePath, json + "\n", cancellationToken).ConfigureAwait(false);
+                await SecureFilePermissions.AppendOwnerOnlyTextAsync(filePath, json + "\n", cancellationToken).ConfigureAwait(false);
 
                 SecureFilePermissions.ApplyOwnerOnlyFile(filePath);
-
             }
             finally
             {
                 _writeLock.Release();
             }
-
         }
         catch (OperationCanceledException)
         {
@@ -139,9 +132,7 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to write guardrails audit log entry.");
-
         }
-
     }
 
     public async Task<IReadOnlyList<GuardrailAuditRecord>> QueryAsync(
@@ -153,7 +144,6 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
         int limit,
         CancellationToken cancellationToken)
     {
-
         Result<AuditQueryPage<GuardrailAuditRecord>> page = await QueryPageAsync(
             from,
             to,
@@ -167,7 +157,6 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
         return page.IsSuccess
             ? page.Value.Records
             : [];
-
     }
 
     public async Task<Result<AuditQueryPage<GuardrailAuditRecord>>> QueryPageAsync(
@@ -180,16 +169,13 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
         string? cursor,
         CancellationToken cancellationToken)
     {
-
         GuardrailsAuditLogSettings config =
             _optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
 
         if (!config.Enabled)
         {
-
             return Result<AuditQueryPage<GuardrailAuditRecord>>.Success(
                 new AuditQueryPage<GuardrailAuditRecord>([], null));
-
         }
 
         (string directory, string stem) =
@@ -197,7 +183,6 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
 
         if (!Directory.Exists(directory))
         {
-
             return string.IsNullOrWhiteSpace(cursor)
                 ? Result<AuditQueryPage<GuardrailAuditRecord>>.Success(
                     new AuditQueryPage<GuardrailAuditRecord>([], null))
@@ -205,7 +190,6 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
                     new Error(
                         ErrorCodes.Validation.InvalidQuery,
                         "The audit cursor no longer references retained log data. Restart without 'cursor'."));
-
         }
 
         return await AuditLogPageReader.QueryAsync(
@@ -230,38 +214,30 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
             stage,
             violationType,
             sessionId).ConfigureAwait(false);
-
     }
 
     private void PrepareForNewDate(string directory, string dateStamp)
     {
-
         try
         {
-
             Directory.CreateDirectory(directory);
 
             SecureFilePermissions.ApplyOwnerOnlyDirectory(directory);
-
         }
         catch (Exception ex)
         {
-
             _logger.LogError(ex, "Failed to create or secure guardrails audit log directory {Directory}; audit entries for {DateStamp} will be dropped.", directory, dateStamp);
 
             return;
-
         }
 
         _lastPreparedDateStamp = dateStamp;
 
         _sizeCapWarnedForCurrentDate = false;
-
     }
 
     private static (string Directory, string Stem) ResolvePathParts(string configuredPath)
     {
-
         string? directory = Path.GetDirectoryName(configuredPath);
 
         string stem = Path.GetFileNameWithoutExtension(configuredPath);
@@ -272,9 +248,7 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
         }
 
         return (string.IsNullOrWhiteSpace(directory) ? "." : directory, stem);
-
     }
 
     public void Dispose() => _writeLock.Dispose();
-
 }

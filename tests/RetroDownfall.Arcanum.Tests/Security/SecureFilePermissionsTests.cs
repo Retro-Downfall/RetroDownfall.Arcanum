@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 
 public sealed class SecureFilePermissionsTests : IAsyncLifetime
 {
-
     private TempWorkspace _temp = null!;
 
     private string? _originalDotnetEnvironment;
@@ -25,7 +24,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-
         _temp = new TempWorkspace();
 
         await _temp.InitializeAsync();
@@ -44,12 +42,10 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
 
         global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _temp.Root);
-
     }
 
     public async Task DisposeAsync()
     {
-
         SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
 
         SecureFilePermissions.WindowsOwnerOnlyDirectoryCreateForTests = null;
@@ -67,7 +63,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
             _originalTestHome);
 
         await _temp.DisposeAsync();
-
     }
 
     [Theory]
@@ -82,7 +77,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         uint effectiveUserId,
         bool expected)
     {
-
         bool actual = SecureFilePermissions.UnixOwnerOnlyPostureMatches(
             (UnixFileMode)mode,
             ownerUserId,
@@ -90,22 +84,18 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
             isDirectory);
 
         Assert.Equal(expected, actual);
-
     }
 
     [SkippableFact]
     public void ApplyOwnerOnlyToSensitivePaths_restricts_configuration_preset_sidecars()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
@@ -119,7 +109,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
         foreach (string path in paths)
         {
-
             File.WriteAllText(path, "{}");
 
             File.SetUnixFileMode(
@@ -128,35 +117,28 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
                 | UnixFileMode.UserWrite
                 | UnixFileMode.GroupRead
                 | UnixFileMode.OtherRead);
-
         }
 
         SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths();
 
         foreach (string path in paths)
         {
-
             Assert.Equal(
                 UnixFileMode.UserRead | UnixFileMode.UserWrite,
                 File.GetUnixFileMode(path));
-
         }
-
     }
 
     [SkippableFact]
     public void RunStartupPermissionSelfCheck_warns_for_configuration_preset_sidecars()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
@@ -170,7 +152,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
         foreach (string path in paths)
         {
-
             File.WriteAllText(path, "{}");
 
             File.SetUnixFileMode(
@@ -178,7 +159,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
                 UnixFileMode.UserRead
                 | UnixFileMode.UserWrite
                 | UnixFileMode.GroupRead);
-
         }
 
         CapturingLogger logger = new();
@@ -187,19 +167,15 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
         foreach (string path in paths)
         {
-
             Assert.Contains(
                 logger.Warnings,
                 warning => warning.Message.Contains(path, StringComparison.Ordinal));
-
         }
-
     }
 
     [Fact]
     public void EnsureOwnerOnlyDirectoryExists_creates_restricted_directory()
     {
-
         string path = Path.Combine(_temp.Root, "secure-dir");
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(path);
@@ -208,13 +184,10 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
         if (!OperatingSystem.IsWindows())
         {
-
             UnixFileMode mode = File.GetUnixFileMode(path);
 
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, mode);
-
         }
-
     }
 
     [Fact]
@@ -270,7 +243,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
     [Fact]
     public void ApplyOwnerOnlyFile_restricts_new_file()
     {
-
         string path = Path.Combine(_temp.Root, "secret.txt");
 
         File.WriteAllText(path, "secret");
@@ -279,38 +251,30 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
         if (!OperatingSystem.IsWindows())
         {
-
             UnixFileMode mode = File.GetUnixFileMode(path);
 
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
-
         }
-
     }
 
     [Fact]
     public void Strict_owner_only_file_application_rejects_missing_file()
     {
-
         string path = Path.Combine(_temp.Root, "missing-secret.txt");
 
         Assert.False(
             SecureFilePermissions.TryApplyOwnerOnlyFileStrict(path));
-
     }
 
     [Fact]
     public void RunStartupPermissionSelfCheck_does_not_throw_for_missing_paths()
     {
-
         SecureFilePermissions.RunStartupPermissionSelfCheck(NullLogger.Instance);
-
     }
 
     [Fact]
     public void Default_secret_file_paths_include_file_encryption_key_store()
     {
-
         MethodInfo? method = typeof(SecureFilePermissions).GetMethod(
             "DefaultSecretFilePaths",
             BindingFlags.Static | BindingFlags.NonPublic);
@@ -321,22 +285,18 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
             method.Invoke(null, null));
 
         Assert.Contains(ArcanumPaths.FileEncryptionKeyStoreFile, paths);
-
     }
 
     [SkippableFact]
     public void RunStartupPermissionSelfCheck_warns_for_world_readable_file()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.SecretStoreDirectory);
@@ -359,13 +319,11 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         Assert.Contains(
             logger.Warnings,
             warning => warning.Message.Contains(path, StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void EnsureOwnerOnlyDirectoryExists_is_idempotent()
     {
-
         string path = Path.Combine(_temp.Root, "existing-dir");
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(path);
@@ -373,13 +331,11 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(path);
 
         Assert.True(Directory.Exists(path));
-
     }
 
     [SkippableFact]
     public void RunStartupPermissionSelfCheck_warns_for_world_readable_secret_files()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Owner-only Unix mode bits are what this asserts against.");
@@ -388,9 +344,7 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
-
             return;
-
         }
 
         string dir = Path.Combine(Path.GetTempPath(), "arcanum-test-" + Guid.NewGuid().ToString("N"));
@@ -413,27 +367,21 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
         try
         {
-
             SecureFilePermissions.RunStartupPermissionSelfCheck(logger, [secFile, keyFile]);
 
             Assert.Contains(logger.Warnings, w => w.Message.Contains(secFile, StringComparison.Ordinal));
 
             Assert.Contains(logger.Warnings, w => w.Message.Contains(keyFile, StringComparison.Ordinal));
-
         }
         finally
         {
-
             Directory.Delete(dir, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public void TryApplyUnixFileMode_logs_warning_when_chmod_fails()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Owner-only Unix mode bits are what this asserts against.");
@@ -442,9 +390,7 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
-
             return;
-
         }
 
         CapturingSink sink = new();
@@ -455,28 +401,22 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
         try
         {
-
             string bogusPath = Path.Combine(_temp.Root, "does-not-exist-" + Guid.NewGuid().ToString("N"));
 
             SecureFilePermissions.TryApplyUnixFileMode(bogusPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
             Assert.Contains(sink.Events, e => e.Level == LogEventLevel.Warning
                 && e.MessageTemplate.Text.Contains("Failed to apply owner-only permissions", StringComparison.OrdinalIgnoreCase));
-
         }
         finally
         {
-
             Serilog.Log.Logger = previous;
-
         }
-
     }
 
     [SkippableFact]
     public void CreateOwnerOnlyTempFile_creates_file_with_owner_only_mode()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Owner-only Unix mode bits are what this asserts against.");
@@ -485,20 +425,16 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
-
             return;
-
         }
 
         string tempPath = Path.Combine(_temp.Root, "secret.tmp." + Guid.NewGuid().ToString("N"));
 
         using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
         {
-
             stream.Write(new byte[] { 1, 2, 3 });
 
             stream.Flush();
-
         }
 
         UnixFileMode mode = File.GetUnixFileMode(tempPath);
@@ -506,29 +442,62 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
 
         File.Delete(tempPath);
+    }
 
+    /// <summary>
+    /// A temp file that is created with the umask's permissions and only chmod'ed afterwards is group-
+    /// and world-readable (0644 under the usual 022 umask) for the window between open and chmod. The
+    /// mode has to be owner-only from the create itself.
+    /// </summary>
+    [SkippableFact]
+    public void CreateOwnerOnlyTempFile_IsOwnerOnlyAtCreation()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If above has run; kept so the platform analyzer sees the guard.
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        string tempPath = Path.Combine(_temp.Root, "secret.tmp." + Guid.NewGuid().ToString("N"));
+
+        UnixFileMode? atCreation = null;
+
+        SecureFilePermissions.AfterOwnerOnlyTempFileCreatedForTests =
+            created => atCreation = OperatingSystem.IsWindows() ? null : File.GetUnixFileMode(created);
+
+        try
+        {
+            using FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath);
+        }
+        finally
+        {
+            SecureFilePermissions.AfterOwnerOnlyTempFileCreatedForTests = null;
+        }
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, atCreation);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(tempPath));
+
+        File.Delete(tempPath);
     }
 
     private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger
     {
-
         private readonly List<(LogLevel Level, string Message)> _warnings = new();
 
         public IReadOnlyList<(LogLevel Level, string Message)> Warnings
         {
-
             get
             {
-
                 lock (_warnings)
                 {
-
                     return _warnings.ToList();
-
                 }
-
             }
-
         }
 
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => NoopDisposable.Instance;
@@ -542,68 +511,46 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-
             if (logLevel == LogLevel.Warning)
             {
-
                 lock (_warnings)
                 {
-
                     _warnings.Add((logLevel, formatter(state, exception)));
-
                 }
-
             }
-
         }
 
         private sealed class NoopDisposable : IDisposable
         {
-
             public static readonly NoopDisposable Instance = new();
 
             public void Dispose()
             {
             }
-
         }
-
     }
 
     private sealed class CapturingSink : ILogEventSink
     {
-
         private readonly List<LogEvent> _events = new();
 
         public IReadOnlyList<LogEvent> Events
         {
-
             get
             {
-
                 lock (_events)
                 {
-
                     return _events.ToList();
-
                 }
-
             }
-
         }
 
         public void Emit(LogEvent logEvent)
         {
-
             lock (_events)
             {
-
                 _events.Add(logEvent);
-
             }
-
         }
-
     }
-
 }
