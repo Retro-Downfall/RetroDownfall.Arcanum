@@ -3,7 +3,7 @@ using System.Diagnostics.Metrics;
 namespace RetroDownfall.Arcanum.Core.Telemetry;
 
 /// <summary>
-/// Real-time aggregate snapshot used by TelemetryPane.
+/// Process-local aggregate snapshot read through <see cref="TelemetryService.GetSnapshot"/>.
 /// </summary>
 public sealed record TelemetrySnapshot(
     long InputTokens,
@@ -18,7 +18,7 @@ public sealed record TelemetrySnapshot(
 {
     /// <summary>
     /// Native web-research aggregates. This is a non-positional property so the
-    /// original snapshot constructor remains source-compatible with pane clients.
+    /// original snapshot constructor stays source-compatible with its readers.
     /// </summary>
     public WebResearchTelemetrySnapshot WebResearch { get; init; } = new();
 
@@ -44,9 +44,15 @@ public sealed record WebResearchTelemetrySnapshot(
     TimeSpan CumulativeLatency = default);
 
 /// <summary>
-/// Subscribes to <see cref="ArcanumMetrics"/> instruments and exposes
-/// debounced snapshot updates for TelemetryPane.
+/// Subscribes to <see cref="ArcanumMetrics"/> instruments and rolls them up into process-local
+/// aggregates read on demand through <see cref="GetSnapshot"/>.
 /// </summary>
+/// <remarks>
+/// Pull-only. An earlier revision raised a <c>SnapshotUpdated</c> event on every measurement,
+/// synchronously on the measurement thread and with no subscriber anywhere in the product, while its
+/// documentation promised debouncing that did not exist. The Command Center's telemetry pane renders
+/// the per-call context breakdown instead, so the event was removed rather than debounced.
+/// </remarks>
 public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
 {
     private readonly MeterListener _listener;
@@ -101,8 +107,6 @@ public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
     private int _started;
 
     private int _disposed;
-
-    public event EventHandler<TelemetrySnapshot>? SnapshotUpdated;
 
     public TelemetryService()
     {
@@ -221,8 +225,6 @@ public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
                 Interlocked.Increment(ref _subagentFailed);
                 break;
         }
-
-        RaiseSnapshotUpdated();
     }
 
     public void Dispose()
@@ -284,15 +286,7 @@ public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
             case "arcanum_web_research_search_queries_total":
                 Interlocked.Add(ref _webSearchQueries, measurement);
                 break;
-
-            default:
-                // The listener is attached to the process-wide ArcanumMetrics meter, so it also
-                // observes instruments this service does not roll up. Raising an identical snapshot
-                // for them makes SnapshotUpdated fire without anything having changed.
-                return;
         }
-
-        RaiseSnapshotUpdated();
     }
 
     private void OnDoubleMeasurement(
@@ -330,15 +324,7 @@ public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
                 }
 
                 break;
-
-            default:
-                // See OnLongMeasurement: an unrelated instrument on the shared meter must not
-                // publish a snapshot.
-                return;
-
         }
-
-        RaiseSnapshotUpdated();
     }
 
     private void AddWebTokens(
@@ -364,31 +350,6 @@ public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
         else if (TagEquals(tags, "kind", "citation"))
         {
             Interlocked.Add(ref _webCitationTokens, measurement);
-        }
-    }
-
-    private void RaiseSnapshotUpdated()
-    {
-        EventHandler<TelemetrySnapshot>? handler = SnapshotUpdated;
-
-        if (handler is null)
-        {
-            return;
-        }
-
-        TelemetrySnapshot snapshot = GetSnapshot();
-
-        foreach (Delegate subscriber in handler.GetInvocationList())
-        {
-            try
-            {
-                ((EventHandler<TelemetrySnapshot>)subscriber)(this, snapshot);
-            }
-            catch
-            {
-                // Telemetry observers are best-effort and must never break the
-                // operation that recorded a metric.
-            }
         }
     }
 

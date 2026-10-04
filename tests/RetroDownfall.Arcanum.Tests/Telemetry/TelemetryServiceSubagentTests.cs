@@ -9,8 +9,6 @@ public sealed class TelemetryServiceSubagentTests
     public void RecordSubagentRun_RollsUpOneUnifiedSnapshot()
     {
         using TelemetryService telemetry = new();
-        List<TelemetrySnapshot> updates = [];
-        telemetry.SnapshotUpdated += (_, snapshot) => updates.Add(snapshot);
 
         telemetry.RecordSubagentRun(
             new SubagentTelemetryEvent(
@@ -19,7 +17,7 @@ public sealed class TelemetryServiceSubagentTests
                 Latency: TimeSpan.FromSeconds(2),
                 Outcome: SubagentRunOutcome.Completed));
 
-        TelemetrySnapshot snapshot = Assert.Single(updates);
+        TelemetrySnapshot snapshot = telemetry.GetSnapshot();
         Assert.Equal(1, snapshot.Subagents.Runs);
         Assert.Equal(1, snapshot.Subagents.Completed);
         Assert.Equal(0, snapshot.Subagents.Failed);
@@ -29,17 +27,14 @@ public sealed class TelemetryServiceSubagentTests
     }
 
     [Fact]
-    public void Instrument_the_service_does_not_roll_up_publishes_no_snapshot()
+    public void Instrument_the_service_does_not_roll_up_leaves_the_snapshot_unchanged()
     {
-
         // The MeterListener attaches to the process-wide ArcanumMetrics meter, so it observes every
         // instrument any other component (or any test running in parallel) records. An instrument
-        // this service does not aggregate must not publish an identical, unchanged snapshot.
+        // this service does not aggregate must leave every aggregate exactly as it was.
         using TelemetryService telemetry = new();
 
-        List<TelemetrySnapshot> updates = [];
-
-        telemetry.SnapshotUpdated += (_, snapshot) => updates.Add(snapshot);
+        TelemetrySnapshot before = telemetry.GetSnapshot();
 
         using System.Diagnostics.Metrics.Meter meter = new(ArcanumMetrics.Meter.Name);
 
@@ -53,6 +48,6 @@ public sealed class TelemetryServiceSubagentTests
 
         unrelatedDouble.Record(1.5);
 
-        Assert.Empty(updates);
+        Assert.Equal(before, telemetry.GetSnapshot());
     }
 }

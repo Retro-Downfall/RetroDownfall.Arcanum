@@ -10,8 +10,6 @@ public sealed class TelemetryServiceWebResearchTests
     public void Aggregates_web_research_outcomes_usage_cost_and_latency()
     {
         using TelemetryService telemetry = new();
-        int updates = 0;
-        telemetry.SnapshotUpdated += (_, _) => updates++;
 
         TagList successTags = new()
         {
@@ -86,7 +84,6 @@ public sealed class TelemetryServiceWebResearchTests
         Assert.Equal(4, snapshot.SearchQueries);
         Assert.Equal(0.0125m, snapshot.CostUsd);
         Assert.Equal(TimeSpan.FromSeconds(1), snapshot.CumulativeLatency);
-        Assert.True(updates >= 10);
     }
 
     [Fact]
@@ -99,25 +96,5 @@ public sealed class TelemetryServiceWebResearchTests
         telemetry.Dispose();
 
         Assert.Throws<ObjectDisposedException>(telemetry.Start);
-    }
-
-    [Fact]
-    public void Throwing_snapshot_observer_cannot_break_metric_recording()
-    {
-        using TelemetryService telemetry = new();
-        telemetry.SnapshotUpdated += static (_, _) =>
-            throw new InvalidOperationException("observer failure");
-        TagList tags = new()
-        {
-            { "provider", "test-provider" },
-            { "operation", "search" },
-            { "outcome", "success" },
-        };
-
-        Exception? exception = Record.Exception(
-            () => ArcanumMetrics.WebResearchRequestsTotal.Add(1, tags));
-
-        Assert.Null(exception);
-        Assert.Equal(1, telemetry.GetSnapshot().WebResearch.Requests);
     }
 }
