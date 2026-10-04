@@ -139,6 +139,22 @@ internal static class WorkspacePathPolicy
     internal static bool IsPathUnderWorkspaceWithSymlinkCheck(
         string workspaceRootFull,
         string candidateFull,
+        out string? resolvedFinalPath) =>
+        IsPathUnderWorkspaceUnderLinkSemantics(
+            workspaceRootFull,
+            candidateFull,
+            OperatingSystem.IsWindows(),
+            out resolvedFinalPath);
+
+    /// <summary>
+    /// <see cref="IsPathUnderWorkspaceWithSymlinkCheck"/> with the link
+    /// interpretation rule chosen explicitly, so the Windows dual-interpretation rule runs against real links
+    /// on any host. Production always passes <see cref="OperatingSystem.IsWindows"/>.
+    /// </summary>
+    internal static bool IsPathUnderWorkspaceUnderLinkSemantics(
+        string workspaceRootFull,
+        string candidateFull,
+        bool windowsLinkSemantics,
         out string? resolvedFinalPath)
     {
         resolvedFinalPath = null;
@@ -172,9 +188,14 @@ internal static class WorkspacePathPolicy
             return false;
         }
 
+        int linksFollowed = 0;
+
         if (!TryResolveComponents(
                 canonicalRoot,
                 SplitComponents(relative),
+                canonicalRoot,
+                windowsLinkSemantics,
+                ref linksFollowed,
                 out string? canonicalCandidate,
                 out bool exists))
         {
@@ -339,6 +360,38 @@ internal static class WorkspacePathPolicy
         [NotNullWhen(true)] out string? resolved,
         out bool exists)
     {
+        int linksFollowed = 0;
+
+        return TryResolveComponents(
+            start,
+            components,
+            containmentRoot: null,
+            windowsLinkSemantics: false,
+            ref linksFollowed,
+            out resolved,
+            out exists);
+    }
+
+    /// <param name="containmentRoot">
+    /// The canonical root the result must stay under, or <see langword="null"/> while canonicalising the root
+    /// itself (whose own links are the operator's choice). Only consulted by the Windows arm.
+    /// </param>
+    /// <param name="windowsLinkSemantics">
+    /// <see langword="true"/> on Windows. The Windows I/O manager may join a relative reparse target to the
+    /// link's directory and collapse <c>..</c> as text, where POSIX steps to the physical parent of whatever
+    /// the walk has reached. For a relative target containing a <c>..</c> segment, the rest of the path is
+    /// therefore also resolved under the textual interpretation, and both results must lie under
+    /// <paramref name="containmentRoot"/>.
+    /// </param>
+    private static bool TryResolveComponents(
+        string start,
+        IReadOnlyList<string> components,
+        string? containmentRoot,
+        bool windowsLinkSemantics,
+        ref int linksFollowed,
+        [NotNullWhen(true)] out string? resolved,
+        out bool exists)
+    {
         resolved = null;
 
         exists = false;
@@ -350,8 +403,6 @@ internal static class WorkspacePathPolicy
         string current = start;
 
         bool currentIsDirectory = true;
-
-        int linksFollowed = 0;
 
         while (pending.TryPop(out string? part))
         {
@@ -411,7 +462,22 @@ internal static class WorkspacePathPolicy
                 }
                 else
                 {
-                    PushReversed(pending, SplitComponents(linkTarget!));
+                    string[] targetComponents = SplitComponents(linkTarget!);
+
+                    if (windowsLinkSemantics
+                        && containmentRoot is not null
+                        && Array.IndexOf(targetComponents, "..") >= 0
+                        && !IsTextualLinkInterpretationContained(
+                            current,
+                            linkTarget!,
+                            pending,
+                            containmentRoot,
+                            ref linksFollowed))
+                    {
+                        return false;
+                    }
+
+                    PushReversed(pending, targetComponents);
                 }
 
                 currentIsDirectory = true;
@@ -454,6 +520,57 @@ internal static class WorkspacePathPolicy
         {
             pending.Push(components[index]);
         }
+    }
+
+    /// <summary>
+    /// The textual interpretation of a relative link target: joined to the link's directory and collapsed
+    /// as text. Pure, so the Windows rule can be pinned on any host.
+    /// </summary>
+    internal static string TextualLinkTargetInterpretation(string linkDirectory, string relativeLinkTarget) =>
+        Path.GetFullPath(Path.Join(linkDirectory, relativeLinkTarget));
+
+    /// <summary>
+    /// Resolves the textual interpretation of a relative link target followed by the components still
+    /// pending (in walk order), sharing the caller's link budget, and reports whether that path stays under
+    /// <paramref name="containmentRoot"/>.
+    /// </summary>
+    private static bool IsTextualLinkInterpretationContained(
+        string linkDirectory,
+        string relativeLinkTarget,
+        Stack<string> pending,
+        string containmentRoot,
+        ref int linksFollowed)
+    {
+        string textual;
+
+        try
+        {
+            textual = TextualLinkTargetInterpretation(linkDirectory, relativeLinkTarget);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or SecurityException)
+        {
+            return false;
+        }
+
+        string? textualRoot = Path.GetPathRoot(textual);
+
+        if (string.IsNullOrEmpty(textualRoot))
+        {
+            return false;
+        }
+
+        // Stack<T> enumerates top first, which is walk order.
+        List<string> remaining = [.. SplitComponents(textual[textualRoot.Length..]), .. pending];
+
+        return TryResolveComponents(
+                textualRoot,
+                remaining,
+                containmentRoot,
+                windowsLinkSemantics: true,
+                ref linksFollowed,
+                out string? resolvedTextual,
+                out _)
+            && IsPathUnderWorkspace(containmentRoot, resolvedTextual);
     }
 
     /// <summary>

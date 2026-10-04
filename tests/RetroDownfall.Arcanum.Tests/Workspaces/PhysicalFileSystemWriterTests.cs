@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -8,29 +9,23 @@ namespace RetroDownfall.Arcanum.Tests.Workspaces;
 
 public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 {
-
     private TempWorkspace _workspace = null!;
 
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
-
     }
 
     public async Task DisposeAsync()
     {
-
         await _workspace.DisposeAsync();
-
     }
 
     [Fact]
     public async Task WriteFileAsync_creates_new_file_with_parent_directories()
     {
-
         PhysicalFileSystemWriter writer = CreateWriter();
 
         WorkspaceInfo workspace = MakeWorkspace();
@@ -42,13 +37,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal("nested/deep/new.txt", result.Value!.RelativePath.Replace('\\', '/'));
 
         Assert.Equal("hello", await File.ReadAllTextAsync(Path.Combine(_workspace.Root, "nested", "deep", "new.txt")));
-
     }
 
     [Fact]
     public async Task WriteFileAsync_overwrites_existing_file()
     {
-
         _workspace.WriteFile("existing.txt", "old content");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -60,13 +53,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.Equal("new content", await File.ReadAllTextAsync(Path.Combine(_workspace.Root, "existing.txt")));
-
     }
 
     [Fact]
     public async Task WriteFileAsync_rejects_path_traversal()
     {
-
         PhysicalFileSystemWriter writer = CreateWriter();
 
         WorkspaceInfo workspace = MakeWorkspace();
@@ -76,13 +67,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.PathTraversal", result.Error.Code);
-
     }
 
     [Fact]
     public async Task WriteFileAsync_rejects_absolute_paths()
     {
-
         PhysicalFileSystemWriter writer = CreateWriter();
 
         WorkspaceInfo workspace = MakeWorkspace();
@@ -94,13 +83,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.PathTraversal", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task WriteFileAsync_rejects_symlink_escape()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Symlink-escape containment is exercised on Unix hosts.");
@@ -111,7 +98,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         try
         {
-
             string linkPath = Path.Combine(_workspace.Root, "escape-link.txt");
 
             string outsideFile = Path.Combine(outsideDir, "target.txt");
@@ -131,15 +117,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
             Assert.Equal("Workspace.SymbolicLinkEscape", result.Error.Code);
 
             Assert.Equal("outside secret", await File.ReadAllTextAsync(outsideFile));
-
         }
         finally
         {
-
             Directory.Delete(outsideDir, recursive: true);
-
         }
-
     }
 
     /// <summary>
@@ -151,7 +133,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     [SkippableFact]
     public async Task WriteFileAsync_does_not_create_parent_directories_outside_workspace_through_a_symlinked_ancestor()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Symlink-escape containment is exercised on Unix hosts.");
@@ -162,7 +143,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         try
         {
-
             Directory.CreateSymbolicLink(Path.Combine(_workspace.Root, "escape-dir"), outsideDir);
 
             PhysicalFileSystemWriter writer = CreateWriter();
@@ -179,21 +159,16 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
             Assert.False(Directory.Exists(Path.Combine(outsideDir, "injected")));
 
             Assert.False(File.Exists(Path.Combine(outsideDir, "injected", "deeper", "payload.txt")));
-
         }
         finally
         {
-
             Directory.Delete(outsideDir, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task WriteFileAsync_rejects_content_exceeding_MaxFileWriteSizeBytes()
     {
-
         ArcanumSettings settings = new()
         {
             Workspaces = new WorkspaceSettings { EnableFileWrite = true },
@@ -216,13 +191,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
-
     }
 
     [Fact]
     public async Task WriteFileAsync_returns_FileWriteDisabled_when_toggle_is_off()
     {
-
         PhysicalFileSystemWriter writer = CreateWriter(new ArcanumSettings());
 
         WorkspaceInfo workspace = MakeWorkspace();
@@ -234,13 +207,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal("Workspace.FileWriteDisabled", result.Error.Code);
 
         Assert.False(File.Exists(Path.Combine(_workspace.Root, "any.txt")));
-
     }
 
     [Fact]
     public async Task WriteFileAsync_rejects_existing_directory_target()
     {
-
         _workspace.CreateSubdir("adir");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -252,13 +223,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.PathIsDirectory", result.Error.Code);
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_replaces_single_occurrence()
     {
-
         _workspace.WriteFile("target.txt", "hello world, hello universe once");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -273,13 +242,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal(1, result.Value!.Replacements);
 
         Assert.Equal("hello world, hello galaxy", await File.ReadAllTextAsync(Path.Combine(_workspace.Root, "target.txt")));
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_replaces_multiple_occurrences_with_expected_replacements()
     {
-
         _workspace.WriteFile("target.txt", "foo foo foo");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -294,13 +261,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal(3, result.Value!.Replacements);
 
         Assert.Equal("bar bar bar", await File.ReadAllTextAsync(Path.Combine(_workspace.Root, "target.txt")));
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_returns_ReplacementNotFound_when_oldString_absent()
     {
-
         _workspace.WriteFile("target.txt", "hello world");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -313,13 +278,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.ReplacementNotFound", result.Error.Code);
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_returns_ReplacementAmbiguous_when_multiple_matches_and_no_expected_replacements()
     {
-
         _workspace.WriteFile("target.txt", "foo foo");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -332,13 +295,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.ReplacementAmbiguous", result.Error.Code);
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_returns_ReplacementAmbiguous_when_expected_replacements_mismatches_actual_count()
     {
-
         _workspace.WriteFile("target.txt", "foo foo foo");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -351,13 +312,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.ReplacementAmbiguous", result.Error.Code);
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_returns_FileNotFound_when_file_does_not_exist()
     {
-
         PhysicalFileSystemWriter writer = CreateWriter();
 
         WorkspaceInfo workspace = MakeWorkspace();
@@ -368,13 +327,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.FileNotFound", result.Error.Code);
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_returns_FileNotFound_for_directory_path()
     {
-
         _workspace.CreateSubdir("adir");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -387,13 +344,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.FileNotFound", result.Error.Code);
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_rejects_combined_size_exceeding_MaxReplaceTextBlockBytes()
     {
-
         _workspace.WriteFile("target.txt", "foo");
 
         ArcanumSettings settings = new()
@@ -419,13 +374,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task ReplaceTextBlockAsync_write_failure_leaves_no_temp_file_and_original_content_intact()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Unix owner-only mode bits are what makes the directory unreadable here.");
@@ -434,9 +387,7 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
-
             return;
-
         }
 
         string subdir = _workspace.CreateSubdir("readonly-dir");
@@ -451,7 +402,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         try
         {
-
             PhysicalFileSystemWriter writer = CreateWriter();
 
             WorkspaceInfo workspace = MakeWorkspace();
@@ -462,25 +412,20 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
             Assert.True(result.IsFailure);
 
             Assert.Equal("Workspace.AccessDenied", result.Error.Code);
-
         }
         finally
         {
-
             File.SetUnixFileMode(subdir, originalMode);
-
         }
 
         Assert.Equal("original content", await File.ReadAllTextAsync(filePath));
 
         Assert.Empty(Directory.EnumerateFiles(subdir, ".arcanum-*.tmp"));
-
     }
 
     [Fact]
     public async Task DeleteAsync_removes_file()
     {
-
         _workspace.WriteFile("gone.txt", "bye");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -494,13 +439,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.False(result.Value!.WasDirectory);
 
         Assert.False(File.Exists(Path.Combine(_workspace.Root, "gone.txt")));
-
     }
 
     [Fact]
     public async Task DeleteAsync_removes_empty_directory()
     {
-
         string dir = _workspace.CreateSubdir("empty-dir");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -514,13 +457,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.Value!.WasDirectory);
 
         Assert.False(Directory.Exists(dir));
-
     }
 
     [Fact]
     public async Task DeleteAsync_returns_DirectoryNotEmpty_for_non_empty_directory_without_recursive()
     {
-
         _workspace.WriteFile("non-empty-dir/child.txt", "content");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -532,13 +473,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.DirectoryNotEmpty", result.Error.Code);
-
     }
 
     [Fact]
     public async Task DeleteAsync_recursive_removes_non_empty_directory_tree()
     {
-
         _workspace.WriteFile("tree/a.txt", "a");
 
         _workspace.WriteFile("tree/nested/b.txt", "b");
@@ -552,13 +491,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "tree")));
-
     }
 
     [SkippableFact]
     public async Task DeleteAsync_recursive_skips_symlinks_that_escape_workspace()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Symlink-escape containment is exercised on Unix hosts.");
@@ -569,7 +506,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         try
         {
-
             string outsideFile = Path.Combine(outsideDir, "target.txt");
 
             await File.WriteAllTextAsync(outsideFile, "outside secret");
@@ -597,15 +533,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
             Assert.True(File.Exists(linkPath) || Directory.Exists(linkPath));
 
             Assert.False(File.Exists(Path.Combine(parentDir, "keep.txt")));
-
         }
         finally
         {
-
             Directory.Delete(outsideDir, recursive: true);
-
         }
-
     }
 
     /// <summary>
@@ -626,7 +558,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     [InlineData("./")]
     public async Task DeleteAsync_refuses_to_delete_the_workspace_root(string relativePath)
     {
-
         _workspace.WriteFile("keep.txt", "content");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -646,7 +577,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(Directory.Exists(_workspace.Root));
 
         Assert.True(File.Exists(Path.Combine(_workspace.Root, "keep.txt")));
-
     }
 
     /// <summary>
@@ -657,7 +587,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     [Fact]
     public async Task DeleteAsync_refuses_a_traversal_that_resolves_to_the_workspace_root()
     {
-
         _workspace.WriteFile("keep.txt", "content");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -677,13 +606,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(Directory.Exists(_workspace.Root));
 
         Assert.True(File.Exists(Path.Combine(_workspace.Root, "keep.txt")));
-
     }
 
     [Fact]
     public async Task DeleteAsync_returns_FileNotFound_when_path_does_not_exist()
     {
-
         PhysicalFileSystemWriter writer = CreateWriter();
 
         WorkspaceInfo workspace = MakeWorkspace();
@@ -693,13 +620,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.FileNotFound", result.Error.Code);
-
     }
 
     [Fact]
     public async Task CreateDirectoryAsync_creates_nested_directories()
     {
-
         PhysicalFileSystemWriter writer = CreateWriter();
 
         WorkspaceInfo workspace = MakeWorkspace();
@@ -709,13 +634,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.True(Directory.Exists(Path.Combine(_workspace.Root, "a", "b", "c")));
-
     }
 
     [Fact]
     public async Task CreateDirectoryAsync_rejects_path_traversal()
     {
-
         PhysicalFileSystemWriter writer = CreateWriter();
 
         WorkspaceInfo workspace = MakeWorkspace();
@@ -725,13 +648,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.PathTraversal", result.Error.Code);
-
     }
 
     [Fact]
     public async Task CreateDirectoryAsync_rejects_existing_file_target()
     {
-
         _workspace.WriteFile("afile.txt", "content");
 
         PhysicalFileSystemWriter writer = CreateWriter();
@@ -743,13 +664,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.PathIsFile", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task WriteFileAsync_UnauthorizedAccessException_maps_to_AccessDenied()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Unix owner-only mode bits are what makes the directory unreadable here.");
@@ -758,9 +677,7 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
         {
-
             return;
-
         }
 
         string subdir = _workspace.CreateSubdir("locked-dir");
@@ -771,7 +688,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         try
         {
-
             PhysicalFileSystemWriter writer = CreateWriter();
 
             WorkspaceInfo workspace = MakeWorkspace();
@@ -781,15 +697,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
             Assert.True(result.IsFailure);
 
             Assert.Equal("Workspace.AccessDenied", result.Error.Code);
-
         }
         finally
         {
-
             File.SetUnixFileMode(subdir, originalMode);
-
         }
-
     }
 
     /// <summary>
@@ -801,20 +713,17 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     [SkippableFact]
     public async Task ReplaceTextBlockAsync_rejects_a_fifo_instead_of_blocking_forever()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
 
         string fifoPath = Path.Combine(_workspace.Root, "pipe");
 
         using (System.Diagnostics.Process? mkfifo = System.Diagnostics.Process.Start("mkfifo", fifoPath))
         {
-
             Skip.If(mkfifo is null, "mkfifo is unavailable on this host.");
 
             await mkfifo!.WaitForExitAsync();
 
             Skip.If(mkfifo.ExitCode != 0, "mkfifo failed on this host.");
-
         }
 
         Assert.True(File.Exists(fifoPath));
@@ -833,13 +742,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Result<TextBlockReplaceResult> result = await replace;
 
         Assert.True(result.IsFailure);
-
     }
 
     [Fact]
     public async Task ReplaceTextBlockAsync_rejects_a_target_beyond_the_read_size_limit()
     {
-
         string path = Path.Combine(_workspace.Root, "huge.txt");
 
         string original = new string('a', 1024 * 1024) + "needle";
@@ -863,7 +770,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Workspace.FileTooLarge, result.Error.Code);
 
         Assert.Equal(original, await File.ReadAllTextAsync(path));
-
     }
 
     /// <summary>
@@ -875,7 +781,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     [Fact]
     public async Task WriteFileAsync_preserves_an_existing_utf8_bom()
     {
-
         string path = Path.Combine(_workspace.Root, "Program.cs");
 
         await File.WriteAllBytesAsync(path, [.. Utf8Bom, .. "// old"u8]);
@@ -893,7 +798,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal(expected, await File.ReadAllBytesAsync(path));
 
         Assert.Equal(expected.LongLength, result.Value!.BytesWritten);
-
     }
 
     /// <summary>
@@ -903,7 +807,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     [Fact]
     public async Task WriteFileAsync_does_not_double_a_bom_the_caller_already_supplied()
     {
-
         string path = Path.Combine(_workspace.Root, "Program.cs");
 
         await File.WriteAllBytesAsync(path, [.. Utf8Bom, .. "// old"u8]);
@@ -919,13 +822,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         byte[] expected = [.. Utf8Bom, .. "// new"u8];
 
         Assert.Equal(expected, await File.ReadAllBytesAsync(path));
-
     }
 
     [Fact]
     public async Task WriteFileAsync_does_not_add_a_bom_to_a_destination_that_had_none()
     {
-
         string path = Path.Combine(_workspace.Root, "plain.txt");
 
         await File.WriteAllBytesAsync(path, "old"u8.ToArray());
@@ -939,7 +840,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.Equal("new"u8.ToArray(), await File.ReadAllBytesAsync(path));
-
     }
 
     /// <summary>
@@ -951,7 +851,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     [Fact]
     public async Task ReplaceTextBlockAsync_rejects_a_target_that_is_not_valid_utf8_instead_of_corrupting_it()
     {
-
         string path = Path.Combine(_workspace.Root, "legacy.cs");
 
         byte[] original = [.. "// caf"u8, 0xE9, .. " TODO"u8];
@@ -975,7 +874,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Workspace.PathNotAllowed, result.Error.Code);
 
         Assert.Equal(original, await File.ReadAllBytesAsync(path));
-
     }
 
     /// <summary>
@@ -986,7 +884,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     [Fact]
     public async Task ReplaceTextBlockAsync_rejects_a_binary_target_instead_of_rewriting_it()
     {
-
         string path = Path.Combine(_workspace.Root, "blob.bin");
 
         byte[] original = [.. "TODO"u8, 0x00, 0x01, 0x02];
@@ -1010,7 +907,57 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Workspace.PathNotAllowed, result.Error.Code);
 
         Assert.Equal(original, await File.ReadAllBytesAsync(path));
+    }
 
+    /// <summary>
+    /// R-007, replace path: the post-open check asks the kernel where the handle lives. A handle on a file
+    /// outside the workspace is rejected even when the stream reports a name inside it and the expected
+    /// identity was captured from that outside file (the swapped-link TOCTOU shape).
+    /// </summary>
+    [Fact]
+    public void IsOpenedReadHandleContained_rejects_outside_handle_whose_reported_name_is_inside()
+    {
+        string outside = Path.Combine(
+            Path.GetDirectoryName(_workspace.Root)!,
+            $"outside-{Guid.NewGuid():N}.txt");
+
+        File.WriteAllText(outside, "outside secret");
+
+        try
+        {
+            Assert.True(FileHandleIdentityInterop.TryGetPathIdentity(outside, out FileHandleIdentity outsideIdentity));
+
+            using FileStream stream = new ReportedNameFileStream(
+                outside,
+                Path.Combine(_workspace.Root, "looks-inside.txt"));
+
+            Assert.False(PhysicalFileSystemWriter.IsOpenedReadHandleContained(
+                _workspace.Root,
+                stream,
+                outsideIdentity));
+        }
+        finally
+        {
+            File.Delete(outside);
+        }
+    }
+
+    [Fact]
+    public void IsOpenedReadHandleContained_accepts_inside_handle_with_matching_identity()
+    {
+        string inside = _workspace.WriteFile("inside.txt", "ok");
+
+        Assert.True(FileHandleIdentityInterop.TryGetPathIdentity(inside, out FileHandleIdentity identity));
+
+        using FileStream stream = new(inside, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+        Assert.True(PhysicalFileSystemWriter.IsOpenedReadHandleContained(_workspace.Root, stream, identity));
+    }
+
+    private sealed class ReportedNameFileStream(string path, string reportedName)
+        : FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)
+    {
+        public override string Name => reportedName;
     }
 
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
@@ -1023,5 +970,4 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     private WorkspaceInfo MakeWorkspace() =>
         new("id", "test", _workspace.Root, WorkspaceType.Campaign, DateTimeOffset.UtcNow);
-
 }

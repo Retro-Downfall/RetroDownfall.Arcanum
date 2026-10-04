@@ -767,6 +767,81 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
     }
 
     [Fact]
+    public void TextualLinkTargetInterpretation_CollapsesDotDotAsTextAgainstTheLinkDirectory()
+    {
+        string linkDirectory = Path.Combine(_root, "outer", "ws");
+
+        string target = Path.Join("b", "..", "..", "..", "escape");
+
+        Assert.Equal(
+            Path.GetFullPath(Path.Combine(_root, "escape")),
+            WorkspacePathPolicy.TextualLinkTargetInterpretation(linkDirectory, target));
+    }
+
+    /// <summary>
+    /// <c>b -> a/b/c</c> (inside) and <c>d -> b/../../../escape</c>. Re-walking physically from <c>a/b/c</c>
+    /// lands on <c>ws/escape</c>, inside; collapsing the target as text against <c>ws</c> lands two levels
+    /// above it. POSIX uses the physical walk; under the Windows rule both interpretations must be contained,
+    /// so the textual escape fails closed. Runs the Windows rule against real links on any POSIX host.
+    /// </summary>
+    [SkippableFact]
+    public void IsPathUnderWorkspace_WindowsRule_RejectsLinkWhoseTextualInterpretationEscapes()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Creates real links with POSIX behaviour; the Windows lane runs the native test below.");
+
+        string workspace = CreateDualInterpretationFixture();
+
+        string candidate = Path.Combine(workspace, "d", "new.txt");
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceUnderLinkSemantics(
+            workspace,
+            candidate,
+            windowsLinkSemantics: false,
+            out _));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceUnderLinkSemantics(
+            workspace,
+            candidate,
+            windowsLinkSemantics: true,
+            out _));
+    }
+
+    [SkippableFact]
+    public void IsPathUnderWorkspace_WindowsRule_AllowsDotDotTargetContainedUnderBothInterpretations()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Creates real links with POSIX behaviour; the Windows lane runs the native test below.");
+
+        string workspace = CreateDualInterpretationFixture();
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(workspace, "e"),
+            Path.Join("a", "..", "a", "b"));
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceUnderLinkSemantics(
+            workspace,
+            Path.Combine(workspace, "e", "c", "new.txt"),
+            windowsLinkSemantics: true,
+            out _));
+    }
+
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_OnWindows_RejectsLinkWhoseTextualInterpretationEscapes()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Native Windows reparse-point lane.");
+
+        string workspace = CreateDualInterpretationFixture();
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "d", "new.txt"),
+            out _));
+    }
+
+    [Fact]
     public void RevalidatePathBeforeIo_MatchesSymlinkCheck()
     {
         string nestedDir = Path.Combine(_root, "src");
@@ -797,6 +872,25 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Directory.CreateDirectory(workspace);
 
         Directory.CreateSymbolicLink(Path.Combine(workspace, "b"), Path.Combine("..", "outside"));
+
+        return workspace;
+    }
+
+    /// <summary>
+    /// <c>outer/ws/a/b/c</c> (real), <c>ws/b -> a/b/c</c> and <c>ws/d -> b/../../../escape</c>; returns
+    /// <c>outer/ws</c>.
+    /// </summary>
+    private string CreateDualInterpretationFixture()
+    {
+        string workspace = Path.Combine(_root, "dual-" + Guid.NewGuid().ToString("N"), "ws");
+
+        Directory.CreateDirectory(Path.Combine(workspace, "a", "b", "c"));
+
+        Directory.CreateSymbolicLink(Path.Combine(workspace, "b"), Path.Join("a", "b", "c"));
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(workspace, "d"),
+            Path.Join("b", "..", "..", "..", "escape"));
 
         return workspace;
     }

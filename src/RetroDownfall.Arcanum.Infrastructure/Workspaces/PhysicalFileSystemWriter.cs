@@ -579,11 +579,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static (FileStream? Stream, Error? Error) TryOpenForHandleCheckedRead(string workspaceRoot, string absolutePath)
     {
-        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
-        {
-            return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
-        }
-
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, absolutePath, out string? resolvedFinalPath))
         {
             return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
@@ -633,28 +628,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             return (null, new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage));
         }
 
-        if (!FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity)
-            || !FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity))
-        {
-            stream.Dispose();
-
-            return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
-        }
-
-        string openedFullPath;
-
-        try
-        {
-            openedFullPath = Path.GetFullPath(stream.Name);
-        }
-        catch (Exception)
-        {
-            stream.Dispose();
-
-            return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
-        }
-
-        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, openedFullPath, out _))
+        if (!IsOpenedReadHandleContained(workspaceRoot, stream, expectedIdentity))
         {
             stream.Dispose();
 
@@ -663,6 +637,20 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         return (stream, null);
     }
+
+    /// <summary>
+    /// Post-open check for the replace path: the opened handle must be the pre-open identity and the kernel's
+    /// path for it must lie under the workspace root. <see cref="FileStream.Name"/> is never consulted: it is
+    /// only the string the stream was opened with, so an escaping link swapped in before the open (which also
+    /// makes the captured identity the outside file's) would pass a check on it.
+    /// </summary>
+    internal static bool IsOpenedReadHandleContained(
+        string workspaceRoot,
+        FileStream stream,
+        FileHandleIdentity expectedIdentity) =>
+        FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity)
+        && FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity)
+        && WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle);
 
     /// <summary>
     /// Recursively deletes <paramref name="path"/> and its contents. Each enumerated entry is revalidated with
