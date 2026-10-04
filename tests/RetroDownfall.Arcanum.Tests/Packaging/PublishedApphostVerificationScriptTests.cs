@@ -254,9 +254,12 @@ public sealed class PublishedApphostVerificationScriptTests
                 ]);
         }
 
+        // The macOS release and the Windows build are the two workflows that package an Arcanum
+        // archive. A third copy lived in private-beta-release.yml until that second release path was
+        // deleted; losing either remaining one is what this count exists to catch.
         Assert.True(
-            packagedArchives >= 3,
-            $"Expected all three shipping archive workflows, but found {packagedArchives}.");
+            packagedArchives >= 2,
+            $"Expected both shipping archive workflows, but found {packagedArchives}.");
     }
 
     private static int AssertPackagedArchivesAreGated(
