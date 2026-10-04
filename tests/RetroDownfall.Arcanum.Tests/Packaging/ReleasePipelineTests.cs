@@ -484,6 +484,64 @@ public sealed class ReleasePipelineTests
     }
 
     /// <summary>
+    /// A release dispatch must never replace the assets of a release that is already public, and two
+    /// dispatches must not interleave their uploads. <c>gh release upload --clobber</c> succeeds on
+    /// any existing release, so without a check an explicit version turns a notarized public
+    /// download into a mutable one.
+    /// </summary>
+    [Fact]
+    public void Release_refuses_to_clobber_a_published_release()
+    {
+        string root = RepositoryRoot();
+
+        string release = File
+            .ReadAllText(Path.Combine(root, ".github", "workflows", "release.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        int create = release.IndexOf("- name: Create or update the draft GitHub Release", StringComparison.Ordinal);
+
+        Assert.True(create > 0, "release.yml lost its draft-release assembly step.");
+
+        string beforeCreate = release[..create];
+
+        Assert.Contains("isDraft", beforeCreate, StringComparison.Ordinal);
+
+        int jobs = release.IndexOf("\njobs:\n", StringComparison.Ordinal);
+
+        Assert.True(jobs > 0, "release.yml declares no jobs.");
+
+        string topLevel = release[..jobs];
+
+        int concurrency = topLevel.IndexOf("\nconcurrency:\n", StringComparison.Ordinal);
+
+        Assert.True(
+            concurrency >= 0,
+            "release.yml needs a top-level concurrency group so two dispatches cannot interleave per-file uploads.");
+
+        string concurrencyBlock = topLevel[concurrency..];
+
+        Assert.Contains("cancel-in-progress: false", concurrencyBlock, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("cancel-in-progress: true", release, StringComparison.Ordinal);
+
+        // Never on a job: this workflow is also workflow_call, and a called job's group would
+        // serialize against the caller's.
+        Assert.Equal(
+            1,
+            release.Split('\n').Count(static line => line.TrimStart().StartsWith("concurrency:", StringComparison.Ordinal)));
+
+        string macOs = File
+            .ReadAllText(Path.Combine(root, ".github", "workflows", "release-macos-arm64.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        int macOsCreate = macOs.IndexOf("- name: Create or update draft GitHub Release", StringComparison.Ordinal);
+
+        Assert.True(macOsCreate > 0, "release-macos-arm64.yml lost its draft-release step.");
+
+        Assert.Contains("isDraft", macOs[..macOsCreate], StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Bodies of every brace-delimited block that follows <paramref name="header"/>, brace-matched
     /// so a nested block does not terminate its parent.
     /// </summary>

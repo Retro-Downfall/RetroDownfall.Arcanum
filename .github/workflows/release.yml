@@ -47,6 +47,18 @@ on:
 permissions:
   contents: read
 
+# Queue, never cancel. Two dispatches that both leave `version` blank would each compute "highest
+# existing beta + 1" and then interleave their per-file uploads into the same draft, shipping a zip
+# from one run beside a checksum file from the other. One group per requested version serializes
+# exactly the runs that could collide: an explicit version is its own group, and every blank version
+# shares `auto`. `cancel-in-progress` stays false because a release must never be cancelled by
+# whatever is dispatched next (the same reason ci.yml carries the opposite setting and this file
+# does not). This is the only `concurrency:` in the file: the workflow is also `workflow_call`, and
+# a group on a called job would serialize against the caller's own.
+concurrency:
+  group: release-${{ inputs.version || 'auto' }}
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Validate the version and require every shipping asset
@@ -185,6 +197,31 @@ jobs:
             fi
           } >> "$GITHUB_OUTPUT"
           echo "VERSION=$VERSION"
+
+      # `gh release upload --clobber` succeeds on any release that exists, draft or published, so an
+      # explicit version (or a declared non-channel <Version>) that names a release already public
+      # would replace its notarized binaries and SHA256SUMS.txt in place. Refuse here, before any
+      # platform spends a build, unless the release is absent or still a draft. Any answer other than
+      # "release not found" fails closed: not being able to tell is not permission to overwrite.
+      - name: Refuse to replace a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -uo pipefail
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            if [[ "$state" != "true" ]]; then
+              echo "error: release $TAG is already published; refusing to replace its assets. Choose a new version." >&2
+              exit 1
+            fi
+            echo "Release $TAG exists as a draft; its assets may be replaced."
+          elif [[ "$state" == *"release not found"* ]]; then
+            echo "Release $TAG does not exist yet."
+          else
+            echo "error: could not determine whether release $TAG is published: $state" >&2
+            exit 1
+          fi
 
       - name: Require a verified hermetic SQLCipher asset for every shipping RID
         run: |

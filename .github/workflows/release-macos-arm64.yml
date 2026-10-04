@@ -112,6 +112,32 @@ jobs:
           echo "MARKETING_VERSION=$MARKETING_VERSION"
           echo "BUNDLE_VERSION=$BUNDLE_VERSION"
 
+      # `gh release upload --clobber` succeeds on any release that exists, draft or published, so a
+      # standalone dispatch naming a version that is already public would replace its notarized
+      # artifacts in place. Check before the ~24 minute Native AOT compile rather than after it. Only
+      # a run that will touch the release needs the answer; the unified release owns its own check.
+      # Any answer other than "release not found" fails closed.
+      - name: Refuse to replace a published release
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -uo pipefail
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            if [[ "$state" != "true" ]]; then
+              echo "error: release $TAG is already published; refusing to replace its assets. Choose a new version." >&2
+              exit 1
+            fi
+            echo "Release $TAG exists as a draft; its assets may be replaced."
+          elif [[ "$state" == *"release not found"* ]]; then
+            echo "Release $TAG does not exist yet."
+          else
+            echo "error: could not determine whether release $TAG is published: $state" >&2
+            exit 1
+          fi
+
       - name: Require Apple signing and notarization secrets
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
