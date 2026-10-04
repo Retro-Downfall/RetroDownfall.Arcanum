@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
@@ -16,10 +17,8 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 internal static class SpellCommandSupport
 {
-
     public static void WriteSpellSummaryTable(SpellSummary[] spells, IThemePalette themePalette)
     {
-
         Table table = new();
 
         table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Name")));
@@ -32,13 +31,11 @@ internal static class SpellCommandSupport
 
         foreach (SpellSummary spell in spells)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(spell.Name))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(spell.Description ?? "-"))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(spell.Source.ToString()))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(spell.Tags.Length == 0 ? "-" : string.Join(", ", spell.Tags)))));
-
         }
 
         AnsiConsole.Write(table);
@@ -47,9 +44,7 @@ internal static class SpellCommandSupport
         {
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No spells matched.")));
         }
-
     }
-
 }
 
 /// <summary>
@@ -58,11 +53,11 @@ internal static class SpellCommandSupport
 public sealed class SpellCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
+    IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
-
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
@@ -73,7 +68,6 @@ public sealed class SpellCommands(
     /// <param name="workspace">Workspace root to scope the search (defaults to the host's default workspace).</param>
     public async Task<int> List(string? workspace = null, CancellationToken cancellationToken = default)
     {
-
         Result<SpellSummary[]> result = await apiClient.GetSpellsAsync(workspace, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -86,7 +80,6 @@ public sealed class SpellCommands(
         SpellCommandSupport.WriteSpellSummaryTable(result.Value, themePalette);
 
         return 0;
-
     }
 
     /// <summary>
@@ -96,11 +89,9 @@ public sealed class SpellCommands(
     /// <param name="workspace">Workspace ID, name, or server path used to scope the lookup.</param>
     public async Task<int> Get(string? name, string? workspace = null, CancellationToken cancellationToken = default)
     {
-
         if (resourceCatalog is not null
             && !string.IsNullOrWhiteSpace(workspace))
         {
-
             ResourceSelectionResult<WorkspaceInfo> workspaceSelection =
                 await resourceCatalog
                     .SelectWorkspaceAsync(workspace, cancellationToken)
@@ -108,14 +99,11 @@ public sealed class SpellCommands(
 
             if (workspaceSelection.Status == ResourceSelectionStatus.Cancelled)
             {
-
                 return 0;
-
             }
 
             if (workspaceSelection.Status == ResourceSelectionStatus.Error)
             {
-
                 string message = string.IsNullOrWhiteSpace(workspaceSelection.Error)
                     ? "Workspace selection failed."
                     : workspaceSelection.Error;
@@ -124,11 +112,9 @@ public sealed class SpellCommands(
                     themePalette.ErrorMarkup(Markup.Escape(message)));
 
                 return 1;
-
             }
 
             workspace = workspaceSelection.Value!.Path;
-
         }
 
         if (resourceCatalog is not null)
@@ -224,7 +210,6 @@ public sealed class SpellCommands(
         AnsiConsole.Write(panel);
 
         return 0;
-
     }
 
     /// <summary>
@@ -247,7 +232,6 @@ public sealed class SpellCommands(
         string[]? dependency = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(name))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
@@ -299,7 +283,6 @@ public sealed class SpellCommands(
             themePalette.HighlightLabelMarkup(Markup.Escape("Spell created:"), Markup.Escape(name.Trim())));
 
         return 0;
-
     }
 
     /// <summary>
@@ -316,7 +299,6 @@ public sealed class SpellCommands(
         string[]? tag = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(workspace))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
@@ -346,7 +328,6 @@ public sealed class SpellCommands(
         AnsiConsole.MarkupLine(themePalette.HighlightLabelMarkup(Markup.Escape("Spell updated:"), Markup.Escape(name)));
 
         return 0;
-
     }
 
     /// <summary>
@@ -356,7 +337,6 @@ public sealed class SpellCommands(
     /// <param name="workspace">Workspace root to scope the deletion.</param>
     public async Task<int> Delete(string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(workspace))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
@@ -385,7 +365,6 @@ public sealed class SpellCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Spell removed.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -404,12 +383,10 @@ public sealed class SpellCommands(
         string? workspace = null,
         CancellationToken cancellationToken = default)
     {
-
         SpellSource? parsedSource = null;
 
         if (!string.IsNullOrWhiteSpace(source))
         {
-
             parsedSource = source.Trim().ToLowerInvariant() switch
             {
                 "builtin" => SpellSource.Builtin,
@@ -425,7 +402,6 @@ public sealed class SpellCommands(
 
                 return (int)CliExitCode.ConfigurationError;
             }
-
         }
 
         Result<SpellSummary[]> result = await apiClient
@@ -442,7 +418,6 @@ public sealed class SpellCommands(
         SpellCommandSupport.WriteSpellSummaryTable(result.Value, themePalette);
 
         return 0;
-
     }
 
     /// <summary>
@@ -452,7 +427,6 @@ public sealed class SpellCommands(
     /// <param name="workspace">Workspace root to scope the validation.</param>
     public async Task<int> Validate(string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
-
         Result<SpellValidationResultDto> result = await apiClient
             .ValidateSpellAsync(name, workspace, cancellationToken)
             .ConfigureAwait(false);
@@ -465,6 +439,19 @@ public sealed class SpellCommands(
         }
 
         SpellValidationResultDto validation = result.Value;
+
+        // The host reports an invalid spell as a successful result, so the verdict is the exit status
+        // here: a validation that could never fail could not gate a pipeline.
+        int verdict = validation.IsValid
+            ? (int)CliExitCode.Success
+            : (int)CliExitCode.GenericError;
+
+        if (CliInvocationContext.Current.Json)
+        {
+            dispatcher.WriteJson(validation, ArcanumJsonContext.Default.SpellValidationResultDto);
+
+            return verdict;
+        }
 
         Table table = new();
 
@@ -507,8 +494,7 @@ public sealed class SpellCommands(
 
         AnsiConsole.Write(panel);
 
-        return 0;
-
+        return verdict;
     }
 
     /// <summary>
@@ -525,7 +511,6 @@ public sealed class SpellCommands(
         string? input = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrEmpty(input))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
@@ -556,7 +541,6 @@ public sealed class SpellCommands(
         await ExecuteResultRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
 
         return 0;
-
     }
 
     /// <summary>
@@ -566,7 +550,6 @@ public sealed class SpellCommands(
     /// <param name="workspace">Workspace root to scope the lookup.</param>
     public async Task<int> Versions(string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
-
         Result<SpellVersionDto[]> result = await apiClient
             .GetSpellVersionsAsync(name, workspace, null, cancellationToken)
             .ConfigureAwait(false);
@@ -588,20 +571,17 @@ public sealed class SpellCommands(
 
         foreach (SpellVersionDto version in result.Value)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(version.Version))),
                 new Markup(version.IsActive
                     ? themePalette.HighlightMarkup(Markup.Escape("yes"))
                     : themePalette.MutedMarkup(Markup.Escape("-"))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(version.CreatedAt.ToString("u")))));
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     /// <summary>
@@ -616,7 +596,6 @@ public sealed class SpellCommands(
         string? output = null,
         CancellationToken cancellationToken = default)
     {
-
         Result<SpellExportDto> result = await apiClient
             .ExportSpellAsync(name, workspace, cancellationToken)
             .ConfigureAwait(false);
@@ -654,7 +633,6 @@ public sealed class SpellCommands(
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -664,7 +642,6 @@ public sealed class SpellCommands(
     /// <param name="workspace">Workspace root to import into.</param>
     public async Task<int> Import(string? file = null, string? workspace = null, CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(file))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
@@ -720,7 +697,6 @@ public sealed class SpellCommands(
             themePalette.HighlightLabelMarkup(Markup.Escape("Spell imported:"), Markup.Escape(result.Value.Name)));
 
         return 0;
-
     }
 
     /// <summary>
@@ -737,12 +713,10 @@ public sealed class SpellCommands(
         string? campaign = null,
         CancellationToken cancellationToken = default)
     {
-
         Guid? sessionId = null;
 
         if (!string.IsNullOrWhiteSpace(session))
         {
-
             if (!CliArgReader.TryParseGuid(session, out Guid parsedSessionId))
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
@@ -751,14 +725,12 @@ public sealed class SpellCommands(
             }
 
             sessionId = parsedSessionId;
-
         }
 
         Guid? campaignId = null;
 
         if (!string.IsNullOrWhiteSpace(campaign))
         {
-
             if (!CliArgReader.TryParseGuid(campaign, out Guid parsedCampaignId))
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
@@ -767,7 +739,6 @@ public sealed class SpellCommands(
             }
 
             campaignId = parsedCampaignId;
-
         }
 
         SpellCastRequest request = new(workspace, sessionId, campaignId);
@@ -802,7 +773,6 @@ public sealed class SpellCommands(
 
         if (cast.ResonantDependencies.Length > 0)
         {
-
             Table depTable = new();
 
             depTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Spell Name")));
@@ -815,12 +785,10 @@ public sealed class SpellCommands(
             AnsiConsole.MarkupLine(themePalette.HeadingBoldMarkup(Markup.Escape("Resonant Dependencies")));
 
             AnsiConsole.Write(depTable);
-
         }
 
         if (cast.AvailableTools.Length > 0)
         {
-
             Table toolTable = new();
 
             toolTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Tool Name")));
@@ -838,12 +806,10 @@ public sealed class SpellCommands(
             {
                 AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("(all tools available \u2014 no attunement filter)")));
             }
-
         }
 
         if (cast.AvailableSpellScripts.Length > 0)
         {
-
             Table scriptTable = new();
 
             scriptTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Script")));
@@ -856,7 +822,6 @@ public sealed class SpellCommands(
             AnsiConsole.MarkupLine(themePalette.HeadingBoldMarkup(Markup.Escape("Spell Scripts")));
 
             AnsiConsole.Write(scriptTable);
-
         }
 
         if (cast.CodexContent is not null)
@@ -866,7 +831,6 @@ public sealed class SpellCommands(
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -881,7 +845,6 @@ public sealed class SpellCommands(
         string? workspace = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(newName))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name is required.")));
@@ -906,9 +869,7 @@ public sealed class SpellCommands(
         SpellCommandSupport.WriteSpellSummaryTable([result.Value], themePalette);
 
         return 0;
-
     }
-
 }
 
 /// <summary>
@@ -916,7 +877,6 @@ public sealed class SpellCommands(
 /// </summary>
 public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalette themePalette, IOptions<ArcanumSettings> settings)
 {
-
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
@@ -935,7 +895,6 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
         string? workspace = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(version))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
@@ -972,7 +931,6 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
             themePalette.HighlightMarkup(Markup.Escape($"\u2713 Created version {result.Value.Version} for spell \"{name}\"")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -989,7 +947,6 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
         string? workspace = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(version))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
@@ -1028,7 +985,6 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
             themePalette.HighlightMarkup(Markup.Escape($"\u2713 Updated version {result.Value.Version} for spell \"{name}\"")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -1043,7 +999,6 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
         string? workspace = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(version))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
@@ -1075,7 +1030,5 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
         }
 
         return 0;
-
     }
-
 }
