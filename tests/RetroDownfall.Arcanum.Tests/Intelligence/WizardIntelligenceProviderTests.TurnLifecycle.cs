@@ -389,4 +389,96 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.Equal(InferenceRunStatus.Completed, status);
     }
+
+    /// <summary>
+    /// R-277: a caller that cancels mid-stream leaves nothing in flight. The scripted provider
+    /// cancels the caller itself right after its first token, so the cancellation lands at one known
+    /// point rather than racing a wall-clock timer, and the turn must then have resolved its assistant
+    /// entry with the partial answer, closed its run as abandoned, handed back its unspent
+    /// reservation, and released the Session for the next turn.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_CancelledMidStream_ResolvesTurnReleasesLeaseAndClosesRun()
+    {
+        Guid sessionId = Guid.Parse("27700000-0000-0000-0000-000000000001");
+
+        using CancellationTokenSource caller = new();
+
+        SessionTurnConcurrencyGate turnGate = new();
+
+        FakeGrimoireRepository grimoire = new() { FixedSessionId = sessionId };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamResponder(token => TokenThenCallerCancels("tok", caller, token));
+
+        RecordingTurnRunWriter runs = new();
+
+        RecordingBudgetReservationService reservations = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            grimoire: grimoire,
+            turnRunWriter: runs,
+            budgetReservationService: reservations,
+            sessionTurnGate: turnGate);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (IntelligenceEvent _ in wizard.StreamPromptAsync(
+                BaseRequest() with { Prompt = "cancel", SkipSpellRouting = true, DisableMcpTools = true },
+                InvocationContexts.AttendedSession(),
+                caller.Token))
+            {
+            }
+        });
+
+        // The assistant entry was resolved with what had streamed, not left empty and in flight.
+        // Whether the consumer saw the token frame before the cancellation reached it is a race
+        // between the producer and the projection channel, so only the durable side is asserted.
+        Assert.Equal("tok", grimoire.LastFinalizedContent);
+
+        // The run closed exactly once, as abandoned, and the unspent reservation went back.
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Abandoned, status);
+
+        Assert.True(reservations.WasReleased);
+
+        Assert.Equal(0, reservations.ReconcileCount);
+
+        // The Session lease is free: the next turn on the same Session is admitted.
+        GrimoireTurnWriter nextWriter = new(
+            new FakeGrimoireRepository(),
+            new FakeSessionTurnBeginStore(),
+            new SessionEventHub(NullLogger<SessionEventHub>.Instance),
+            NullLogger<GrimoireTurnWriter>.Instance,
+            sessionTurnGate: turnGate);
+
+        Result<GrimoireTurnWriter.TurnHandle> next = await nextWriter.BeginBufferedAssistantReplyAsync(
+            BaseRequest() with { SessionId = sessionId },
+            InvocationContexts.AttendedSession(),
+            "next turn",
+            ModelName,
+            CancellationToken.None);
+
+        Assert.True(next.IsSuccess);
+
+        Assert.True(await nextWriter.ResolveInterruptedAndMarkFinalizedAsync(
+            next.Value,
+            streamedContent: null,
+            CancellationToken.None));
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> TokenThenCallerCancels(
+        string token,
+        CancellationTokenSource caller,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        yield return new ChatResponseUpdate(ChatRole.Assistant, token);
+
+        await caller.CancelAsync();
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
 }

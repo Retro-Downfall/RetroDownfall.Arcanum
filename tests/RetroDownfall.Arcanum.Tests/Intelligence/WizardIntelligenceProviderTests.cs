@@ -1034,30 +1034,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario16_CancellationDuringStream_CancelsCleanly()
-    {
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueSlowStream(TimeSpan.FromSeconds(5), "tok");
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat);
-
-        using CancellationTokenSource cts = new();
-
-        cts.CancelAfter(TimeSpan.FromMilliseconds(100));
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-        {
-            await foreach (IntelligenceEvent _ in wizard.StreamPromptAsync(
-                BaseRequest() with { Prompt = "cancel", SkipSpellRouting = true, DisableMcpTools = true },
-                InvocationContexts.AttendedSession(),
-                cts.Token))
-            {
-            }
-        });
-    }
-
-    [Fact]
     public async Task Scenario17_EmptyPrompt_ReturnsValidationError()
     {
         WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient());
@@ -10344,6 +10320,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public void EnqueueImmediateStreamFailure(Exception ex) =>
             _streaming.Enqueue(_ => ImmediateFailingStream(ex));
+
+        /// <summary>Answers the next streaming call with <paramref name="respond"/>, given the call's token.</summary>
+        public void EnqueueStreamResponder(Func<CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> respond) =>
+            _streaming.Enqueue(respond);
 
         public void EnqueueSlowStream(TimeSpan delay, string token) =>
             _streaming.Enqueue(ct => SlowStream(delay, token, ct));
