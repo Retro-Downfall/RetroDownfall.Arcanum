@@ -6984,11 +6984,14 @@ internal sealed partial class DataRetentionService(
     /// body, or the request-identity row, because a retry with a changed plan would otherwise
     /// reconstruct an owner that matched a closed scope it has no right to adopt.
     ///
-    /// <para>An interrupted reset is resumed by the erasure coordinator with that exact owner while
-    /// the durable operation lease is maintained. If exact ownership cannot be established, lease
-    /// maintenance is lost, or the coordinator cannot safely finish, recovery returns a typed
-    /// requires-attention result so the checkpoint and closed admission remain available for operator
-    /// reconciliation (§10.20.3).</para>
+    /// <para>An interrupted reset is resumed by the erasure coordinator with that exact owner. The
+    /// durable operation lease is deliberately not maintained across the resumed closed period: a
+    /// renewal advances the row's revision, and the transition journal binds itself to the exact
+    /// revision the launch produced. A second recovery starting beside this one is guarded instead by
+    /// the coordinator's process-local claim and the journal's one active slot per profile. If exact
+    /// ownership cannot be established or is lost, or the coordinator cannot safely finish, recovery
+    /// returns a typed requires-attention result so the checkpoint and closed admission remain
+    /// available for operator reconciliation (§10.20.3).</para>
     /// </remarks>
     private async Task<LongRunningOperationRecoveryResult> RecoverCovenantResetMutationAsync(
         LongRunningOperation operation,
