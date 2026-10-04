@@ -113,8 +113,11 @@ public sealed class CovenantCommands(
             return (int)CliExitCode.Success;
         }
 
-        Result<CovenantMutationResultDto> committed = await apiClient
-            .SetCovenantAsync(
+        Result<CovenantMutationResultDto> committed = await CommitAsync(
+            mutationId,
+            key,
+            campaignId,
+            () => apiClient.SetCovenantAsync(
                 new CovenantSetRequest(
                     scope,
                     campaignId,
@@ -124,7 +127,8 @@ public sealed class CovenantCommands(
                     mutationId,
                     reactivate,
                     prepared.Value.PreflightToken),
-                cancellationToken)
+                cancellationToken),
+            cancellationToken)
             .ConfigureAwait(false);
 
         return WriteMutation(committed);
@@ -164,8 +168,11 @@ public sealed class CovenantCommands(
             return (int)CliExitCode.Success;
         }
 
-        Result<CovenantMutationResultDto> committed = await apiClient
-            .RetireCovenantAsync(
+        Result<CovenantMutationResultDto> committed = await CommitAsync(
+            mutationId,
+            key,
+            campaignId,
+            () => apiClient.RetireCovenantAsync(
                 new CovenantRetireRequest(
                     scope,
                     campaignId,
@@ -174,7 +181,8 @@ public sealed class CovenantCommands(
                     expectedRevision,
                     mutationId,
                     prepared.Value.PreflightToken),
-                cancellationToken)
+                cancellationToken),
+            cancellationToken)
             .ConfigureAwait(false);
 
         return WriteMutation(committed);
@@ -240,8 +248,11 @@ public sealed class CovenantCommands(
             return (int)CliExitCode.Success;
         }
 
-        Result<CovenantMutationResultDto> committed = await apiClient
-            .CorrectCovenantAsync(
+        Result<CovenantMutationResultDto> committed = await CommitAsync(
+            mutationId,
+            key,
+            campaignId,
+            () => apiClient.CorrectCovenantAsync(
                 new CovenantCorrectRequest(
                     scope,
                     campaignId,
@@ -253,7 +264,8 @@ public sealed class CovenantCommands(
                     targetRenderedHash,
                     mutationId,
                     prepared.Value.PreflightToken),
-                cancellationToken)
+                cancellationToken),
+            cancellationToken)
             .ConfigureAwait(false);
 
         return WriteMutation(committed);
@@ -302,8 +314,11 @@ public sealed class CovenantCommands(
             return (int)CliExitCode.Success;
         }
 
-        Result<CovenantCurationResultDto> committed = await apiClient
-            .CurateCovenantAsync(
+        Result<CovenantCurationResultDto> committed = await CommitAsync(
+            mutationId,
+            key,
+            campaignId,
+            () => apiClient.CurateCovenantAsync(
                 new CovenantCurationRequest(
                     kind,
                     scope,
@@ -313,7 +328,8 @@ public sealed class CovenantCommands(
                     expectedRevision,
                     mutationId,
                     prepared.Value.PreflightToken),
-                cancellationToken)
+                cancellationToken),
+            cancellationToken)
             .ConfigureAwait(false);
 
         return WriteCuration(committed);
@@ -328,9 +344,10 @@ public sealed class CovenantCommands(
     /// value an operator could type to ask for the next one. Following it here matches every other
     /// cursor catalog the CLI walks.
     ///
-    /// <para>A cursor that comes back unchanged is a refusal to advance, not a page. Following it
-    /// again would loop forever printing the same entries, so it stops and says the listing is
-    /// partial.</para>
+    /// <para>A cursor the walk has already been handed, whether it comes straight back or after other
+    /// cursors, is a refusal to advance, not a page. Following it again would loop forever accumulating
+    /// entries, so the walk fails with the no-progress fault and prints nothing that could be mistaken
+    /// for the whole listing.</para>
     /// </remarks>
     public async Task<int> List(
         Guid? campaignId,
@@ -349,9 +366,9 @@ public sealed class CovenantCommands(
 
         string? cursor = null;
 
-        CovenantPageDto last;
+        HashSet<string> seenCursors = new(StringComparer.Ordinal);
 
-        bool stalled;
+        CovenantPageDto last;
 
         while (true)
         {
@@ -379,18 +396,12 @@ public sealed class CovenantCommands(
             {
                 last = page.Value;
 
-                stalled = false;
-
                 break;
             }
 
-            if (string.Equals(next, cursor, StringComparison.Ordinal))
+            if (!seenCursors.Add(next))
             {
-                last = page.Value;
-
-                stalled = true;
-
-                break;
+                return Fail(CursorNoProgress("listing"));
             }
 
             cursor = next;
@@ -405,7 +416,7 @@ public sealed class CovenantCommands(
                 new CovenantListPayload(
                     [.. items.Select(Project)],
                     NextCursor: null,
-                    last.Truncated || stalled,
+                    last.Truncated,
                     last.Search,
                     last.Truncated ? last.TruncationReason : null),
                 CliJsonContext.Default.CovenantListPayload);
@@ -424,11 +435,6 @@ public sealed class CovenantCommands(
         {
             dispatcher.WritePayload(
                 $"{item.Key}  [{item.Lane}]  revision {item.LaneRevision}  {item.CompiledByteCost} bytes  {item.Origin}");
-        }
-
-        if (stalled)
-        {
-            dispatcher.WriteDiagnostic("The server stopped advancing its cursor; this listing is incomplete.");
         }
 
         return (int)CliExitCode.Success;
@@ -452,9 +458,9 @@ public sealed class CovenantCommands(
 
         string? cursor = null;
 
-        CovenantPageDto last;
+        HashSet<string> seenCursors = new(StringComparer.Ordinal);
 
-        bool stalled;
+        CovenantPageDto last;
 
         while (true)
         {
@@ -483,18 +489,12 @@ public sealed class CovenantCommands(
             {
                 last = page.Value;
 
-                stalled = false;
-
                 break;
             }
 
-            if (string.Equals(next, cursor, StringComparison.Ordinal))
+            if (!seenCursors.Add(next))
             {
-                last = page.Value;
-
-                stalled = true;
-
-                break;
+                return Fail(CursorNoProgress("search results"));
             }
 
             cursor = next;
@@ -506,7 +506,7 @@ public sealed class CovenantCommands(
                 new CovenantListPayload(
                     [.. items.Select(Project)],
                     NextCursor: null,
-                    last.Truncated || stalled,
+                    last.Truncated,
                     last.Search,
                     last.Truncated ? last.TruncationReason : null),
                 CliJsonContext.Default.CovenantListPayload);
@@ -518,7 +518,7 @@ public sealed class CovenantCommands(
         {
             dispatcher.WritePayload("No Covenant entries matched.");
 
-            WriteSearchTruncation(last, stalled);
+            WriteSearchTruncation(last);
 
             return (int)CliExitCode.Success;
         }
@@ -529,22 +529,15 @@ public sealed class CovenantCommands(
                 $"{item.Key}  [{item.Lane}]  revision {item.LaneRevision}  {item.CompiledByteCost} bytes  {item.Origin}");
         }
 
-        WriteSearchTruncation(last, stalled);
+        WriteSearchTruncation(last);
 
         return (int)CliExitCode.Success;
     }
 
-    private void WriteSearchTruncation(CovenantPageDto last, bool stalled)
+    private void WriteSearchTruncation(CovenantPageDto last)
     {
-        if (!last.Truncated && !stalled)
+        if (!last.Truncated)
         {
-            return;
-        }
-
-        if (stalled)
-        {
-            dispatcher.WriteDiagnostic("The server stopped advancing its cursor; these search results are incomplete.");
-
             return;
         }
 
@@ -724,6 +717,8 @@ public sealed class CovenantCommands(
     {
         string? cursor = null;
 
+        HashSet<string> seenCursors = new(StringComparer.Ordinal);
+
         while (true)
         {
             Result<CovenantVersionPageDto> page = await apiClient
@@ -739,10 +734,14 @@ public sealed class CovenantCommands(
 
             into.AddRange(page.Value.Items);
 
-            if (page.Value.NextCursor is not { Length: > 0 } next
-                || string.Equals(next, cursor, StringComparison.Ordinal))
+            if (page.Value.NextCursor is not { Length: > 0 } next)
             {
                 return (int)CliExitCode.Success;
+            }
+
+            if (!seenCursors.Add(next))
+            {
+                return Fail(CursorNoProgress("version history"));
             }
 
             cursor = next;
@@ -1321,6 +1320,52 @@ public sealed class CovenantCommands(
     /// Fails a host <see cref="Result"/>: a <c>Connection.*</c> error exits 3 so automation can tell an
     /// unreachable host from a domain failure; every other host error keeps the generic exit code.
     /// </summary>
+    /// <summary>
+    /// Sends the commit request of a confirmed mutation and, when the caller is cancelled while it is in
+    /// flight, says the mutation may still have been applied.
+    /// </summary>
+    /// <remarks>
+    /// The host completes a committed mutation whatever the caller does afterwards, so Ctrl-C after the
+    /// request went out keeps its cancellation exit and names the mutation: the operator checks the key
+    /// rather than assuming nothing happened. A cancellation that lands before the request is sent cancels
+    /// a mutation that never started, and must not claim otherwise.
+    /// </remarks>
+    private async Task<Result<T>> CommitAsync<T>(
+        Guid mutationId,
+        string key,
+        Guid? campaignId,
+        Func<Task<Result<T>>> send,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        try
+        {
+            return await send().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            string campaignOption = campaignId is { } campaign ? $" --campaign {campaign:D}" : string.Empty;
+
+            dispatcher.WriteDiagnostic(
+                $"The request to change '{key}' was already sent when the operation was cancelled, so Covenant mutation {mutationId:D} "
+                + $"may have been applied. Run 'arcanum memory covenant show {key}{campaignOption}' to see the outcome before trying again.");
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The fault for a host that hands back a continuation it already handed back: following it would
+    /// accumulate the same pages for ever, so the walk ends with nothing printed, as every other cursor
+    /// walk in the CLI does.
+    /// </summary>
+    private static Error CursorNoProgress(string what) =>
+        new(
+            "Api.PaginationNoProgress",
+            $"Api.PaginationNoProgress: the host returned a cursor it had already returned, so the Covenant {what} cannot be completed. "
+            + "Nothing was printed; retry after repairing or upgrading the host.");
+
     private int Fail(Error error) =>
         Fail(error, (CliExitCode)CliFailureExit.ExitCode(error));
 
