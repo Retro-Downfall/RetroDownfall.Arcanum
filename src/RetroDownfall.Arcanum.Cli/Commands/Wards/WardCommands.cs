@@ -149,7 +149,8 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
             }
             else if (string.Equals(result.Error.Code, "Ward.AlreadyResolved", StringComparison.Ordinal))
             {
-                AnsiConsole.MarkupLine(themePalette.HighlightMarkup(Markup.Escape("Ward already resolved.")));
+                // A refusal, so it goes to stderr in the error style with the failing exit code below.
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Ward already resolved.")));
             }
             else
             {

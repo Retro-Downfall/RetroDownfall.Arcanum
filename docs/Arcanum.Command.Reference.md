@@ -783,7 +783,7 @@ Lists, inspects, and explicitly resolves retained active compatibility Wards. Or
 |---|---|---|
 | `arcanum ward list` | List active compatibility Wards. | None beyond global or inherited family options. |
 | `arcanum ward show <id>` | Show compatibility Ward detail. | None beyond global or inherited family options. |
-| `arcanum ward resolve <id>` | Resolve a compatibility Ward. | `--allow` — Record an allowed resolution.<br>`--deny` — Record a denied resolution.<br>`--reason <reason>` — Optional reason recorded with the resolution. |
+| `arcanum ward resolve <id>` | Resolve a compatibility Ward. A Ward that was already resolved is refused with `Ward already resolved.` on stderr and exit `1`; nothing is changed. | `--allow` — Record an allowed resolution.<br>`--deny` — Record a denied resolution.<br>`--reason <reason>` — Optional reason recorded with the resolution. |
 
 ### `arcanum trial`
 
