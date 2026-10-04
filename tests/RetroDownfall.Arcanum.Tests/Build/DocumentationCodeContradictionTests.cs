@@ -401,6 +401,48 @@ public sealed class DocumentationCodeContradictionTests
             namingFiles);
     }
 
+    /// <summary>
+    /// The diagnostic MCP invocation route and the Scalar reference UI are both gated, and the API
+    /// reference says so where a reader meets the route, not only in a design section. The claims hold
+    /// while the route refuses outside the Development edition and Scalar maps only on its feature flag.
+    /// </summary>
+    [Fact]
+    public void The_api_reference_says_the_diagnostic_mcp_route_and_scalar_are_gated()
+    {
+        Assert.Contains(
+            "edition != ArcanumEdition.Development",
+            ReadSource("Api", "Mcp", "DiagnosticMcpInvocationEndpoints.cs"),
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "ErrorCodes.Mcp.DiagnosticDisabled",
+            ReadSource("Api", "Mcp", "DiagnosticMcpInvocationEndpoints.cs"),
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "\"Arcanum:Features:ScalarUi\"",
+            ReadSource("Api", "ApiBootstrapper.cs"),
+            StringComparison.Ordinal);
+
+        string[] lines = ReadDocument("Arcanum.API.md").Split('\n');
+
+        string diagnosticRoute = Assert.Single(
+            lines,
+            static line => line.StartsWith("| POST | `/api/mcp/tools/invoke`", StringComparison.Ordinal));
+
+        Assert.Contains("Development edition only", diagnosticRoute, StringComparison.Ordinal);
+
+        Assert.Contains("`Mcp.DiagnosticDisabled`", diagnosticRoute, StringComparison.Ordinal);
+
+        string scalarRoute = Assert.Single(
+            lines,
+            static line => line.StartsWith("| `GET /api/openapi/v1.json`", StringComparison.Ordinal));
+
+        Assert.Contains("`Arcanum:Features:ScalarUi`", scalarRoute, StringComparison.Ordinal);
+
+        Assert.Contains("default false", scalarRoute, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))

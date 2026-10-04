@@ -54,7 +54,7 @@ The established §8 contract numbers are retained in this extracted reference so
 | POST | `/api/mcp/{name}/restart` | Restart one MCP server (`ApiResponse<bool>`); optional `workingDirectory` query. |
 | POST | `/api/mcp/trust-workspace` | Approve a workspace-local `mcp.json` for auto-start (`ApiResponse<bool>`; body `{ "workingDirectory": "..." }`; DESIGN §5.6). |
 | POST | `/api/mcp/reload` | Reload MCP connections (global nuclear reload — DESIGN §5.6). |
-| POST | `/api/mcp/tools/invoke` | **Diagnostic MCP Invocation** — policy-constrained direct invoke of an **external** MCP tool by an operator (`ApiResponse<McpToolInvokeResponse>`). |
+| POST | `/api/mcp/tools/invoke` | **Diagnostic MCP Invocation** — policy-constrained direct invoke of an **external** MCP tool by an operator (`ApiResponse<McpToolInvokeResponse>`). Development edition only; otherwise **404** `Mcp.DiagnosticDisabled`. |
 | GET | `/api/sessions` | Search/list Grimoire sessions (`ApiResponse<SessionQueryResult>`; DESIGN §11.16). |
 | POST | `/api/sessions` | Create session (`ApiResponse<SessionDetailDto>`; **201**). |
 | GET | `/api/sessions/analytics` | Session analytics (`ApiResponse<SessionAnalytics>`; DESIGN §11.16). |
@@ -294,7 +294,7 @@ The established §8 contract numbers are retained in this extracted reference so
 | `GET /api/events/logs` | SSE `LogEntry` frames (`text/event-stream`) | §8.16 |
 | `GET /api/sessions/{id}/stream` | SSE entry frames (`text/event-stream`) | DESIGN §11.16 |
 | `GET /api/apprentices/{id}/chronicle` | SSE Chronicle frames (`text/event-stream`) | DESIGN §5.7 |
-| `GET /api/openapi/v1.json` / `GET /api/scalar` | OpenAPI document and Scalar UI (not application `ApiResponse`) | DESIGN §11.5 |
+| `GET /api/openapi/v1.json` / `GET /api/scalar` | OpenAPI document and Scalar UI (not application `ApiResponse`). The OpenAPI document is always mapped; the Scalar UI is mapped only when `Arcanum:Features:ScalarUi` is true (default false) | DESIGN §11.5 |
 | `POST /v1/chat/completions` | OpenAI-shaped JSON or `text/event-stream` | §1 table |
 | `GET /v1/models` | OpenAI-shaped JSON list | §1 table |
 
