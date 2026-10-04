@@ -210,9 +210,9 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
                 cast.Value.AvailableTools,
                 StringComparer.Ordinal);
 
-            // Handing the binding back restores the answer a process with no gate would give, which
-            // is what keeps this test's refusal from following the rest of the run around.
-            HostProcessToolPolicy.SetStartupDecisionForTests(null);
+            // Binding a permitting decision stands in for a gate that allowed the tools, which
+            // proves the refusal above came from the blocked decision and nothing else.
+            HostProcessToolsEscapeHatchScope.BindPermittingDecision();
 
             Assert.True(HostProcessToolPolicy.AreAllowed(ArcanumEdition.Development));
         }

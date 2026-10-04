@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Core.Security;
 /// </remarks>
 public static class HostProcessToolPolicy
 {
-
     public const string ExecuteCommandToolName = "execute_command";
 
     public const string RunSpellScriptToolName =
@@ -66,17 +65,15 @@ public static class HostProcessToolPolicy
     /// </summary>
     /// <remarks>
     /// Called once, by the host bootstrap, at the point the provisional classification becomes the
-    /// process policy. A process that never runs the gate never binds one and keeps the edition and
-    /// environment rule on its own — which is the honest answer there, because an unbound predicate
-    /// has no gate decision to disagree with rather than a permissive one.
+    /// process policy. A process that never runs the gate never binds one, and for it the predicate
+    /// answers no: the edition and environment are necessary and never sufficient, so with no
+    /// published permitting decision there is nothing that has actually allowed the tools (R-087).
     /// </remarks>
     public static void BindStartupDecision(IHostProcessToolsRuntimePolicy policy)
     {
-
         ArgumentNullException.ThrowIfNull(policy);
 
         Volatile.Write(ref _startupDecision, policy);
-
     }
 
     /// <summary>Installs or clears the bound decision around a test that publishes one.</summary>
@@ -93,25 +90,27 @@ public static class HostProcessToolPolicy
     public static bool AreAllowed(ArcanumEdition edition) =>
         edition == ArcanumEdition.Development
         && ArcanumEnvironment.IsAllowHostProcessToolsEnabled()
-        && !RefusedByStartupGate();
+        && PermittedByStartupGate();
 
     /// <summary>
-    /// Whether the startup gate refused this installation's host-process-tools state.
+    /// Whether the startup gate published a decision that permits host process tools.
     /// </summary>
     /// <remarks>
-    /// Only a <i>blocked</i> publication subtracts. A gate that classified the installation without
-    /// blocking computed its flag from the same edition and environment this predicate reads, so it
-    /// can only disagree with them by being stale; a block is the gate's veto on an installation
-    /// whose durable evidence says these tools must not be handed out, and that veto wins (§10.15).
+    /// Fails closed: no bound decision, an unpublished one, a blocked one, and one that simply does
+    /// not permit all answer no. A process whose gate never ran has no durable evidence these tools
+    /// may be handed out, and the edition plus the environment variable are inputs the gate itself
+    /// refuses to start on when the installation has no completed transition (§10.15).
     /// </remarks>
-    private static bool RefusedByStartupGate()
+    private static bool PermittedByStartupGate()
     {
-
         IHostProcessToolsRuntimePolicy? published = Volatile.Read(ref _startupDecision);
 
-        return published is { IsPublished: true, HostProcessToolsPermitted: false }
-            && published.Blocker is not HostProcessToolsStartupBlocker.None;
-
+        return published is
+        {
+            IsPublished: true,
+            HostProcessToolsPermitted: true,
+            Blocker: HostProcessToolsStartupBlocker.None,
+        };
     }
 
     /// <summary>
@@ -120,15 +119,15 @@ public static class HostProcessToolPolicy
     public static HostProcessToolPolicyStatus Resolve(ArcanumEdition edition)
     {
         bool envFlag = ArcanumEnvironment.IsAllowHostProcessToolsEnabled();
-        bool allowed = edition == ArcanumEdition.Development && envFlag && !RefusedByStartupGate();
+        bool allowed = edition == ArcanumEdition.Development && envFlag && PermittedByStartupGate();
 
         string detail = allowed
             ? "Host process tools enabled (Development edition + ARCANUM_ALLOW_HOST_PROCESS_TOOLS). "
               + "This is an unsafe escape hatch — process is Degraded."
             : edition == ArcanumEdition.Development && envFlag
-                ? "The startup gate refused host process tools for this process: this installation has "
-                  + "no completed host-process-tools transition. Clear ARCANUM_ALLOW_HOST_PROCESS_TOOLS "
-                  + "and start the host again."
+                ? "The startup gate refused host process tools for this process: it published no decision "
+                  + "permitting them, and this installation has no completed host-process-tools "
+                  + "transition. Clear ARCANUM_ALLOW_HOST_PROCESS_TOOLS and start the host again."
                 : edition == ArcanumEdition.Development
                     ? "Development edition: host process tools remain off until ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1."
                     : "Local edition: host process tools disabled (execute_command / run_spell_script).";
@@ -140,7 +139,6 @@ public static class HostProcessToolPolicy
             IsHealthDegraded: allowed,
             PublicMessage: detail);
     }
-
 }
 
 /// <param name="Edition">Resolved runtime edition.</param>

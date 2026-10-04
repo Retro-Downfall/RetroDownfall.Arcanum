@@ -4711,6 +4711,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_EDITION", "development");
 
+            HostProcessToolsEscapeHatchScope.BindPermittingDecision();
+
             await CreateSpellWithDeclaredToolsAsync("exec-spell", ["execute_command"]);
 
             ScriptingChatClient chat = new();
@@ -4774,6 +4776,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         }
         finally
         {
+            HostProcessToolPolicy.SetStartupDecisionForTests(null);
+
             global::System.Environment.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, previousAllow);
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_EDITION", previousEdition);

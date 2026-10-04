@@ -10,7 +10,6 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// </summary>
 internal sealed class HostProcessToolsEscapeHatchScope : IDisposable
 {
-
     /// <summary>Shared gate for process-wide edition / host-tool env mutations.</summary>
     internal static readonly SemaphoreSlim Gate = new(1, 1);
 
@@ -34,6 +33,26 @@ internal sealed class HostProcessToolsEscapeHatchScope : IDisposable
             "1");
 
         global::System.Environment.SetEnvironmentVariable(ArcanumEnvironment.EditionEnvVar, "development");
+
+        BindPermittingDecision();
+    }
+
+    /// <summary>
+    /// Binds the published, permitting startup-gate decision a real host would hold once its gate
+    /// ran. The predicate fails closed without one, so a test that arms the escape hatch has to bind
+    /// the decision too; the binding is process-wide and is cleared again on dispose.
+    /// </summary>
+    internal static void BindPermittingDecision()
+    {
+        HostProcessToolsRuntimePolicy policy = new();
+
+        _ = policy.Publish(
+            new HostProcessToolsStartupDecision(
+                HostProcessToolsMarkerPairDisposition.TaintedMatched,
+                CovenantPermitted: false,
+                HostProcessToolsPermitted: true));
+
+        HostProcessToolPolicy.SetStartupDecisionForTests(policy);
     }
 
     public void Dispose()
@@ -47,6 +66,8 @@ internal sealed class HostProcessToolsEscapeHatchScope : IDisposable
 
         try
         {
+            HostProcessToolPolicy.SetStartupDecisionForTests(null);
+
             global::System.Environment.SetEnvironmentVariable(
                 HostProcessToolPolicy.AllowHostProcessToolsEnvVar,
                 _previousAllow);
@@ -60,5 +81,4 @@ internal sealed class HostProcessToolsEscapeHatchScope : IDisposable
             _ = Gate.Release();
         }
     }
-
 }
