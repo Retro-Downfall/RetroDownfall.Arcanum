@@ -97,7 +97,7 @@ Projects live under `src/` rather than the repository root for shorter CI paths,
 
 ### 3.2 `Directory.Build.props`
 
-Shared MSBuild: `TargetFramework` `net10.0`, `Nullable`/`ImplicitUsings` enable, `LangVersion` latest, `<Version>0.1.0-beta</Version>`. `Directory.Build.props` retains the **`Microsoft.Bcl.Memory` 10.0.8** baseline, while every current source/test project explicitly applies `<PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />`; **10.0.10 is therefore the effective solution pin** protecting the `Microsoft.ML.Tokenizers.Data.O200kBase` netstandard2.0 shim path. Per-project `.csproj` files hold what differs.
+Shared MSBuild: `TargetFramework` `net10.0`, `Nullable`/`ImplicitUsings` enable, `LangVersion` latest, `<Version>0.1.0-beta</Version>`. `Directory.Build.props` is the one place the **`Microsoft.Bcl.Memory` 10.0.10** pin lives, protecting the `Microsoft.ML.Tokenizers.Data.O200kBase` netstandard2.0 shim path; no project carries a per-project `Update` for it, and `PackageVersionConsistencyTests` fails when any project under `src/` or `tests/` (the assets-only `NativeSqlCipher` project once kept the older 10.0.8 baseline) resolves a different version. Per-project `.csproj` files hold what differs.
 
 
 ### 3.3 Package versions

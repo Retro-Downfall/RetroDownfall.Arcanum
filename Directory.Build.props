@@ -55,7 +55,12 @@
 
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.Bcl.Memory" Version="10.0.8" />
+    <!-- The one place this pin lives. It protects the Microsoft.ML.Tokenizers.Data.O200kBase
+         netstandard2.0 shim path, and a project that overrides it, or misses it, resolves its own
+         version (NativeSqlCipher once kept the older baseline while every other project applied a
+         per-project Update). PackageVersionConsistencyTests fails if any project resolves a
+         different version. -->
+    <PackageReference Include="Microsoft.Bcl.Memory" Version="10.0.10" />
 
   </ItemGroup>
 
