@@ -27,7 +27,6 @@ public sealed record ParsedSpell(
     string DirectoryPath,
     IReadOnlyList<string> AvailableScripts)
 {
-
     public string[] Tags { get; init; } = Array.Empty<string>();
 
     public string? SystemPrompt { get; init; }
@@ -45,12 +44,10 @@ public sealed record ParsedSpell(
     public string Body { get; init; } = string.Empty;
 
     public SkillMetadata? SkillMetadata { get; init; }
-
 }
 
 internal static class SpellScanner
 {
-
     private const int FullSpellCacheCapacity = 256;
 
     private const int MetadataScanCacheCapacity = 32;
@@ -77,11 +74,9 @@ internal static class SpellScanner
 
     private sealed class MetadataScanCacheEntry(IReadOnlyList<SpellMetadata> metadata, DateTimeOffset cachedAt)
     {
-
         public IReadOnlyList<SpellMetadata> Metadata { get; } = metadata;
 
         public DateTimeOffset CachedAt { get; } = cachedAt;
-
     }
 
     /// <summary>
@@ -95,7 +90,6 @@ internal static class SpellScanner
     /// </summary>
     private sealed class CoalescedWork<TResult>
     {
-
         private readonly CancellationTokenSource _cancellation = new();
 
         private readonly Lock _gate = new();
@@ -109,10 +103,8 @@ internal static class SpellScanner
         /// <summary>Joins this wave, returning false when it has already closed and must be replaced.</summary>
         internal bool TryJoin()
         {
-
             lock (_gate)
             {
-
                 if (_closed)
                 {
                     return false;
@@ -121,39 +113,31 @@ internal static class SpellScanner
                 _joiners++;
 
                 return true;
-
             }
-
         }
 
         /// <summary>Starts the shared work at most once and returns the task every joiner awaits.</summary>
         internal Task<TResult> Start(Func<CancellationToken, Task<TResult>> factory)
         {
-
             Lazy<Task<TResult>> work;
 
             lock (_gate)
             {
-
                 _work ??= new Lazy<Task<TResult>>(
                     () => factory(_cancellation.Token),
                     LazyThreadSafetyMode.ExecutionAndPublication);
 
                 work = _work;
-
             }
 
             return work.Value;
-
         }
 
         /// <summary>Drops one joiner, returning true when that was the last one and the wave has closed.</summary>
         internal bool Leave()
         {
-
             lock (_gate)
             {
-
                 _joiners--;
 
                 if (_joiners > 0)
@@ -164,9 +148,7 @@ internal static class SpellScanner
                 _closed = true;
 
                 return true;
-
             }
-
         }
 
         /// <summary>
@@ -176,7 +158,6 @@ internal static class SpellScanner
         /// </summary>
         internal void CancelAndRelease()
         {
-
             Lazy<Task<TResult>>? work;
 
             lock (_gate)
@@ -188,7 +169,6 @@ internal static class SpellScanner
 
             if (work is null || !work.IsValueCreated)
             {
-
                 _cancellation.Dispose();
 
                 return;
@@ -197,28 +177,24 @@ internal static class SpellScanner
             _ = work.Value.ContinueWith(
                 static (completed, state) =>
                 {
-
                     _ = completed.Exception;
 
                     ((CancellationTokenSource)state!).Dispose();
-
                 },
                 _cancellation,
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
-
         }
 
         /// <summary>Releases a wave that lost the publication race and was never joined.</summary>
         internal void Discard() => _cancellation.Dispose();
-
     }
 
     /// <summary>
     /// Coalesces concurrent misses for <paramref name="key"/> onto one shared task while keeping each
-    /// caller's cancellation to itself. <see cref="SingleFlight.CoalesceAsync"/> hands every joiner the
-    /// same task and lets the factory close over the leader's token, so an aborted leader cancelled
+    /// caller's cancellation to itself. A plain shared-task single-flight (one lazily started task handed
+    /// to every joiner, its factory closing over the leader's token) would let an aborted leader cancel
     /// every joined caller — a follower's own token was healthy, so its foreign OperationCanceledException
     /// escaped as a 500 rather than a graceful abort. Here the wave owns the token, joiners are counted,
     /// and the in-flight entry is removed only when the last joiner leaves rather than per awaiter.
@@ -229,12 +205,10 @@ internal static class SpellScanner
         Func<CancellationToken, Task<TResult>> factory,
         CancellationToken cancellationToken) where TKey : notnull
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         while (true)
         {
-
             CoalescedWork<TResult> candidate = new();
 
             CoalescedWork<TResult> entry = inFlight.GetOrAdd(key, candidate);
@@ -246,7 +220,6 @@ internal static class SpellScanner
 
             if (!entry.TryJoin())
             {
-
                 // The wave closed between the lookup and the join; drop the dead entry (only if the map
                 // still holds this exact one, so a newer wave is never evicted) and open a fresh one.
                 _ = inFlight.TryRemove(new KeyValuePair<TKey, CoalescedWork<TResult>>(key, entry));
@@ -256,26 +229,18 @@ internal static class SpellScanner
 
             try
             {
-
                 return await entry.Start(factory).WaitAsync(cancellationToken).ConfigureAwait(false);
-
             }
             finally
             {
-
                 if (entry.Leave())
                 {
-
                     _ = inFlight.TryRemove(new KeyValuePair<TKey, CoalescedWork<TResult>>(key, entry));
 
                     entry.CancelAndRelease();
-
                 }
-
             }
-
         }
-
     }
 
     private static readonly HashSet<string> HeavyDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
@@ -400,7 +365,6 @@ internal static class SpellScanner
             cacheKey,
             async scanToken =>
             {
-
                 List<SpellMetadata> globalSpells = [];
 
                 if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
@@ -427,7 +391,6 @@ internal static class SpellScanner
                 }
 
                 return result;
-
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -443,13 +406,10 @@ internal static class SpellScanner
         long maxFileSizeBytes,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(rootFullPath)
             || !Directory.Exists(rootFullPath))
         {
-
             yield break;
-
         }
 
         string root = Path.GetFullPath(rootFullPath);
@@ -458,7 +418,6 @@ internal static class SpellScanner
                      root,
                      cancellationToken))
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             SpellMetadata? metadata = await TryParseSpellMetadataAsync(
@@ -470,13 +429,9 @@ internal static class SpellScanner
 
             if (metadata is not null)
             {
-
                 yield return metadata;
-
             }
-
         }
-
     }
 
     internal static async Task<ParsedSpell?> LoadFullAsync(
@@ -527,7 +482,6 @@ internal static class SpellScanner
             cacheKey,
             async parseToken =>
             {
-
                 ParsedSpell? result = await TryParseSpellFileAsync(
                     fullPath,
                     maxFileSizeBytes,
@@ -541,7 +495,6 @@ internal static class SpellScanner
                 }
 
                 return result;
-
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -554,7 +507,6 @@ internal static class SpellScanner
         long maxFileSizeBytes,
         int metadataScanCacheTtlSeconds = 0)
     {
-
         IReadOnlyList<SpellMetadata> metadata = await ScanMetadataAsync(
             workspaceRoot,
             cancellationToken,
@@ -829,7 +781,6 @@ internal static class SpellScanner
         string rootFullPath,
         CancellationToken cancellationToken)
     {
-
         string canonicalRoot = ResolveCanonicalDirectory(rootFullPath);
 
         HashSet<string> visitedCanonicalDirectories = new(
@@ -842,30 +793,24 @@ internal static class SpellScanner
 
         if (!SpellDirectoryFrame.TryOpen(rootFullPath, out SpellDirectoryFrame? rootFrame))
         {
-
             yield break;
-
         }
 
         pending.Push(rootFrame!);
 
         try
         {
-
             while (pending.Count > 0)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 SpellDirectoryFrame frame = pending.Peek();
 
                 if (!frame.TryTakeNext(out string? entry))
                 {
-
                     pending.Pop().Dispose();
 
                     continue;
-
                 }
 
                 string currentEntry = entry!;
@@ -876,59 +821,46 @@ internal static class SpellScanner
 
                 try
                 {
-
                     attributes = File.GetAttributes(currentEntry);
-
                 }
                 catch (Exception exception) when (
                     exception is IOException
                         or UnauthorizedAccessException
                         or FileNotFoundException)
                 {
-
                     continue;
-
                 }
 
                 if (attributes.HasFlag(FileAttributes.Directory))
                 {
-
                     string name = Path.GetFileName(currentEntry);
 
                     if (name.Length == 0
                         || name[0] == '.'
                         || HeavyDirectoryNames.Contains(name))
                     {
-
                         continue;
-
                     }
 
                     string fullDirectory;
 
                     try
                     {
-
                         fullDirectory = Path.GetFullPath(currentEntry);
-
                     }
                     catch (Exception exception) when (
                         exception is IOException
                             or UnauthorizedAccessException
                             or ArgumentException)
                     {
-
                         continue;
-
                     }
 
                     if (!WorkspacePathPolicy.IsPathUnderWorkspace(
                             rootFullPath,
                             fullDirectory))
                     {
-
                         continue;
-
                     }
 
                     string canonicalDirectory = ResolveCanonicalDirectory(
@@ -942,15 +874,12 @@ internal static class SpellScanner
                             fullDirectory,
                             out SpellDirectoryFrame? childFrame))
                     {
-
                         continue;
-
                     }
 
                     pending.Push(childFrame!);
 
                     continue;
-
                 }
 
                 if (string.Equals(
@@ -961,94 +890,70 @@ internal static class SpellScanner
                         rootFullPath,
                         currentEntry))
                 {
-
                     yield return currentEntry;
-
                 }
-
             }
-
         }
         finally
         {
-
             while (pending.TryPop(out SpellDirectoryFrame? frame))
             {
-
                 frame!.Dispose();
-
             }
-
         }
-
     }
 
     private sealed class SpellDirectoryFrame(
         IEnumerator<string> entries) : IDisposable
     {
-
         internal static bool TryOpen(
             string directory,
             out SpellDirectoryFrame? frame)
         {
-
             frame = null;
 
             try
             {
-
                 frame = new SpellDirectoryFrame(
                     Directory
                         .EnumerateFileSystemEntries(directory)
                         .GetEnumerator());
 
                 return true;
-
             }
             catch (Exception exception) when (
                 exception is IOException
                     or UnauthorizedAccessException
                     or DirectoryNotFoundException)
             {
-
                 return false;
-
             }
-
         }
 
         internal bool TryTakeNext(out string? entry)
         {
-
             try
             {
-
                 if (entries.MoveNext())
                 {
-
                     entry = entries.Current;
 
                     return true;
-
                 }
-
             }
             catch (Exception exception) when (
                 exception is IOException
                     or UnauthorizedAccessException
                     or DirectoryNotFoundException)
             {
-
             }
 
             entry = null;
 
             return false;
-
         }
 
         public void Dispose() => entries.Dispose();
-
     }
 
     private static IEnumerable<string> EnumerateDirectoryEntriesSafely(
@@ -1089,7 +994,6 @@ internal static class SpellScanner
 
         using (enumerator)
         {
-
             while (true)
             {
                 bool hasNext;
@@ -1174,9 +1078,7 @@ internal static class SpellScanner
 
         if (SpellFrontmatterValidator.ValidateParsed(parsed) is not null)
         {
-
             return null;
-
         }
 
         return new SpellMetadata(parsed.Name, parsed.Description, filePath, parsed.Tags, parsed.Tools);
@@ -1196,7 +1098,7 @@ internal static class SpellScanner
         // Prove the object is an unaliased regular file before opening it (DESIGN §11.6). TryGetFileLength
         // reports 0 for a FIFO, so the size gate above passes, and a blocking open(2) on a FIFO never returns
         // until a writer appears — no CancellationToken can interrupt an open. Because ScanMetadataAsync
-        // coalesces through SingleFlight, one planted FIFO would pin a thread-pool thread and leave the spell
+        // coalesces through CoalesceWithCallerCancellationAsync, one planted FIFO would pin a thread-pool thread and leave the spell
         // catalog permanently unavailable for every caller of that workspace.
         if (SecureFileReader.TryOpenRegularFile(
                 filePath,
@@ -1314,9 +1216,7 @@ internal static class SpellScanner
 
         if (SpellFrontmatterValidator.ValidateParsed(parsed) is not null)
         {
-
             return null;
-
         }
 
         string spellDirectoryPath = string.Empty;
@@ -1367,7 +1267,6 @@ internal static class SpellScanner
 
                     if (sidecarRead.Status is SecureFileReadStatus.Success && sidecarRead.Text is not null)
                     {
-
                         skillMetadata = JsonSerializer.Deserialize(sidecarRead.Text, ArcanumCoreJsonContext.Default.SkillMetadata);
 
                         if (skillMetadata is not null
@@ -1376,16 +1275,13 @@ internal static class SpellScanner
                                 ArcanumSettingClamps.MaxDeclaredTools(
                                     maxDeclaredTools ?? ArcanumRuntimeDefaults.Spells.MaxDeclaredTools)) is not null)
                         {
-
                             skillMetadata = null;
-
                         }
 
                         if (skillMetadata is not null)
                         {
                             mergedTags = MergeTags(parsed.Tags, skillMetadata.Tags);
                         }
-
                     }
                 }
                 catch (IOException)
@@ -1548,5 +1444,4 @@ internal static class SpellScanner
 
         return Path.GetFileName(trimmed);
     }
-
 }
