@@ -472,4 +472,44 @@ public sealed class FileHandleIdentityTests : IDisposable
 
         Assert.Equal(default, identity);
     }
+
+    [SkippableFact]
+    public void TryGetHandleKernelPath_ReportsTheCanonicalLocationOfTheOpenFile()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows(),
+            "The kernel path query is implemented for macOS, Linux and Windows.");
+
+        using SafeFileHandle handle = File.OpenHandle(_tempFile);
+
+        Assert.True(FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernelPath));
+
+        Assert.True(WorkspacePathPolicy.TryCanonicalize(Path.GetFullPath(_tempFile), out string? canonical, out bool exists));
+
+        Assert.True(exists);
+
+        Assert.Equal(canonical, kernelPath, ignoreCase: OperatingSystem.IsWindows() || OperatingSystem.IsMacOS());
+    }
+
+    [Fact]
+    public void TryGetHandleKernelPath_ClosedHandle_ReturnsFalse()
+    {
+        SafeFileHandle handle = File.OpenHandle(_tempFile);
+
+        handle.Dispose();
+
+        Assert.False(FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernelPath));
+
+        Assert.Null(kernelPath);
+    }
+
+    [Theory]
+    [InlineData(@"\\?\C:\work\file.txt", @"C:\work\file.txt")]
+    [InlineData(@"\\?\UNC\server\share\file.txt", @"\\server\share\file.txt")]
+    [InlineData(@"\\?\unc\server\share\file.txt", @"\\server\share\file.txt")]
+    [InlineData(@"C:\already\plain.txt", @"C:\already\plain.txt")]
+    public void NormalizeWindowsFinalPath_StripsTheExtendedLengthPrefix(string finalPath, string expected)
+    {
+        Assert.Equal(expected, FileHandleIdentityInterop.NormalizeWindowsFinalPath(finalPath));
+    }
 }

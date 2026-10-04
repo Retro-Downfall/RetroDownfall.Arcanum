@@ -2430,6 +2430,82 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.Equal(expectedCount, observed.Count);
     }
 
+    /// <summary>
+    /// R-163 (and R-147 underneath it): a name that merely begins with <c>..</c> is an ordinary entry. Every
+    /// page boundary here lands on one, so the continuation seek must not mistake it for a parent segment.
+    /// </summary>
+    [Fact]
+    public async Task ListDirectory_continuation_pages_past_a_dot_dot_prefixed_entry()
+    {
+        const int expectedCount = 130;
+
+        for (int index = 0; index < expectedCount; index++)
+        {
+            _workspace.WriteFile($"..paged-{index:D3}.txt", "x");
+        }
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        HashSet<string> observed = new(StringComparer.Ordinal);
+
+        string? continuation = null;
+
+        int pages = 0;
+
+        do
+        {
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams
+                {
+                    RelativePath = ".",
+                    Recursive = false,
+                    Continuation = continuation,
+                },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError, Assert.Single(result.Content).Text);
+
+            pages++;
+
+            string text = Assert.Single(result.Content).Text!;
+
+            foreach (string line in text.Split('\n'))
+            {
+                if (line.StartsWith("..paged-", StringComparison.Ordinal))
+                {
+                    observed.Add(line);
+                }
+            }
+
+            const string cursorPrefix = "continuation=";
+
+            int cursorStart = text.LastIndexOf(
+                cursorPrefix,
+                StringComparison.Ordinal);
+
+            if (cursorStart < 0)
+            {
+                break;
+            }
+
+            cursorStart += cursorPrefix.Length;
+
+            int cursorEnd = text.IndexOf(';', cursorStart);
+
+            Assert.True(cursorEnd > cursorStart);
+
+            continuation = text[cursorStart..cursorEnd];
+        } while (true);
+
+        Assert.True(pages > 1, "The fixture must span more than one page to exercise the continuation seek.");
+
+        Assert.Equal(expectedCount, observed.Count);
+    }
+
     [Fact]
     public async Task ToolsCall_search_archives_truncates_an_oversized_match_instead_of_failing_the_call()
     {

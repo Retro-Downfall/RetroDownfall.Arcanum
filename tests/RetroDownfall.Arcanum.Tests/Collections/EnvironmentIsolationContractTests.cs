@@ -281,7 +281,7 @@ public sealed class EnvironmentIsolationContractTests
     /// <summary>
     /// The control above only pins the property-setter shape. Production exposes just as many
     /// method-shaped seams — <c>SessionAttachmentToolAmbient.SetUtcTicksNowForTests</c>,
-    /// <c>WorkspacePathPolicy.SetSymlinkResolverForTests</c>,
+    /// <c>WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests</c>,
     /// <c>OutboundUrlGuard.SetPinnedAddressRewriterForTests</c> — and a predicate that recognises
     /// only <c>set_</c> leaves every caller of those unguarded while still passing the control
     /// above. Pin the second shape separately so neither branch can rot unnoticed.

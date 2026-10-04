@@ -677,7 +677,7 @@ internal sealed partial class WorkspaceIndexingService(
             // containment — must be re-verified before any content is read.
             if (!FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity)
                 || !FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity)
-                || !WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspacePath, Path.GetFullPath(stream.Name), out _))
+                || !WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspacePath, stream.SafeFileHandle))
             {
                 logger.LogWarning(
                     "Workspace indexing rejected {FullPath}: file identity changed between the containment check and open (possible symlink swap); skipping.",

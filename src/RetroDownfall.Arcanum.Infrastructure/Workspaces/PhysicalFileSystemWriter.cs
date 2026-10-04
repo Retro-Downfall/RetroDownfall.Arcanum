@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> options) : IFileSystemWriter
 {
-
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
 
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
@@ -24,7 +23,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string content,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!IsFileWriteEnabled())
@@ -87,7 +85,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         int? expectedReplacements,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!IsFileWriteEnabled())
@@ -138,10 +135,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         try
         {
-
             await using (readStream)
             {
-
                 using SecureFileReadResult readResult = await SecureFileReader
                     .ReadBytesAsync(
                         readStream,
@@ -182,9 +177,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 {
                     return new Error(ErrorCodes.Workspace.PathNotAllowed, InvalidUtf8Message);
                 }
-
             }
-
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
@@ -231,7 +224,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         bool recursive,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!IsFileWriteEnabled())
@@ -281,14 +273,12 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         try
         {
-
             if (isFile)
             {
                 File.Delete(resolvedPath);
             }
             else if (!recursive)
             {
-
                 if (Directory.EnumerateFileSystemEntries(resolvedPath).Any())
                 {
                     return Task.FromResult<Result<FileDeleteResult>>(
@@ -296,13 +286,11 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 }
 
                 Directory.Delete(resolvedPath, recursive: false);
-
             }
             else
             {
                 DeleteRecursive(workspaceRoot, resolvedPath, ct);
             }
-
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
@@ -326,7 +314,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string relativePath,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!IsFileWriteEnabled())
@@ -381,7 +368,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private bool IsFileWriteEnabled()
     {
-
         ArcanumSettings settings = options.Value;
 
         return settings.Workspaces?.EnableFileWrite ?? new WorkspaceSettings().EnableFileWrite;
@@ -438,7 +424,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         byte[] contentBytes,
         CancellationToken ct)
     {
-
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
             return new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage);
@@ -448,7 +433,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         if (!string.IsNullOrEmpty(parentDir))
         {
-
             try
             {
                 Directory.CreateDirectory(parentDir);
@@ -461,7 +445,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             {
                 return new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage);
             }
-
         }
 
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
@@ -479,7 +462,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         try
         {
-
             replaceStatus = await AtomicFile.ReplaceAsync(
                 absolutePath,
                 tempPath,
@@ -493,7 +475,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                         && FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out expectedIdentity),
                 afterReplace: () =>
                     TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity)).ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
@@ -523,7 +504,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static bool DestinationStartsWithUtf8Bom(string workspaceRoot, string absolutePath)
     {
-
         if (!File.Exists(absolutePath))
         {
             return false;
@@ -538,7 +518,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         using (probeStream)
         {
-
             Span<byte> preamble = stackalloc byte[3];
 
             try
@@ -550,9 +529,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             {
                 return false;
             }
-
         }
-
     }
 
     /// <summary>
@@ -562,12 +539,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static bool TryVerifyMovedDestination(string workspaceRoot, string absolutePath, FileHandleIdentity expectedIdentity)
     {
-
         FileStream verifyStream;
 
         try
         {
-
             verifyStream = new FileStream(
                 absolutePath,
                 FileMode.Open,
@@ -575,7 +550,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 FileShare.ReadWrite | FileShare.Delete,
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or IOException)
         {
@@ -584,8 +558,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         using (verifyStream)
         {
-
-            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, Path.GetFullPath(verifyStream.Name), out _))
+            if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, verifyStream.SafeFileHandle))
             {
                 return false;
             }
@@ -596,9 +569,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             }
 
             return FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity);
-
         }
-
     }
 
     /// <summary>
@@ -608,7 +579,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static (FileStream? Stream, Error? Error) TryOpenForHandleCheckedRead(string workspaceRoot, string absolutePath)
     {
-
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
             return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
@@ -642,7 +612,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         try
         {
-
             stream = new FileStream(
                 absolutePath,
                 FileMode.Open,
@@ -650,7 +619,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 FileShare.Read,
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
@@ -668,7 +636,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         if (!FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity)
             || !FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity))
         {
-
             stream.Dispose();
 
             return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
@@ -682,7 +649,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         }
         catch (Exception)
         {
-
             stream.Dispose();
 
             return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
@@ -690,7 +656,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, openedFullPath, out _))
         {
-
             stream.Dispose();
 
             return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
@@ -708,7 +673,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static void DeleteRecursive(string workspaceRoot, string path, CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, path, out _))
@@ -720,12 +684,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         if (isDirectory)
         {
-
             bool isSymlink = new DirectoryInfo(path).LinkTarget is not null;
 
             if (isSymlink)
             {
-
                 Directory.Delete(path, recursive: false);
 
                 return;
@@ -749,7 +711,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private static int CountOccurrences(string haystack, string needle)
     {
-
         if (needle.Length == 0)
         {
             return 0;
@@ -761,7 +722,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         while (true)
         {
-
             int found = haystack.IndexOf(needle, index, StringComparison.Ordinal);
 
             if (found < 0)
@@ -779,7 +739,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private static DateTimeOffset GetLastWriteTimeUtcSafe(string path)
     {
-
         try
         {
             return File.GetLastWriteTimeUtc(path);
@@ -820,5 +779,4 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     private const string InvalidUtf8Message = "The file is not valid UTF-8 text. This endpoint edits UTF-8 text files only.";
 
     private const string BinaryTargetMessage = "The file contains NUL bytes and is treated as binary. This endpoint edits UTF-8 text files only.";
-
 }

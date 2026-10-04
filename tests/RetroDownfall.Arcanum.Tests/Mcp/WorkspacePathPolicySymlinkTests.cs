@@ -6,7 +6,6 @@ using Xunit;
 [Collection("WorkspacePathPolicy")]
 public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 {
-
     private readonly string _root;
 
     private readonly List<string> _cleanup = [];
@@ -72,31 +71,6 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 
         WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(true);
 
-        // Path.GetRelativePath is case-sensitive on Linux; pair the ignore-case comparison seam
-        // with a relative-path resolver that treats containment ignore-case as well.
-        WorkspacePathPolicy.SetRelativePathResolverForTests(static (root, candidate) =>
-        {
-            char sep = Path.DirectorySeparatorChar;
-
-            string rootTrim = root.TrimEnd(sep);
-
-            string cand = Path.GetFullPath(candidate);
-
-            if (string.Equals(rootTrim, cand, StringComparison.OrdinalIgnoreCase))
-            {
-                return ".";
-            }
-
-            string prefix = rootTrim + sep;
-
-            if (cand.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                return cand[prefix.Length..];
-            }
-
-            return Path.GetRelativePath(root, candidate);
-        });
-
         try
         {
             string root = Path.GetFullPath(Path.Combine(_root, "CaseRoot"));
@@ -119,16 +93,9 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 
             Assert.True(allowed);
 
-            // Case-insensitive volumes resolve the probe path; case-sensitive ones allow
-            // lexically and leave resolvedFinalPath null when the probe path does not exist.
-            if (File.Exists(child) || Directory.Exists(child))
-            {
-                Assert.Equal(Path.GetFullPath(child), resolved);
-            }
-            else
-            {
-                Assert.Null(resolved);
-            }
+            // The part below the root is walked from the root as spelled, so the entry is found on
+            // case-sensitive volumes too; it is not a link, so the candidate comes back as given.
+            Assert.Equal(Path.GetFullPath(child), resolved);
         }
         finally
         {
@@ -385,64 +352,6 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.Equal(Path.GetFullPath(realFile), resolved);
     }
 
-    [Fact]
-    public void IsPathUnderWorkspaceWithSymlinkCheck_RelativePathEscapeViaTestSeam_Rejects()
-    {
-
-        string root = Path.GetFullPath(_root);
-
-        string nested = Path.Combine(root, "nested");
-
-        Directory.CreateDirectory(nested);
-
-        try
-        {
-
-            WorkspacePathPolicy.SetRelativePathResolverForTests((_, _) => "../outside");
-
-            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
-
-            Assert.False(allowed);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.SetRelativePathResolverForTests(null);
-
-        }
-
-    }
-
-    [Fact]
-    public void IsPathUnderWorkspaceWithSymlinkCheck_RootedRelativePathViaTestSeam_Rejects()
-    {
-
-        string root = Path.GetFullPath(_root);
-
-        string nested = Path.Combine(root, "nested");
-
-        Directory.CreateDirectory(nested);
-
-        try
-        {
-
-            WorkspacePathPolicy.SetRelativePathResolverForTests((_, _) => "/absolute/outside");
-
-            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
-
-            Assert.False(allowed);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.SetRelativePathResolverForTests(null);
-
-        }
-
-    }
-
     [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_IntermediateFileSymlink_ResolvesInsideRoot()
     {
@@ -469,103 +378,6 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.True(allowed);
 
         Assert.Equal(Path.GetFullPath(realFile), resolved);
-
-    }
-
-    [Fact]
-    public void TryResolveFinalSymlinkTargetForCoverageTest_NonExistentPath_ReturnsTrue()
-    {
-
-        WorkspacePathPolicy.SetSymlinkResolverForTests(null);
-
-        string missing = Path.Combine(_root, "ghost-path");
-
-        bool ok = WorkspacePathPolicy.TryResolveFinalSymlinkTargetForCoverageTest(missing, out string? resolved);
-
-        Assert.True(ok);
-
-        Assert.Null(resolved);
-
-    }
-
-    [Fact]
-    public void IsPathUnderWorkspaceWithSymlinkCheck_LeafResolveFailureViaTestSeam_Rejects()
-    {
-
-        string root = Path.GetFullPath(_root);
-
-        string file = Path.Combine(root, "leaf-fail.txt");
-
-        File.WriteAllText(file, "x");
-
-        int calls = 0;
-
-        try
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(_ =>
-            {
-                calls++;
-
-                return calls == 1 ? (true, null) : (false, null);
-            });
-
-            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out _);
-
-            Assert.False(allowed);
-
-            Assert.True(calls >= 2);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
-
-        }
-
-    }
-
-    [Fact]
-    public void IsPathUnderWorkspaceWithSymlinkCheck_ResolveSeam_CoversNullAndNonNullTargets()
-    {
-
-        string root = Path.GetFullPath(_root);
-
-        string file = Path.Combine(root, "combo.txt");
-
-        File.WriteAllText(file, "ok");
-
-        string redirected = Path.Combine(root, "combo-redirect.txt");
-
-        File.WriteAllText(redirected, "ok");
-
-        try
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(_ => (true, null));
-
-            Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? nullTarget));
-
-            Assert.Equal(Path.GetFullPath(file), nullTarget);
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(path =>
-                string.Equals(path, file, StringComparison.Ordinal)
-                    ? (true, redirected)
-                    : (true, null));
-
-            Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? nonNullTarget));
-
-            Assert.Equal(redirected, nonNullTarget);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
-
-        }
-
     }
 
     [SkippableFact]
@@ -574,8 +386,6 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "This asserts POSIX behaviour and runs on macOS and Linux only.");
-
-        WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         string inner = Path.Combine(_root, "native-inner");
 
@@ -590,143 +400,6 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.True(allowed);
 
         Assert.Equal(Path.GetFullPath(inner), resolved);
-
-    }
-
-    [Fact]
-    public void IsPathUnderWorkspaceWithSymlinkCheck_ResolveNonNullTargetViaTestSeam_UsesResolvedTarget()
-    {
-
-        string root = Path.GetFullPath(_root);
-
-        string file = Path.Combine(root, "plain.txt");
-
-        File.WriteAllText(file, "ok");
-
-        string redirected = Path.Combine(root, "redirected.txt");
-
-        File.WriteAllText(redirected, "ok");
-
-        try
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(path =>
-                string.Equals(path, file, StringComparison.Ordinal)
-                    ? (true, redirected)
-                    : (true, null));
-
-            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? resolved);
-
-            Assert.True(allowed);
-
-            Assert.Equal(redirected, resolved);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
-
-        }
-
-    }
-
-    [Fact]
-    public void IsPathUnderWorkspaceWithSymlinkCheck_ResolveNullTargetViaTestSeam_UsesCandidatePath()
-    {
-
-        string root = Path.GetFullPath(_root);
-
-        string file = Path.Combine(root, "plain.txt");
-
-        File.WriteAllText(file, "ok");
-
-        try
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(_ => (true, null));
-
-            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? resolved);
-
-            Assert.True(allowed);
-
-            Assert.Equal(Path.GetFullPath(file), resolved);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
-
-        }
-
-    }
-
-    [Fact]
-    public void IsPathUnderWorkspaceWithSymlinkCheck_ResolveFailureViaTestSeam_Rejects()
-    {
-
-        string root = Path.GetFullPath(_root);
-
-        string nested = Path.Combine(root, "nested");
-
-        Directory.CreateDirectory(nested);
-
-        try
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(_ => (false, null));
-
-            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
-
-            Assert.False(allowed);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
-
-        }
-
-    }
-
-    [Fact]
-    public void IsPathUnderWorkspaceWithSymlinkCheck_ResolveTargetViaTestSeam_UpdatesWalk()
-    {
-
-        string root = Path.GetFullPath(_root);
-
-        string nested = Path.Combine(root, "nested");
-
-        Directory.CreateDirectory(nested);
-
-        string redirected = Path.Combine(root, "redirected");
-
-        Directory.CreateDirectory(redirected);
-
-        try
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(path =>
-                string.Equals(path, nested, StringComparison.Ordinal)
-                    ? (true, redirected)
-                    : (true, null));
-
-            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out string? resolved);
-
-            Assert.True(allowed);
-
-            Assert.Equal(redirected, resolved);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
-
-        }
-
     }
 
     [SkippableFact]
@@ -753,13 +426,11 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, target, out _);
 
         Assert.True(allowed);
-
     }
 
     [Fact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_ExistingDirectoryLeaf_ResolvesToCandidate()
     {
-
         string leafDir = Path.Combine(_root, "leaf-dir");
 
         Directory.CreateDirectory(leafDir);
@@ -769,7 +440,330 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.True(allowed);
 
         Assert.Equal(Path.GetFullPath(leafDir), resolved);
+    }
 
+    /// <summary>
+    /// R-007: <c>ws/b -> ../outside</c> escapes, and <c>ws/d -> b/sub</c> is a second link whose target is
+    /// spelled through the first. Resolving <c>d</c> yields the string <c>ws/b/sub</c>, which sits lexically
+    /// under the root, so a walk that splices that string in without re-walking it never visits <c>b</c>.
+    /// </summary>
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_LinkTargetPassesThroughEscapingDirectorySymlink_Rejects()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string workspace = CreateChainedLinkFixture(out _);
+
+        Directory.CreateSymbolicLink(Path.Combine(workspace, "d"), Path.Combine("b", "sub"));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "d", "file"),
+            out _));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "d"),
+            out _));
+    }
+
+    /// <summary>
+    /// Control for R-007: a pure link-to-link chain (<c>chain -> b</c>, <c>b -> ../outside</c>) was already
+    /// rejected before the canonicalising rewrite and must stay rejected.
+    /// </summary>
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_PureLinkChain_Rejects()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string workspace = CreateChainedLinkFixture(out _);
+
+        Directory.CreateSymbolicLink(Path.Combine(workspace, "chain"), "b");
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "chain", "sub", "file"),
+            out _));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "chain"),
+            out _));
+    }
+
+    /// <summary>
+    /// The workspace root is canonicalised the same way as the candidate, so a root spelled through the
+    /// macOS <c>/var -> /private/var</c> alias still contains an in-workspace link whose absolute target is
+    /// spelled through the other side of that alias.
+    /// </summary>
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_RootSpelledThroughSystemAlias_AllowsLinkSpelledThroughTarget()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The /var -> /private/var alias exists on macOS only.");
+
+        string workspace = Path.Combine(_root, "alias-ws");
+
+        Directory.CreateDirectory(Path.Combine(workspace, "real"));
+
+        File.WriteAllText(Path.Combine(workspace, "real", "notes.txt"), "ok");
+
+        string aliasSpelledRoot = Path.GetFullPath(workspace);
+
+        string targetSpelledRoot = NoFollowPathTopology.NormalizeMacOsSystemAlias(aliasSpelledRoot);
+
+        Skip.If(
+            string.Equals(aliasSpelledRoot, targetSpelledRoot, StringComparison.Ordinal),
+            "The temp directory is not spelled through a macOS system alias on this host.");
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(workspace, "abs-link"),
+            Path.Combine(targetSpelledRoot, "real"));
+
+        string candidate = Path.Combine(aliasSpelledRoot, "abs-link", "notes.txt");
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(aliasSpelledRoot, candidate, out _));
+
+        // A leaf link's resolved path is re-expressed under the root as the caller spelled it, so
+        // workspace-relative names computed from it keep working.
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            aliasSpelledRoot,
+            Path.Combine(aliasSpelledRoot, "abs-link"),
+            out string? resolved));
+
+        Assert.Equal(Path.Combine(aliasSpelledRoot, "real"), resolved);
+    }
+
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_LinkLoop_Rejects()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        File.CreateSymbolicLink(Path.Combine(_root, "loop-a"), "loop-b");
+
+        File.CreateSymbolicLink(Path.Combine(_root, "loop-b"), "loop-a");
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            _root,
+            Path.Combine(_root, "loop-a", "file.txt"),
+            out _));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            _root,
+            Path.Combine(_root, "loop-a"),
+            out _));
+    }
+
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_ChainAtDepthCap_Allows_AndOneBeyond_Rejects()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        Directory.CreateDirectory(Path.Combine(_root, "chain-end"));
+
+        // hop-0 -> hop-1 -> ... -> hop-(N-1) -> chain-end: following hop-0 resolves N links.
+        int cap = WorkspacePathPolicy.MaxSymbolicLinkResolutions;
+
+        for (int index = 0; index <= cap; index++)
+        {
+            string target = index == cap ? "chain-end" : $"hop-{index + 1}";
+
+            Directory.CreateSymbolicLink(Path.Combine(_root, $"hop-{index}"), target);
+        }
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            _root,
+            Path.Combine(_root, "hop-1", "file.txt"),
+            out _));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            _root,
+            Path.Combine(_root, "hop-0", "file.txt"),
+            out _));
+    }
+
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_UnreadableIntermediateDirectory_Rejects()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        Skip.If(
+            string.Equals(System.Environment.UserName, "root", StringComparison.Ordinal),
+            "root bypasses directory search permission.");
+
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string locked = Path.Combine(_root, "locked");
+
+        Directory.CreateDirectory(locked);
+
+        File.WriteAllText(Path.Combine(locked, "inner.txt"), "ok");
+
+        File.SetUnixFileMode(locked, UnixFileMode.None);
+
+        try
+        {
+            Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                _root,
+                Path.Combine(locked, "inner.txt"),
+                out _));
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                locked,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_ChainedLeafLink_ResolvesCanonicalTarget()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string realFile = Path.Combine(_root, "real.txt");
+
+        File.WriteAllText(realFile, "ok");
+
+        File.CreateSymbolicLink(Path.Combine(_root, "second.txt"), "real.txt");
+
+        File.CreateSymbolicLink(Path.Combine(_root, "first.txt"), "second.txt");
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            _root,
+            Path.Combine(_root, "first.txt"),
+            out string? resolved));
+
+        Assert.Equal(Path.GetFullPath(realFile), resolved);
+    }
+
+    /// <summary>
+    /// The in-workspace shape of R-007: <c>d -> b/sub</c> with <c>b -> real-dir</c>. Containment holds, and
+    /// the leaf link resolves through <c>b</c> to its canonical location.
+    /// </summary>
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_LinkTargetThroughContainedDirectoryLink_ResolvesCanonicalTarget()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string realSub = Path.Combine(_root, "real-dir", "sub");
+
+        Directory.CreateDirectory(realSub);
+
+        File.WriteAllText(Path.Combine(realSub, "file.txt"), "ok");
+
+        Directory.CreateSymbolicLink(Path.Combine(_root, "b"), "real-dir");
+
+        Directory.CreateSymbolicLink(Path.Combine(_root, "d"), Path.Combine("b", "sub"));
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            _root,
+            Path.Combine(_root, "d"),
+            out string? resolvedLink));
+
+        Assert.Equal(Path.GetFullPath(realSub), resolvedLink);
+
+        string throughLink = Path.Combine(_root, "d", "file.txt");
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            _root,
+            throughLink,
+            out string? resolvedFile));
+
+        Assert.Equal(Path.GetFullPath(throughLink), resolvedFile);
+    }
+
+    /// <summary>
+    /// A dangling link whose target lies outside the root is resolved like any other: a write through it
+    /// would create the missing target outside the workspace.
+    /// </summary>
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_DanglingLinkToOutside_Rejects()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string workspace = CreateChainedLinkFixture(out _);
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(workspace, "dangling"),
+            Path.Combine("..", "outside", "not-yet-created"));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "dangling"),
+            out _));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "dangling", "new.txt"),
+            out _));
+    }
+
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_LinkTargetClimbingOutThroughRealDirectory_Rejects()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string workspace = CreateChainedLinkFixture(out _);
+
+        Directory.CreateDirectory(Path.Combine(workspace, "real"));
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(workspace, "climb"),
+            Path.Combine("real", "..", "..", "outside"));
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "climb", "sub", "file"),
+            out _));
+    }
+
+    /// <summary>
+    /// Canonical, not merely conservative: <c>up -> ..</c> leaves the root, but <c>up/&lt;ws&gt;/file</c>
+    /// names a file inside it, exactly as the kernel would resolve it.
+    /// </summary>
+    [SkippableFact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_LinkOutAndBackIn_Allows()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string workspace = CreateChainedLinkFixture(out _);
+
+        File.WriteAllText(Path.Combine(workspace, "inside.txt"), "ok");
+
+        Directory.CreateSymbolicLink(Path.Combine(workspace, "up"), "..");
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "up", "outside", "sub", "file"),
+            out _));
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            workspace,
+            Path.Combine(workspace, "up", "ws", "inside.txt"),
+            out _));
     }
 
     [Fact]
@@ -784,14 +778,32 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Assert.True(WorkspacePathPolicy.RevalidatePathBeforeIo(_root, targetFile));
     }
 
+    /// <summary>
+    /// Builds <c>outside/sub/file</c> (real) and <c>ws/b -> ../outside</c> under this test's temp root and
+    /// returns the workspace path.
+    /// </summary>
+    private string CreateChainedLinkFixture(out string outside)
+    {
+        string fixture = Path.Combine(_root, "chain-" + Guid.NewGuid().ToString("N"));
+
+        outside = Path.Combine(fixture, "outside");
+
+        string workspace = Path.Combine(fixture, "ws");
+
+        Directory.CreateDirectory(Path.Combine(outside, "sub"));
+
+        File.WriteAllText(Path.Combine(outside, "sub", "file"), "outside secret");
+
+        Directory.CreateDirectory(workspace);
+
+        Directory.CreateSymbolicLink(Path.Combine(workspace, "b"), Path.Combine("..", "outside"));
+
+        return workspace;
+    }
+
     public void Dispose()
     {
-
         WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
-
-        WorkspacePathPolicy.SetRelativePathResolverForTests(null);
-
-        WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         foreach (string path in _cleanup)
         {
@@ -808,5 +820,4 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
             }
         }
     }
-
 }

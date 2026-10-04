@@ -9,14 +9,14 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 [Collection("WorkspacePathPolicy")]
 public sealed class SandboxedFileIoTests : IAsyncLifetime
 {
-
     private TempWorkspace _workspace = null!;
 
     private string _outsideFile = null!;
 
+    private readonly List<string> _outsideDirectories = [];
+
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
@@ -24,12 +24,10 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         _outsideFile = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}.txt");
 
         await File.WriteAllTextAsync(_outsideFile, "outside secret");
-
     }
 
     public async Task DisposeAsync()
     {
-
         FileHandleIdentityInterop.TryGetPathIdentityForTests = null;
 
         FileHandleIdentityInterop.TryGetHandleIdentityForTests = null;
@@ -40,23 +38,29 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         SecureFileReader.AfterOpenForTests = null;
 
+        SandboxedFileIo.AfterCreateParentDirectoryForTests = null;
+
         WorkspacePathPolicy.ResetTestSeams();
 
         if (File.Exists(_outsideFile))
         {
-
             File.Delete(_outsideFile);
+        }
 
+        foreach (string outside in _outsideDirectories)
+        {
+            if (Directory.Exists(outside))
+            {
+                Directory.Delete(outside, recursive: true);
+            }
         }
 
         await _workspace.DisposeAsync();
-
     }
 
     [SkippableFact]
     public void TryOpenForRead_rejects_symlink_to_outside_workspace()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "This asserts POSIX behaviour and runs on macOS and Linux only.");
@@ -65,9 +69,7 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         if (File.Exists(linkPath))
         {
-
             File.Delete(linkPath);
-
         }
 
         File.CreateSymbolicLink(linkPath, _outsideFile);
@@ -79,13 +81,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             out _);
 
         Assert.False(opened);
-
     }
 
     [Fact]
     public void TryOpenForRead_rejects_path_outside_workspace()
     {
-
         bool opened = SandboxedFileIo.TryOpenForRead(
             _workspace.Root,
             _outsideFile,
@@ -97,105 +97,48 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.Null(stream);
 
         AssertSandboxError(error);
-
     }
 
-    [Fact]
-    public void TryOpenForRead_rejects_path_that_escapes_on_post_open_validation()
+    /// <summary>
+    /// R-007, read side: <c>d -> b/sub</c> spelled through <c>b -> ../outside</c> must not open the outside file.
+    /// </summary>
+    [SkippableFact]
+    public void TryOpenForRead_rejects_file_reached_through_chained_escaping_link()
     {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
-        string target = Path.Combine(_workspace.Root, "changed-between-validations.txt");
+        string outside = CreateOutsideDirectory();
 
-        File.WriteAllText(target, "inside");
+        Directory.CreateDirectory(Path.Combine(outside, "sub"));
 
-        int relativePathCalls = 0;
+        File.WriteAllText(Path.Combine(outside, "sub", "secret.txt"), "outside secret");
 
-        WorkspacePathPolicy.SetRelativePathResolverForTests((root, candidate) =>
-        {
+        Directory.CreateSymbolicLink(
+            Path.Combine(_workspace.Root, "b"),
+            Path.Combine("..", Path.GetFileName(outside)));
 
-            relativePathCalls++;
+        Directory.CreateSymbolicLink(
+            Path.Combine(_workspace.Root, "d"),
+            Path.Combine("b", "sub"));
 
-            return relativePathCalls <= 2
-                ? Path.GetRelativePath(root, candidate)
-                : "..";
-
-        });
-
-        try
-        {
-
-            bool opened = SandboxedFileIo.TryOpenForRead(
-                _workspace.Root,
-                target,
-                out FileStream? stream,
-                out McpToolsCallResultWire? error);
-
-            Assert.False(opened);
-
-            Assert.Null(stream);
-
-            Assert.Equal(3, relativePathCalls);
-
-            AssertSandboxError(error);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.ResetTestSeams();
-
-        }
-
-    }
-
-    [Fact]
-    public void TryOpenForRead_rejects_path_that_escapes_on_preopen_symlink_validation()
-    {
-
-        string target = Path.Combine(
+        bool opened = SandboxedFileIo.TryOpenForRead(
             _workspace.Root,
-            "changed-before-open.txt");
+            Path.Combine(_workspace.Root, "d", "secret.txt"),
+            out FileStream? stream,
+            out McpToolsCallResultWire? error);
 
-        File.WriteAllText(target, "inside");
+        Assert.False(opened);
 
-        int relativePathCalls = 0;
+        Assert.Null(stream);
 
-        WorkspacePathPolicy.SetRelativePathResolverForTests(
-            (root, candidate) =>
-            {
-                relativePathCalls++;
-
-                return relativePathCalls == 1
-                    ? Path.GetRelativePath(root, candidate)
-                    : "..";
-            });
-
-        try
-        {
-            bool opened = SandboxedFileIo.TryOpenForRead(
-                _workspace.Root,
-                target,
-                out FileStream? stream,
-                out McpToolsCallResultWire? error);
-
-            Assert.False(opened);
-
-            Assert.Null(stream);
-
-            Assert.Equal(2, relativePathCalls);
-
-            AssertSandboxError(error);
-        }
-        finally
-        {
-            WorkspacePathPolicy.ResetTestSeams();
-        }
+        AssertSandboxError(error);
     }
 
     [Fact]
     public void TryOpenForRead_rejects_missing_file_when_identity_cannot_be_resolved()
     {
-
         string missing = Path.Combine(_workspace.Root, "missing.txt");
 
         bool opened = SandboxedFileIo.TryOpenForRead(
@@ -211,13 +154,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.False(File.Exists(missing));
 
         AssertSandboxError(error);
-
     }
 
     [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_writes_inside_workspace()
     {
-
         string target = Path.Combine(_workspace.Root, "atomic.txt");
 
         (bool success, _) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
@@ -229,7 +170,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.True(success);
 
         Assert.Equal("atomic content", await File.ReadAllTextAsync(target));
-
     }
 
     /// <summary>
@@ -245,7 +185,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_preserves_an_existing_utf8_bom()
     {
-
         string target = Path.Combine(_workspace.Root, "bom.txt");
 
         byte[] preamble = [0xEF, 0xBB, 0xBF];
@@ -263,7 +202,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         byte[] expected = [.. preamble, .. "replacement"u8.ToArray()];
 
         Assert.Equal(expected, await File.ReadAllBytesAsync(target));
-
     }
 
     /// <summary>
@@ -273,7 +211,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_never_introduces_or_doubles_a_preamble()
     {
-
         string plain = Path.Combine(_workspace.Root, "plain.txt");
 
         await File.WriteAllBytesAsync(plain, "original"u8.ToArray());
@@ -305,13 +242,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         byte[] expected = [.. preamble, .. "replacement"u8.ToArray()];
 
         Assert.Equal(expected, await File.ReadAllBytesAsync(bommed));
-
     }
 
     [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_does_not_treat_a_short_destination_as_a_preamble()
     {
-
         string target = Path.Combine(_workspace.Root, "short.txt");
 
         await File.WriteAllBytesAsync(target, [0xEF]);
@@ -325,13 +260,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.True(success);
 
         Assert.Equal("replacement"u8.ToArray(), await File.ReadAllBytesAsync(target));
-
     }
 
     [SkippableFact]
     public async Task TryWriteAllTextAtomicallyAsync_rejects_existing_hard_link()
     {
-
         Skip.If(
             !OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Unsupported operating system.");
@@ -346,7 +279,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         try
         {
-
             Assert.True(HardLinkTestSupport.TryCreate(outsideAlias, target));
 
             (bool success, McpToolsCallResultWire? error) =
@@ -363,21 +295,16 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             Assert.Equal("original", await File.ReadAllTextAsync(target));
 
             Assert.Equal("original", await File.ReadAllTextAsync(outsideAlias));
-
         }
         finally
         {
-
             File.Delete(outsideAlias);
-
         }
-
     }
 
     [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_fails_closed_when_link_count_is_unavailable()
     {
-
         string target = Path.Combine(_workspace.Root, "unknown-link-count.txt");
 
         await File.WriteAllTextAsync(target, "original");
@@ -386,7 +313,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         try
         {
-
             (bool success, McpToolsCallResultWire? error) =
                 await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
                     _workspace.Root,
@@ -399,21 +325,16 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             Assert.NotNull(error);
 
             Assert.Equal("original", await File.ReadAllTextAsync(target));
-
         }
         finally
         {
-
             FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
-
         }
-
     }
 
     [Fact]
     public void TryOpenForRead_accepts_regular_file_inside_workspace()
     {
-
         string target = Path.Combine(_workspace.Root, "inside.txt");
 
         File.WriteAllText(target, "inside");
@@ -432,17 +353,13 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         using (stream)
         {
-
             Assert.Equal("inside", new StreamReader(stream).ReadToEnd());
-
         }
-
     }
 
     [Fact]
     public void TryOpenForRead_rejects_hard_linked_regular_file()
     {
-
         string target = Path.Combine(_workspace.Root, "linked-read.txt");
 
         string outsideAlias = Path.Combine(
@@ -453,7 +370,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         try
         {
-
             Assert.True(HardLinkTestSupport.TryCreate(outsideAlias, target));
 
             bool opened = SandboxedFileIo.TryOpenForRead(
@@ -467,21 +383,16 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             Assert.Null(stream);
 
             AssertSandboxError(error);
-
         }
         finally
         {
-
             File.Delete(outsideAlias);
-
         }
-
     }
 
     [Fact]
     public async Task TryReadAllTextAsync_rejects_malformed_utf8()
     {
-
         string target = Path.Combine(_workspace.Root, "malformed.txt");
 
         await File.WriteAllBytesAsync(target, [0x66, 0x80, 0x6f]);
@@ -504,13 +415,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.DoesNotContain(target, message, StringComparison.Ordinal);
 
         Assert.DoesNotContain("f�o", message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task TryReadAllTextAsync_observes_cancellation_inside_read_loop()
     {
-
         string target = Path.Combine(_workspace.Root, "cancel-read.txt");
 
         await File.WriteAllTextAsync(target, new string('x', 8192));
@@ -530,35 +439,118 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
                 target,
                 maxBytes: 8192,
                 cancellation.Token));
-
     }
 
+    /// <summary>
+    /// The revalidation never trusts <see cref="FileStream.Name"/>: a handle on an outside file is rejected
+    /// even when the stream reports a name inside the workspace.
+    /// </summary>
     [Fact]
-    public void TryRevalidateOpenedHandle_rejects_stream_with_blank_opened_path()
+    public void TryRevalidateOpenedHandle_rejects_outside_handle_whose_reported_name_is_inside()
     {
+        Assert.True(
+            FileHandleIdentityInterop.TryGetPathIdentity(_outsideFile, out FileHandleIdentity expectedIdentity));
 
-        string target = Path.Combine(_workspace.Root, "blank-name.txt");
-
-        File.WriteAllText(target, "inside");
-
-        using FileStream stream = new BlankNameFileStream(target);
+        using FileStream stream = new ReportedNameFileStream(
+            _outsideFile,
+            Path.Combine(_workspace.Root, "looks-inside.txt"));
 
         bool valid = SandboxedFileIo.TryRevalidateOpenedHandle(
             _workspace.Root,
             stream,
-            expectedIdentity: default,
+            expectedIdentity,
             out McpToolsCallResultWire? error);
 
         Assert.False(valid);
 
         AssertSandboxError(error);
+    }
 
+    /// <summary>
+    /// R-007: a write spelled through <c>ws/d -> b/sub</c>, where <c>ws/b -> ../outside</c> escapes, must not
+    /// create anything under <c>outside</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task TryWriteAllTextAtomicallyAsync_ThroughChainedLink_DoesNotCreateFileOutsideRoot()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string outside = CreateOutsideDirectory();
+
+        Directory.CreateDirectory(Path.Combine(outside, "sub"));
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(_workspace.Root, "b"),
+            Path.Combine("..", Path.GetFileName(outside)));
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(_workspace.Root, "d"),
+            Path.Combine("b", "sub"));
+
+        (bool success, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                Path.Combine(_workspace.Root, "d", "planted.txt"),
+                "attacker content",
+                CancellationToken.None);
+
+        Assert.False(success);
+
+        AssertSandboxError(error);
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(outside, "sub")));
+    }
+
+    /// <summary>
+    /// The post-open revalidation asks the kernel where the opened handle lives. A file moved out of the
+    /// workspace after it was opened keeps its identity, and the path the stream was opened with still
+    /// reads as contained, so only the handle's own path can tell that it now sits outside the root.
+    /// </summary>
+    [SkippableFact]
+    public void TryRevalidateOpenedHandle_rejects_handle_whose_file_moved_outside_workspace()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Moving a file that has an open handle is refused on Windows.");
+
+        string outside = CreateOutsideDirectory();
+
+        string target = Path.Combine(_workspace.Root, "moved-after-open.txt");
+
+        File.WriteAllText(target, "inside");
+
+        Assert.True(FileHandleIdentityInterop.TryGetPathIdentity(target, out FileHandleIdentity expectedIdentity));
+
+        using FileStream stream = new(
+            target,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+
+        Assert.True(SandboxedFileIo.TryRevalidateOpenedHandle(
+            _workspace.Root,
+            stream,
+            expectedIdentity,
+            out _));
+
+        File.Move(target, Path.Combine(outside, "moved-after-open.txt"));
+
+        bool valid = SandboxedFileIo.TryRevalidateOpenedHandle(
+            _workspace.Root,
+            stream,
+            expectedIdentity,
+            out McpToolsCallResultWire? error);
+
+        Assert.False(valid);
+
+        AssertSandboxError(error);
     }
 
     [Fact]
     public void TryRevalidateOpenedHandle_rejects_open_file_outside_workspace()
     {
-
         Assert.True(
             FileHandleIdentityInterop.TryGetPathIdentity(_outsideFile, out FileHandleIdentity expectedIdentity));
 
@@ -577,13 +569,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.False(valid);
 
         AssertSandboxError(error);
-
     }
 
     [Fact]
     public void TryRevalidateOpenedHandle_rejects_when_handle_identity_cannot_be_resolved()
     {
-
         string target = Path.Combine(_workspace.Root, "missing-handle-identity.txt");
 
         File.WriteAllText(target, "inside");
@@ -601,7 +591,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         try
         {
-
             bool valid = SandboxedFileIo.TryRevalidateOpenedHandle(
                 _workspace.Root,
                 stream,
@@ -611,21 +600,16 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             Assert.False(valid);
 
             AssertSandboxError(error);
-
         }
         finally
         {
-
             FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
-
         }
-
     }
 
     [Fact]
     public void TryOpenForRead_rejects_when_handle_identity_mismatches_preopen_identity()
     {
-
         FileHandleIdentityInterop.TryGetPathMetadataForTests = _ =>
             new FileHandleMetadata(
                 new FileHandleIdentity(1, 1),
@@ -638,7 +622,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         try
         {
-
             string target = Path.Combine(_workspace.Root, "mismatch.txt");
 
             File.WriteAllText(target, "mismatch");
@@ -654,17 +637,13 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             Assert.NotNull(error);
 
             Assert.Contains("sandbox", error!.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
-
         }
         finally
         {
-
             FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
 
             FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
-
         }
-
     }
 
     // W3.4 Group C #7: the write path validates the target lexically then File.Move's the
@@ -676,14 +655,12 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_rejects_when_destination_handle_mismatches_temp_identity()
     {
-
         FileHandleIdentityInterop.TryGetPathIdentityForTests = _ => new FileHandleIdentity(7, 7);
 
         FileHandleIdentityInterop.TryGetHandleIdentityForTests = _ => new FileHandleIdentity(7, 8);
 
         try
         {
-
             string target = Path.Combine(_workspace.Root, "write-mismatch.txt");
 
             File.WriteAllText(target, "original");
@@ -699,23 +676,18 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             Assert.NotNull(error);
 
             Assert.Contains("sandbox", error!.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
-
         }
         finally
         {
-
             FileHandleIdentityInterop.TryGetPathIdentityForTests = null;
 
             FileHandleIdentityInterop.TryGetHandleIdentityForTests = null;
-
         }
-
     }
 
     [SkippableFact]
     public void TryGetPathIdentity_MatchesHandleIdentity_OnUnix()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "This asserts POSIX behaviour and runs on macOS and Linux only.");
@@ -740,13 +712,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.True(handleOk);
 
         Assert.True(FileHandleIdentity.IdentitiesMatch(pathIdentity, handleIdentity));
-
     }
 
     [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_rejects_target_outside_workspace()
     {
-
         (bool success, McpToolsCallResultWire? error) =
             await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
                 _workspace.Root,
@@ -759,34 +729,35 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         AssertSandboxError(error);
 
         Assert.Equal("outside secret", await File.ReadAllTextAsync(_outsideFile));
-
     }
 
     // The write path revalidates containment a second time after creating the parent directory,
     // because directory creation is an observable pause an attacker can use to swap the parent for
     // a symlink out of the workspace. That second revalidation must fail closed before any staging.
-    [Fact]
+    [SkippableFact]
     public async Task TryWriteAllTextAtomicallyAsync_rejects_target_that_escapes_after_parent_directory_creation()
     {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
 
-        string target = Path.Combine(_workspace.Root, "escapes-after-mkdir.txt");
+        string outside = CreateOutsideDirectory();
 
-        int relativePathCalls = 0;
+        string parent = Path.Combine(_workspace.Root, "created-then-swapped");
 
-        WorkspacePathPolicy.SetRelativePathResolverForTests((root, candidate) =>
+        string target = Path.Combine(parent, "escapes-after-mkdir.txt");
+
+        SandboxedFileIo.AfterCreateParentDirectoryForTests = created =>
         {
+            SandboxedFileIo.AfterCreateParentDirectoryForTests = null;
 
-            relativePathCalls++;
+            Directory.Delete(created);
 
-            return relativePathCalls == 1
-                ? Path.GetRelativePath(root, candidate)
-                : "..";
-
-        });
+            Directory.CreateSymbolicLink(created, outside);
+        };
 
         try
         {
-
             (bool success, McpToolsCallResultWire? error) =
                 await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
                     _workspace.Root,
@@ -796,20 +767,14 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
             Assert.False(success);
 
-            Assert.Equal(2, relativePathCalls);
-
             AssertSandboxError(error);
 
-            Assert.False(File.Exists(target));
-
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
         }
         finally
         {
-
-            WorkspacePathPolicy.ResetTestSeams();
-
+            SandboxedFileIo.AfterCreateParentDirectoryForTests = null;
         }
-
     }
 
     // A path with no parent directory (a filesystem root) falls back to the workspace root when
@@ -818,7 +783,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     [SkippableFact]
     public async Task TryWriteAllTextAtomicallyAsync_rejects_root_path_that_has_no_parent_directory()
     {
-
         // A Windows drive root cannot be probed for a link target: the metadata query underneath
         // WorkspacePathPolicy's symlink check cannot name a root directory, so the check fails
         // closed and containment revalidation rejects the path before the staging fallback this
@@ -832,36 +796,22 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         Assert.Null(Path.GetDirectoryName(filesystemRoot));
 
-        WorkspacePathPolicy.SetRelativePathResolverForTests((_, _) => string.Empty);
+        // Pins that containment revalidation passes, so the rejection below comes from the
+        // staging/replace step rather than from the pre-write containment check.
+        Assert.True(WorkspacePathPolicy.RevalidatePathBeforeIo(filesystemRoot, filesystemRoot));
 
-        try
-        {
+        (bool success, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                filesystemRoot,
+                filesystemRoot,
+                "attacker content",
+                CancellationToken.None);
 
-            // Pins that containment revalidation passes, so the rejection below comes from the
-            // staging/replace step rather than from the pre-write containment check.
-            Assert.True(WorkspacePathPolicy.RevalidatePathBeforeIo(filesystemRoot, filesystemRoot));
+        Assert.False(success);
 
-            (bool success, McpToolsCallResultWire? error) =
-                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
-                    filesystemRoot,
-                    filesystemRoot,
-                    "attacker content",
-                    CancellationToken.None);
+        AssertSandboxError(error);
 
-            Assert.False(success);
-
-            AssertSandboxError(error);
-
-            Assert.Empty(Directory.EnumerateFiles(filesystemRoot, ".arcanum-*.tmp"));
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.ResetTestSeams();
-
-        }
-
+        Assert.Empty(Directory.EnumerateFiles(filesystemRoot, ".arcanum-*.tmp"));
     }
 
     // W3.4 Group C #7: when the post-move identity check fails AND the best-effort rollback cannot
@@ -870,7 +820,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_reports_unverified_destination_when_rollback_cannot_confirm_quarantine()
     {
-
         string target = Path.Combine(_workspace.Root, "unverified-write.txt");
 
         await File.WriteAllTextAsync(target, "original");
@@ -888,7 +837,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         try
         {
-
             (bool success, McpToolsCallResultWire? error) =
                 await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
                     _workspace.Root,
@@ -912,23 +860,18 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
                 : null;
 
             Assert.NotEqual("replacement", destinationContent);
-
         }
         finally
         {
-
             FileHandleIdentityInterop.TryGetPathIdentityForTests = null;
 
             FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
-
         }
-
     }
 
     [Fact]
     public async Task TryReadAllTextAsync_returns_no_content_for_path_outside_workspace()
     {
-
         (string? content, McpToolsCallResultWire? error) =
             await SandboxedFileIo.TryReadAllTextAsync(
                 _workspace.Root,
@@ -939,56 +882,42 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.Null(content);
 
         AssertSandboxError(error);
-
     }
 
     // The handle is revalidated again after the bytes are read, so content read through a handle
     // that no longer resolves inside the workspace is discarded rather than returned to the caller.
-    [Fact]
+    [SkippableFact]
     public async Task TryReadAllTextAsync_discards_content_when_post_read_revalidation_fails()
     {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Moving a file that has an open handle is refused on Windows.");
+
+        string outside = CreateOutsideDirectory();
 
         string target = Path.Combine(_workspace.Root, "escapes-after-read.txt");
 
         await File.WriteAllTextAsync(target, "secret payload");
 
-        int relativePathCalls = 0;
-
-        WorkspacePathPolicy.SetRelativePathResolverForTests((root, candidate) =>
+        // Runs after the handle passed its post-open check and before the bytes are read: the open
+        // file leaves the workspace while the read is in flight.
+        SecureFileReader.AfterOpenForTests = _ =>
         {
+            SecureFileReader.AfterOpenForTests = null;
 
-            relativePathCalls++;
+            File.Move(target, Path.Combine(outside, "escapes-after-read.txt"));
+        };
 
-            return relativePathCalls <= 3
-                ? Path.GetRelativePath(root, candidate)
-                : "..";
+        (string? content, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryReadAllTextAsync(
+                _workspace.Root,
+                target,
+                maxBytes: 1024,
+                CancellationToken.None);
 
-        });
+        Assert.Null(content);
 
-        try
-        {
-
-            (string? content, McpToolsCallResultWire? error) =
-                await SandboxedFileIo.TryReadAllTextAsync(
-                    _workspace.Root,
-                    target,
-                    maxBytes: 1024,
-                    CancellationToken.None);
-
-            Assert.Null(content);
-
-            Assert.Equal(4, relativePathCalls);
-
-            AssertSandboxError(error);
-
-        }
-        finally
-        {
-
-            WorkspacePathPolicy.ResetTestSeams();
-
-        }
-
+        AssertSandboxError(error);
     }
 
     // Real metadata for paths the seam is not simulating. Resolved through the no-follow probe,
@@ -999,9 +928,24 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             ? metadata
             : null;
 
+    /// <summary>
+    /// A real directory beside the workspace root, removed in <see cref="DisposeAsync"/>.
+    /// </summary>
+    private string CreateOutsideDirectory()
+    {
+        string outside = Path.Combine(
+            Path.GetDirectoryName(_workspace.Root)!,
+            "outside-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(outside);
+
+        _outsideDirectories.Add(outside);
+
+        return outside;
+    }
+
     private static void AssertSandboxError(McpToolsCallResultWire? error)
     {
-
         Assert.NotNull(error);
 
         Assert.True(error!.IsError);
@@ -1009,19 +953,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         McpToolContentTextWire content = Assert.IsType<McpToolContentTextWire>(Assert.Single(error.Content!));
 
         Assert.Contains("sandbox", content.Text!, StringComparison.OrdinalIgnoreCase);
-
     }
 
-    private sealed class BlankNameFileStream : FileStream
+    private sealed class ReportedNameFileStream(string path, string reportedName)
+        : FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)
     {
-
-        public BlankNameFileStream(string path)
-            : base(path, FileMode.Open, FileAccess.Read, FileShare.Read)
-        {
-        }
-
-        public override string Name => " ";
-
+        public override string Name => reportedName;
     }
-
 }
