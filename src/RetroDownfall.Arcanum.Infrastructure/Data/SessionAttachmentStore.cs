@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
@@ -40,6 +41,15 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// pending turn: <c>pending|{turnId}</c>.
     /// </summary>
     internal static readonly KeyedLock<string> AttachmentGates = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Absolute destinations of promoted copies that are on disk (or about to be) while the rows that will claim
+    /// them are not yet committed. The orphan sweep leaves these alone: it deliberately takes no gate per file
+    /// (gate order is session, then pending turn), so this registry and the commit-time blob revalidation are
+    /// what keep it from unlinking a copy the promotion is about to publish.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, byte> PromotionsInFlight = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     private readonly ArcanumDbContext _db;
 
@@ -537,6 +547,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         List<PromotionPlan> plans = [];
 
+        List<string> registeredDestinations = [];
+
         try
         {
             foreach (SessionAttachmentRecord row in pending)
@@ -557,9 +569,30 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     throw new InvalidOperationException($"Pending attachment file missing: {row.RelativePath}");
                 }
 
+                // Registered before the first byte lands, so the sweep can never observe the copy unprotected.
+                _ = PromotionsInFlight.TryAdd(newAbsolute, 0);
+
+                registeredDestinations.Add(newAbsolute);
+
                 await AtomicCopyFileAsync(oldAbsolute, newAbsolute, cancellationToken).ConfigureAwait(false);
 
-                plans.Add(new PromotionPlan(row, oldAbsolute, newAbsolute, NormalizeRelativePath(newRelative)));
+                if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    newAbsolute,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact copiedBlob))
+                {
+                    TryDeleteFile(newAbsolute);
+
+                    throw new IOException(
+                        "Attachment promotion could not capture the promoted blob identity.");
+                }
+
+                plans.Add(new PromotionPlan(
+                    row,
+                    oldAbsolute,
+                    newAbsolute,
+                    NormalizeRelativePath(newRelative),
+                    copiedBlob));
             }
 
             if (AfterBytesCommittedBeforeDbForTesting is not null)
@@ -619,6 +652,14 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                         }
                     }
 
+                    // The write lock is held, so no other writer can claim or release these paths. Publishing a
+                    // row for bytes that were unlinked or replaced since the copy would lose the attachment once
+                    // the original is deleted below, so a missing or replaced copy aborts the whole promotion.
+                    foreach (PromotionPlan plan in plans)
+                    {
+                        ValidateOwnedBlob(plan.Row with { RelativePath = plan.NewRelativePath }, plan.NewBlob);
+                    }
+
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -631,6 +672,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             }
 
             throw;
+        }
+        finally
+        {
+            foreach (string destination in registeredDestinations)
+            {
+                _ = PromotionsInFlight.TryRemove(destination, out _);
+            }
         }
 
         foreach (PromotionPlan plan in plans)
@@ -1995,7 +2043,11 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// is touched: an attachment write lands its ciphertext before it inserts its row, so a file missing
     /// from the snapshot but newer than it belongs to a write still in flight, and that also spares
     /// <c>EncryptedBlobStore</c>'s staging temporaries. Second, a file that is about to be unlinked is
-    /// re-checked against the live table, so a row committed since the snapshot keeps its bytes.
+    /// re-checked against the live table, so a row committed since the snapshot keeps its bytes. Third, a
+    /// promotion's copies are registered in <see cref="PromotionsInFlight"/> from before the copy until its rows
+    /// commit, because a copy can predate the snapshot and still have no committed row; the promotion also
+    /// revalidates its copies inside the commit transaction, so a copy that is unlinked anyway aborts the
+    /// promotion with the original intact instead of publishing a row for missing bytes.
     /// The threshold is read from the filesystem's own clock rather than from <see cref="DateTime.UtcNow"/>,
     /// because those are not the same clock: a host can stamp files from a coarser cached time than the
     /// process clock reports, and a file created after the snapshot then reads back as older than it and
@@ -2041,6 +2093,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 continue;
             }
 
+            // Checked before the live-row re-read below: a promotion unregisters only after its rows commit, so a
+            // path that is no longer registered is claimed by a row the re-read can see.
+            if (IsPromotionInFlight(absolute))
+            {
+                continue;
+            }
+
             // Promotion stages as `destination + ".tmp"`, but EncryptedBlobStore stages as
             // `"." + fileName + ".tmp." + guid`, which no suffix test can match — hence the infix check.
             string fileName = Path.GetFileName(absolute);
@@ -2068,6 +2127,15 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             TryDeleteFile(absolute);
         }
     }
+
+    /// <summary>
+    /// Whether <paramref name="absolutePath"/> is a promoted copy, or its <c>.tmp</c> staging file, whose row has
+    /// not committed yet.
+    /// </summary>
+    private static bool IsPromotionInFlight(string absolutePath) =>
+        PromotionsInFlight.ContainsKey(absolutePath)
+        || (absolutePath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+            && PromotionsInFlight.ContainsKey(absolutePath[..^".tmp".Length]));
 
     /// <summary>
     /// Whether <paramref name="absolutePath"/> was last written at or after <paramref name="threshold"/>.
@@ -2491,5 +2559,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         SessionAttachmentRecord Row,
         string OldAbsolutePath,
         string NewAbsolutePath,
-        string NewRelativePath);
+        string NewRelativePath,
+        IdentityOwnedFileSystemArtifact NewBlob);
 }
