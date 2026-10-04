@@ -838,8 +838,13 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         client.AllowDispose.TrySetResult();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => canceledRestart);
+        // The old client was stopped before the caller left, so the restart reports that state rather
+        // than throwing a cancellation that reads as "nothing happened".
+        Result canceled = await canceledRestart.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        Assert.True(canceled.IsFailure);
+        Assert.Equal("Mcp.RestartCanceled", canceled.Error.Code);
 
         _ = await overlappingRestart.WaitAsync(
             TimeSpan.FromSeconds(5));
