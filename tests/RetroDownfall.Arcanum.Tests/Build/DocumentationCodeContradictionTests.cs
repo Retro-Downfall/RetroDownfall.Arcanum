@@ -293,6 +293,44 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("test-time", targets, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void The_design_places_cli_diagnostics_outside_the_coverage_denominator_and_names_the_real_ci_runner()
+    {
+        string root = TestRepositoryPaths.RepositoryRoot();
+
+        string runsettings = File.ReadAllText(
+            Path.Combine(root, "tests", "RetroDownfall.Arcanum.Tests", "coverage.runsettings"));
+
+        // The claim below is false for as long as the Include filter omits Cli.
+        Assert.DoesNotContain("[RetroDownfall.Arcanum.Cli]", runsettings, StringComparison.Ordinal);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string placement = DocumentSection(design, "**Placement.**", "The twelve original checks");
+
+        Assert.DoesNotContain("All of those are inside the coverage denominator", placement, StringComparison.Ordinal);
+
+        Assert.Contains("outside", placement, StringComparison.Ordinal);
+
+        string workflow = File
+            .ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        string job = workflow[workflow.IndexOf("\n  build-test:", StringComparison.Ordinal)..];
+
+        Match runner = Regex.Match(job, @"\n    runs-on: (?<label>\S+)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
+
+        Assert.True(runner.Success, "ci.yml's build-test job names no runner.");
+
+        string header = Assert.Single(
+            design.Split('\n'),
+            static line => line.StartsWith("| Post-exclusion metric", StringComparison.Ordinal));
+
+        Assert.Contains($"`{runner.Groups["label"].Value}`", header, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("macOS 14", header, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))

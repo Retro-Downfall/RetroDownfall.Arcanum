@@ -340,9 +340,9 @@ Auto-launched processes do not expose `arcanum serve stop` or `daemon stop`.
 
 **Host relay over re-implementation.** `host.health_components` surfaces the full `HealthComponentDto[]` from `GET /api/health` rather than re-deriving Grimoire, MCP, provider, embedding, sandbox, workspace, and Conclave verdicts CLI-side, where several of those services are not even registered. An unreachable host is `Unavailable`, never a failure.
 
-**Placement.** Contracts, the runner, the outcome algebra, and the remediation-command catalog live in `Core/Cli`; filesystem, configuration, credential, Grimoire, and operation checks and every repair live in `Infrastructure/Diagnostics`; the checks that need CLI-owned services (`ISetupProviderProbe`, `ArcanumHealthProbe`) live in `Cli/Diagnostics`. All of those are inside the coverage denominator.
+**Placement.** Contracts, the runner, the outcome algebra, and the remediation-command catalog live in `Core/Cli`; filesystem, configuration, credential, Grimoire, and operation checks and every repair live in `Infrastructure/Diagnostics`; the checks that need CLI-owned services (`ISetupProviderProbe`, `ArcanumHealthProbe`) live in `Cli/Diagnostics`. The `Core` and `Infrastructure` parts are inside the coverage denominator; the `Cli/Diagnostics` checks are outside it, because the Include filter in `coverage.runsettings` names Core, Infrastructure and Api only (§13.1) — they are scenario-tested, not line-gated.
 
-The twelve original checks are the exception: they remain inline in `DoctorCommand`, which is `[ExcludeFromCodeCoverage]` and therefore outside it. They were left in place because rewriting a published `--json` surface and expanding it in one change would make any regression impossible to attribute; `LegacyDoctorChecks` gives them an id, subsystem, outcome, and remedy without touching their behavior. They resolve `--only`/`--skip` themselves rather than being filtered after the fact, because several of them probe the network, load the tokenizer, or scan encrypted blob storage — filtering results after paying for them is not filtering. Migrating them onto `IDoctorCheck` is the natural follow-up.
+The twelve original checks are a second case: they remain inline in `DoctorCommand`, which lives in `Cli` and is also `[ExcludeFromCodeCoverage]`, so nothing in it is counted either way. They were left in place because rewriting a published `--json` surface and expanding it in one change would make any regression impossible to attribute; `LegacyDoctorChecks` gives them an id, subsystem, outcome, and remedy without touching their behavior. They resolve `--only`/`--skip` themselves rather than being filtered after the fact, because several of them probe the network, load the tokenizer, or scan encrypted blob storage — filtering results after paying for them is not filtering. Migrating them onto `IDoctorCheck` is the natural follow-up.
 
 **Outcome derivation runs in both directions.** A registry check reports a `DoctorOutcome` and the runner derives `Status` from it. A legacy check reports the `ok`/`warn`/`fail` string and `LegacyDoctorChecks.Enrich` back-derives the outcome, which cannot recover `Unavailable` or `Skipped` — both collapse into the legacy vocabulary. One case is corrected explicitly: an optional `arcanum.json` or `mcp.json` that simply is not there reports `warn`, and projecting that onto `Degraded` would make `--strict` fail every default installation, so it is mapped to `Skipped` and its status restated as `ok`.
 
@@ -3927,7 +3927,7 @@ dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.cspr
 
 Run `scripts/coverage.sh --threshold` from Git Bash for the normal parallel coverage gate. Threshold evaluation prefers Python and falls back to Windows PowerShell on Windows; the xUnit run itself remains parallel.
 
-| Post-exclusion metric | Default/local target | CI target (macOS 14 `build-test`) |
+| Post-exclusion metric | Default/local target | CI target (`macos-26` `build-test`) |
 |-----------------------|----------------------|------------------|
 | Line coverage | ≥ 80% | ≥ 80% |
 | Branch coverage | ≥ 70% | ≥ 70% |
