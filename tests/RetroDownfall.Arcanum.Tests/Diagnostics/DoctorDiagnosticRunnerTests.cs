@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Diagnostics;
 /// </summary>
 public sealed class DoctorDiagnosticRunnerTests
 {
-
     [Theory]
     [InlineData(DoctorOutcome.Healthy, "ok")]
     [InlineData(DoctorOutcome.Skipped, "ok")]
@@ -20,23 +19,18 @@ public sealed class DoctorDiagnosticRunnerTests
     [InlineData(DoctorOutcome.Unhealthy, "fail")]
     public void Legacy_status_is_derived_from_the_outcome(DoctorOutcome outcome, string expected)
     {
-
         Assert.Equal(expected, DoctorOutcomes.ToLegacyStatus(outcome));
-
     }
 
     [Fact]
     public void Aggregate_of_no_findings_is_healthy()
     {
-
         Assert.Equal(DoctorOutcome.Healthy, DoctorOutcomes.Aggregate([]));
-
     }
 
     [Fact]
     public void Aggregate_takes_the_most_severe_outcome()
     {
-
         Assert.Equal(
             DoctorOutcome.Unhealthy,
             DoctorOutcomes.Aggregate(
@@ -45,19 +39,16 @@ public sealed class DoctorDiagnosticRunnerTests
         Assert.Equal(
             DoctorOutcome.Degraded,
             DoctorOutcomes.Aggregate([DoctorOutcome.Unavailable, DoctorOutcome.Degraded]));
-
     }
 
     [Fact]
     public void Skipped_findings_never_worsen_the_aggregate()
     {
-
         Assert.Equal(
             DoctorOutcome.Healthy,
             DoctorOutcomes.Aggregate([DoctorOutcome.Skipped, DoctorOutcome.Healthy]));
 
         Assert.Equal(DoctorOutcome.Healthy, DoctorOutcomes.Aggregate([DoctorOutcome.Skipped]));
-
     }
 
     [Theory]
@@ -74,15 +65,12 @@ public sealed class DoctorDiagnosticRunnerTests
         bool strict,
         bool expected)
     {
-
         Assert.Equal(expected, DoctorOutcomes.IsFailure(outcome, strict));
-
     }
 
     [Fact]
     public async Task Run_projects_every_check_into_a_report_check_carrying_its_id_and_subsystem()
     {
-
         DoctorDiagnosticRunner runner = new(
             [
                 new StubCheck("paths.managed_directories", "Paths", DoctorSubsystem.Paths),
@@ -98,7 +86,6 @@ public sealed class DoctorDiagnosticRunnerTests
             report.Value.Checks,
             check =>
             {
-
                 Assert.Equal("paths.managed_directories", check.Id);
 
                 Assert.Equal(DoctorSubsystem.Paths, check.Subsystem);
@@ -106,16 +93,13 @@ public sealed class DoctorDiagnosticRunnerTests
                 Assert.Equal("Paths", check.Name);
 
                 Assert.Equal("ok", check.Status);
-
             },
             check => Assert.Equal("grimoire.integrity", check.Id));
-
     }
 
     [Fact]
     public async Task Network_checks_are_skipped_unless_the_operator_opts_in()
     {
-
         DoctorDiagnosticRunner runner = new(
             [new StubCheck("providers.reachability", "Providers", DoctorSubsystem.Providers, requiresNetwork: true)],
             []);
@@ -135,13 +119,11 @@ public sealed class DoctorDiagnosticRunnerTests
             CancellationToken.None);
 
         Assert.Equal(DoctorOutcome.Healthy, Assert.Single(online.Value.Checks).Outcome);
-
     }
 
     [Fact]
     public async Task Only_selects_by_check_id_or_by_subsystem()
     {
-
         DoctorDiagnosticRunner runner = new(
             [
                 new StubCheck("paths.managed_directories", "Paths", DoctorSubsystem.Paths),
@@ -161,13 +143,11 @@ public sealed class DoctorDiagnosticRunnerTests
             CancellationToken.None);
 
         Assert.Equal(2, bySubsystem.Value.Checks.Count);
-
     }
 
     [Fact]
     public async Task Skip_removes_the_named_check_and_keeps_the_rest()
     {
-
         DoctorDiagnosticRunner runner = new(
             [
                 new StubCheck("paths.managed_directories", "Paths", DoctorSubsystem.Paths),
@@ -180,13 +160,49 @@ public sealed class DoctorDiagnosticRunnerTests
             CancellationToken.None);
 
         Assert.Equal("paths.managed_directories", Assert.Single(report.Value.Checks).Id);
+    }
 
+    [Fact]
+    public async Task Only_and_skip_that_cancel_out_fail_instead_of_reporting_healthy()
+    {
+        DoctorDiagnosticRunner runner = new(
+            [
+                new StubCheck("paths.managed_directories", "Paths", DoctorSubsystem.Paths),
+                new StubCheck("grimoire.integrity", "Grimoire", DoctorSubsystem.Grimoire),
+            ],
+            []);
+
+        Result<DoctorReport> report = await runner.RunAsync(
+            DoctorRunRequest.ReadOnly with { Only = ["grimoire"], Skip = ["grimoire"] },
+            CancellationToken.None);
+
+        Assert.True(report.IsFailure);
+
+        Assert.Equal(DoctorErrors.UnknownSelectorCode, report.Error.Code);
+
+        Assert.Contains("arcanum doctor list", report.Error.Message);
+    }
+
+    [Fact]
+    public async Task A_selection_that_only_names_checks_composed_elsewhere_is_not_an_empty_selection()
+    {
+        DoctorDiagnosticRunner runner = new(
+            [new StubCheck("paths.managed_directories", "Paths", DoctorSubsystem.Paths)],
+            []);
+
+        Result<DoctorReport> report = await runner.RunAsync(
+            DoctorRunRequest.ReadOnly with { Only = ["mcp"] },
+            CancellationToken.None,
+            [new DoctorCatalogCheck("mcp.servers", "MCP servers", DoctorSubsystem.Mcp, RequiresNetwork: false)]);
+
+        Assert.True(report.IsSuccess);
+
+        Assert.Empty(report.Value.Checks);
     }
 
     [Fact]
     public async Task An_unrecognized_selector_fails_and_names_the_discovery_command()
     {
-
         DoctorDiagnosticRunner runner = new(
             [new StubCheck("paths.managed_directories", "Paths", DoctorSubsystem.Paths)],
             []);
@@ -202,13 +218,11 @@ public sealed class DoctorDiagnosticRunnerTests
         Assert.Contains("arcanum doctor list", report.Error.Message);
 
         Assert.Contains("paths.nope", report.Error.Message);
-
     }
 
     [Fact]
     public async Task A_check_that_throws_degrades_to_unavailable_instead_of_killing_the_command()
     {
-
         DoctorDiagnosticRunner runner = new(
             [
                 new ThrowingCheck("grimoire.integrity", DoctorSubsystem.Grimoire),
@@ -229,13 +243,11 @@ public sealed class DoctorDiagnosticRunnerTests
         Assert.Equal(DoctorOutcome.Unavailable, failed.Outcome);
 
         Assert.Contains("InvalidOperationException", failed.Detail);
-
     }
 
     [Fact]
     public async Task A_check_that_throws_never_leaks_the_exception_message()
     {
-
         DoctorDiagnosticRunner runner = new(
             [new ThrowingCheck("grimoire.integrity", DoctorSubsystem.Grimoire)],
             []);
@@ -245,13 +257,11 @@ public sealed class DoctorDiagnosticRunnerTests
             CancellationToken.None);
 
         Assert.DoesNotContain(ThrowingCheck.SecretBearingMessage, Assert.Single(report.Value.Checks).Detail);
-
     }
 
     [Fact]
     public async Task Operator_cancellation_is_never_swallowed_into_a_finding()
     {
-
         using CancellationTokenSource cancellation = new();
 
         await cancellation.CancelAsync();
@@ -262,13 +272,11 @@ public sealed class DoctorDiagnosticRunnerTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => runner.RunAsync(DoctorRunRequest.ReadOnly, cancellation.Token));
-
     }
 
     [Fact]
     public async Task Report_health_follows_the_aggregate_and_honors_strict()
     {
-
         DoctorDiagnosticRunner runner = new(
             [new StubCheck("runtime.pid_file", "PID", DoctorSubsystem.Runtime, outcome: DoctorOutcome.Degraded)],
             []);
@@ -286,13 +294,11 @@ public sealed class DoctorDiagnosticRunnerTests
             CancellationToken.None);
 
         Assert.False(strict.Value.Healthy);
-
     }
 
     [Fact]
     public async Task A_repair_selector_without_apply_plans_only()
     {
-
         StubRepair repair = new("runtime.remove_stale_pid", ["runtime.pid_file"]);
 
         DoctorDiagnosticRunner runner = new(
@@ -310,13 +316,11 @@ public sealed class DoctorDiagnosticRunnerTests
         DoctorRepairResult result = Assert.Single(report.Value.Repairs ?? []);
 
         Assert.Equal(DoctorRepairState.Planned, result.State);
-
     }
 
     [Fact]
     public async Task Apply_runs_each_selected_repair_exactly_once()
     {
-
         StubRepair pid = new("runtime.remove_stale_pid", ["runtime.pid_file"]);
 
         StubRepair permissions = new("permissions.apply_owner_only", ["permissions.posture"]);
@@ -341,13 +345,11 @@ public sealed class DoctorDiagnosticRunnerTests
         Assert.Equal(1, permissions.AppliedCount);
 
         Assert.Equal(2, (report.Value.Repairs ?? []).Count);
-
     }
 
     [Fact]
     public async Task A_failed_repair_makes_the_report_unhealthy()
     {
-
         DoctorDiagnosticRunner runner = new(
             [new StubCheck("runtime.pid_file", "PID", DoctorSubsystem.Runtime)],
             [new StubRepair("runtime.remove_stale_pid", ["runtime.pid_file"], failOnApply: true)]);
@@ -359,13 +361,11 @@ public sealed class DoctorDiagnosticRunnerTests
         Assert.False(report.Value.Healthy);
 
         Assert.Equal(DoctorRepairState.Failed, Assert.Single(report.Value.Repairs ?? []).State);
-
     }
 
     [Fact]
     public async Task A_repair_that_throws_is_reported_as_failed_without_leaking_its_message()
     {
-
         DoctorDiagnosticRunner runner = new(
             [new StubCheck("runtime.pid_file", "PID", DoctorSubsystem.Runtime)],
             [new StubRepair("runtime.remove_stale_pid", ["runtime.pid_file"], throwOnApply: true)]);
@@ -379,13 +379,11 @@ public sealed class DoctorDiagnosticRunnerTests
         Assert.Equal(DoctorRepairState.Failed, result.State);
 
         Assert.DoesNotContain(StubRepair.SecretBearingMessage, result.Failure);
-
     }
 
     [Fact]
     public async Task An_unrecognized_repair_id_fails_and_names_the_discovery_command()
     {
-
         DoctorDiagnosticRunner runner = new([], []);
 
         Result<DoctorReport> report = await runner.RunAsync(
@@ -397,13 +395,11 @@ public sealed class DoctorDiagnosticRunnerTests
         Assert.Equal(DoctorErrors.UnknownSelectorCode, report.Error.Code);
 
         Assert.Contains("arcanum doctor list", report.Error.Message);
-
     }
 
     [Fact]
     public async Task Apply_without_a_repair_selector_is_rejected_rather_than_repairing_everything()
     {
-
         DoctorDiagnosticRunner runner = new(
             [new StubCheck("runtime.pid_file", "PID", DoctorSubsystem.Runtime)],
             [new StubRepair("runtime.remove_stale_pid", ["runtime.pid_file"])]);
@@ -415,40 +411,33 @@ public sealed class DoctorDiagnosticRunnerTests
         Assert.True(report.IsFailure);
 
         Assert.Equal(DoctorErrors.ApplyWithoutRepairCode, report.Error.Code);
-
     }
 
     [Fact]
     public void Duplicate_check_ids_are_rejected_at_construction()
     {
-
         Assert.Throws<InvalidOperationException>(() => new DoctorDiagnosticRunner(
             [
                 new StubCheck("runtime.pid_file", "PID", DoctorSubsystem.Runtime),
                 new StubCheck("runtime.pid_file", "PID again", DoctorSubsystem.Runtime),
             ],
             []));
-
     }
 
     [Fact]
     public void A_repair_whose_detector_is_not_registered_is_rejected_at_construction()
     {
-
         Assert.Throws<InvalidOperationException>(() => new DoctorDiagnosticRunner(
             [new StubCheck("runtime.pid_file", "PID", DoctorSubsystem.Runtime)],
             [new StubRepair("runtime.remove_stale_pid", ["runtime.absent_detector"])]));
-
     }
 
     [Fact]
     public void Every_check_id_uses_its_subsystem_as_the_namespace()
     {
-
         Assert.Throws<InvalidOperationException>(() => new DoctorDiagnosticRunner(
             [new StubCheck("grimoire.integrity", "Mislabelled", DoctorSubsystem.Runtime)],
             []));
-
     }
 
     private sealed class StubCheck(
@@ -458,7 +447,6 @@ public sealed class DoctorDiagnosticRunnerTests
         bool requiresNetwork = false,
         DoctorOutcome outcome = DoctorOutcome.Healthy) : IDoctorCheck
     {
-
         public string Id => id;
 
         public string Name => name;
@@ -469,12 +457,10 @@ public sealed class DoctorDiagnosticRunnerTests
 
         public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new DoctorFinding(outcome, $"{id} inspected"));
-
     }
 
     private sealed class ThrowingCheck(string id, DoctorSubsystem subsystem) : IDoctorCheck
     {
-
         internal const string SecretBearingMessage = "passphrase=hunter2";
 
         public string Id => id;
@@ -487,12 +473,10 @@ public sealed class DoctorDiagnosticRunnerTests
 
         public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken) =>
             throw new InvalidOperationException(SecretBearingMessage);
-
     }
 
     private sealed class CancellingCheck(string id, DoctorSubsystem subsystem) : IDoctorCheck
     {
-
         public string Id => id;
 
         public string Name => id;
@@ -503,13 +487,10 @@ public sealed class DoctorDiagnosticRunnerTests
 
         public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(new DoctorFinding(DoctorOutcome.Healthy, "unreachable"));
-
         }
-
     }
 
     private sealed class StubRepair(
@@ -518,7 +499,6 @@ public sealed class DoctorDiagnosticRunnerTests
         bool failOnApply = false,
         bool throwOnApply = false) : IDoctorRepair
     {
-
         internal const string SecretBearingMessage = "apiKey=sk-live-secret";
 
         public string Id => id;
@@ -536,33 +516,25 @@ public sealed class DoctorDiagnosticRunnerTests
 
         public Task<DoctorRepairResult> PlanAsync(CancellationToken cancellationToken)
         {
-
             PlannedCount++;
 
             return Task.FromResult(
                 new DoctorRepairResult(id, DoctorRepairState.Planned, "one change planned", [], null));
-
         }
 
         public Task<DoctorRepairResult> ApplyAsync(CancellationToken cancellationToken)
         {
-
             AppliedCount++;
 
             if (throwOnApply)
             {
-
                 throw new IOException(SecretBearingMessage);
-
             }
 
             return Task.FromResult(
                 failOnApply
                     ? new DoctorRepairResult(id, DoctorRepairState.Failed, "could not apply", [], "denied")
                     : new DoctorRepairResult(id, DoctorRepairState.Applied, "applied", [], null));
-
         }
-
     }
-
 }
