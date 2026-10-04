@@ -50,10 +50,8 @@ internal static class CampaignCommandSupport
 
     public static bool TryParseWorkspaceType(string? value, out WorkspaceType type)
     {
-
         switch (value?.Trim().ToLowerInvariant())
         {
-
             case "spell":
                 type = WorkspaceType.Spell;
                 return true;
@@ -73,14 +71,11 @@ internal static class CampaignCommandSupport
             default:
                 type = default;
                 return false;
-
         }
-
     }
 
     public static void WriteCampaignDetailPanel(CampaignDto campaign, IThemePalette themePalette)
     {
-
         Table table = new();
 
         table.Border(TableBorder.None);
@@ -119,9 +114,7 @@ internal static class CampaignCommandSupport
         };
 
         AnsiConsole.Write(panel);
-
     }
-
 }
 
 /// <summary>
@@ -135,7 +128,6 @@ public sealed class CampaignCommands(
     IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
-
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
@@ -146,12 +138,10 @@ public sealed class CampaignCommands(
     /// <param name="type">Filter by workspace type: spell, campaign, data, custom.</param>
     public async Task<int> List(string? type = null, CancellationToken cancellationToken = default)
     {
-
         WorkspaceType? workspaceType = null;
 
         if (!string.IsNullOrWhiteSpace(type))
         {
-
             if (!CampaignCommandSupport.TryParseWorkspaceType(type, out WorkspaceType parsed))
             {
                 CliErrorOutput.WriteMarkupLine(
@@ -161,10 +151,18 @@ public sealed class CampaignCommands(
             }
 
             workspaceType = parsed;
-
         }
 
-        Result<ListPageResult<CampaignDto>> result = await apiClient.GetCampaignsAsync(workspaceType, cancellationToken).ConfigureAwait(false);
+        // Every campaign, not the first page: the host bounds each page and names the rest.
+        Result<HostListing<CampaignDto>> result = await HostPageWalker
+            .ReadAsync<CampaignDto, int>(
+                "campaign list",
+                singlePage: false,
+                async (offset, token) => HostPageWalker.ByOffset(
+                    await apiClient.GetCampaignsPageAsync(workspaceType, null, offset, token).ConfigureAwait(false),
+                    offset),
+                cancellationToken)
+            .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -187,13 +185,11 @@ public sealed class CampaignCommands(
 
         foreach (CampaignDto campaign in campaigns)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(campaign.Name))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(campaign.Path))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(campaign.Type.ToString()))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(campaign.CreatedAt.ToString("u")))));
-
         }
 
         AnsiConsole.Write(table);
@@ -204,7 +200,6 @@ public sealed class CampaignCommands(
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -251,7 +246,6 @@ public sealed class CampaignCommands(
         CampaignCommandSupport.WriteCampaignDetailPanel(result.Value, themePalette);
 
         return 0;
-
     }
 
     /// <summary>
@@ -268,7 +262,6 @@ public sealed class CampaignCommands(
         string? description = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(name))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
@@ -310,7 +303,6 @@ public sealed class CampaignCommands(
                 Markup.Escape($"{result.Value.Name} ({result.Value.Id:D})")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -320,7 +312,6 @@ public sealed class CampaignCommands(
     /// <param name="name">New campaign display name.</param>
     public async Task<int> Update(string? id, string? name = null, CancellationToken cancellationToken = default)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -339,7 +330,6 @@ public sealed class CampaignCommands(
             themePalette.HighlightLabelMarkup(Markup.Escape("Campaign updated:"), Markup.Escape(result.Value.Name)));
 
         return 0;
-
     }
 
     /// <summary>
@@ -348,7 +338,6 @@ public sealed class CampaignCommands(
     /// <param name="id">Campaign GUID.</param>
     public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -373,7 +362,6 @@ public sealed class CampaignCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Campaign removed.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -383,7 +371,6 @@ public sealed class CampaignCommands(
     /// <param name="output">Write exported JSON to this file instead of stdout.</param>
     public async Task<int> Export(string? id, string? output = null, CancellationToken cancellationToken = default)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -422,7 +409,6 @@ public sealed class CampaignCommands(
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -432,7 +418,6 @@ public sealed class CampaignCommands(
     /// <param name="file">Path to a campaign export JSON file (as produced by 'campaign export').</param>
     public async Task<int> Import(string? id, string? file = null, CancellationToken cancellationToken = default)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -502,7 +487,6 @@ public sealed class CampaignCommands(
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -519,7 +503,6 @@ public sealed class CampaignCommands(
         string? tool = null,
         CancellationToken cancellationToken = default)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -537,7 +520,6 @@ public sealed class CampaignCommands(
         SpellCommandSupport.WriteSpellSummaryTable(result.Value, themePalette);
 
         return 0;
-
     }
 
     /// <summary>
@@ -552,12 +534,18 @@ public sealed class CampaignCommands(
         string? tag = null,
         CancellationToken cancellationToken = default)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
-        Result<ListPageResult<PromptSummaryDto>> result = await apiClient
-            .GetCampaignPromptsAsync(campaignId, query, tag, cancellationToken)
+        // Every prompt of the campaign, not the first page the host bounds the answer to.
+        Result<HostListing<PromptSummaryDto>> result = await HostPageWalker
+            .ReadAsync<PromptSummaryDto, int>(
+                "campaign prompt list",
+                singlePage: false,
+                async (offset, token) => HostPageWalker.ByOffset(
+                    await apiClient.GetCampaignPromptsAsync(campaignId, query, tag, offset, token).ConfigureAwait(false),
+                    offset),
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -571,11 +559,9 @@ public sealed class CampaignCommands(
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(prompts, ArcanumJsonContext.Default.PromptSummaryDtoArray);
 
             return 0;
-
         }
 
         Table table = new();
@@ -588,12 +574,10 @@ public sealed class CampaignCommands(
 
         foreach (PromptSummaryDto prompt in prompts)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(prompt.Name))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(prompt.Version))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(prompt.Tags.Length == 0 ? "-" : string.Join(", ", prompt.Tags)))));
-
         }
 
         AnsiConsole.Write(table);
@@ -604,7 +588,6 @@ public sealed class CampaignCommands(
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -623,7 +606,6 @@ public sealed class CampaignCommands(
         string? beforeUpdatedAt = null,
         CancellationToken cancellationToken = default)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -631,7 +613,6 @@ public sealed class CampaignCommands(
 
         if (!string.IsNullOrWhiteSpace(beforeUpdatedAt))
         {
-
             if (!DateTimeOffset.TryParse(
                     beforeUpdatedAt,
                     System.Globalization.CultureInfo.InvariantCulture,
@@ -644,7 +625,6 @@ public sealed class CampaignCommands(
             }
 
             beforeUpdatedAtParsed = parsed;
-
         }
 
         Result<SessionQueryResult> result = await apiClient
@@ -667,7 +647,6 @@ public sealed class CampaignCommands(
         // session-workspace consumers already raise.
         if (result.Value is { HasMore: true, NextBeforeUpdatedAt: null } && sessions.Length == 0)
         {
-
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape(
@@ -675,7 +654,6 @@ public sealed class CampaignCommands(
                         + "an advancing cursor. Re-run the command.")));
 
             return 1;
-
         }
 
         // The paging advice below is operator prose about how to ask for the next page, which a
@@ -683,11 +661,9 @@ public sealed class CampaignCommands(
         // would page from is UpdatedAt on the last one.
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(sessions, ArcanumJsonContext.Default.SessionSummaryDtoArray);
 
             return 0;
-
         }
 
         Table table = new();
@@ -704,7 +680,6 @@ public sealed class CampaignCommands(
 
         foreach (SessionSummaryDto session in sessions)
         {
-
             string shortId = session.Id.ToString("D")[..8];
 
             table.AddRow(
@@ -713,7 +688,6 @@ public sealed class CampaignCommands(
                 new Markup(themePalette.TextMarkup(Markup.Escape(session.Status))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(session.EntryCount.ToString(System.Globalization.CultureInfo.InvariantCulture)))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(session.UpdatedAt.ToString("u")))));
-
         }
 
         AnsiConsole.Write(table);
@@ -725,7 +699,6 @@ public sealed class CampaignCommands(
 
         if (result.Value.HasMore)
         {
-
             // The empty no-cursor page is already refused above, so the last summary is here to page
             // from whenever the host did not name a cursor of its own.
             DateTimeOffset cursor = result.Value.NextBeforeUpdatedAt ?? sessions[^1].UpdatedAt;
@@ -733,13 +706,10 @@ public sealed class CampaignCommands(
             AnsiConsole.MarkupLine(
                 themePalette.MutedMarkup(
                     Markup.Escape($"More results available \u2014 use --before-updated-at {cursor:O} to page")));
-
         }
 
         return 0;
-
     }
-
 }
 
 /// <summary>
@@ -752,7 +722,6 @@ public sealed class CampaignCodexCommands(
     IOptions<ArcanumSettings> settings,
     ICliResourceCatalog? resourceCatalog = null)
 {
-
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
@@ -763,7 +732,6 @@ public sealed class CampaignCodexCommands(
     /// <param name="id">Campaign GUID.</param>
     public async Task<int> Get(string? id, CancellationToken cancellationToken)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -786,7 +754,6 @@ public sealed class CampaignCodexCommands(
         await Console.Out.WriteLineAsync(result.Value.Content).ConfigureAwait(false);
 
         return 0;
-
     }
 
     /// <summary>
@@ -796,7 +763,6 @@ public sealed class CampaignCodexCommands(
     /// <param name="file">Path to a file whose contents become CODEX.md.</param>
     public async Task<int> Put(string? id, string? file = null, CancellationToken cancellationToken = default)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -826,7 +792,6 @@ public sealed class CampaignCodexCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("CODEX.md updated.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -835,7 +800,6 @@ public sealed class CampaignCodexCommands(
     /// <param name="id">Campaign GUID.</param>
     public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
-
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 
@@ -860,7 +824,5 @@ public sealed class CampaignCodexCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("CODEX.md removed.")));
 
         return 0;
-
     }
-
 }

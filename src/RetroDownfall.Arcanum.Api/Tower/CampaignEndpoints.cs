@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class CampaignEndpoints
 {
-
     public static RouteGroupBuilder MapCampaignEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapGet(
@@ -341,6 +340,8 @@ internal static class CampaignEndpoints
                 Guid id,
                 string? q,
                 string? tag,
+                int? limit,
+                int? offset,
                 ICampaignRepository repo,
                 IPromptRepository promptRepo,
                 HttpContext ctx) =>
@@ -361,8 +362,14 @@ internal static class CampaignEndpoints
 
                 bool hasClientFilters = !string.IsNullOrWhiteSpace(q) || !string.IsNullOrWhiteSpace(tag);
 
+                // A client-side q/tag filter thins one page, so it always reads the first 10,000 rows and its
+                // offsets would not address the underlying sequence; only an unfiltered read pages.
                 ListPageResult<Prompt> page = await promptRepo
-                    .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
+                    .ListAsync(
+                        id,
+                        ArcanumSettingClamps.ListQueryLimit(hasClientFilters ? 10_000 : limit ?? 10_000),
+                        hasClientFilters ? 0 : Math.Max(0, offset ?? 0),
+                        ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 IEnumerable<PromptSummaryDto> filtered = page.Items.Select(PromptMapping.ToSummaryDto);
@@ -656,14 +663,12 @@ internal static class CampaignEndpoints
         ISpellRepository spellRepo,
         HttpContext ctx)
     {
-
         string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
         ICovenantExportPolicy? policy = ctx.RequestServices.GetService<ICovenantExportPolicy>();
 
         if (policy is null)
         {
-
             return await BuildCampaignExportAsync(
                 id,
                 exclusions: null,
@@ -672,7 +677,6 @@ internal static class CampaignEndpoints
                 spellRepo,
                 ctx,
                 traceId).ConfigureAwait(false);
-
         }
 
         Result<CovenantExportAdmission> admission = await policy
@@ -681,21 +685,18 @@ internal static class CampaignEndpoints
 
         if (admission.IsFailure)
         {
-
             return Results.Json(
                 ApiResponse<CampaignExportDto>.FromResult(
                     Result<CampaignExportDto>.Failure(admission.Error),
                     traceId),
                 ArcanumJsonContext.Default.ApiResponseCampaignExportDto,
                 statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(admission.Error.Code));
-
         }
 
         ICovenantSnapshotReadLease? owned = admission.Value.ReadLease;
 
         if (owned is null)
         {
-
             return await BuildCampaignExportAsync(
                 id,
                 exclusions: null,
@@ -704,12 +705,10 @@ internal static class CampaignEndpoints
                 spellRepo,
                 ctx,
                 traceId).ConfigureAwait(false);
-
         }
 
         try
         {
-
             Result<CovenantCampaignExportExclusions> exclusions = await policy
                 .InventoryCampaignExclusionsAsync(id, owned, ctx.RequestAborted)
                 .ConfigureAwait(false);
@@ -734,20 +733,14 @@ internal static class CampaignEndpoints
             owned = null;
 
             return response;
-
         }
         finally
         {
-
             if (owned is not null)
             {
-
                 await owned.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private static async Task<IResult> BuildCampaignExportAsync(
@@ -759,7 +752,6 @@ internal static class CampaignEndpoints
         HttpContext ctx,
         string traceId)
     {
-
         Result<CampaignExportDto> result = await ComposeCampaignExportAsync(
             id,
             exclusions,
@@ -774,7 +766,6 @@ internal static class CampaignEndpoints
                 ApiResponse<CampaignExportDto>.FromResult(result, traceId),
                 ArcanumJsonContext.Default.ApiResponseCampaignExportDto,
                 statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
-
     }
 
     /// <summary>
@@ -790,15 +781,12 @@ internal static class CampaignEndpoints
         ISpellRepository spellRepo,
         HttpContext ctx)
     {
-
         Campaign? campaign = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
         if (campaign is null)
         {
-
             return Result<CampaignExportDto>.Failure(
                 new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
-
         }
 
         SpellSummary[] summaries = await spellRepo.ListAsync(campaign.Path, ctx.RequestAborted).ConfigureAwait(false);
@@ -843,7 +831,6 @@ internal static class CampaignEndpoints
             exportSpells,
             promptExports,
             exclusions));
-
     }
 
     private static IResult MapCampaignError(Error error, string traceId)
@@ -852,12 +839,10 @@ internal static class CampaignEndpoints
 
         if (string.Equals(error.Code, ErrorCodes.Campaign.PathNotAllowed, StringComparison.Ordinal))
         {
-
             return Results.Json(
                 response,
                 ArcanumJsonContext.Default.ApiResponseCampaignDto,
                 statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
-
         }
 
         return Results.Json(
@@ -865,5 +850,4 @@ internal static class CampaignEndpoints
             ArcanumJsonContext.Default.ApiResponseCampaignDto,
             statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(error.Code));
     }
-
 }

@@ -252,6 +252,35 @@ public sealed class PromptCommandTests
             "The tool-call argument preview emitted an unpaired surrogate.");
     }
 
+    [Fact]
+    public void List_follows_hasMore_until_exhausted()
+    {
+        PromptSummaryDto first = new(Guid.NewGuid(), null, "first-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        PromptSummaryDto second = new(Guid.NewGuid(), null, "second-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<PromptSummaryDto>>(
+                request.RequestUri!.Query.Contains("offset=1", StringComparison.Ordinal)
+                    ? new ListPageResult<PromptSummaryDto>([second], false)
+                    : new ListPageResult<PromptSummaryDto>([first], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["prompt", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains("offset=1", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains("first-page-prompt", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("second-page-prompt", result.Output, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

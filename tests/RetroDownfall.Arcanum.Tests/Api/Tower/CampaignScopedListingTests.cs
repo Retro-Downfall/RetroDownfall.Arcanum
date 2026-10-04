@@ -13,19 +13,15 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ApiHost")]
 public sealed class CampaignScopedListingTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public CampaignScopedListingTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     private async Task<CampaignDto> CreateCampaignAsync(HttpClient client, string suffix)
     {
-
         string path = Path.Combine(_factory.TempHome, $"campaign-scoped-{suffix}");
 
         Directory.CreateDirectory(path);
@@ -43,13 +39,11 @@ public sealed class CampaignScopedListingTests
         ApiResponse<CampaignDto>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseCampaignDto);
 
         return body!.Data!;
-
     }
 
     [SkippableFact]
     public async Task CampaignSpells_includes_builtins_with_shadow_order()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -73,13 +67,11 @@ public sealed class CampaignScopedListingTests
         Assert.NotNull(body?.Data);
 
         Assert.Contains(body!.Data!, s => s.Name == "campaign-only");
-
     }
 
     [SkippableFact]
     public async Task CampaignSpells_404_when_campaign_not_found()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -87,13 +79,11 @@ public sealed class CampaignScopedListingTests
         HttpResponseMessage response = await client.GetAsync($"/api/campaigns/{Guid.NewGuid()}/spells");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task CampaignPrompts_filtered_by_campaign()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -136,13 +126,80 @@ public sealed class CampaignScopedListingTests
         Assert.All(body!.Data!.Items, p => Assert.Equal(campaign.Id, p.CampaignId));
 
         Assert.Single(body.Data.Items);
+    }
 
+    /// <summary>
+    /// A campaign's prompt page names a continuation, so a client has to be able to follow it: the route
+    /// reads <c>limit</c> and <c>offset</c> for an unfiltered listing.
+    /// </summary>
+    [SkippableFact]
+    public async Task CampaignPrompts_pages_through_limit_and_offset()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignAsync(client, "prompt-paging");
+
+        for (int index = 0; index < 3; index++)
+        {
+            CreatePromptRequest request = new(
+                $"paged-prompt-{index}-{Guid.NewGuid():N}",
+                "1.0.0",
+                "Hello",
+                null,
+                [],
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                campaign.Id);
+
+            string createPayload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.CreatePromptRequest);
+
+            HttpResponseMessage created = await client.PostAsync("/api/prompts", new StringContent(createPayload, Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        }
+
+        ListPageResult<PromptSummaryDto> first = await ReadPromptPageAsync(client, campaign.Id, "?limit=2");
+
+        Assert.Equal(2, first.Items.Length);
+
+        Assert.True(first.HasMore);
+
+        Assert.Equal(2, first.NextOffset);
+
+        ListPageResult<PromptSummaryDto> second = await ReadPromptPageAsync(client, campaign.Id, "?limit=2&offset=2");
+
+        Assert.Single(second.Items);
+
+        Assert.False(second.HasMore);
+
+        Assert.DoesNotContain(second.Items, item => first.Items.Any(seen => seen.Id == item.Id));
+    }
+
+    private static async Task<ListPageResult<PromptSummaryDto>> ReadPromptPageAsync(HttpClient client, Guid campaignId, string query)
+    {
+        HttpResponseMessage response = await client.GetAsync($"/api/campaigns/{campaignId}/prompts{query}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<ListPageResult<PromptSummaryDto>>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto);
+
+        Assert.NotNull(body?.Data);
+
+        return body!.Data!;
     }
 
     [SkippableFact]
     public async Task CampaignSessions_filtered_by_campaign()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -168,7 +225,5 @@ public sealed class CampaignScopedListingTests
         Assert.NotNull(body?.Data);
 
         Assert.Contains(body!.Data!.Summaries, s => s.CampaignId == campaign.Id);
-
     }
-
 }

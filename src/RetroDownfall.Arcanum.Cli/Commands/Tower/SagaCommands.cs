@@ -15,6 +15,12 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 {
     private const int ContentPreviewChars = 80;
 
+    /// <summary>The rows <c>GET /api/saga</c> returns when no limit is named.</summary>
+    private const int HostDefaultListLimit = 100;
+
+    /// <summary>The most rows <c>GET /api/saga</c> returns; it clamps a larger limit down to this.</summary>
+    private const int HostMaxListLimit = 10_000;
+
     /// <summary>
     /// Paginated listing of Saga memories (GET /api/saga).
     /// </summary>
@@ -43,8 +49,14 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             sessionId = parsedSessionId;
         }
 
+        // The host answers with a bare array and no page marker, so one row beyond what is shown is
+        // requested: an extra row is the host's proof that the page was a prefix of the listing.
+        int shown = Math.Clamp(limit ?? HostDefaultListLimit, 1, HostMaxListLimit);
+
+        int firstRow = Math.Max(0, offset ?? 0);
+
         Result<SagaMemoryDto[]> result = await apiClient
-            .SagaListAsync(query, sessionId, limit, offset, cancellationToken)
+            .SagaListAsync(query, sessionId, Math.Min(shown + 1, HostMaxListLimit), firstRow, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -54,7 +66,14 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             return CliFailureExit.ExitCode(result.Error);
         }
 
-        SagaMemoryDto[] memories = result.Value;
+        // At the host's own ceiling there is no room to ask for the extra row, so a full page is the
+        // most that can be said: it may be the whole listing or a prefix of it.
+        bool moreAvailable = result.Value.Length > shown
+            || (shown == HostMaxListLimit && result.Value.Length == shown);
+
+        SagaMemoryDto[] memories = result.Value.Length > shown
+            ? result.Value[..shown]
+            : result.Value;
 
         Table table = new();
 
@@ -99,6 +118,14 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         if (memories.Length == 0)
         {
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No Saga memories found.")));
+        }
+
+        if (moreAvailable)
+        {
+            CliErrorOutput.WriteMarkupLine(
+                themePalette.MutedMarkup(
+                    Markup.Escape(
+                        $"More Saga memories are available; continue with --offset {firstRow + memories.Length}.")));
         }
 
         return 0;

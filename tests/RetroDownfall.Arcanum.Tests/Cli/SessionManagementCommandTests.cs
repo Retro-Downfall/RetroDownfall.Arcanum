@@ -716,6 +716,114 @@ public sealed class SessionManagementCommandTests
             $"stdout is the payload stream and must stay clean, got: {result.Output}");
     }
 
+    /// <summary>
+    /// A host that reports <c>HasMore</c> holds sessions the first page did not carry. A listing that
+    /// stopped there looked complete on the very list an operator reads before deleting or archiving.
+    /// </summary>
+    [Fact]
+    public void SessionList_follows_or_reports_continuation_when_the_host_reports_more()
+    {
+        DateTimeOffset cursor = new(2026, 7, 1, 12, 0, 0, TimeSpan.Zero);
+
+        SessionSummaryDto first = new(Guid.NewGuid(), null, "First page session", "active", 1, cursor, cursor);
+
+        int calls = 0;
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<SessionQueryResult>.FromResult(
+                Result<SessionQueryResult>.Success(
+                    Interlocked.Increment(ref calls) == 1
+                        ? new SessionQueryResult([first], cursor, true)
+                        : new SessionQueryResult([], null, false))),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["session", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.DoesNotContain("beforeUpdatedAt", handler.Requests[0].RequestUri!.Query, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("beforeUpdatedAt=", handler.Requests[1].RequestUri!.Query, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("First page session", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SessionList_json_carries_the_sessions_of_every_page_as_one_array()
+    {
+        DateTimeOffset firstUpdated = new(2026, 7, 2, 12, 0, 0, TimeSpan.Zero);
+
+        DateTimeOffset secondUpdated = new(2026, 7, 1, 12, 0, 0, TimeSpan.Zero);
+
+        SessionSummaryDto first = new(Guid.NewGuid(), null, "One", "active", 1, firstUpdated, firstUpdated);
+
+        SessionSummaryDto second = new(Guid.NewGuid(), null, "Two", "active", 1, secondUpdated, secondUpdated);
+
+        int calls = 0;
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<SessionQueryResult>.FromResult(
+                Result<SessionQueryResult>.Success(
+                    Interlocked.Increment(ref calls) == 1
+                        ? new SessionQueryResult([first], firstUpdated, true)
+                        : new SessionQueryResult([second], null, false))),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["--json", "session", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(2, document.RootElement.GetArrayLength());
+    }
+
+    [Fact]
+    public void SessionList_fails_without_a_partial_listing_when_the_host_repeats_its_cursor()
+    {
+        DateTimeOffset cursor = new(2026, 7, 1, 12, 0, 0, TimeSpan.Zero);
+
+        SessionSummaryDto row = new(Guid.NewGuid(), null, "Looping", "active", 1, cursor, cursor);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<SessionQueryResult>.FromResult(
+                Result<SessionQueryResult>.Success(new SessionQueryResult([row], cursor, true))),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["session", "list"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("Api.PaginationNoProgress", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Looping", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SessionList_with_a_limit_reads_one_page_and_says_more_exist()
+    {
+        DateTimeOffset cursor = new(2026, 7, 1, 12, 0, 0, TimeSpan.Zero);
+
+        SessionSummaryDto first = new(Guid.NewGuid(), null, "Only page", "active", 1, cursor, cursor);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<SessionQueryResult>.FromResult(
+                Result<SessionQueryResult>.Success(new SessionQueryResult([first], cursor, true))),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["session", "list", "--limit", "1"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Single(handler.Requests);
+
+        Assert.Contains("omit --limit", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("Only page", result.Output, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

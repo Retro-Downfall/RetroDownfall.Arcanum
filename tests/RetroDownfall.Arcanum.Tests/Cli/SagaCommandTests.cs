@@ -110,9 +110,66 @@ public sealed class SagaCommandTests
 
         Assert.Contains($"sessionId={sessionId:D}", query, StringComparison.Ordinal);
 
-        Assert.Contains("limit=10", query, StringComparison.Ordinal);
+        // One row beyond the requested ten, so the listing can tell a full page from a prefix.
+        Assert.Contains("limit=11", query, StringComparison.Ordinal);
 
         Assert.Contains("offset=5", query, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The host returns a bare array with no page marker, so the listing asks for one row beyond what it
+    /// shows: an extra row is the host's proof that the page was a prefix, and the notice names the
+    /// offset that continues it.
+    /// </summary>
+    [Fact]
+    public void List_reports_when_a_prefix_was_shown()
+    {
+        RecordingHandler handler = new(request =>
+        {
+            int requested = int.Parse(
+                System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["limit"]!,
+                System.Globalization.CultureInfo.InvariantCulture);
+
+            SagaMemoryDto[] rows = Enumerable
+                .Range(1, Math.Min(requested, 5))
+                .Select(static index => new SagaMemoryDto($"mem-{index:D4}", $"payload{index}", DateTimeOffset.UnixEpoch, null, null, null))
+                .ToArray();
+
+            return CreateResponse(
+                new ApiResponse<SagaMemoryDto[]>(rows, true, null),
+                ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
+        });
+
+        CliTestResult result = RunCommand(handler, ["saga", "list", "--limit", "3"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Contains("limit=4", request.RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains("payload3", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("payload4", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("--offset 3", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void List_says_nothing_when_the_page_was_the_whole_listing()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaMemoryDto[]>(
+                [new SagaMemoryDto("mem-0001", "payload1", DateTimeOffset.UnixEpoch, null, null, null)],
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
+
+        CliTestResult result = RunCommand(handler, ["saga", "list", "--limit", "3"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.DoesNotContain("--offset", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -161,6 +161,60 @@ public sealed class ApprenticeCommandTests
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void List_follows_hasMore_until_exhausted()
+    {
+        DateTimeOffset firstUpdated = new(2026, 7, 2, 12, 0, 0, TimeSpan.Zero);
+
+        ApprenticeSummaryDto first = new(SampleId, null, "Task", "First page goal", "Idle", 0, 0, firstUpdated, firstUpdated);
+
+        ApprenticeSummaryDto second = new(Guid.NewGuid(), null, "Task", "Second page goal", "Idle", 0, 0, firstUpdated.AddDays(-1), firstUpdated.AddDays(-1));
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(
+                request.RequestUri!.Query.Contains("beforeUpdatedAt=", StringComparison.Ordinal)
+                    ? new ListPageResult<ApprenticeSummaryDto>([second], false)
+                    : new ListPageResult<ApprenticeSummaryDto>([first], true, NextBeforeUpdatedAt: firstUpdated),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains("beforeUpdatedAt=", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains("First page goal", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Second page goal", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void List_with_a_limit_reads_one_page_and_says_more_exist()
+    {
+        DateTimeOffset updated = new(2026, 7, 2, 12, 0, 0, TimeSpan.Zero);
+
+        ApprenticeSummaryDto only = new(SampleId, null, "Task", "Only page goal", "Idle", 0, 0, updated, updated);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(
+                new ListPageResult<ApprenticeSummaryDto>([only], true, NextBeforeUpdatedAt: updated),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "list", "--limit", "1"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Single(handler.Requests);
+
+        Assert.Contains("omit --limit", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,
