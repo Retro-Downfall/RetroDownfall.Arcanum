@@ -47,7 +47,7 @@ public sealed class TurnProjectionSemanticTests
                 new RunAbandoned(
                     Correlation(1),
                     Error: null,
-                    TurnTerminationReason.ClientDisconnected,
+                    TurnTerminationReason.Cancelled,
                     Usage: null,
                     Warnings: [],
                     Interrupted: true,

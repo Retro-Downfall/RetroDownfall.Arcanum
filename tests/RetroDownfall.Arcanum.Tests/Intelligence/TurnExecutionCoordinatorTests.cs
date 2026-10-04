@@ -38,7 +38,6 @@ public sealed class TurnExecutionCoordinatorTests
         Result<PromptTurnResult> result = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            hasIdempotencyKey: true,
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -49,8 +48,6 @@ public sealed class TurnExecutionCoordinatorTests
         Assert.Equal(["warning"], result.Value.Warnings);
         Assert.NotNull(source.CapturedRequest);
         Assert.Equal(TurnResponseMode.Buffered, source.CapturedRequest.ResponseMode);
-        Assert.False(source.CapturedRequest.HumanInteractionAvailable);
-        Assert.True(source.CapturedRequest.HasIdempotencyKey);
     }
 
     [Fact]
@@ -60,7 +57,7 @@ public sealed class TurnExecutionCoordinatorTests
             new RunAbandoned(
                 Correlation(1),
                 Error: null,
-                TurnTerminationReason.ClientDisconnected,
+                TurnTerminationReason.Cancelled,
                 Usage: null,
                 Warnings: [],
                 Interrupted: true,
@@ -70,7 +67,6 @@ public sealed class TurnExecutionCoordinatorTests
         Result<PromptTurnResult> result = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            hasIdempotencyKey: false,
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -87,7 +83,7 @@ public sealed class TurnExecutionCoordinatorTests
                 new RunAbandoned(
                     Correlation(1),
                     expected,
-                    TurnTerminationReason.GuardrailsBlocked,
+                    TurnTerminationReason.ProviderFailure,
                     Usage: null,
                     Warnings: [],
                     Interrupted: false,
@@ -96,7 +92,6 @@ public sealed class TurnExecutionCoordinatorTests
         Result<PromptTurnResult> result = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            hasIdempotencyKey: false,
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -112,7 +107,6 @@ public sealed class TurnExecutionCoordinatorTests
         Result<PromptTurnResult> result = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            hasIdempotencyKey: false,
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -131,7 +125,6 @@ public sealed class TurnExecutionCoordinatorTests
             coordinator.ExecuteBufferedAsync(
                 new PingRequest("prompt"),
                 InvocationContexts.AttendedSession(),
-                hasIdempotencyKey: false,
                 cancellation.Token));
     }
 
@@ -155,7 +148,6 @@ public sealed class TurnExecutionCoordinatorTests
             coordinator.ExecuteIntelligenceStreamAsync(
                 new PingRequest("prompt"),
                 InvocationContexts.AttendedSession(),
-                hasIdempotencyKey: true,
                 CancellationToken.None));
 
         Assert.Collection(
@@ -173,7 +165,6 @@ public sealed class TurnExecutionCoordinatorTests
             });
         Assert.NotNull(source.CapturedRequest);
         Assert.Equal(TurnResponseMode.Streaming, source.CapturedRequest.ResponseMode);
-        Assert.True(source.CapturedRequest.HumanInteractionAvailable);
     }
 
     [Fact]
@@ -188,7 +179,6 @@ public sealed class TurnExecutionCoordinatorTests
                 coordinator.ExecuteIntelligenceStreamAsync(
                     new PingRequest("prompt"),
                     InvocationContexts.AttendedSession(),
-                    hasIdempotencyKey: false,
                     timeout.Token))
             .WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -215,7 +205,6 @@ public sealed class TurnExecutionCoordinatorTests
                     coordinator.ExecuteIntelligenceStreamAsync(
                         new PingRequest("prompt"),
                         InvocationContexts.AttendedSession(),
-                        hasIdempotencyKey: false,
                         timeout.Token))
                 .WaitAsync(TimeSpan.FromSeconds(5)));
 
@@ -240,7 +229,6 @@ public sealed class TurnExecutionCoordinatorTests
             .ExecuteIntelligenceStreamAsync(
                 new PingRequest("prompt"),
                 InvocationContexts.AttendedSession(),
-                hasIdempotencyKey: false,
                 CancellationToken.None)
             .WithCancellation(CancellationToken.None))
         {
@@ -264,7 +252,6 @@ public sealed class TurnExecutionCoordinatorTests
                 .ExecuteIntelligenceStreamAsync(
                     new PingRequest("prompt"),
                     InvocationContexts.AttendedSession(),
-                    hasIdempotencyKey: false,
                     cancellation.Token)
                 .WithCancellation(CancellationToken.None))
             {
@@ -316,11 +303,7 @@ public sealed class TurnExecutionCoordinatorTests
         new(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            responseMode,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: responseMode == TurnResponseMode.Streaming,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
+            responseMode);
 
     private static TurnEventCorrelation Correlation(long sequence) =>
         new(
@@ -394,7 +377,6 @@ public sealed class TurnExecutionCoordinatorTests
         _ = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             expected,
-            hasIdempotencyKey: false,
             CancellationToken.None);
 
         Assert.Same(expected, source.CapturedRequest!.InvocationContext);
@@ -420,7 +402,6 @@ public sealed class TurnExecutionCoordinatorTests
         await foreach (IntelligenceEvent _ in coordinator.ExecuteIntelligenceStreamAsync(
             new PingRequest("prompt"),
             expected,
-            hasIdempotencyKey: false,
             CancellationToken.None))
         {
         }
@@ -438,7 +419,6 @@ public sealed class TurnExecutionCoordinatorTests
             () => coordinator.ExecuteBufferedAsync(
                 new PingRequest("prompt"),
                 null!,
-                hasIdempotencyKey: false,
                 CancellationToken.None));
     }
 

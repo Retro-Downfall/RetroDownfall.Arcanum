@@ -12,11 +12,9 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class TurnEngineAbandonmentTests
 {
-
     [Fact]
     public async Task RunTurnAsync_abandoned_by_its_consumer_unwinds_and_observes_the_producer()
     {
-
         AbandonmentPipelineRunner runner = new();
 
         TurnEngine engine = new(runner);
@@ -36,22 +34,16 @@ public sealed class TurnEngineAbandonmentTests
             "The producer must be cancelled and awaited before the iterator finishes disposing.");
 
         Assert.Null(runner.TerminalEmissionFailure);
-
     }
 
     private static TurnExecutionRequest CreateTurnRequest() =>
         new(
             new PingRequest("abandonment"),
             InvocationContexts.AttendedSession(),
-            TurnResponseMode.Streaming,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: true,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
+            TurnResponseMode.Streaming);
 
     private sealed class AbandonmentPipelineRunner : ITurnPipelineRunner
     {
-
         private readonly TaskCompletionSource _finished =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -75,10 +67,8 @@ public sealed class TurnEngineAbandonmentTests
 
         private async Task RunAsync(TurnEventEmitter emitter, CancellationToken cancellationToken)
         {
-
             try
             {
-
                 await emitter
                     .EmitAsync(new TurnStatusChanged(emitter.NextCorrelation(), "working"), cancellationToken)
                     .ConfigureAwait(false);
@@ -86,39 +76,27 @@ public sealed class TurnEngineAbandonmentTests
                 // The Wizard pipeline keeps running after the consumer leaves; only the producer
                 // token can stop it.
                 await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException)
             {
-
                 try
                 {
-
                     // Mirrors ProduceAsync's terminal emission from inside its cancellation catch.
                     await emitter
                         .EmitAsync(
                             new TurnStatusChanged(emitter.NextCorrelation(), "abandoned"),
                             CancellationToken.None)
                         .ConfigureAwait(false);
-
                 }
                 catch (Exception ex)
                 {
-
                     TerminalEmissionFailure = ex;
-
                 }
-
             }
             finally
             {
-
                 _ = _finished.TrySetResult();
-
             }
-
         }
-
     }
-
 }

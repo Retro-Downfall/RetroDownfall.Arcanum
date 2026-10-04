@@ -170,7 +170,6 @@ public sealed partial class WizardIntelligenceProvider(
             .ExecuteBufferedAsync(
                 request,
                 invocationContext,
-                TurnIdempotencyAmbient.Current,
                 cancellationToken,
                 auditContext)
             .ConfigureAwait(false);
@@ -188,7 +187,6 @@ public sealed partial class WizardIntelligenceProvider(
             .ExecuteIntelligenceStreamAsync(
                 request,
                 invocationContext,
-                TurnIdempotencyAmbient.Current,
                 cancellationToken,
                 auditContext)
             .WithCancellation(cancellationToken)

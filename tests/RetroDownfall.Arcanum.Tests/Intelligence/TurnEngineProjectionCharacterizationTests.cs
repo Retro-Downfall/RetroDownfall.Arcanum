@@ -526,11 +526,7 @@ public sealed class TurnEngineProjectionCharacterizationTests
         new(
             new PingRequest("test"),
             InvocationContexts.AttendedSession(),
-            mode,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: mode == TurnResponseMode.Streaming,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
+            mode);
 
     private sealed class ThrowingTurnPipelineRunner(Exception failure) : ITurnPipelineRunner
     {

@@ -38,14 +38,14 @@ public sealed class TurnDisconnectAndIdempotencyCharacterizationTests
         RunAbandoned abandoned = new(
             emitter.NextCorrelation(),
             new Error(ErrorCodes.Hub.Error, "Client disconnected."),
-            TurnTerminationReason.ClientDisconnected,
+            TurnTerminationReason.Cancelled,
             Usage: null,
             Warnings: [],
             Interrupted: true,
             PartialText: "partial");
 
         Assert.True(abandoned.IsTerminal);
-        Assert.Equal(TurnTerminationReason.ClientDisconnected, abandoned.Reason);
+        Assert.Equal(TurnTerminationReason.Cancelled, abandoned.Reason);
         Assert.True(abandoned.Interrupted);
     }
 
@@ -72,20 +72,8 @@ public sealed class TurnDisconnectAndIdempotencyCharacterizationTests
     }
 
     [Fact]
-    public void HasIdempotencyKey_AmbientNotPingRequest()
+    public void HasIdempotencyKey_IsNotAPingRequestMember()
     {
-        PingRequest forged = new(Prompt: "hi");
         Assert.Null(typeof(PingRequest).GetProperty("HasIdempotencyKey"));
-
-        TurnExecutionRequest request = new(
-            forged,
-            InvocationContexts.AttendedSession(),
-            TurnResponseMode.Streaming,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: true,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
-
-        Assert.False(request.HasIdempotencyKey);
     }
 }

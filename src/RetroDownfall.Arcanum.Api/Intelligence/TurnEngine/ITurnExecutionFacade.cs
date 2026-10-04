@@ -20,14 +20,12 @@ public interface ITurnExecutionFacade
     Task<Result<PromptTurnResult>> ExecuteBufferedAsync(
         PingRequest request,
         ArcanumInvocationContext invocationContext,
-        bool hasIdempotencyKey,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext = null);
 
     IAsyncEnumerable<IntelligenceEvent> ExecuteIntelligenceStreamAsync(
         PingRequest request,
         ArcanumInvocationContext invocationContext,
-        bool hasIdempotencyKey,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext = null);
 }

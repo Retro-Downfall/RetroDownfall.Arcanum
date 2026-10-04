@@ -21,7 +21,6 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
     public Task<Result<PromptTurnResult>> ExecuteBufferedAsync(
         PingRequest request,
         ArcanumInvocationContext invocationContext,
-        bool hasIdempotencyKey,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext = null)
     {
@@ -30,11 +29,7 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
         TurnExecutionRequest turnRequest = new(
             request,
             invocationContext,
-            TurnResponseMode.Buffered,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: false,
-            hasIdempotencyKey,
-            AccountingHandle: TurnAccountingAmbient.Current);
+            TurnResponseMode.Buffered);
 
         return ExecuteBufferedCoreAsync(turnRequest, executionToken, auditContext);
     }
@@ -42,7 +37,6 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
     public IAsyncEnumerable<IntelligenceEvent> ExecuteIntelligenceStreamAsync(
         PingRequest request,
         ArcanumInvocationContext invocationContext,
-        bool hasIdempotencyKey,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext = null)
     {
@@ -51,11 +45,7 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
         TurnExecutionRequest turnRequest = new(
             request,
             invocationContext,
-            TurnResponseMode.Streaming,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: true,
-            hasIdempotencyKey,
-            AccountingHandle: TurnAccountingAmbient.Current);
+            TurnResponseMode.Streaming);
 
         return ExecuteIntelligenceStreamCoreAsync(turnRequest, executionToken, auditContext);
     }

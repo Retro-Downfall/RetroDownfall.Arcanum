@@ -14,57 +14,6 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class ManaPreflightTests
-{
-    private static ManaPreflight CreatePreflight() =>
-        new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
-
-    [Theory]
-    [InlineData(0, 3, true)]
-    [InlineData(3, 3, true)]
-    [InlineData(4, 3, false)]
-    public void ShouldSkipCompressionPreflight_RespectsMinMessages(int count, int min, bool expected)
-    {
-        List<MeAiChatMessage> messages = Enumerable.Range(0, count)
-            .Select(static i => new MeAiChatMessage(ChatRole.User, $"m{i}"))
-            .ToList();
-
-        bool skip = CreatePreflight().ShouldSkipCompressionPreflight(messages, min);
-
-        Assert.Equal(expected, skip);
-    }
-
-    [Fact]
-    public void CountTokens_IncludesOverheadAndMessageText()
-    {
-        Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding("o200k_base");
-
-        List<MeAiChatMessage> messages =
-        [
-            new MeAiChatMessage(ChatRole.User, "hello world"),
-            new MeAiChatMessage(ChatRole.Assistant, [new TextContent("assistant reply")]),
-        ];
-
-        int count = CreatePreflight().CountTokens(messages, tokenizer, perMessageOverheadTokens: 4, "o200k_base");
-
-        int textOnly = tokenizer.CountTokens("hello world") + tokenizer.CountTokens("assistant reply");
-
-        Assert.Equal(textOnly + 8, count);
-    }
-
-    [Fact]
-    public void CountTokens_EmptyMessages_ReturnsOverheadOnly()
-    {
-        Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding("o200k_base");
-
-        List<MeAiChatMessage> messages = [new MeAiChatMessage(ChatRole.User, string.Empty)];
-
-        int count = CreatePreflight().CountTokens(messages, tokenizer, perMessageOverheadTokens: 5, "o200k_base");
-
-        Assert.Equal(5, count);
-    }
-}
-
 public sealed class InferenceTokenizerResolverTests
 {
     [Fact]
