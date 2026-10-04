@@ -25,7 +25,7 @@ public static class ArcanumMasterKeyBootstrapper
 
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+            .PersistKeysToOwnerOnlyKeyRing();
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
