@@ -96,7 +96,7 @@ public static class LongRunningOperationRecoveryRegistry
                     "Idempotently release a stranded reservation when actual cost cannot be established, so "
                     + "the daily limit is not permanently consumed by a dead process.",
                 ManualRepairGuidance:
-                    "Check 'arcanum budget status' for outstanding reservations; releasing is safe and idempotent."),
+                    "Check 'arcanum budget' for outstanding reservations; releasing is safe and idempotent."),
 
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.Batch,
@@ -175,7 +175,7 @@ public static class LongRunningOperationRecoveryRegistry
                 RecoveryIntent:
                     "Re-scan blob metadata and reconcile plaintext, envelope, and replace-before-metadata states.",
                 ManualRepairGuidance:
-                    "Run 'arcanum key status' and re-run the migration; per-file state makes it resumable."),
+                    "Run 'arcanum data encryption status' and re-run 'arcanum data encryption migrate'; per-file state makes it resumable."),
 
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.BlobEncryptionKeyRotation,
@@ -187,7 +187,7 @@ public static class LongRunningOperationRecoveryRegistry
                 RecoveryIntent:
                     "Continue toward the active write key while retaining every still-referenced prior key.",
                 ManualRepairGuidance:
-                    "Run 'arcanum key status'; never delete a prior key until rotation reports no references to it."),
+                    "Run 'arcanum data encryption status'; never delete a prior key until rotation reports no references to it."),
 
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.BackupCreate,
@@ -211,7 +211,7 @@ public static class LongRunningOperationRecoveryRegistry
                 MaxCheckpointVersion: 2,
                 LongRunningOperationStartupPriority.Readiness,
                 RecoveryIntent: "Restart idempotently from the durable prune cursor; pruned rows are already gone.",
-                ManualRepairGuidance: "Re-run 'arcanum retention prune'; the cursor makes repetition safe."),
+                ManualRepairGuidance: "Re-run 'arcanum data prune --apply'; the cursor makes repetition safe."),
 
             // BeforeStateWrites since #118. The priority belongs to the kind rather than to a
             // checkpoint version, so the legacy version-0 and version-2 arms move with it and stay
@@ -232,7 +232,7 @@ public static class LongRunningOperationRecoveryRegistry
                     + "owner is rebuilt from the launch alone, whose phase authority is the authenticated journal "
                     + "beside the installation lock rather than this row, and whose admission stays closed until "
                     + "the reset is resumed or an operator resolves it.",
-                ManualRepairGuidance: "Inspect 'arcanum retention status' before re-applying the policy change."),
+                ManualRepairGuidance: "Inspect 'arcanum data retention show' before re-applying the policy change."),
 
             // Version 0 is the documented legacy arm and stays admitted: those rows carry no payload
             // at all and are restarted idempotently from durable quarantine state. Version 2 is the

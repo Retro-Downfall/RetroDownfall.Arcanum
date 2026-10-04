@@ -1,4 +1,10 @@
+using System.CommandLine;
+using System.CommandLine.Parsing;
 using System.Reflection;
+using System.Text.RegularExpressions;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -186,5 +192,53 @@ public sealed class LongRunningOperationRecoveryRegistryTests
     {
         Assert.False(LongRunningOperationRecoveryRegistry.Contains("not-a-real-kind"));
         Assert.Null(LongRunningOperationRecoveryRegistry.Find("not-a-real-kind"));
+    }
+
+    /// <summary>
+    /// R-086: repair guidance is the only text an operator reads once recovery has parked a row, so
+    /// a command it names that the CLI does not register sends them to an exit-2 usage error.
+    /// </summary>
+    [Fact]
+    public void ManualRepairGuidance_names_only_registered_cli_commands()
+    {
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        List<string> broken = [];
+
+        int checkedCommands = 0;
+
+        foreach (LongRunningOperationRecoveryDescriptor descriptor
+            in LongRunningOperationRecoveryRegistry.Descriptors.Values)
+        {
+            foreach (Match match in Regex.Matches(descriptor.ManualRepairGuidance, "'(arcanum [^']+)'"))
+            {
+                checkedCommands++;
+
+                string[] tokens = match.Groups[1].Value
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .Skip(1)
+                    .Select(static token => token.StartsWith('<') ? Guid.NewGuid().ToString("D") : token)
+                    .ToArray();
+
+                ParseResult parsed = root.Parse(tokens);
+
+                if (parsed.Errors.Count > 0)
+                {
+                    broken.Add($"{descriptor.Kind}: '{match.Groups[1].Value}' -> {parsed.Errors[0].Message}");
+                }
+            }
+        }
+
+        Assert.True(checkedCommands > 0);
+
+        Assert.Empty(broken);
     }
 }
