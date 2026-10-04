@@ -146,12 +146,31 @@ internal static class MemoryErasureEvidence
     /// and a Covenant-only catalog carries no Core metadata to read at all. Only a catalog that has the
     /// table must say which Core version it is, and missing or malformed metadata there still throws.
     /// </remarks>
+    /// <remarks>
+    /// <para>A positive answer is kept per native connection together with the catalog's change stamp,
+    /// and reused only while that stamp reads the same, so a repeated probe is one statement rather than
+    /// two. The stamp is the schema cookie (any DDL, by any connection), the data version (any commit by
+    /// another connection) and this connection's total change count (any write it has made, committed
+    /// or not), so neither the fingerprint table nor the recorded Core version can change between a
+    /// positive answer and its reuse. A negative answer is never kept: it is the cheap one, and the
+    /// catalog it describes is the one an upgrade is about to change.</para>
+    /// </remarks>
     internal static async Task<bool> IsInstalledAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(connection);
+
+        CatalogStamp stamp = await ReadCatalogStampAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+        SQLitePCL.sqlite3 handle = connection.Handle
+            ?? throw new InvalidOperationException("The connection has no open database handle.");
+
+        if (InstalledCatalogs.TryGetValue(handle, out InstalledCatalog? installed) && installed.Stamp == stamp)
+        {
+            return true;
+        }
 
         await using (SqliteCommand command = Command(
             connection,
@@ -164,8 +183,45 @@ internal static class MemoryErasureEvidence
             }
         }
 
-        return await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false)
+        bool current = await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false)
             >= CoreSchemaVersion;
+
+        if (current)
+        {
+            InstalledCatalogs.GetOrCreateValue(handle).Stamp = stamp;
+        }
+
+        return current;
+    }
+
+    /// <summary>The positive installation answers, per native connection, with the stamp each was given under.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SQLitePCL.sqlite3, InstalledCatalog> InstalledCatalogs = new();
+
+    /// <summary>The last stamp a positive installation answer was given under, for one native connection.</summary>
+    /// <remarks>A native connection is used by one caller at a time, so the slot needs no lock.</remarks>
+    private sealed class InstalledCatalog
+    {
+        internal CatalogStamp? Stamp { get; set; }
+    }
+
+    /// <summary>What has to read the same for a positive installation answer to still hold.</summary>
+    private sealed record CatalogStamp(long SchemaCookie, long DataVersion, long TotalChanges);
+
+    private static async Task<CatalogStamp> ReadCatalogStampAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = Command(
+            connection,
+            transaction,
+            "SELECT (SELECT schema_version FROM pragma_schema_version), (SELECT data_version FROM pragma_data_version), total_changes();");
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new CatalogStamp(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2))
+            : throw new InvalidDataException("The catalog change stamp could not be read.");
     }
 
     /// <summary>Whether <paramref name="store"/> holds any fingerprint at all, under any key.</summary>

@@ -65,6 +65,66 @@ public sealed class MemoryErasureEvidenceTests : IClassFixture<GrimoireFixture>,
         }
     }
 
+    /// <summary>
+    /// A probe repeated on a catalog nothing has changed runs one statement, not the table check and the
+    /// Core version read again; and a write between probes is seen.
+    /// </summary>
+    /// <remarks>
+    /// Every guard probe used to ask both questions each time, which is two statements before the one
+    /// that answers. The positive answer is reused only while the catalog's change stamp is unchanged,
+    /// so a Core version recorded below 13 on this same connection after a positive probe still answers
+    /// "no evidence".
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_repeated_probe_on_an_unchanged_catalog_runs_one_statement()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await Connection.OpenAsync(Token);
+
+        Assert.True(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+
+        Assert.Equal(1, await CountStatementsAsync(
+            async () => Assert.True(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token))));
+
+        await ExecuteAsync(
+            Connection,
+            "UPDATE grimoire_feature_schemas SET SchemaVersion = 12 WHERE FamilyCode = 0 AND TransactionTierCode = 0;");
+
+        Assert.False(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+    }
+
+    /// <summary>
+    /// The top-level statements a probe runs. SQLite also traces the nested statement behind a
+    /// table-valued pragma, as a <c>--</c> comment line, and those are not separate round trips.
+    /// </summary>
+    private async Task<int> CountStatementsAsync(Func<Task> probe)
+    {
+        int statements = 0;
+
+        SQLitePCL.raw.sqlite3_trace(
+            Connection.Handle,
+            (SQLitePCL.strdelegate_trace)((_, statement) =>
+            {
+                if (!statement.StartsWith("--", StringComparison.Ordinal))
+                {
+                    statements++;
+                }
+            }),
+            null);
+
+        try
+        {
+            await probe();
+        }
+        finally
+        {
+            SQLitePCL.raw.sqlite3_trace(Connection.Handle, (SQLitePCL.delegate_trace?)null, null);
+        }
+
+        return statements;
+    }
+
     [SkippableFact]
     public async Task Fingerprint_rows_round_trip_by_primary_key_and_store()
     {
