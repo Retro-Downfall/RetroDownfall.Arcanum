@@ -81,8 +81,6 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         Assert.Same(repository, first.ServiceProvider.GetRequiredService<ISessionAttachmentIndexWriter>());
 
-        Assert.Same(repository, first.ServiceProvider.GetRequiredService<ISessionAttachmentIndexMaintenance>());
-
         Assert.NotNull(first.ServiceProvider.GetRequiredService<SessionAttachmentIndexProcessor>());
 
         await using AsyncServiceScope second = factory.Services.CreateAsyncScope();

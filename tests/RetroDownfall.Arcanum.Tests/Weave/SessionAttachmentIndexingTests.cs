@@ -268,19 +268,20 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The index's purge of a session empties its rows from a plain vector mirror whatever the
-    /// accelerator flag says, and leaves another session's rows alone.
+    /// Abandoning an attachment's staged generation empties its rows from a plain vector mirror whatever
+    /// the accelerator flag says, and leaves another attachment's rows alone.
     /// </summary>
     /// <remarks>
     /// The mirror holds the embedding itself, so a row left behind is attachment content left behind. A
     /// build with no accelerator would otherwise skip a mirror an earlier build filled. The flag is off
     /// here, which is the shipping runtime, and the rows are seeded because no production path of this
-    /// build writes them. Entered at the index's own port, which is where the mirror is handled; the
-    /// repository no longer deletes a whole session.
+    /// build writes them. Entered at the index's own port, through the path the indexer takes when it
+    /// gives up on an attachment: marking it without an index removes every generation that was never
+    /// published, and the mirror rows of its chunks with them.
     /// </remarks>
     [SkippableFact]
 
-    public async Task DeleteForSessionInAmbientTransactionAsync_EmptiesItsPlainVectorMirrorRowsWhileTheFlagIsOff()
+    public async Task MarkWithoutIndexAsync_EmptiesAStagedGenerationsPlainVectorMirrorRowsWhileTheFlagIsOff()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -289,7 +290,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
             sessionId: null,
-            prompt: "index then purge",
+            prompt: "stage then abandon",
             model: "test-model",
             cancellationToken: CancellationToken.None);
 
@@ -298,40 +299,36 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             "notes",
             "notes.txt",
             "text/plain",
-            "purge me");
+            "abandon me");
 
-        _ = await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
-            new(attachment.Id, sessionId),
-            CancellationToken.None);
+        string[] chunkIds = await StageUnpublishedGenerationAsync(attachment);
 
-        SessionAttachmentIndexedChunk[] chunks = await _index!.GetChunksForAttachmentAsync(
-            attachment.Id,
-            CancellationToken.None);
-
-        Assert.NotEmpty(chunks);
+        Assert.NotEmpty(chunkIds);
 
         await CreatePlainVectorMirrorAsync();
 
-        foreach (SessionAttachmentIndexedChunk chunk in chunks)
+        foreach (string chunkId in chunkIds)
         {
 
-            await SeedVectorMirrorRowAsync(chunk.ChunkId);
+            await SeedVectorMirrorRowAsync(chunkId);
 
         }
 
-        await SeedVectorMirrorRowAsync("another-sessions-chunk");
+        await SeedVectorMirrorRowAsync("another-attachments-chunk");
 
-        await PurgeIndexForSessionAsync(sessionId);
+        await AbandonIndexAsync(attachment);
+
+        Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM session_attachment_chunks;"));
 
         Assert.Equal(
             0,
             await CountAsync(
-                "SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId <> 'another-sessions-chunk';"));
+                "SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId <> 'another-attachments-chunk';"));
 
         Assert.Equal(
             1,
             await CountAsync(
-                "SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId = 'another-sessions-chunk';"));
+                "SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId = 'another-attachments-chunk';"));
 
     }
 
@@ -410,8 +407,8 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped, and the index's purge of a
-    /// session still succeeds.
+    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped, and abandoning an attachment's
+    /// staged generation still succeeds.
     /// </summary>
     /// <remarks>
     /// An FTS5 virtual table stands in for it, because it records the same <c>CREATE VIRTUAL TABLE</c>
@@ -420,7 +417,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
     /// </remarks>
     [SkippableFact]
 
-    public async Task DeleteForSessionInAmbientTransactionAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
+    public async Task MarkWithoutIndexAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -429,7 +426,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
             sessionId: null,
-            prompt: "index then purge",
+            prompt: "stage then abandon",
             model: "test-model",
             cancellationToken: CancellationToken.None);
 
@@ -438,41 +435,101 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             "notes",
             "notes.txt",
             "text/plain",
-            "purge me");
+            "abandon me");
 
-        _ = await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
-            new(attachment.Id, sessionId),
-            CancellationToken.None);
+        string[] chunkIds = await StageUnpublishedGenerationAsync(attachment);
 
-        string chunkId = (await _index!.GetChunksForAttachmentAsync(
-            attachment.Id,
-            CancellationToken.None))[0].ChunkId;
+        Assert.NotEmpty(chunkIds);
 
         await ExecuteAsync(
             "CREATE VIRTUAL TABLE session_attachment_embeddings_vec USING fts5(ChunkId, Embedding);");
 
-        await SeedVectorMirrorRowAsync(chunkId);
+        await SeedVectorMirrorRowAsync(chunkIds[0]);
 
-        await PurgeIndexForSessionAsync(sessionId);
+        await AbandonIndexAsync(attachment);
 
-        Assert.Empty(await _index.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+        Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM session_attachment_chunks;"));
 
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM session_attachment_embeddings_vec;"));
 
     }
 
-    /// <summary>Runs the attachment index's purge of one session in a transaction, as its caller did.</summary>
-    private async Task PurgeIndexForSessionAsync(Guid sessionId)
+    /// <summary>
+    /// Writes one chunk of a generation and stops before publication, which is the checkpointed state the
+    /// indexer leaves behind whenever a batch is interrupted, and returns the chunk identities it wrote.
+    /// </summary>
+    private async Task<string[]> StageUnpublishedGenerationAsync(SessionAttachmentRecord attachment)
     {
 
-        await using IDbContextTransaction transaction = await _db!.Database
-            .BeginTransactionAsync(CancellationToken.None);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        await _index!.DeleteForSessionInAmbientTransactionAsync(sessionId, CancellationToken.None);
+        await _index!.SetPendingAsync(attachment, 1, CancellationToken.None);
 
-        await transaction.CommitAsync(CancellationToken.None);
+        SessionAttachmentIndexCheckpoint checkpoint = await _index.BeginReplaceAsync(
+            attachment,
+            Dimensions,
+            "test-pipeline",
+            now,
+            CancellationToken.None);
+
+        float[] vector = new float[Dimensions];
+
+        vector[0] = 1f;
+
+        await _index.AppendReplaceBatchAsync(
+            attachment,
+            checkpoint.GenerationId,
+            [new SessionAttachmentTextChunk(0, 0, 5, 1, 1, "alpha")],
+            [new Embedding<float>(vector)],
+            Dimensions,
+            now,
+            now,
+            CancellationToken.None);
+
+        if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
+        {
+
+            await _db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        await using System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = "SELECT ChunkId FROM session_attachment_chunks WHERE AttachmentId = $attachment;";
+
+        System.Data.Common.DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "$attachment";
+
+        parameter.Value = attachment.Id.ToString().ToUpperInvariant();
+
+        command.Parameters.Add(parameter);
+
+        List<string> chunkIds = [];
+
+        await using System.Data.Common.DbDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+        while (await reader.ReadAsync(CancellationToken.None))
+        {
+
+            chunkIds.Add(reader.GetString(0));
+
+        }
+
+        return [.. chunkIds];
 
     }
+
+    /// <summary>Gives up on the attachment's index, as the indexer does, which removes what was never published.</summary>
+    private Task AbandonIndexAsync(SessionAttachmentRecord attachment) =>
+        _index!.MarkWithoutIndexAsync(
+            attachment.Id,
+            attachment.ContentSha256,
+            SessionAttachmentIndexStatus.Failed,
+            attempt: 1,
+            failureReason: "abandoned",
+            extractedAt: null,
+            CancellationToken.None);
 
     private GrimoireRepository CreateRepository() =>
         new(
@@ -1403,11 +1460,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             throw new NotSupportedException();
 
         public Task<IDisposable> AcquireSessionGateAsync(
-            Guid sessionId,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task DeleteRowsForSessionInAmbientTransactionAsync(
             Guid sessionId,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();

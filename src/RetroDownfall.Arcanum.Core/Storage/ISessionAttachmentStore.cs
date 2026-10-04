@@ -341,13 +341,6 @@ public interface ISessionAttachmentStore
     Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Deletes all <c>SessionAttachments</c> rows for <paramref name="sessionId"/>.
-    /// Must be called while <see cref="AcquireSessionGateAsync"/> is held and an EF ambient
-    /// transaction is open on the shared <c>ArcanumDbContext</c> connection (raw SQL enlists).
-    /// </summary>
-    Task DeleteRowsForSessionInAmbientTransactionAsync(Guid sessionId, CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Best-effort delete of <c>attachments/{sessionId}/</c> using <see cref="CancellationToken.None"/>.
     /// Returns <c>false</c> when the directory could not be removed (logged by caller / recovered by reconcile).
     /// </summary>

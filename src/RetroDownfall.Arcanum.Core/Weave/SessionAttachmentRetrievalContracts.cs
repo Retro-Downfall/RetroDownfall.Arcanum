@@ -63,12 +63,3 @@ public interface ISessionAttachmentRetrievalService
         CancellationToken cancellationToken);
 
 }
-
-public interface ISessionAttachmentIndexMaintenance
-{
-
-    Task DeleteForSessionInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken);
-
-}

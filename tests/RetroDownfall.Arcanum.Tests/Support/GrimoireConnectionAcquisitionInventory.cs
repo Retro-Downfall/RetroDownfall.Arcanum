@@ -1377,13 +1377,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "DeleteForSessionInAmbientTransactionAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "UpsertStateAsync(8)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
@@ -2582,13 +2575,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs", "DataRetentionService", "MutationTargetExistsAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.Lifecycle.cs", "SessionAttachmentStore", "DeleteRowsForSessionInAmbientTransactionAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,

@@ -148,11 +148,6 @@ internal sealed class NoOpSessionAttachmentStore(
 
     }
 
-    public Task DeleteRowsForSessionInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
-
     public bool TryDeleteSessionDirectory(Guid sessionId) => true;
 
     public Task ClearEntryIdsInAmbientTransactionAsync(

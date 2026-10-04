@@ -1082,8 +1082,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SessionAttachmentIndexRepository>();
         services.AddScoped<ISessionAttachmentIndexWriter>(
             static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());
-        services.AddScoped<ISessionAttachmentIndexMaintenance>(
-            static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());
         services.AddScoped<SessionAttachmentIndexProcessor>();
         services.AddScoped<ISessionAttachmentRetrievalService, SessionAttachmentRetrievalService>();
         // Phase 7 — read-only RAG / The Weave inspector over the existing workspace chunk tables. Scoped

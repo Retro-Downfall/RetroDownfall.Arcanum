@@ -113,7 +113,7 @@ internal interface ISessionAttachmentIndexWriter
 
 internal sealed class SessionAttachmentIndexRepository(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability) : ISessionAttachmentIndexWriter, ISessionAttachmentIndexMaintenance
+    WeaveIndexAvailability availability) : ISessionAttachmentIndexWriter
 {
     /// <summary>The accelerator's mirror of the chunk embeddings, which no schema file installs.</summary>
     private const string VectorMirrorTable = "session_attachment_embeddings_vec";
@@ -938,52 +938,6 @@ internal sealed class SessionAttachmentIndexRepository(
             .ToArray();
     }
 
-    public async Task DeleteForSessionInAmbientTransactionAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        if (db.Database.CurrentTransaction is null)
-        {
-            throw new InvalidOperationException("Attachment index purge requires an ambient transaction.");
-        }
-
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-        DbTransaction transaction = db.Database.CurrentTransaction.GetDbTransaction();
-
-        List<string> chunkIds = await GetChunkIdsForSessionAsync(
-            connection,
-            transaction,
-            sessionId,
-            cancellationToken).ConfigureAwait(false);
-
-        await DeleteVecRowsAsync(connection, transaction, chunkIds, cancellationToken).ConfigureAwait(false);
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        // Two parameters for one Session, because the two columns hold it in different spellings on
-        // purpose. A chunk's own SessionId is the tapestry's live scope-id set and stays as the indexer
-        // wrote it; SessionAttachments.SessionId is canonical. One parameter served both until this
-        // split, and because the two predicates are joined by OR the failure would have been a silent
-        // under-delete leaving orphaned chunks behind, not a loud one.
-        command.CommandText =
-            """
-            DELETE FROM session_attachment_chunks
-            WHERE SessionId = @chunkSessionId
-               OR AttachmentId IN (
-                   SELECT Id FROM SessionAttachments WHERE SessionId = @attachmentSessionId
-               )
-            """;
-
-        AddParameter(command, "@chunkSessionId", sessionId.ToString());
-
-        AddParameter(command, "@attachmentSessionId", sessionId.ToString().ToUpperInvariant());
-
-        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     private static async Task<string?> GetPublishedGenerationIdAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -1353,44 +1307,6 @@ internal sealed class SessionAttachmentIndexRepository(
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-    }
-
-    private static async Task<List<string>> GetChunkIdsForSessionAsync(
-        DbConnection connection,
-        DbTransaction transaction,
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        await using DbCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        // Split for the same reason the delete above it is, and it has to agree with that delete row for
-        // row: this is what collects the vector rows the delete is about to orphan.
-        command.CommandText =
-            """
-            SELECT ChunkId
-            FROM session_attachment_chunks
-            WHERE SessionId = @chunkSessionId
-               OR AttachmentId IN (
-                   SELECT Id FROM SessionAttachments WHERE SessionId = @attachmentSessionId
-               )
-            """;
-
-        AddParameter(command, "@chunkSessionId", sessionId.ToString());
-
-        AddParameter(command, "@attachmentSessionId", sessionId.ToString().ToUpperInvariant());
-
-        List<string> ids = [];
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            ids.Add(reader.GetString(0));
-        }
-
-        return ids;
     }
 
     private static SessionAttachmentIndexState ReadState(DbDataReader reader) => new(
