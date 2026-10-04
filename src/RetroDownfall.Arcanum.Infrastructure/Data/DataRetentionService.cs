@@ -6146,7 +6146,10 @@ internal sealed partial class DataRetentionService(
     /// dispatches through the purge boundary; this is the bulk twin that did not.
     ///
     /// <para>Asked inside that transaction, about the snapshot it read, so the Entries asked about are
-    /// the Entries it removes and no label can be committed between an answer and the delete.</para>
+    /// the Entries it removes and no label can be committed between an answer and the delete. Asked as
+    /// one batched question, which the guard answers in bounded chunks, because the transaction already
+    /// holds the write lock every other writer waits for and a point query per Entry would hold it for
+    /// as long as the Session has Entries.</para>
     /// </remarks>
     private async Task RefuseLabeledSessionEntriesAsync(
         SessionPlanSnapshot snapshot,
@@ -6154,19 +6157,18 @@ internal sealed partial class DataRetentionService(
         DbTransaction transaction,
         CancellationToken cancellationToken)
     {
-        foreach (Guid entryId in snapshot.EntryIds)
-        {
-            Result unlabeled = await EnsureArtifactUnlabeledAsync(
+        Result unlabeled = await labeledArtifactGuard
+            .EnsureAllUnlabeledAsync(
                 SensitiveArtifactKind.AssistantEntry,
-                entryId,
+                snapshot.EntryIds,
                 connection,
                 transaction,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken)
+            .ConfigureAwait(false);
 
-            if (unlabeled.IsFailure)
-            {
-                throw new RetentionCovenantLabelException(unlabeled.Error);
-            }
+        if (unlabeled.IsFailure)
+        {
+            throw new RetentionCovenantLabelException(unlabeled.Error);
         }
     }
 

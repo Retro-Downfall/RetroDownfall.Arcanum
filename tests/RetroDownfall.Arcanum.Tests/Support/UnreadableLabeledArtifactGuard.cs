@@ -45,6 +45,14 @@ internal sealed class UnreadableLabeledArtifactGuard : ICovenantLabeledArtifactT
         CancellationToken cancellationToken = default) =>
         Refuse();
 
+    public ValueTask<Result> EnsureAllUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        IReadOnlyCollection<Guid> artifactIds,
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken = default) =>
+        Refuse();
+
     public ValueTask<Result> EnsureNoneLabeledAsync(
         SensitiveArtifactKind kind,
         DbConnection connection,

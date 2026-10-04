@@ -93,6 +93,48 @@ internal sealed class CovenantLabeledArtifactGuard(
 
     }
 
+    public async ValueTask<Result> EnsureAllUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        IReadOnlyCollection<Guid> artifactIds,
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken = default)
+    {
+
+        RequireTransactionOn(connection, transaction);
+
+        ArgumentNullException.ThrowIfNull(artifactIds);
+
+        try
+        {
+
+            foreach (Guid[] chunk in artifactIds.Chunk(IdentityChunkSize))
+            {
+
+                Result answer = await AnyLabeledAmongAsync(connection, transaction, kind, chunk, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (answer.IsFailure)
+                {
+
+                    return answer;
+
+                }
+
+            }
+
+            return Result.Success();
+
+        }
+        catch (SqliteException exception)
+        {
+
+            return Unreadable(kind, exception);
+
+        }
+
+    }
+
     public async ValueTask<Result> EnsureNoneLabeledAsync(
         SensitiveArtifactKind kind,
         DbConnection connection,
@@ -128,6 +170,74 @@ internal sealed class CovenantLabeledArtifactGuard(
         }
 
         return label.Value is null
+            ? Result.Success()
+            : Refusal(kind);
+
+    }
+
+    /// <summary>
+    /// How many identities one batched question names, so a Session of any size is asked in bounded
+    /// statements well inside SQLite's limit on bound parameters.
+    /// </summary>
+    private const int IdentityChunkSize = 256;
+
+    private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
+
+    /// <summary>
+    /// Whether any of one chunk of identities carries a label of this kind, by the unique
+    /// (kind, artifact) index, reading inside the caller's transaction.
+    /// </summary>
+    private static async Task<Result> AnyLabeledAmongAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        SensitiveArtifactKind kind,
+        Guid[] artifactIds,
+        CancellationToken cancellationToken)
+    {
+
+        if (artifactIds.Length == 0)
+        {
+
+            return Result.Success();
+
+        }
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        string[] names = [.. artifactIds.Select(static (_, index) => $"$artifact{index}")];
+
+        command.CommandText = $"""
+            SELECT EXISTS(
+                SELECT 1 FROM artifact_sensitivity
+                WHERE ArtifactKindCode = $kind AND ArtifactId IN ({string.Join(", ", names)}));
+            """;
+
+        DbParameter kindParameter = command.CreateParameter();
+
+        kindParameter.ParameterName = "$kind";
+
+        kindParameter.Value = (long)kind;
+
+        _ = command.Parameters.Add(kindParameter);
+
+        for (int index = 0; index < artifactIds.Length; index++)
+        {
+
+            DbParameter parameter = command.CreateParameter();
+
+            parameter.ParameterName = names[index];
+
+            parameter.Value = Format(artifactIds[index]);
+
+            _ = command.Parameters.Add(parameter);
+
+        }
+
+        object? any = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return any is 0L or null or DBNull
             ? Result.Success()
             : Refusal(kind);
 

@@ -154,6 +154,22 @@ internal sealed class LabelIntrusionGuard(ICovenantLabeledArtifactTransactionGua
 
     }
 
+    public async ValueTask<Result> EnsureAllUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        IReadOnlyCollection<Guid> artifactIds,
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken = default)
+    {
+
+        Result answer = await inner.EnsureAllUnlabeledAsync(kind, artifactIds, connection, transaction, cancellationToken).ConfigureAwait(false);
+
+        await intruder.IntrudeAsync(askedInsideTransaction: true, cancellationToken).ConfigureAwait(false);
+
+        return answer;
+
+    }
+
     public async ValueTask<Result> EnsureNoneLabeledAsync(
         SensitiveArtifactKind kind,
         DbConnection connection,

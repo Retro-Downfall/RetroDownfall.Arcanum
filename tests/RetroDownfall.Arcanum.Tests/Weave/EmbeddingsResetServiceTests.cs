@@ -633,6 +633,14 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             inner.EnsureUnlabeledAsync(kind, artifactId, connection, transaction, cancellationToken);
 
+        public ValueTask<Result> EnsureAllUnlabeledAsync(
+            SensitiveArtifactKind kind,
+            IReadOnlyCollection<Guid> artifactIds,
+            DbConnection connection,
+            DbTransaction transaction,
+            CancellationToken cancellationToken = default) =>
+            inner.EnsureAllUnlabeledAsync(kind, artifactIds, connection, transaction, cancellationToken);
+
         public ValueTask<Result> EnsureNoneLabeledAsync(
             SensitiveArtifactKind kind,
             DbConnection connection,

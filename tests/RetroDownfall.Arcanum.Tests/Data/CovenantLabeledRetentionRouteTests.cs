@@ -694,6 +694,137 @@ public sealed class CovenantLabeledRetentionRouteTests
     }
 
     /// <summary>
+    /// A Session delete asks the label guard about its Entries as one batched question, not once per Entry,
+    /// and still removes the Session and every Entry.
+    /// </summary>
+    /// <remarks>
+    /// The questions are asked while the transaction holds the write lock every other writer needs, so one
+    /// point query per Entry made a Session with tens of thousands of them a long wait for everything
+    /// else. The delete names all six hundred in one call and never asks about one on its own; the guard
+    /// splits that call into bounded statements, which the guard's own tests pin across chunk boundaries.
+    /// The real answers come back unchanged.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_session_delete_asks_the_label_guard_in_chunks_not_once_per_entry()
+    {
+
+        RequireSqlCipher();
+
+        GuardQuestionCounts counts = new();
+
+        await using ArcanumWebApplicationFactory factory = HostWithCountingGuard(counts);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid[] entryIds;
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+
+            SqliteConnection connection = await OpenAsync(scope);
+
+            await SeedSessionAsync(connection, sessionId);
+
+            entryIds = await SeedEntriesAsync(connection, sessionId, 600);
+
+        }
+
+        HttpResponseMessage deleted = await client.DeleteAsync($"/api/data/sessions/{sessionId:D}");
+
+        ApiResponse<DataRetentionApplyResult> body = await ReadAsync(deleted);
+
+        Assert.True(body.IsSuccess, body.Error?.Message);
+
+        // One question about every Entry the delete removes, and none about a single Entry.
+        Assert.Equal(0, counts.PerArtifact);
+
+        Assert.Equal(1, counts.Batches);
+
+        Assert.Equal(600, counts.BatchedArtifacts);
+
+        Assert.Equal(0, counts.OutsideTransaction);
+
+        await using AsyncServiceScope after = factory.Services.CreateAsyncScope();
+
+        SqliteConnection verify = await OpenAsync(after);
+
+        Assert.Equal(0, await CountAsync(verify, "Entries", "Id", entryIds[0]));
+
+        Assert.Equal(0, await CountAsync(verify, "Sessions", "Id", sessionId));
+
+    }
+
+    /// <summary>
+    /// One labelled Entry refuses the Session delete wherever it sits among the Session's Entries, and
+    /// nothing is removed.
+    /// </summary>
+    /// <remarks>
+    /// The first and the last of six hundred, so whichever order the delete reads its Entries in, one of
+    /// them lands in a later chunk than the first. A check that asked only the first chunk would pass the
+    /// delete for that one.
+    /// </remarks>
+    [SkippableTheory]
+
+    [InlineData(0)]
+
+    [InlineData(599)]
+
+    public async Task A_labeled_entry_in_any_chunk_refuses_the_session_delete_route(int position)
+    {
+
+        RequireSqlCipher();
+
+        GuardQuestionCounts counts = new();
+
+        await using ArcanumWebApplicationFactory factory = HostWithCountingGuard(counts);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid[] entryIds;
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+
+            SqliteConnection connection = await OpenAsync(scope);
+
+            await SeedSessionAsync(connection, sessionId);
+
+            entryIds = await SeedEntriesAsync(connection, sessionId, 600);
+
+            await LabelAsync(
+                scope,
+                SensitiveArtifactKind.AssistantEntry,
+                entryIds[position],
+                sessionId);
+
+        }
+
+        HttpResponseMessage deleted = await client.DeleteAsync($"/api/data/sessions/{sessionId:D}");
+
+        ApiResponse<DataRetentionApplyResult> body = await ReadAsync(deleted);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, body.Error?.Code);
+
+        await using AsyncServiceScope after = factory.Services.CreateAsyncScope();
+
+        SqliteConnection verify = await OpenAsync(after);
+
+        Assert.Equal(1, await CountAsync(verify, "Entries", "Id", entryIds[position]));
+
+        Assert.Equal(1, await CountAsync(verify, "Sessions", "Id", sessionId));
+
+        Assert.Equal(1, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", entryIds[position]));
+
+    }
+
+    /// <summary>
     /// Seeds one unlabelled memory or entry the operation deletes, runs the operation with a second
     /// writer trying to label it right after the guard answers, and asserts that writer was blocked.
     /// </summary>
@@ -789,6 +920,26 @@ public sealed class CovenantLabeledRetentionRouteTests
                     static _ => new UnreadableLabeledArtifactGuard()),
         };
 
+    /// <summary>
+    /// A host whose labelled-artifact guard is the real one, counting every question it is asked.
+    /// </summary>
+    private static ArcanumWebApplicationFactory HostWithCountingGuard(GuardQuestionCounts counts) =>
+        new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                Func<IServiceProvider, object> real = services
+                    .Last(static descriptor => descriptor.ServiceType == typeof(ICovenantLabeledArtifactTransactionGuard))
+                    .ImplementationFactory
+                    ?? throw new InvalidOperationException("The guard is registered by a factory.");
+
+                services.AddScoped<ICovenantLabeledArtifactTransactionGuard>(
+                    sp => new CountingLabeledArtifactGuard((ICovenantLabeledArtifactTransactionGuard)real(sp), counts));
+
+            },
+        };
+
     private static async Task<SqliteConnection> OpenAsync(AsyncServiceScope scope)
     {
 
@@ -828,7 +979,8 @@ public sealed class CovenantLabeledRetentionRouteTests
     private static async Task SeedEntryAsync(
         SqliteConnection connection,
         Guid sessionId,
-        Guid entryId)
+        Guid entryId,
+        long sequence = 1)
     {
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -836,7 +988,7 @@ public sealed class CovenantLabeledRetentionRouteTests
         command.CommandText = """
             INSERT INTO "Entries" (
                 "Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence", "IsPinned")
-            VALUES ($id, $session, 2, 'labelled assistant content', 'test-model', $created, 1, 0);
+            VALUES ($id, $session, 2, 'labelled assistant content', 'test-model', $created, $sequence, 0);
             """;
 
         _ = command.Parameters.AddWithValue("$id", Canonical(entryId));
@@ -845,7 +997,33 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         _ = command.Parameters.AddWithValue("$created", Backdated);
 
+        _ = command.Parameters.AddWithValue("$sequence", sequence);
+
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    /// <summary>
+    /// Seeds <paramref name="count"/> assistant Entries in one Session, in sequence order, in one
+    /// transaction, and returns their identities in that order.
+    /// </summary>
+    private static async Task<Guid[]> SeedEntriesAsync(SqliteConnection connection, Guid sessionId, int count)
+    {
+
+        Guid[] ids = [.. Enumerable.Range(0, count).Select(static _ => Guid.NewGuid())];
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        for (int index = 0; index < ids.Length; index++)
+        {
+
+            await SeedEntryAsync(connection, sessionId, ids[index], index + 1L);
+
+        }
+
+        await transaction.CommitAsync(CancellationToken.None);
+
+        return ids;
 
     }
 

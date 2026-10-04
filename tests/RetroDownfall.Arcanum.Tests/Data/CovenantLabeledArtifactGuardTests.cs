@@ -298,6 +298,206 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A set of artifacts none of which is labelled passes the batched check, across more than one chunk.
+    /// </summary>
+    /// <remarks>
+    /// Six hundred identities is two full chunks and a remainder, so a check that stopped after the first
+    /// chunk, or that bound too many parameters for one statement, shows up here rather than on a Session
+    /// of a few Entries.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_set_with_no_labeled_member_passes_the_batched_check_across_chunks()
+    {
+
+        RequireSqlCipher();
+
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
+
+        Guid[] ids = [.. Enumerable.Range(0, 600).Select(static _ => Guid.NewGuid())];
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        Result answer = await guard.EnsureAllUnlabeledAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            ids,
+            transaction.Connection!,
+            transaction,
+            CancellationToken.None);
+
+        Assert.True(answer.IsSuccess);
+
+    }
+
+    /// <summary>
+    /// One labelled member refuses the batched check wherever it sits in the set, including either side of
+    /// a chunk boundary.
+    /// </summary>
+    /// <remarks>
+    /// The positions are the first member, the last of the first chunk, the first of the second, and the
+    /// last of the set. A check that read only some chunks, or that dropped a member when it split the
+    /// set, would pass the one position it never asked about.
+    /// </remarks>
+    [SkippableTheory]
+
+    [InlineData(0)]
+
+    [InlineData(255)]
+
+    [InlineData(256)]
+
+    [InlineData(599)]
+
+    public async Task A_labeled_member_anywhere_in_the_set_refuses_the_batched_check(int position)
+    {
+
+        RequireSqlCipher();
+
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
+
+        Guid[] ids = [.. Enumerable.Range(0, 600).Select(static _ => Guid.NewGuid())];
+
+        await SeedLabelAsync(SensitiveArtifactKind.AssistantEntry, ids[position], CancellationToken.None);
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        Result refused = await guard.EnsureAllUnlabeledAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            ids,
+            transaction.Connection!,
+            transaction,
+            CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+        // The refusal names the boundary and never the artifact, as the per-artifact form's does.
+        Assert.Contains("purge boundary", refused.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(ids[position].ToString("D"), refused.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    /// <summary>
+    /// The batched check is per kind and per identity: a label of another kind on one of the identities,
+    /// or a label on an identity that is not in the set, does not refuse it.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task The_batched_check_ignores_another_kind_and_an_identity_outside_the_set()
+    {
+
+        RequireSqlCipher();
+
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
+
+        Guid[] ids = [.. Enumerable.Range(0, 3).Select(static _ => Guid.NewGuid())];
+
+        await SeedLabelAsync(SensitiveArtifactKind.Saga, ids[1], CancellationToken.None);
+
+        await SeedLabelAsync(SensitiveArtifactKind.AssistantEntry, Guid.NewGuid(), CancellationToken.None);
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        Result answer = await guard.EnsureAllUnlabeledAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            ids,
+            transaction.Connection!,
+            transaction,
+            CancellationToken.None);
+
+        Assert.True(answer.IsSuccess);
+
+        Result other = await guard.EnsureAllUnlabeledAsync(
+            SensitiveArtifactKind.Saga,
+            ids,
+            transaction.Connection!,
+            transaction,
+            CancellationToken.None);
+
+        Assert.True(other.IsFailure);
+
+    }
+
+    /// <summary>
+    /// A label the caller's own transaction wrote and has not committed is seen by the batched check made
+    /// in it.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task A_label_written_in_the_callers_transaction_is_seen_by_the_batched_check()
+    {
+
+        RequireSqlCipher();
+
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
+
+        Guid[] ids = [.. Enumerable.Range(0, 5).Select(static _ => Guid.NewGuid())];
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        Assert.True(
+            (await guard.EnsureAllUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, ids, transaction.Connection!, transaction, CancellationToken.None)).IsSuccess);
+
+        await SeedLabelAsync(SensitiveArtifactKind.AssistantEntry, ids[3], CancellationToken.None, transaction);
+
+        Assert.True(
+            (await guard.EnsureAllUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, ids, transaction.Connection!, transaction, CancellationToken.None)).IsFailure);
+
+    }
+
+    /// <summary>
+    /// A label table that cannot be read refuses the batched check with <c>Covenant.Unavailable</c>, and an
+    /// empty set passes without reading it at all.
+    /// </summary>
+    /// <remarks>
+    /// The same real failure the other arms are driven with: a temporary table of the same name shadows the
+    /// label table, so the read fails on a column it does not have. The empty set asks nothing, so it has
+    /// nothing to be unable to read.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task An_unreadable_label_table_refuses_the_batched_check_and_an_empty_set_passes()
+    {
+
+        RequireSqlCipher();
+
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
+
+        Guid artifactId = Guid.NewGuid();
+
+        await UnreadableLabelTableAsync();
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+        Result refused = await guard.EnsureAllUnlabeledAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            [artifactId],
+            transaction.Connection!,
+            transaction,
+            CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
+
+        Assert.DoesNotContain(artifactId.ToString("D"), refused.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Result empty = await guard.EnsureAllUnlabeledAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            [],
+            transaction.Connection!,
+            transaction,
+            CancellationToken.None);
+
+        Assert.True(empty.IsSuccess);
+
+    }
+
+    /// <summary>
     /// A transaction that is not on the connection handed alongside it is a caller's mistake, refused
     /// before anything is read.
     /// </summary>
@@ -325,6 +525,9 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         _ = await Assert.ThrowsAsync<ArgumentException>(async () =>
             await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, Guid.NewGuid(), connection, foreign, CancellationToken.None));
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await guard.EnsureAllUnlabeledAsync(SensitiveArtifactKind.Saga, [Guid.NewGuid()], connection, foreign, CancellationToken.None));
 
         _ = await Assert.ThrowsAsync<ArgumentException>(async () =>
             await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, connection, foreign, CancellationToken.None));

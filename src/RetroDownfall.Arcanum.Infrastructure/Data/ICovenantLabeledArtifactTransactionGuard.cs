@@ -45,6 +45,28 @@ internal interface ICovenantLabeledArtifactTransactionGuard : ICovenantLabeledAr
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Confirms none of the named artifacts of one kind carries a live label, reading inside the
+    /// caller's write transaction.
+    /// </summary>
+    /// <remarks>
+    /// The batched form of the per-artifact question, for a delete that removes many artifacts of one
+    /// kind together: a Session delete asks about every Entry it takes with it. It answers in chunks of
+    /// identities inside the same transaction, so the answer and the delete are still one moment, and it
+    /// asks once per chunk where the per-artifact form asks once per artifact — which matters here because
+    /// the transaction already holds the write lock every other writer waits for. Refused as the
+    /// per-artifact form is: a label on any of them is <c>Covenant.ForbiddenAuthority</c>, and a label
+    /// table that cannot be read is <c>Covenant.Unavailable</c>. A row that exists is a label; this form
+    /// does not decode it, so a damaged row refuses rather than passes. An empty set passes without a
+    /// read.
+    /// </remarks>
+    ValueTask<Result> EnsureAllUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        IReadOnlyCollection<Guid> artifactIds,
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Confirms no artifact of this kind carries a live label anywhere in the installation, reading
     /// inside the caller's write transaction.
     /// </summary>
