@@ -333,13 +333,31 @@ internal sealed class BackupRestoreCovenantCoordinator
             return inventory.Error;
         }
 
-        Result<CampaignPathRestoreCleanupPreparationReceipt> receipt = await CommitStagedAsync(
-            session,
-            staged,
-            destination,
-            inventory.Value,
-            purgeProtectedState,
-            cancellationToken).ConfigureAwait(false);
+        // The inventory owns its opened roots until preparation takes them. If staging fails before preparation
+        // is reached, nothing else ever will, so it is released here; once preparation has the seeds it has
+        // released everything it did not retain, and this must not touch them.
+        PreparationHandoff handoff = new();
+
+        Result<CampaignPathRestoreCleanupPreparationReceipt> receipt;
+
+        try
+        {
+            receipt = await CommitStagedAsync(
+                session,
+                staged,
+                destination,
+                inventory.Value,
+                purgeProtectedState,
+                handoff,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (!handoff.Handed)
+            {
+                await inventory.Value.DisposeAsync().ConfigureAwait(false);
+            }
+        }
 
         if (receipt.IsFailure)
         {
@@ -541,6 +559,12 @@ internal sealed class BackupRestoreCovenantCoordinator
     /// <summary>The version every checkpoint this build produces carries.</summary>
     internal const byte BackupRestoreMarkerCleanupCheckpointVersion = 1;
 
+    /// <summary>Whether the cleanup inventory's seeds have been handed to preparation, which then owns them.</summary>
+    private sealed class PreparationHandoff
+    {
+        internal bool Handed { get; set; }
+    }
+
     /// <summary>
     /// Runs sanitation, reconciliation, and marker preparation, and commits them as one staged state.
     /// </summary>
@@ -550,6 +574,7 @@ internal sealed class BackupRestoreCovenantCoordinator
         BackupCovenantRestoreDestinationState destination,
         CampaignPathRestoreCleanupInventory inventory,
         bool purgeProtectedState,
+        PreparationHandoff handoff,
         CancellationToken cancellationToken)
     {
         Result<RestoreStagingManagedAuthoritySanitizationCapability> capability =
@@ -599,6 +624,9 @@ internal sealed class BackupRestoreCovenantCoordinator
 
             return reconciled.Error;
         }
+
+        // From here the preparation owns the seeds' opened roots, whether it succeeds or not.
+        handoff.Handed = true;
 
         Result<CampaignPathRestoreCleanupPreparationReceipt> prepared = await _services.Markers
             .PrepareRestoreCleanupInStagedDatabaseAsync(

@@ -29,7 +29,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// </remarks>
 internal sealed partial class CampaignPathMarkerLifecycle
 {
-
     /// <summary>
     /// The domain the content-free observation digest of an unopenable root is computed under.
     /// </summary>
@@ -47,14 +46,11 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         Result ownerValid = ValidateRestoreOwner(owner);
 
         if (ownerValid.IsFailure)
         {
-
             return ownerValid.Error;
-
         }
 
         SqliteConnection connection =
@@ -65,33 +61,37 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (registered.IsFailure)
         {
-
             return registered.Error;
-
         }
 
         if (registered.Value.Count > CampaignPathRestoreCleanupIntentVector.MaximumIntents)
         {
-
             return new Error(
                 ErrorCodes.Covenant.CapacityExceeded,
                 "This destination holds more registered Campaign roots than one authenticated restore "
                 + "journal may carry.");
-
         }
 
         ImmutableArray<CampaignPathRestoreCleanupSeed>.Builder seeds =
             ImmutableArray.CreateBuilder<CampaignPathRestoreCleanupSeed>(registered.Value.Count);
 
-        foreach (RegisteredRoot root in registered.Value)
+        try
         {
+            foreach (RegisteredRoot root in registered.Value)
+            {
+                seeds.Add(await ObserveRegisteredRootAsync(root, cancellationToken).ConfigureAwait(false));
+            }
+        }
+        catch
+        {
+            // Every seed already built holds an opened root authority that nothing has been handed yet, so
+            // the caller can never release it. Cancellation or a fault part-way must not strand them.
+            await new CampaignPathRestoreCleanupInventory(seeds.ToImmutable()).DisposeAsync().ConfigureAwait(false);
 
-            seeds.Add(await ObserveRegisteredRootAsync(root, cancellationToken).ConfigureAwait(false));
-
+            throw;
         }
 
         return new CampaignPathRestoreCleanupInventory(seeds.ToImmutable());
-
     }
 
     /// <summary>
@@ -101,13 +101,10 @@ internal sealed partial class CampaignPathMarkerLifecycle
         RegisteredRoot root,
         CancellationToken cancellationToken)
     {
-
         // One no-follow resolution, answering "what is there" and never "may this be worked on".
         if (_rootOpener.IdentifyExact(root.DisplayPath) is not { } identity)
         {
-
             return Blocked(root, CampaignPathCleanupRootBlocker.RootUnavailable);
-
         }
 
         Result<CampaignPathMarkerRootAuthority> opened =
@@ -121,20 +118,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (opened.IsFailure)
         {
-
             return Blocked(root, CampaignPathCleanupRootBlocker.RootUnavailable);
-
         }
 
         // The registry indexed one physical identity for this Campaign. A directory now answering to a
         // different one is somebody else's, whatever the name still says.
         if (opened.Value.PhysicalIdentityDigest != root.IndexedIdentityDigest)
         {
-
             await opened.Value.DisposeAsync().ConfigureAwait(false);
 
             return Blocked(root, CampaignPathCleanupRootBlocker.PhysicalIdentityMismatch);
-
         }
 
         return new CampaignPathRestoreCleanupSeed(
@@ -143,14 +136,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
             root.IndexedIdentityDigest,
             root.DisplayPath,
             new CampaignPathCleanupRootObservation.Opened(opened.Value));
-
     }
 
     private static CampaignPathRestoreCleanupSeed Blocked(
         RegisteredRoot root,
         CampaignPathCleanupRootBlocker blocker)
     {
-
         CampaignPathCleanupRootBlockerEvidence evidence = new(
             blocker,
             root.IndexedIdentityDigest,
@@ -164,14 +155,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
             blocker is CampaignPathCleanupRootBlocker.RootUnavailable
                 ? new CampaignPathCleanupRootObservation.Unavailable(evidence)
                 : new CampaignPathCleanupRootObservation.Mismatch(evidence));
-
     }
 
     private static CovenantDigest ObservationDigest(
         RegisteredRoot root,
         CampaignPathCleanupRootBlocker blocker)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         hash.AppendData(Encoding.ASCII.GetBytes(BlockedObservationDomain));
@@ -187,7 +176,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         hash.AppendData(root.IndexedIdentityDigest.Bytes.AsSpan());
 
         return new CovenantDigest(hash.GetHashAndReset());
-
     }
 
     /// <summary>
@@ -202,7 +190,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         List<RegisteredRoot> roots = [];
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -218,15 +205,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (!Guid.TryParse(reader.GetString(0), out Guid campaignId)
                 || campaignId == Guid.Empty)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A registered Campaign root names no usable Campaign identity.");
-
             }
 
             long revision = reader.GetInt64(1);
@@ -235,11 +219,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (revision <= 0 || digest.Length != CovenantLimits.DigestBytes)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A registered Campaign root carries no usable revision or identity evidence.");
-
             }
 
             roots.Add(
@@ -248,21 +230,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     revision,
                     reader.GetString(2),
                     new CovenantDigest(digest)));
-
         }
 
         return roots;
-
     }
 
     private static byte[] ReadDigest(SqliteDataReader reader, int ordinal)
     {
-
         if (reader.IsDBNull(ordinal))
         {
-
             return [];
-
         }
 
         using Stream stream = reader.GetStream(ordinal);
@@ -272,7 +249,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         stream.CopyTo(buffer);
 
         return buffer.ToArray();
-
     }
 
     /// <summary>One row of this installation's own Campaign root registry.</summary>
@@ -281,5 +257,4 @@ internal sealed partial class CampaignPathMarkerLifecycle
         long Revision,
         string DisplayPath,
         CovenantDigest IndexedIdentityDigest);
-
 }
