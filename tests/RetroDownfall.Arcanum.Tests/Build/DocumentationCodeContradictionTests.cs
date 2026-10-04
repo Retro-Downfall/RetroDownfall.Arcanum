@@ -24,6 +24,11 @@ public sealed class DocumentationCodeContradictionTests
         RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(5));
 
+    private static readonly Regex RebuildRequiredClause = new(
+        @"`RebuildRequired` (?:appears|is reported) only[^.]*\.",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
     [Fact]
     public void A_committed_entry_erase_is_documented_as_republishing_canonical_mutation()
     {
@@ -155,6 +160,30 @@ public sealed class DocumentationCodeContradictionTests
         }
 
         Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void The_rebuild_required_rule_is_documented_with_its_accelerator_condition()
+    {
+        // The documented condition is true only while the rule keys on the accelerator being Healthy.
+        Assert.Contains(
+            "snapshot.Accelerator is CovenantCapabilityState.Healthy",
+            ReadSource("Infrastructure", "Covenant", "CovenantManagementService.cs"),
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "outboxCanContinue || !rebuildOwed",
+            ReadSource("Infrastructure", "Data", "Covenant", "CovenantSearchHealthRule.cs"),
+            StringComparison.Ordinal);
+
+        foreach (string file in (string[])["Arcanum.API.md", "Arcanum.DESIGN.md"])
+        {
+            Match clause = RebuildRequiredClause.Match(ReadDocument(file));
+
+            Assert.True(clause.Success, $"{file} lost its statement of when RebuildRequired appears.");
+
+            Assert.Contains("accelerator is not Healthy", clause.Value, StringComparison.Ordinal);
+        }
     }
 
     private static string ReadDocument(string fileName) =>
