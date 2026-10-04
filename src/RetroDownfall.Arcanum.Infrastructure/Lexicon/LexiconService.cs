@@ -270,7 +270,11 @@ internal sealed partial class LexiconService(
                         }
                     },
                     cancellationToken),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                // An Unseen Servant entry can never be erased, so it can never be fingerprinted, and a key
+                // that is not there has nothing to verify about it. Only the key-state gate is lifted: a
+                // present key that cannot verify the store's evidence still refuses the write.
+                exemptFromKeyState: LexiconDaemonStateNames.Is(normalized)).ConfigureAwait(false);
         }
         catch (InspectionException exception)
         {

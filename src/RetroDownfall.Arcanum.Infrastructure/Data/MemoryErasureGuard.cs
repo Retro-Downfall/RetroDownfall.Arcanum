@@ -28,17 +28,25 @@ internal enum MemoryErasureGuardVerdict
 /// <remarks>
 /// <see cref="Key"/> is a private copy the context owns and zeroes on disposal. It is set whenever the
 /// store held evidence, and otherwise only when the latch already held a present key, which spares
-/// most first-fingerprint races the retry without ever reading the credential store.
+/// most first-fingerprint races the retry without ever reading the credential store. A context with
+/// <see cref="KeyStateExempt"/> may hold evidence and no key: its write names something no erase can
+/// name, so a key that is not there has nothing to verify about it.
 /// </remarks>
 internal sealed class MemoryErasureGuardContext : IDisposable
 {
-    internal MemoryErasureGuardContext(MemoryReviewStore store, bool evidencePresent, MemoryErasureKey? key)
+    internal MemoryErasureGuardContext(
+        MemoryReviewStore store,
+        bool evidencePresent,
+        MemoryErasureKey? key,
+        bool keyStateExempt = false)
     {
         Store = store;
 
         EvidencePresent = evidencePresent;
 
         Key = key;
+
+        KeyStateExempt = keyStateExempt;
     }
 
     internal MemoryReviewStore Store { get; }
@@ -47,6 +55,12 @@ internal sealed class MemoryErasureGuardContext : IDisposable
     internal bool EvidencePresent { get; }
 
     internal MemoryErasureKey? Key { get; }
+
+    /// <summary>
+    /// Whether the write was prepared without a key because the key is not present and the write is exempt
+    /// from that gate. Phase two then has no fingerprint to look for and allows it.
+    /// </summary>
+    internal bool KeyStateExempt { get; }
 
     public void Dispose() => Key?.Dispose();
 }
@@ -124,13 +138,19 @@ internal static class MemoryErasureGuard
     /// transaction, so this refuses a connection that is inside one. The check reads the connection's
     /// own autocommit state, which a raw <c>BEGIN</c> changes as surely as a transaction object does.
     /// </remarks>
+    /// <param name="exemptFromKeyState">
+    /// Whether the write names something no erase can name, so a key that is not present is no reason to
+    /// refuse it. Only the key-state gate is lifted: a present key that cannot verify the store's evidence
+    /// still refuses it, because that is the store's integrity rather than the key's availability.
+    /// </param>
     /// <returns>The context to carry into the transaction, or the refusal when the store cannot be guarded.</returns>
     /// <exception cref="InvalidOperationException">The connection is inside a transaction.</exception>
     internal static async Task<Result<MemoryErasureGuardContext>> PrepareAsync(
         SqliteConnection connection,
         MemoryReviewStore store,
         IMemoryErasureKeyProvider keys,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool exemptFromKeyState = false)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
@@ -154,7 +174,9 @@ internal static class MemoryErasureGuard
         {
             opened.Key?.Dispose();
 
-            return RefusalFor(opened.State);
+            return exemptFromKeyState
+                ? new MemoryErasureGuardContext(store, evidencePresent: true, key: null, keyStateExempt: true)
+                : RefusalFor(opened.State);
         }
 
         MemoryErasureKey key = opened.Key
@@ -229,7 +251,10 @@ internal static class MemoryErasureGuard
 
         if (context.Key is not { } key)
         {
-            return MemoryErasureGuardVerdict.RetryWithKey;
+            // A write prepared without a key because it needs none has no fingerprint to look for.
+            return context.KeyStateExempt
+                ? MemoryErasureGuardVerdict.Allowed
+                : MemoryErasureGuardVerdict.RetryWithKey;
         }
 
         if (await MemoryErasureEvidence
@@ -265,11 +290,12 @@ internal static class MemoryErasureGuard
         MemoryReviewStore store,
         IMemoryErasureKeyProvider keys,
         Func<MemoryErasureGuardContext, Task<T>> write,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool exemptFromKeyState = false)
     {
         ArgumentNullException.ThrowIfNull(write);
 
-        using (MemoryErasureGuardContext first = await PrepareOrThrowAsync(connection, store, keys, cancellationToken)
+        using (MemoryErasureGuardContext first = await PrepareOrThrowAsync(connection, store, keys, cancellationToken, exemptFromKeyState)
                    .ConfigureAwait(false))
         {
             try
@@ -282,7 +308,7 @@ internal static class MemoryErasureGuard
             }
         }
 
-        using MemoryErasureGuardContext second = await PrepareOrThrowAsync(connection, store, keys, cancellationToken)
+        using MemoryErasureGuardContext second = await PrepareOrThrowAsync(connection, store, keys, cancellationToken, exemptFromKeyState)
             .ConfigureAwait(false);
 
         try
@@ -299,10 +325,11 @@ internal static class MemoryErasureGuard
         SqliteConnection connection,
         MemoryReviewStore store,
         IMemoryErasureKeyProvider keys,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool exemptFromKeyState)
     {
         Result<MemoryErasureGuardContext> prepared =
-            await PrepareAsync(connection, store, keys, cancellationToken).ConfigureAwait(false);
+            await PrepareAsync(connection, store, keys, cancellationToken, exemptFromKeyState).ConfigureAwait(false);
 
         return prepared.IsSuccess ? prepared.Value : throw new MemoryErasureGuardException(prepared.Error);
     }

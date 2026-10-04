@@ -124,6 +124,125 @@ public sealed class LexiconErasureSuppressionTests(GrimoireFixture fixture)
         Assert.Equal(snapshot, await owner.SnapshotAsync());
     }
 
+    /// <summary>
+    /// A <c>daemon_state:</c> name can never be erased, so it can never be fingerprinted, and a key that is
+    /// not there has nothing to verify about it: the Unseen Servant's own state is scribed whatever state the
+    /// key is in, while an ordinary name in the same store is still refused.
+    /// </summary>
+    /// <remarks>
+    /// The one refusal that stays is a key that is present but is not the one that recorded the store's
+    /// evidence, which is pinned separately: it is the store's own integrity, not the key's availability.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("lost", ErrorCodes.MemoryErasure.KeyLost)]
+    [InlineData("unreadable", ErrorCodes.MemoryErasure.KeyUnavailable)]
+    [InlineData("malformed", ErrorCodes.MemoryErasure.KeyUnavailable)]
+    public async Task A_daemon_state_name_is_scribed_whatever_the_key_cannot_do_and_an_ordinary_name_is_still_refused(
+        string state,
+        string code)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        using MemoryErasureKey original = MemoryErasureTestKeys.CreateKey(inner);
+
+        CountingOsCredentialStore credentials = new(inner);
+
+        switch (state)
+        {
+            case "lost":
+                _ = inner.Delete(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount);
+
+                break;
+
+            case "unreadable":
+                credentials.FailWith = OsCredentialStoreStatus.Unavailable;
+
+                break;
+
+            case "malformed":
+                _ = inner.Set(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount, "not-a-key");
+
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown key state.");
+        }
+
+        using MemoryErasureKeyring keys = MemoryErasureTestKeys.Isolated(credentials);
+
+        await using CorrectionFixture owner = new(fixture, annals: true, erasureKeys: keys);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            owner.Connection, original, MemoryErasureIdentity.ForLexicon(null, "Something the operator erased"), Token);
+
+        Result<LexiconEntryDto> ordinary = await owner.Concrete.UpsertAsync("Other", "Person", ["alpha"], LexiconScope.Global);
+
+        Assert.Equal(code, ordinary.Error.Code);
+
+        Result<LexiconEntryDto> daemon = await owner.Concrete.UpsertAsync(
+            "daemon_state:digest-cursor",
+            "State",
+            ["cursor=42"],
+            LexiconScope.Global);
+
+        Assert.True(daemon.IsSuccess, daemon.IsFailure ? $"{daemon.Error.Code}: {daemon.Error.Message}" : null);
+
+        // The prefix is matched whatever its case, as the delete and erase refusals match it.
+        Result<LexiconEntryDto> shouting = await owner.Concrete.UpsertAsync(
+            "DAEMON_STATE:Digest-Cursor-Two",
+            "State",
+            ["cursor=43"],
+            LexiconScope.Global);
+
+        Assert.True(shouting.IsSuccess, shouting.IsFailure ? $"{shouting.Error.Code}: {shouting.Error.Message}" : null);
+
+        string[] entries = [.. (await owner.SnapshotAsync()).Where(static row => row.StartsWith("lexicon_entries:", StringComparison.Ordinal))];
+
+        Assert.Equal(2, entries.Length);
+
+        Assert.All(entries, static row => Assert.Contains("daemon_state:", row, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A present key that did not record the store's evidence still refuses a <c>daemon_state:</c> name, as it
+    /// refuses every other write to the store: the evidence cannot be verified at all, which is the store's
+    /// integrity and not the key's availability.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_daemon_state_name_is_still_refused_when_the_key_present_is_not_the_one_that_recorded_the_evidence()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        using MemoryErasureKey original = MemoryErasureTestKeys.CreateKey(credentials);
+
+        _ = credentials.Delete(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount);
+
+        MemoryErasureTestKeys.CreateKey(credentials).Dispose();
+
+        using MemoryErasureKeyring keys = MemoryErasureTestKeys.Isolated(credentials);
+
+        await using CorrectionFixture owner = new(fixture, annals: true, erasureKeys: keys);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            owner.Connection, original, MemoryErasureIdentity.ForLexicon(null, "Something the operator erased"), Token);
+
+        string[] snapshot = await owner.SnapshotAsync();
+
+        Result<LexiconEntryDto> daemon = await owner.Concrete.UpsertAsync(
+            "daemon_state:digest-cursor",
+            "State",
+            ["cursor=42"],
+            LexiconScope.Global);
+
+        Assert.Equal(ErrorCodes.MemoryErasure.KeyLost, daemon.Error.Code);
+
+        Assert.Equal(snapshot, await owner.SnapshotAsync());
+    }
+
     [SkippableFact]
     public async Task An_erased_identity_that_still_has_a_live_row_is_refused()
     {
