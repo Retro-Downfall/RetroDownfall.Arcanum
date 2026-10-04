@@ -626,20 +626,20 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                               AND "State" = @pendingState
                             """;
 
-                        AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                        AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                         AddParameter(
                             cmd,
                             "@entryId",
                             entryId is null
                                 ? DBNull.Value
-                                : entryId.Value.ToString().ToUpperInvariant());
+                                : GrimoireEntitySql.Format(entryId.Value));
 
                         AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
                         AddParameter(cmd, "@relativePath", plan.NewRelativePath);
 
-                        AddParameter(cmd, "@id", plan.Row.Id.ToString().ToUpperInvariant());
+                        AddParameter(cmd, "@id", GrimoireEntitySql.Format(plan.Row.Id));
 
                         AddParameter(cmd, "@pendingState", nameof(SessionAttachmentState.Pending));
 
@@ -715,7 +715,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     LIMIT 1
                     """;
 
-                AddParameter(cmd, "@id", id.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@id", GrimoireEntitySql.Format(id));
 
                 await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -784,7 +784,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     AddParameter(cmd, "@version", version.Value);
                 }
 
-                AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                 AddParameter(cmd, "@logicalKey", sanitizedKey);
 
@@ -892,7 +892,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     LIMIT @pageSize
                     """;
 
-                AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
@@ -952,7 +952,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     ORDER BY current."LogicalKey" ASC
                     """;
 
-                AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
@@ -1091,7 +1091,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                              AND newer."Version" > current."Version")
                      """;
 
-                AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                 AddParameter(
                     cmd,
@@ -1193,7 +1193,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     LIMIT @maxItems
                     """;
 
-                AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
@@ -1248,7 +1248,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     LIMIT @pageSize
                     """;
 
-                AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
@@ -1448,7 +1448,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                               AND "State" = @state
                             """;
 
-                        AddParameter(delete, "@id", id.ToString().ToUpperInvariant());
+                        AddParameter(delete, "@id", GrimoireEntitySql.Format(id));
 
                         AddParameter(delete, "@state", nameof(SessionAttachmentState.Pending));
 
@@ -1580,21 +1580,21 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                      @sourceStatus, @sourceDiagnosticReason, @encryptionVersion, @encryptionKeyId)
                 """;
 
-            AddParameter(cmd, "@id", record.Id.ToString().ToUpperInvariant());
+            AddParameter(cmd, "@id", GrimoireEntitySql.Format(record.Id));
 
             AddParameter(
                 cmd,
                 "@sessionId",
                 record.SessionId is null
                     ? DBNull.Value
-                    : record.SessionId.Value.ToString().ToUpperInvariant());
+                    : GrimoireEntitySql.Format(record.SessionId.Value));
 
             AddParameter(
                 cmd,
                 "@entryId",
                 record.EntryId is null
                     ? DBNull.Value
-                    : record.EntryId.Value.ToString().ToUpperInvariant());
+                    : GrimoireEntitySql.Format(record.EntryId.Value));
 
             AddParameter(cmd, "@pendingTurnId", (object?)record.PendingTurnId ?? DBNull.Value);
 
@@ -1735,7 +1735,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 "SourceDiagnosticReason" = @sourceDiagnosticReason
             WHERE "Id" = @id
             """;
-        AddParameter(cmd, "@id", id.ToString().ToUpperInvariant());
+        AddParameter(cmd, "@id", GrimoireEntitySql.Format(id));
         AddSourceParameters(cmd, source);
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -1784,7 +1784,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 LIMIT 1
                 """;
 
-            AddParameter(cmd, "@sessionId", sessionId.Value.ToString().ToUpperInvariant());
+            AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId.Value));
         }
         else
         {
@@ -1835,7 +1835,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 WHERE "SessionId" = @sessionId
                 """;
 
-            AddParameter(cmd, "@sessionId", sessionId.Value.ToString().ToUpperInvariant());
+            AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId.Value));
         }
         else
         {

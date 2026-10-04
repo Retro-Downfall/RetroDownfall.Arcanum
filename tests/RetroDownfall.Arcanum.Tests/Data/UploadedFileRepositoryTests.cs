@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Trait("Category", "Integration")]
 public sealed class UploadedFileRepositoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -29,14 +28,11 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
 
     public UploadedFileRepositoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _filesRoot = Path.Combine(
@@ -50,41 +46,31 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         _repo = new UploadedFileRepository(_db, _filesRoot);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = null;
 
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_filesRoot))
         {
-
             Directory.Delete(_filesRoot, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_then_GetByIdAsync_round_trips()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -108,14 +94,12 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         Assert.Equal("batch", loaded.Purpose);
 
         Assert.Equal("application/jsonl", loaded.MimeType);
-
     }
 
     [SkippableFact]
 
     public async Task CreateForOwnedFileAsync_WhenDeleteWriterWins_RejectsWithoutMetadataAndPreservesReplacement()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -145,18 +129,14 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
 
         FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = candidate =>
         {
-
             FileHandleMetadata? metadata = ReadActualMetadata(candidate);
 
             if (string.Equals(candidate, path, StringComparison.Ordinal))
             {
-
                 captured.TrySetResult();
-
             }
 
             return metadata;
-
         };
 
         Task publish = Task.Run(
@@ -177,14 +157,12 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         Assert.Null(await _repo!.GetByIdAsync(id, CancellationToken.None));
 
         Assert.Equal(replacement, await File.ReadAllBytesAsync(path));
-
     }
 
     [SkippableFact]
 
     public async Task CreateForOwnedFileAsync_WhenCreateWins_DeleteSeesMetadataAndOwnedBytes()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -216,25 +194,49 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         Assert.Null(await _repo.GetByIdAsync(id, CancellationToken.None));
 
         Assert.False(File.Exists(path));
+    }
 
+    [SkippableFact]
+    public async Task CreateAsync_StoresTheCanonicalUppercaseDashedIdentity()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid id = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+            new UploadedFileRecord(id, "canonical.jsonl", 5, "batch", "application/jsonl", DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT \"Id\" FROM \"UploadedFiles\" WHERE \"Id\" = @id";
+
+        System.Data.Common.DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@id";
+
+        parameter.Value = id.ToString("D").ToUpperInvariant();
+
+        command.Parameters.Add(parameter);
+
+        Assert.Equal(GrimoireEntitySql.Format(id), await command.ExecuteScalarAsync(CancellationToken.None));
     }
 
     [SkippableFact]
     public async Task GetByIdAsync_returns_null_for_missing_id()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         UploadedFileRecord? loaded = await _repo!.GetByIdAsync(Guid.NewGuid(), CancellationToken.None);
 
         Assert.Null(loaded);
-
     }
 
     [SkippableFact]
     public async Task ListAsync_filters_by_purpose_when_provided()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -252,13 +254,11 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         IReadOnlyList<UploadedFileRecord> all = await _repo.ListAsync(null, CancellationToken.None);
 
         Assert.Equal(2, all.Count);
-
     }
 
     [SkippableFact]
     public async Task DeleteAsync_removes_row()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -270,7 +270,6 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         UploadedFileRecord? loaded = await _repo.GetByIdAsync(id, CancellationToken.None);
 
         Assert.Null(loaded);
-
     }
 
     [SkippableTheory]
@@ -279,7 +278,6 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
     public async Task TryDeleteUnreferencedAsync_blocks_all_batch_roles_for_active_and_terminal_batches(
         string status)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = Guid.NewGuid();
@@ -333,13 +331,44 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         Assert.NotNull(await _repo.GetByIdAsync(outputFileId, CancellationToken.None));
 
         Assert.NotNull(await _repo.GetByIdAsync(errorFileId, CancellationToken.None));
+    }
 
+    /// <summary>
+    /// The delete's classification and its conditional delete are answered by the primary key and by one index per
+    /// batch file column, not by a scan of either table.
+    /// </summary>
+    /// <remarks>
+    /// The statements are the repository's own constants, so the plan explained here is the text it runs. A scan of
+    /// <c>UploadedFiles</c> or <c>Batches</c> here is the cost of every file delete growing with every file and
+    /// every batch the installation ever held.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(UploadedFileRepository.ClassifyDeleteSql)]
+    [InlineData(UploadedFileRepository.DeleteUnreferencedMetadataSql)]
+    public async Task TryDeleteUnreferencedAsync_UsesThePrimaryKey(string statement)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string[] plan = await ExplainAsync(statement);
+
+        string joined = string.Join(" | ", plan);
+
+        Assert.DoesNotContain(plan, static line => line.StartsWith("SCAN", StringComparison.Ordinal));
+
+        Assert.Contains(
+            plan,
+            static line => line.StartsWith("SEARCH UploadedFiles USING", StringComparison.Ordinal)
+                && line.EndsWith("INDEX sqlite_autoindex_UploadedFiles_1 (Id=?)", StringComparison.Ordinal));
+
+        foreach (string index in (string[])["IX_Batches_InputFileId", "IX_Batches_OutputFileId", "IX_Batches_ErrorFileId"])
+        {
+            Assert.True(joined.Contains(index, StringComparison.Ordinal), $"No batch file reference is answered by {index}: {joined}");
+        }
     }
 
     [SkippableFact]
     public async Task TryDeleteUnreferencedAsync_is_conditional_and_reports_missing_rows()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -355,14 +384,12 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         Assert.Equal(
             UploadedFileDeleteStatus.NotFound,
             await _repo.TryDeleteUnreferencedAsync(id, CancellationToken.None));
-
     }
 
     [SkippableFact]
 
     public async Task TryDeleteUnreferencedAsync_WhenMetadataDeleteFails_RestoresOwnedBytesAndMetadata()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -406,14 +433,12 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
             Directory.GetFileSystemEntries(
                 _filesRoot,
                 $".arcanum-file-delete-{id:N}-*"));
-
     }
 
     [SkippableFact]
 
     public async Task TryDeleteUnreferencedAsync_WhenByteFinalizationFails_RequiresRecoveryAndKeepsRecognizableQuarantine()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -438,7 +463,6 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
 
         FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = candidate =>
         {
-
             bool quarantinedFile = File.Exists(candidate)
                 && candidate.Contains(
                     $".arcanum-file-delete-{id:N}-",
@@ -446,9 +470,7 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
 
             if (!quarantinedFile)
             {
-
                 return ReadActualMetadata(candidate);
-
             }
 
             quarantinedFileReads++;
@@ -456,7 +478,6 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
             return quarantinedFileReads == 1
                 ? ReadActualMetadata(candidate)
                 : null;
-
         };
 
         UploadedFileDeleteStatus status = await _repo.TryDeleteUnreferencedAsync(
@@ -488,14 +509,12 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
             await _repo.TryDeleteUnreferencedAsync(id, CancellationToken.None));
 
         Assert.True(File.Exists(quarantinedPath));
-
     }
 
     [SkippableFact]
 
     public async Task TryDeleteUnreferencedAsync_WhenOwnedBytesCannotBeQuarantined_PreservesMetadata()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -521,12 +540,9 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
 
         FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = candidate =>
         {
-
             if (!string.Equals(candidate, path, StringComparison.Ordinal))
             {
-
                 return ReadActualMetadata(candidate);
-
             }
 
             originalReads++;
@@ -539,7 +555,6 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
                         original.Identity.VolumeId,
                         original.Identity.FileId + 1),
                 };
-
         };
 
         UploadedFileDeleteStatus status = await _repo.TryDeleteUnreferencedAsync(
@@ -551,13 +566,11 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         Assert.NotNull(await _repo.GetByIdAsync(id, CancellationToken.None));
 
         Assert.True(File.Exists(path));
-
     }
 
     [SkippableFact]
     public void ResolvePath_is_deterministic_and_disk_independent()
     {
-
         Guid id = Guid.NewGuid();
 
         string path1 = UploadedFileStorage.ResolvePath(id);
@@ -567,13 +580,11 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         Assert.Equal(path1, path2);
 
         Assert.EndsWith(id.ToString("N"), path1, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task Migration_creates_UploadedFiles_table()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
@@ -582,9 +593,7 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
 
         if (cmd.Connection!.State != System.Data.ConnectionState.Open)
         {
-
             await cmd.Connection.OpenAsync(CancellationToken.None);
-
         }
 
         cmd.CommandText = """
@@ -597,19 +606,49 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         object? result = await cmd.ExecuteScalarAsync(CancellationToken.None);
 
         Assert.NotNull(result);
-
     }
 
-    private async Task ExecuteSqlAsync(string sql)
+    private async Task<string[]> ExplainAsync(string statement)
     {
-
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(CancellationToken.None);
+        }
 
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "EXPLAIN QUERY PLAN " + statement;
+
+        System.Data.Common.DbParameter id = command.CreateParameter();
+
+        id.ParameterName = "@id";
+
+        id.Value = GrimoireEntitySql.Format(Guid.Empty);
+
+        command.Parameters.Add(id);
+
+        List<string> rows = [];
+
+        await using (System.Data.Common.DbDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None))
+        {
+            while (await reader.ReadAsync(CancellationToken.None))
+            {
+                rows.Add(reader.GetString(reader.GetOrdinal("detail")));
+            }
+        }
+
+        return [.. rows];
+    }
+
+    private async Task ExecuteSqlAsync(string sql)
+    {
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync(CancellationToken.None);
         }
 
         await using System.Data.Common.DbCommand command = connection.CreateCommand();
@@ -617,7 +656,6 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     /// <summary>
@@ -634,5 +672,4 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
             out FileHandleMetadata metadata)
             ? metadata
             : null;
-
 }

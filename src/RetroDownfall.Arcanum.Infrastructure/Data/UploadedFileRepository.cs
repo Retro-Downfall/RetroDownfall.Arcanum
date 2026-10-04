@@ -17,6 +17,46 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class UploadedFileRepository : IUploadedFileRepository
 {
+    /// <summary>
+    /// The statement that classifies a delete: no row, referenced by a batch, or deletable. Internal so a test can
+    /// explain the exact text the repository runs.
+    /// </summary>
+    /// <remarks>
+    /// <c>@id</c> is the canonical identity text (<see cref="GrimoireEntitySql.Format(Guid)"/>), which is what every
+    /// <c>UploadedFiles.Id</c> and every batch file role holds since Core version 15, so each comparison is an exact
+    /// equality the primary key and the three <c>Batches</c> file indexes answer.
+    /// </remarks>
+    internal const string ClassifyDeleteSql =
+        """
+        SELECT CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM "Batches"
+                WHERE "InputFileId" = @id
+                   OR "OutputFileId" = @id
+                   OR "ErrorFileId" = @id
+            ) THEN 1
+            ELSE 0
+        END
+        FROM "UploadedFiles"
+        WHERE "Id" = @id
+        LIMIT 1
+        """;
+
+    /// <summary>The conditional metadata delete that runs inside the same immediate transaction as the classification.</summary>
+    internal const string DeleteUnreferencedMetadataSql =
+        """
+        DELETE FROM "UploadedFiles"
+        WHERE "Id" = @id
+          AND NOT EXISTS (
+              SELECT 1
+              FROM "Batches"
+              WHERE "InputFileId" = @id
+                 OR "OutputFileId" = @id
+                 OR "ErrorFileId" = @id
+          )
+        """;
+
     private readonly ArcanumDbContext _db;
 
     private readonly string _filesRoot;
@@ -153,7 +193,7 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                     LIMIT 1
                     """;
 
-                AddParameter(cmd, "@id", id.ToString());
+                AddParameter(cmd, "@id", GrimoireEntitySql.Format(id));
 
                 await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -229,7 +269,7 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                     WHERE "Id" = @id
                     """;
 
-                AddParameter(cmd, "@id", id.ToString());
+                AddParameter(cmd, "@id", GrimoireEntitySql.Format(id));
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
@@ -387,24 +427,9 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
         classify.Transaction = transaction;
 
-        classify.CommandText =
-            """
-            SELECT CASE
-                WHEN EXISTS (
-                    SELECT 1
-                    FROM "Batches"
-                    WHERE lower(replace("InputFileId", '-', '')) = @id
-                       OR lower(replace(COALESCE("OutputFileId", ''), '-', '')) = @id
-                       OR lower(replace(COALESCE("ErrorFileId", ''), '-', '')) = @id
-                ) THEN 1
-                ELSE 0
-            END
-            FROM "UploadedFiles"
-            WHERE lower(replace("Id", '-', '')) = @id
-            LIMIT 1
-            """;
+        classify.CommandText = ClassifyDeleteSql;
 
-        AddParameter(classify, "@id", id.ToString("N"));
+        AddParameter(classify, "@id", GrimoireEntitySql.Format(id));
 
         object? result = await classify.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
@@ -428,20 +453,9 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
         delete.Transaction = transaction;
 
-        delete.CommandText =
-            """
-            DELETE FROM "UploadedFiles"
-            WHERE lower(replace("Id", '-', '')) = @id
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM "Batches"
-                  WHERE lower(replace("InputFileId", '-', '')) = @id
-                     OR lower(replace(COALESCE("OutputFileId", ''), '-', '')) = @id
-                     OR lower(replace(COALESCE("ErrorFileId", ''), '-', '')) = @id
-              )
-            """;
+        delete.CommandText = DeleteUnreferencedMetadataSql;
 
-        AddParameter(delete, "@id", id.ToString("N"));
+        AddParameter(delete, "@id", GrimoireEntitySql.Format(id));
 
         return await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -534,7 +548,7 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                  @encryptionVersion, @encryptionKeyId, @plaintextSha256)
             """;
 
-        AddParameter(command, "@id", record.Id.ToString());
+        AddParameter(command, "@id", GrimoireEntitySql.Format(record.Id));
 
         AddParameter(command, "@filename", record.Filename);
 

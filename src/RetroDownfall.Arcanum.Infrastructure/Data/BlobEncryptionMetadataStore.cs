@@ -151,7 +151,7 @@ internal sealed class BlobEncryptionMetadataStore(ArcanumDbContext db)
             string purpose = reader.GetString(2);
             candidates.Add(new BlobEncryptionCandidate(
                 BlobEncryptionRecordKind.UploadedFile,
-                id.ToString("D"),
+                GrimoireEntitySql.Format(id),
                 UploadedFileStorage.ResolvePath(id),
                 UploadedFileStorage.ResolveEncryptionPurpose(purpose),
                 reader.GetInt64(1),

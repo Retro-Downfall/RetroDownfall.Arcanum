@@ -86,9 +86,9 @@ internal sealed partial class SessionAttachmentStore
                   AND "EntryId" = @entryId
                 """;
 
-            AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+            AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
-            AddParameter(cmd, "@entryId", entryId.ToString().ToUpperInvariant());
+            AddParameter(cmd, "@entryId", GrimoireEntitySql.Format(entryId));
 
             _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -205,7 +205,7 @@ internal sealed partial class SessionAttachmentStore
                     LIMIT @pageSize
                     """;
 
-                AddParameter(cmd, "@sessionId", sourceSessionId.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sourceSessionId));
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
@@ -217,7 +217,7 @@ internal sealed partial class SessionAttachmentStore
 
                 if (afterAttachmentId is Guid cursor)
                 {
-                    AddParameter(cmd, "@afterAttachmentId", cursor.ToString().ToUpperInvariant());
+                    AddParameter(cmd, "@afterAttachmentId", GrimoireEntitySql.Format(cursor));
                 }
 
                 List<SessionAttachmentRecord> rows = new(ForkAttachmentPageSize);
@@ -619,7 +619,7 @@ internal sealed partial class SessionAttachmentStore
                         WHERE "SessionId" = @sessionId
                         """;
 
-                    AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                    AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                     _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -770,7 +770,7 @@ internal sealed partial class SessionAttachmentStore
                       AND "RelativePath" = @relativePath
                     """;
 
-                AddParameter(cmd, "@id", row.Id.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@id", GrimoireEntitySql.Format(row.Id));
 
                 AddParameter(cmd, "@state", row.State.ToString());
 
