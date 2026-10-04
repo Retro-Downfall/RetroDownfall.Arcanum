@@ -32,7 +32,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </remarks>
 internal interface ICovenantLabeledArtifactTransactionGuard : ICovenantLabeledArtifactGuard
 {
-
     /// <summary>
     /// Confirms the artifact carries no live sensitivity label, reading inside the caller's write
     /// transaction.
@@ -82,5 +81,4 @@ internal interface ICovenantLabeledArtifactTransactionGuard : ICovenantLabeledAr
         DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken = default);
-
 }

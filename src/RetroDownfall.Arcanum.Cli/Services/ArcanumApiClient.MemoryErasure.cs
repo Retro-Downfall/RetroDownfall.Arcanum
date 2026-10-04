@@ -35,7 +35,6 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 /// </remarks>
 public sealed partial class ArcanumApiClient
 {
-
     public Task<Result<MemoryErasurePreflightDto>> PrepareSagaErasureAsync(
         SagaErasePrepareRequest request,
         CancellationToken cancellationToken = default) =>
@@ -222,5 +221,4 @@ public sealed partial class ArcanumApiClient
             cancellationToken,
             retryResponseBodyIOExceptionOnce: true,
             onResponseBodyRetry: onResent);
-
 }
