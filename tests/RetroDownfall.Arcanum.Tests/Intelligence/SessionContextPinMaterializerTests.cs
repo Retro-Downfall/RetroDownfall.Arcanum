@@ -382,6 +382,95 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         }
     }
 
+    [Fact]
+    public async Task Directory_snapshot_skips_VCS_and_dependency_directories_and_reaches_source_files()
+    {
+        // Long names make a few hundred entries overflow the pin budget, as a real object store would.
+        string longName = new('n', 200);
+
+        foreach (string ignored in new[] { ".git", "node_modules" })
+        {
+            string objects = Path.Combine(_workspace, ignored, "objects");
+
+            Directory.CreateDirectory(objects);
+
+            for (int index = 0; index < 400; index++)
+            {
+                await File.WriteAllTextAsync(Path.Combine(objects, $"{longName}-{index}.dat"), "x");
+            }
+        }
+
+        foreach (string ignored in new[] { "bin", "obj" })
+        {
+            string output = Path.Combine(_workspace, "src", ignored, "Debug");
+
+            Directory.CreateDirectory(output);
+
+            await File.WriteAllTextAsync(Path.Combine(output, "app.dll"), "x");
+        }
+
+        Directory.CreateDirectory(Path.Combine(_workspace, "src", "nested", "node_modules", "dep"));
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_workspace, "src", "nested", "node_modules", "dep", "index.js"),
+            "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "src", "Program.cs"), "class P {}");
+
+        SessionContextPinRecord pin = Pin(SessionContextPinKind.DirectorySnapshot, ".", "workspace", null);
+
+        string text = await MaterializeSingleAsync(pin);
+
+        Assert.Contains(Path.Combine("src", "Program.cs"), text, StringComparison.Ordinal);
+
+        Assert.Contains("status: Current", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(".git", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("node_modules", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("app.dll", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("index.js", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Directory_snapshot_pinned_at_an_ignored_directory_still_lists_it()
+    {
+        string nodeModules = Path.Combine(_workspace, "node_modules", "dep");
+
+        Directory.CreateDirectory(nodeModules);
+
+        await File.WriteAllTextAsync(Path.Combine(nodeModules, "index.js"), "x");
+
+        string text = await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.DirectorySnapshot, "node_modules", "deps", null));
+
+        Assert.Contains("index.js", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Directory_snapshot_stops_after_the_directory_visit_cap_and_says_so()
+    {
+        int directories = SessionContextPinMaterializer.MaxDirectoriesPerSnapshot + 50;
+
+        for (int index = 0; index < directories; index++)
+        {
+            Directory.CreateDirectory(Path.Combine(_workspace, "d", $"dir-{index:D5}"));
+        }
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "top.txt"), "x");
+
+        string text = await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.DirectorySnapshot, ".", "workspace", null));
+
+        Assert.Contains("status: Truncated", text, StringComparison.Ordinal);
+
+        Assert.Contains("directories", text, StringComparison.Ordinal);
+
+        Assert.Contains("top.txt", text, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public async Task Directory_snapshot_visits_a_canonical_directory_only_once_across_symlink_cycles()
     {

@@ -45,6 +45,25 @@ public sealed class SessionContextPinMaterializer(
     /// </summary>
     internal const long FileHashCapBytes = 8L * 1024 * 1024;
 
+    /// <summary>
+    /// Directories one directory-snapshot pin visits before it stops and reports truncation. The byte
+    /// budget bounds what a snapshot emits; this bounds the walk itself when most directories contribute
+    /// no rows.
+    /// </summary>
+    internal const int MaxDirectoriesPerSnapshot = 2_048;
+
+    /// <summary>
+    /// Directory names a snapshot does not descend into: version-control metadata, installed
+    /// dependencies and build output. They are matched by name at any depth below the pinned directory.
+    /// </summary>
+    private static readonly HashSet<string> IgnoredDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".git",
+        "node_modules",
+        "bin",
+        "obj",
+    };
+
     private const string FreshnessTokenPrefix = "size=";
 
     private const string DirectoryTruncationSuffix =
@@ -301,6 +320,10 @@ public sealed class SessionContextPinMaterializer(
 
         bool truncated = false;
 
+        bool stoppedByDirectoryCap = false;
+
+        int directoriesVisited = 0;
+
         while (directories.Count > 0
             && !truncated)
         {
@@ -329,6 +352,17 @@ public sealed class SessionContextPinMaterializer(
                 continue;
             }
 
+            if (directoriesVisited >= MaxDirectoriesPerSnapshot)
+            {
+                truncated = true;
+
+                stoppedByDirectoryCap = true;
+
+                break;
+            }
+
+            directoriesVisited++;
+
             string[] entries = Directory
                 .EnumerateFileSystemEntries(
                     directory,
@@ -351,6 +385,13 @@ public sealed class SessionContextPinMaterializer(
 
                 if (Directory.Exists(entry))
                 {
+                    // Version-control and dependency trees would otherwise spend the byte budget before
+                    // the source does. Only descendants are skipped; a pin rooted at one still lists it.
+                    if (IgnoredDirectoryNames.Contains(Path.GetFileName(entry)))
+                    {
+                        continue;
+                    }
+
                     string canonicalDirectory = Path.GetFullPath(
                         resolvedEntry ?? entry);
 
@@ -401,7 +442,9 @@ public sealed class SessionContextPinMaterializer(
             return new(
                 SessionContextPinStatus.Truncated,
                 content,
-                $"Limited to {byteLimit} bytes.");
+                stoppedByDirectoryCap
+                    ? $"Stopped after visiting {MaxDirectoriesPerSnapshot} directories."
+                    : $"Limited to {byteLimit} bytes.");
         }
 
         return FromText(snapshot.ToString(), byteLimit);
