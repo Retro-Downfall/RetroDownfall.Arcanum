@@ -18,7 +18,7 @@ public sealed class OperationCommands(
         if (result.IsFailure)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         Table table = new();
@@ -54,7 +54,7 @@ public sealed class OperationCommands(
         if (result.IsFailure)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         LongRunningOperationDto operation = result.Value;
@@ -99,7 +99,7 @@ public sealed class OperationCommands(
         if (result.IsFailure)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         LongRunningOperationReconciliationSummary summary = result.Value;
@@ -120,7 +120,7 @@ public sealed class OperationCommands(
         if (result.IsFailure)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(themePalette.TextMarkup(Markup.Escape(successMessage)));

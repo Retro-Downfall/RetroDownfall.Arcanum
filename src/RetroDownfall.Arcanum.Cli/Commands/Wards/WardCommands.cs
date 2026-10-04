@@ -12,20 +12,18 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Wards;
 /// </summary>
 public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
-
     /// <summary>
     /// List active compatibility wards (GET /api/wards).
     /// </summary>
     public async Task<int> List(CancellationToken cancellationToken)
     {
-
         Result<WardDto[]> result = await apiClient.GetWardsAsync(cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         WardDto[] wards = result.Value;
@@ -42,13 +40,11 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         foreach (WardDto ward in wards)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(ward.WardId))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(ward.ToolName))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(ward.PlacedAt.ToString("u")))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(ward.ExpiresAt.ToString("u")))));
-
         }
 
         AnsiConsole.Write(table);
@@ -59,7 +55,6 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -68,12 +63,10 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// <param name="id">Ward ID.</param>
     public async Task<int> Get(string id, CancellationToken cancellationToken)
     {
-
         Result<WardDto> result = await apiClient.GetWardAsync(id, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             if (string.Equals(result.Error.Code, "Ward.NotFound", StringComparison.Ordinal))
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Ward not found.")));
@@ -83,8 +76,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             }
 
-            return 1;
-
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         WardDto ward = result.Value;
@@ -121,7 +113,6 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
         AnsiConsole.Write(panel);
 
         return 0;
-
     }
 
     /// <summary>
@@ -138,7 +129,6 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
         string? reason = null,
         CancellationToken cancellationToken = default)
     {
-
         if (allow == deny)
         {
             CliErrorOutput.WriteMarkupLine(
@@ -153,7 +143,6 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         if (result.IsFailure)
         {
-
             if (string.Equals(result.Error.Code, "Ward.NotFound", StringComparison.Ordinal))
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Ward not found.")));
@@ -167,8 +156,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
             }
 
-            return 1;
-
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         WardResolutionDto resolution = result.Value;
@@ -179,7 +167,5 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
             themePalette.HighlightLabelMarkup(Markup.Escape("Ward resolved:"), Markup.Escape($"{resolution.WardId} ({verb})")));
 
         return 0;
-
     }
-
 }

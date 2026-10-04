@@ -1214,6 +1214,49 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.True(committed.RootElement.GetProperty("releasedErasureFingerprint").GetBoolean());
     }
 
+    /// <summary>
+    /// An unreachable host is exit 3 for every Covenant verb, in text and under <c>--json</c>.
+    /// </summary>
+    /// <remarks>
+    /// Only the two erase verbs classified a <c>Connection.*</c> failure, so a wrapper that retries on
+    /// 3 saw "the host is down" from <c>erase</c> and a generic failure from the other ten.
+    /// </remarks>
+    [Theory]
+    [InlineData("set")]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("pin")]
+    [InlineData("unpin")]
+    [InlineData("mask")]
+    [InlineData("unmask")]
+    [InlineData("list")]
+    [InlineData("search")]
+    [InlineData("show")]
+    [InlineData("show-history")]
+    public async Task Host_unreachable_exits_3_for_every_verb(string verb)
+    {
+        RecordingHandler handler = new() { Unreachable = true };
+
+        string[] args = verb switch
+        {
+            "list" => ["memory", "covenant", "list", "--json"],
+            "search" => ["memory", "covenant", "search", "builds", "--json"],
+            "show" => ["memory", "covenant", "show", "preference.builds", "--json"],
+            "show-history" => ["memory", "covenant", "show", "preference.builds", "--history", "--json"],
+            _ => Invocation(verb, approve: "--yes"),
+        };
+
+        CliTestResult result = await RunCliAsync(handler, args);
+
+        Assert.True(
+            result.ExitCode == (int)CliExitCode.NetworkError,
+            $"exit {result.ExitCode}; stdout: {result.Output}; stderr: {result.Error}");
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal((int)CliExitCode.NetworkError, document.RootElement.GetProperty("exitCode").GetInt32());
+    }
+
     private static readonly Guid MaskCampaignId = new("55555555-5555-4555-8555-555555555555");
 
     private string[] Invocation(string verb, string? approve)
@@ -1544,6 +1587,9 @@ public sealed class CovenantCommandTests : IDisposable
         /// </remarks>
         internal List<string> Bodies { get; } = [];
 
+        /// <summary>Whether every request fails the way a refused connection does.</summary>
+        internal bool Unreachable { get; init; }
+
         internal bool EmptyList { get; init; }
 
         /// <summary>Whether the stubbed detail is a Campaign key with no entry, carrying only curation.</summary>
@@ -1583,6 +1629,11 @@ public sealed class CovenantCommandTests : IDisposable
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            if (Unreachable)
+            {
+                throw new HttpRequestException("Connection refused");
+            }
+
             string path = request.RequestUri!.AbsolutePath;
 
             Requests.Add($"{request.Method} {path}");

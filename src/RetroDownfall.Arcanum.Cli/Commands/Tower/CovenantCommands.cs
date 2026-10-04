@@ -40,7 +40,6 @@ public sealed class CovenantCommands(
     ICliInvocationContext invocationContext,
     IOptions<ArcanumSettings> settings)
 {
-
     /// <summary>
     /// The page size every cursor walk asks for.
     /// </summary>
@@ -73,14 +72,11 @@ public sealed class CovenantCommands(
         bool reactivate,
         CancellationToken cancellationToken)
     {
-
         Result<string> content = await AuthoredContentReader.ReadAsync(file, "Covenant", emptyContentRemedy: null, cancellationToken).ConfigureAwait(false);
 
         if (content.IsFailure)
         {
-
             return Fail(content.Error, CliExitCode.ConfigurationError);
-
         }
 
         Guid mutationId = Guid.CreateVersion7();
@@ -102,25 +98,19 @@ public sealed class CovenantCommands(
 
         if (prepared.IsFailure)
         {
-
-            return Fail(prepared.Error, CliExitCode.GenericError);
-
+            return Fail(prepared.Error);
         }
 
         if (RevisionConflict(prepared.Value, "write") is { } writeConflict)
         {
-
             return writeConflict;
-
         }
 
         if (!await ConfirmAsync(prepared.Value, "Write", cancellationToken).ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic("Covenant write cancelled.");
 
             return (int)CliExitCode.Success;
-
         }
 
         Result<CovenantMutationResultDto> committed = await apiClient
@@ -138,7 +128,6 @@ public sealed class CovenantCommands(
             .ConfigureAwait(false);
 
         return WriteMutation(committed);
-
     }
 
     public async Task<int> Retire(
@@ -148,7 +137,6 @@ public sealed class CovenantCommands(
         long expectedRevision,
         CancellationToken cancellationToken)
     {
-
         Guid mutationId = Guid.CreateVersion7();
 
         CovenantScope scope = campaignId is null ? CovenantScope.Global : CovenantScope.Campaign;
@@ -161,25 +149,19 @@ public sealed class CovenantCommands(
 
         if (prepared.IsFailure)
         {
-
-            return Fail(prepared.Error, CliExitCode.GenericError);
-
+            return Fail(prepared.Error);
         }
 
         if (RevisionConflict(prepared.Value, "retirement") is { } retireConflict)
         {
-
             return retireConflict;
-
         }
 
         if (!await ConfirmAsync(prepared.Value, "Retire", cancellationToken).ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic("Covenant retirement cancelled.");
 
             return (int)CliExitCode.Success;
-
         }
 
         Result<CovenantMutationResultDto> committed = await apiClient
@@ -196,7 +178,6 @@ public sealed class CovenantCommands(
             .ConfigureAwait(false);
 
         return WriteMutation(committed);
-
     }
 
     /// <summary>
@@ -216,14 +197,11 @@ public sealed class CovenantCommands(
         string targetRenderedHash,
         CancellationToken cancellationToken)
     {
-
         Result<string> content = await AuthoredContentReader.ReadAsync(file, "Covenant", emptyContentRemedy: null, cancellationToken).ConfigureAwait(false);
 
         if (content.IsFailure)
         {
-
             return Fail(content.Error, CliExitCode.ConfigurationError);
-
         }
 
         Guid mutationId = Guid.CreateVersion7();
@@ -247,25 +225,19 @@ public sealed class CovenantCommands(
 
         if (prepared.IsFailure)
         {
-
-            return Fail(prepared.Error, CliExitCode.GenericError);
-
+            return Fail(prepared.Error);
         }
 
         if (RevisionConflict(prepared.Value, "correction") is { } conflict)
         {
-
             return conflict;
-
         }
 
         if (!await ConfirmAsync(prepared.Value, "Correct", cancellationToken).ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic("Covenant correction cancelled.");
 
             return (int)CliExitCode.Success;
-
         }
 
         Result<CovenantMutationResultDto> committed = await apiClient
@@ -285,7 +257,6 @@ public sealed class CovenantCommands(
             .ConfigureAwait(false);
 
         return WriteMutation(committed);
-
     }
 
     /// <summary>
@@ -304,7 +275,6 @@ public sealed class CovenantCommands(
         long expectedRevision,
         CancellationToken cancellationToken)
     {
-
         Guid mutationId = Guid.CreateVersion7();
 
         CovenantScope scope = campaignId is null ? CovenantScope.Global : CovenantScope.Campaign;
@@ -317,25 +287,19 @@ public sealed class CovenantCommands(
 
         if (prepared.IsFailure)
         {
-
-            return Fail(prepared.Error, CliExitCode.GenericError);
-
+            return Fail(prepared.Error);
         }
 
         if (CurationRevisionConflict(prepared.Value) is { } conflict)
         {
-
             return conflict;
-
         }
 
         if (!await ConfirmCurationAsync(prepared.Value, cancellationToken).ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic($"Covenant {kind.ToString().ToLowerInvariant()} cancelled.");
 
             return (int)CliExitCode.Success;
-
         }
 
         Result<CovenantCurationResultDto> committed = await apiClient
@@ -353,7 +317,6 @@ public sealed class CovenantCommands(
             .ConfigureAwait(false);
 
         return WriteCuration(committed);
-
     }
 
     /// <summary>
@@ -376,7 +339,6 @@ public sealed class CovenantCommands(
         CovenantLifecycle lifecycle,
         CancellationToken cancellationToken)
     {
-
         CovenantCursorScopeSelection selection = allScopes
             ? CovenantCursorScopeSelection.AllScopes
             : campaignId is null
@@ -393,7 +355,6 @@ public sealed class CovenantCommands(
 
         while (true)
         {
-
             Result<CovenantPageDto> page = await apiClient
                 .ListCovenantAsync(
                     new CovenantListRequest(
@@ -409,42 +370,34 @@ public sealed class CovenantCommands(
 
             if (page.IsFailure)
             {
-
-                return Fail(page.Error, CliExitCode.GenericError);
-
+                return Fail(page.Error);
             }
 
             items.AddRange(page.Value.Items);
 
             if (page.Value.NextCursor is not { Length: > 0 } next)
             {
-
                 last = page.Value;
 
                 stalled = false;
 
                 break;
-
             }
 
             if (string.Equals(next, cursor, StringComparison.Ordinal))
             {
-
                 last = page.Value;
 
                 stalled = true;
 
                 break;
-
             }
 
             cursor = next;
-
         }
 
         if (invocationContext.Options.Json)
         {
-
             // The last page's own search health is carried through rather than invented. Only the
             // entries and the continuation are this loop's to replace: it holds every page, so there
             // is nothing left for a caller to continue from.
@@ -458,35 +411,27 @@ public sealed class CovenantCommands(
                 CliJsonContext.Default.CovenantListPayload);
 
             return (int)CliExitCode.Success;
-
         }
 
         if (items.Count == 0)
         {
-
             dispatcher.WritePayload("No Covenant entries in that scope.");
 
             return (int)CliExitCode.Success;
-
         }
 
         foreach (CovenantHeadDto item in items)
         {
-
             dispatcher.WritePayload(
                 $"{item.Key}  [{item.Lane}]  revision {item.LaneRevision}  {item.CompiledByteCost} bytes  {item.Origin}");
-
         }
 
         if (stalled)
         {
-
             dispatcher.WriteDiagnostic("The server stopped advancing its cursor; this listing is incomplete.");
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     public async Task<int> Search(
@@ -529,7 +474,7 @@ public sealed class CovenantCommands(
 
             if (page.IsFailure)
             {
-                return Fail(page.Error, CliExitCode.GenericError);
+                return Fail(page.Error);
             }
 
             items.AddRange(page.Value.Items);
@@ -609,7 +554,6 @@ public sealed class CovenantCommands(
 
     public async Task<int> Show(string key, Guid? campaignId, bool history, CancellationToken cancellationToken)
     {
-
         Result<CovenantDetailDto> detail = await apiClient
             .ShowCovenantAsync(
                 new CovenantDetailRequest(
@@ -621,9 +565,7 @@ public sealed class CovenantCommands(
 
         if (detail.IsFailure)
         {
-
-            return Fail(detail.Error, CliExitCode.GenericError);
-
+            return Fail(detail.Error);
         }
 
         // A host older than the curation members leaves them out, and the source-generated reader
@@ -635,7 +577,6 @@ public sealed class CovenantCommands(
 
         if (invocationContext.Options.Json)
         {
-
             List<CovenantVersionDto> versions = [];
 
             // The documented payload carries a history member, so the flag that fills it has to be
@@ -643,22 +584,16 @@ public sealed class CovenantCommands(
             // history would be a payload that answers a question nobody asked.
             if (history && detail.Value.EntryId is { } historyEntryId)
             {
-
                 foreach (CovenantLane lane in Lanes(detail.Value))
                 {
-
                     int read = await ReadHistoryAsync(historyEntryId, lane, versions, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (read != (int)CliExitCode.Success)
                     {
-
                         return read;
-
                     }
-
                 }
-
             }
 
             dispatcher.WriteJson(
@@ -675,12 +610,10 @@ public sealed class CovenantCommands(
                 CliJsonContext.Default.CovenantShowPayload);
 
             return (int)CliExitCode.Success;
-
         }
 
         if (detail.Value.EntryId is null)
         {
-
             dispatcher.WritePayload($"No Covenant entry under '{key}' in that scope.");
 
             // A scope can curate a key it holds no entry for: a Campaign mask over a Global key is
@@ -689,15 +622,12 @@ public sealed class CovenantCommands(
             if (confirmedCuration != CovenantCurationStateDto.None
                 || proposedCuration != CovenantCurationStateDto.None)
             {
-
                 WriteHead("Confirmed", null, confirmedCuration);
 
                 WriteHead("Proposed", null, proposedCuration);
-
             }
 
             return (int)CliExitCode.Success;
-
         }
 
         WriteHead("Confirmed", detail.Value.Confirmed, confirmedCuration);
@@ -706,9 +636,7 @@ public sealed class CovenantCommands(
 
         if (!history)
         {
-
             return (int)CliExitCode.Success;
-
         }
 
         // Only lanes that have a head are asked about. A version page is keyed by entry and lane, and
@@ -716,7 +644,6 @@ public sealed class CovenantCommands(
         // installation read to be told nothing.
         foreach (CovenantLane lane in Lanes(detail.Value))
         {
-
             int written = await WriteHistoryAsync(
                     detail.Value.EntryId.Value,
                     lane,
@@ -725,34 +652,24 @@ public sealed class CovenantCommands(
 
             if (written != (int)CliExitCode.Success)
             {
-
                 return written;
-
             }
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     private static IEnumerable<CovenantLane> Lanes(CovenantDetailDto detail)
     {
-
         if (detail.Confirmed is not null)
         {
-
             yield return CovenantLane.Confirmed;
-
         }
 
         if (detail.Proposed is not null)
         {
-
             yield return CovenantLane.Proposed;
-
         }
-
     }
 
     /// <summary>
@@ -770,7 +687,6 @@ public sealed class CovenantCommands(
         CovenantLane lane,
         CancellationToken cancellationToken)
     {
-
         dispatcher.WritePayload($"{lane} history:");
 
         List<CovenantVersionDto> versions = [];
@@ -779,23 +695,18 @@ public sealed class CovenantCommands(
 
         if (read != (int)CliExitCode.Success)
         {
-
             return read;
-
         }
 
         foreach (CovenantVersionDto version in versions)
         {
-
             dispatcher.WritePayload(
                 $"  revision {version.LaneRevision}  version {version.VersionId:D}  {version.Operation}  "
                 + $"{version.Origin}  {version.CompiledByteCost} bytes  hash {version.RenderedHash ?? "none"}  "
                 + $"mutation {version.MutationId}  {version.CreatedAtUtc:u}");
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -811,12 +722,10 @@ public sealed class CovenantCommands(
         List<CovenantVersionDto> into,
         CancellationToken cancellationToken)
     {
-
         string? cursor = null;
 
         while (true)
         {
-
             Result<CovenantVersionPageDto> page = await apiClient
                 .ListCovenantVersionsAsync(
                     new CovenantVersionsRequest(entryId, lane, PageSize, cursor),
@@ -825,9 +734,7 @@ public sealed class CovenantCommands(
 
             if (page.IsFailure)
             {
-
-                return Fail(page.Error, CliExitCode.GenericError);
-
+                return Fail(page.Error);
             }
 
             into.AddRange(page.Value.Items);
@@ -835,15 +742,11 @@ public sealed class CovenantCommands(
             if (page.Value.NextCursor is not { Length: > 0 } next
                 || string.Equals(next, cursor, StringComparison.Ordinal))
             {
-
                 return (int)CliExitCode.Success;
-
             }
 
             cursor = next;
-
         }
-
     }
 
     /// <summary>
@@ -861,7 +764,6 @@ public sealed class CovenantCommands(
     /// </remarks>
     private void WriteHead(string label, CovenantHeadDto? head, CovenantCurationStateDto curation)
     {
-
         // An absent lane is reported, not skipped. "There is no Proposed entry" and "I did not look"
         // are different answers, and silence would read as the second.
         dispatcher.WritePayload(head is null
@@ -872,7 +774,6 @@ public sealed class CovenantCommands(
         dispatcher.WritePayload(
             $"  Curation: {(curation.IsPinned ? "pinned" : "not pinned")}, "
             + $"{(curation.IsMasked ? "masked" : "not masked")}, curation revision {curation.Revision}");
-
     }
 
     /// <summary>
@@ -921,12 +822,9 @@ public sealed class CovenantCommands(
     /// </remarks>
     private int? RevisionConflict(CovenantMutationPreflightDto preflight, string noun)
     {
-
         if (preflight.ExpectedLaneRevision == preflight.CurrentLaneRevision)
         {
-
             return null;
-
         }
 
         dispatcher.WriteDiagnostic(
@@ -937,7 +835,6 @@ public sealed class CovenantCommands(
             $"Re-run with --expected-revision {preflight.CurrentLaneRevision} to act on what is there now.");
 
         return (int)CliExitCode.ConfigurationError;
-
     }
 
     /// <summary>
@@ -963,16 +860,12 @@ public sealed class CovenantCommands(
         string verb,
         CancellationToken cancellationToken)
     {
-
         if (invocationContext.Options.Json)
         {
-
             WritePlan(preflight);
-
         }
         else
         {
-
             dispatcher.WritePayload(
                 $"{verb} '{preflight.NormalizedKey}' in the {preflight.Lane} lane, {preflight.Scope} scope.");
 
@@ -980,31 +873,24 @@ public sealed class CovenantCommands(
 
             if (preflight.CompiledByteCost is { } cost)
             {
-
                 dispatcher.WritePayload($"  Compiled cost:    {cost} bytes");
-
             }
 
             if (preflight.RenderedHash is { } hash)
             {
-
                 dispatcher.WritePayload($"  Rendered hash:    {hash}");
-
             }
 
             dispatcher.WritePayload($"  Affects:          {preflight.Effect.AffectedCampaignCount} Campaign(s)");
 
             if (preflight.Effect.AppliesToFutureCampaigns)
             {
-
                 dispatcher.WritePayload("  Also applies to Campaigns created later.");
-
             }
 
             // Releasing a fingerprint is the unsafe direction, so it is part of what is approved.
             switch (preflight.Effect.ReleasesErasureFingerprint)
             {
-
                 case true:
 
                     dispatcher.WritePayload("  Releases an erasure fingerprint: agents may write this key in this scope again.");
@@ -1016,15 +902,12 @@ public sealed class CovenantCommands(
                     dispatcher.WritePayload($"  {UncheckedFingerprints}");
 
                     break;
-
             }
-
         }
 
         return await confirmationPrompt
             .PromptForConfirmationAsync($"{verb} this Covenant entry?", cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1063,17 +946,13 @@ public sealed class CovenantCommands(
 
     private int WriteMutation(Result<CovenantMutationResultDto> committed)
     {
-
         if (committed.IsFailure)
         {
-
-            return Fail(committed.Error, CliExitCode.GenericError);
-
+            return Fail(committed.Error);
         }
 
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 new CovenantMutationResultPayload(
                     committed.Value.MutationId,
@@ -1089,7 +968,6 @@ public sealed class CovenantCommands(
                 CliJsonContext.Default.CovenantMutationResultPayload);
 
             return (int)CliExitCode.Success;
-
         }
 
         dispatcher.WritePayload(committed.Value.Replayed
@@ -1098,7 +976,6 @@ public sealed class CovenantCommands(
 
         switch (committed.Value.ReleasedErasureFingerprint)
         {
-
             case true:
 
                 dispatcher.WritePayload("Released an erasure fingerprint for this key.");
@@ -1110,11 +987,9 @@ public sealed class CovenantCommands(
                 dispatcher.WritePayload(UncheckedFingerprints);
 
                 break;
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -1132,10 +1007,8 @@ public sealed class CovenantCommands(
         CovenantCurationPreflightDto preflight,
         CancellationToken cancellationToken)
     {
-
         if (!invocationContext.Options.Json)
         {
-
             dispatcher.WritePayload(
                 $"{preflight.Kind} '{preflight.NormalizedKey}' in the {preflight.Lane} lane, {preflight.Scope} scope.");
 
@@ -1145,31 +1018,23 @@ public sealed class CovenantCommands(
 
             if (!preflight.ChangesAnything)
             {
-
                 dispatcher.WritePayload("  This subject is already in that state; committing records the request and changes nothing.");
-
             }
 
             if (preflight.GlobalConfirmedSuppressed)
             {
-
                 dispatcher.WritePayload("  The Global entry for this key stops applying in this Campaign, and nothing replaces it.");
-
             }
 
             if (preflight.GlobalConfirmedResurfaces)
             {
-
                 dispatcher.WritePayload("  The Global entry for this key starts applying in this Campaign again.");
-
             }
-
         }
 
         return await confirmationPrompt
             .PromptForConfirmationAsync($"{preflight.Kind} this Covenant subject?", cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1192,21 +1057,16 @@ public sealed class CovenantCommands(
 
     private int WriteCuration(Result<CovenantCurationResultDto> committed)
     {
-
         if (committed.IsFailure)
         {
-
-            return Fail(committed.Error, CliExitCode.GenericError);
-
+            return Fail(committed.Error);
         }
 
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(committed.Value, ArcanumJsonContext.Default.CovenantCurationResultDto);
 
             return (int)CliExitCode.Success;
-
         }
 
         dispatcher.WritePayload(committed.Value.Replayed
@@ -1214,7 +1074,6 @@ public sealed class CovenantCommands(
             : $"{committed.Value.Outcome}: '{committed.Value.NormalizedKey}' is now pinned={committed.Value.IsPinned}, masked={committed.Value.IsMasked}.");
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -1236,7 +1095,6 @@ public sealed class CovenantCommands(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-
         CovenantScope scope = campaignId is null ? CovenantScope.Global : CovenantScope.Campaign;
 
         Result<CovenantDetailDto> detail = await apiClient
@@ -1245,18 +1103,14 @@ public sealed class CovenantCommands(
 
         if (detail.IsFailure)
         {
-
-            return Fail(detail.Error, (CliExitCode)CliFailureExit.ExitCode(detail.Error));
-
+            return Fail(detail.Error);
         }
 
         if (detail.Value.EntryId is not { } entryId)
         {
-
             return Fail(
                 new Error(ErrorCodes.Covenant.NotFound, $"Covenant key '{key}' has no entry to erase in this scope."),
                 CliExitCode.GenericError);
-
         }
 
         Guid mutationId = Guid.CreateVersion7();
@@ -1276,9 +1130,7 @@ public sealed class CovenantCommands(
 
         if (prepared.IsFailure)
         {
-
-            return Fail(prepared.Error, (CliExitCode)CliFailureExit.ExitCode(prepared.Error));
-
+            return Fail(prepared.Error);
         }
 
         MemoryErasureRenderer.WritePreflight(dispatcher, prepared.Value, invocationContext.Options.Json);
@@ -1294,20 +1146,16 @@ public sealed class CovenantCommands(
                     cancellationToken)
                 .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic($"{MemoryReviewStore.Covenant} erasure cancelled.");
 
             if (invocationContext.Options.Json)
             {
-
                 dispatcher.WriteJson(
                     new MemoryErasureCancellationPayload("erase", MemoryReviewStore.Covenant, mutationId, Cancelled: true),
                     CliJsonContext.Default.MemoryErasureCancellationPayload);
-
             }
 
             return (int)CliExitCode.Success;
-
         }
 
         // A cancellation that lands before the apply is sent cancels an erase that never started, and
@@ -1318,7 +1166,6 @@ public sealed class CovenantCommands(
 
         try
         {
-
             erased = await apiClient
                 .EraseCovenantEntryAsync(
                     new CovenantEraseRequest(
@@ -1332,50 +1179,38 @@ public sealed class CovenantCommands(
                         prepared.Value.PreflightToken),
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             // The host completes the erase's disposition whatever the caller does, so Ctrl-C after the
             // request went out keeps the cancellation exit and says the erase may still have happened.
             MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
 
             throw;
-
         }
 
         if (erased.IsFailure)
         {
-
-            int failed = Fail(erased.Error, (CliExitCode)CliFailureExit.ExitCode(erased.Error));
+            int failed = Fail(erased.Error);
 
             if (ArcanumApiClient.ErasureOutcomeUnknown(erased.Error))
             {
-
                 MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
-
             }
 
             return failed;
-
         }
 
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(erased.Value, ArcanumJsonContext.Default.MemoryErasureResultDto);
-
         }
         else
         {
-
             MemoryErasureRenderer.WriteResult(dispatcher, erased.Value);
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -1394,7 +1229,6 @@ public sealed class CovenantCommands(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-
         CovenantErasureReleaseRequest request = new(
             campaignId is null ? CovenantScope.Global : CovenantScope.Campaign,
             campaignId,
@@ -1402,9 +1236,7 @@ public sealed class CovenantCommands(
 
         if (request.Validate() is { IsFailure: true } invalid)
         {
-
             return Fail(invalid.Error, CliExitCode.ConfigurationError);
-
         }
 
         string scopeText = campaignId is { } campaign ? $"Campaign {campaign:D}" : "Global";
@@ -1423,20 +1255,16 @@ public sealed class CovenantCommands(
                     cancellationToken)
                 .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic($"{MemoryReviewStore.Covenant} release cancelled; nothing was released.");
 
             if (invocationContext.Options.Json)
             {
-
                 dispatcher.WriteJson(
                     new MemoryErasureCancellationPayload("release", MemoryReviewStore.Covenant, MutationId: null, Cancelled: true),
                     CliJsonContext.Default.MemoryErasureCancellationPayload);
-
             }
 
             return (int)CliExitCode.Success;
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -1447,62 +1275,47 @@ public sealed class CovenantCommands(
 
         try
         {
-
             released = await apiClient
                 .ReleaseCovenantErasureAsync(request, cancellationToken, () => resent = true)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             MemoryCommands.WriteUnconfirmedRelease(dispatcher);
 
             throw;
-
         }
 
         if (released.IsFailure)
         {
-
-            int failed = Fail(released.Error, (CliExitCode)CliFailureExit.ExitCode(released.Error));
+            int failed = Fail(released.Error);
 
             MemoryCommands.WriteReleaseRefusalGuidance(dispatcher, released.Error);
 
             if (resent)
             {
-
                 MemoryErasureRenderer.WriteResent(dispatcher, "release");
-
             }
 
             return failed;
-
         }
 
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(released.Value, ArcanumJsonContext.Default.MemoryErasureReleaseResultDto);
-
         }
         else
         {
-
             MemoryErasureRenderer.WriteReleaseResult(dispatcher, released.Value);
-
         }
 
         if (resent)
         {
-
             // The answer just rendered describes the resend: the first attempt may already have released.
             MemoryErasureRenderer.WriteResent(dispatcher, "release");
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>The exact lane head an erase requires still to be current, or none for an empty lane.</summary>
@@ -1518,24 +1331,26 @@ public sealed class CovenantCommands(
     /// </remarks>
     private CovenantExternalRetentionDisclosureWriter DisclosureWriter => new(dispatcher, settings);
 
+    /// <summary>
+    /// Fails a host <see cref="Result"/>: a <c>Connection.*</c> error exits 3 so automation can tell an
+    /// unreachable host from a domain failure; every other host error keeps the generic exit code.
+    /// </summary>
+    private int Fail(Error error) =>
+        Fail(error, (CliExitCode)CliFailureExit.ExitCode(error));
+
     private int Fail(Error error, CliExitCode exitCode)
     {
-
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 new CliErrorPayload(error.Message, (int)exitCode),
                 CliJsonContext.Default.CliErrorPayload);
 
             return (int)exitCode;
-
         }
 
         dispatcher.WriteDiagnostic(error.Message);
 
         return (int)exitCode;
-
     }
-
 }

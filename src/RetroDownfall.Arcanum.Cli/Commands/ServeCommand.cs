@@ -47,7 +47,7 @@ public sealed class ServeCommand(
                         $"Could not stop the Arcanum host: {result.Error.Message} "
                         + "If no host is running there is nothing to stop.")));
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(

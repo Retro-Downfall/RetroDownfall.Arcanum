@@ -23,7 +23,6 @@ public sealed class WebWorkflowCommands(
     IConsoleDispatcher dispatcher,
     ICliResourceCatalog resources)
 {
-
     public async Task<int> Search(
         string query,
         int count,
@@ -34,23 +33,19 @@ public sealed class WebWorkflowCommands(
         string? attachToSession,
         CancellationToken cancellationToken)
     {
-
         SessionSelection attachment = await ResolveSessionAsync(
             attachToSession,
             cancellationToken).ConfigureAwait(false);
 
         if (!attachment.Success)
         {
-
             return attachment.Cancelled ? 0 : 1;
-
         }
 
         Result<WebSearchWorkflowResult> response = await apiClient
             .SearchWebAsync(
                 new WebSearchWorkflowRequest
                 {
-
                     Query = query,
 
                     ResultCount = count,
@@ -62,16 +57,13 @@ public sealed class WebWorkflowCommands(
                     ExcludeDomains = excludeDomains,
 
                     AttachToSessionId = attachment.Id,
-
                 },
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (response.IsFailure)
         {
-
             return WriteError(response.Error);
-
         }
 
         string markdown = FormatAnswer(
@@ -81,24 +73,18 @@ public sealed class WebWorkflowCommands(
         if (!await SaveAsync(save, markdown, cancellationToken)
             .ConfigureAwait(false))
         {
-
             return 1;
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 response.Value,
                 ArcanumJsonContext.Default.WebSearchWorkflowResult);
-
         }
         else
         {
-
             dispatcher.WritePayload(markdown);
-
         }
 
         WriteAttachmentDiagnostic(
@@ -106,7 +92,6 @@ public sealed class WebWorkflowCommands(
             response.Value.AttachmentError);
 
         return 0;
-
     }
 
     public async Task<int> Browse(
@@ -116,38 +101,31 @@ public sealed class WebWorkflowCommands(
         string? attachToSession,
         CancellationToken cancellationToken)
     {
-
         SessionSelection attachment = await ResolveSessionAsync(
             attachToSession,
             cancellationToken).ConfigureAwait(false);
 
         if (!attachment.Success)
         {
-
             return attachment.Cancelled ? 0 : 1;
-
         }
 
         Result<WebBrowseWorkflowResult> response = await apiClient
             .BrowseWebAsync(
                 new WebBrowseWorkflowRequest
                 {
-
                     Url = url,
 
                     RenderMode = renderMode,
 
                     AttachToSessionId = attachment.Id,
-
                 },
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (response.IsFailure)
         {
-
             return WriteError(response.Error);
-
         }
 
         if (!await SaveAsync(
@@ -156,24 +134,18 @@ public sealed class WebWorkflowCommands(
                 cancellationToken)
             .ConfigureAwait(false))
         {
-
             return 1;
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 response.Value,
                 ArcanumJsonContext.Default.WebBrowseWorkflowResult);
-
         }
         else
         {
-
             dispatcher.WritePayload(response.Value.Markdown);
-
         }
 
         WriteAttachmentDiagnostic(
@@ -181,7 +153,6 @@ public sealed class WebWorkflowCommands(
             response.Value.AttachmentError);
 
         return 0;
-
     }
 
     public async Task<int> Research(
@@ -202,16 +173,13 @@ public sealed class WebWorkflowCommands(
         bool unattendedMode,
         CancellationToken cancellationToken)
     {
-
         SessionSelection continuation = await ResolveSessionAsync(
             continueSession,
             cancellationToken).ConfigureAwait(false);
 
         if (!continuation.Success)
         {
-
             return continuation.Cancelled ? 0 : 1;
-
         }
 
         SessionSelection attachment = await ResolveSessionAsync(
@@ -220,9 +188,7 @@ public sealed class WebWorkflowCommands(
 
         if (!attachment.Success)
         {
-
             return attachment.Cancelled ? 0 : 1;
-
         }
 
         string format = CliInvocationContext.Current.Json
@@ -231,12 +197,10 @@ public sealed class WebWorkflowCommands(
 
         if (format is not ("terminal" or "markdown" or "json"))
         {
-
             dispatcher.WriteDiagnostic(
                 "--format must be terminal, markdown, or json.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         WebResearchWorkflowResult? result = null;
@@ -245,7 +209,6 @@ public sealed class WebWorkflowCommands(
             .ResearchWebAsync(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = question,
 
                     SourceTarget = sourceTarget,
@@ -291,24 +254,19 @@ public sealed class WebWorkflowCommands(
                     FrequencyPenalty = inferenceFlags?.FrequencyPenalty,
 
                     UnattendedMode = unattendedMode,
-
                 },
                 cancellationToken)
             .ConfigureAwait(false))
         {
-
             switch (frame.Type)
             {
-
                 case WebResearchStreamFrameType.Limits:
 
                 case WebResearchStreamFrameType.Progress:
 
                     if (!string.IsNullOrWhiteSpace(frame.Message))
                     {
-
                         dispatcher.WriteDiagnostic(frame.Message);
-
                     }
 
                     break;
@@ -327,7 +285,7 @@ public sealed class WebWorkflowCommands(
                         $"{frame.Code ?? ErrorCodes.WebResearch.ProviderUnavailable}: "
                         + CliStreamTransportHint.Append(frame.Code, frame.Message ?? "Research failed."));
 
-                    return 1;
+                    return CliFailureExit.ExitCode(frame.Code);
 
                 default:
 
@@ -335,19 +293,15 @@ public sealed class WebWorkflowCommands(
                         "The API returned an unknown research progress frame.");
 
                     return 1;
-
             }
-
         }
 
         if (result is null)
         {
-
             dispatcher.WriteDiagnostic(
                 CliStreamTransportHint.Append(ArcanumApiClient.StreamEmptyResultMessage));
 
             return 1;
-
         }
 
         string markdown = FormatAnswer(result.Answer, result.Citations);
@@ -355,30 +309,22 @@ public sealed class WebWorkflowCommands(
         if (!await SaveAsync(save, markdown, cancellationToken)
             .ConfigureAwait(false))
         {
-
             return 1;
-
         }
 
         if (format == "json")
         {
-
             dispatcher.WriteJson(
                 result,
                 ArcanumJsonContext.Default.WebResearchWorkflowResult);
-
         }
         else if (format == "markdown")
         {
-
             dispatcher.WritePayload(markdown);
-
         }
         else
         {
-
             dispatcher.WritePayload(FormatTerminal(result));
-
         }
 
         // Research streams, so a failed attachment already arrived as its own `attachment_failed`
@@ -388,26 +334,20 @@ public sealed class WebWorkflowCommands(
         WriteAttachmentDiagnostic(result.AttachmentId, attachmentError: null);
 
         return 0;
-
     }
 
     private async Task<SessionSelection> ResolveSessionAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(identifier))
         {
-
             return new SessionSelection(true, false, null);
-
         }
 
         if (Guid.TryParse(identifier, out Guid id))
         {
-
             return new SessionSelection(true, false, id);
-
         }
 
         ResourceSelectionResult<SessionSummaryDto> selection =
@@ -417,26 +357,21 @@ public sealed class WebWorkflowCommands(
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return new SessionSelection(false, true, null);
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
             dispatcher.WriteDiagnostic(
                 selection.Error ?? "Session selection failed.");
 
             return default;
-
         }
 
         return new SessionSelection(
             true,
             false,
             selection.Value!.Id);
-
     }
 
     private async Task<bool> SaveAsync(
@@ -444,17 +379,13 @@ public sealed class WebWorkflowCommands(
         string content,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(path))
         {
-
             return true;
-
         }
 
         try
         {
-
             string fullPath = Path.GetFullPath(path);
 
             string? directory = Path.GetDirectoryName(fullPath);
@@ -462,12 +393,10 @@ public sealed class WebWorkflowCommands(
             if (string.IsNullOrWhiteSpace(directory)
                 || !Directory.Exists(directory))
             {
-
                 dispatcher.WriteDiagnostic(
                     "The --save destination directory does not exist.");
 
                 return false;
-
             }
 
             string temporaryPath = Path.Combine(
@@ -476,7 +405,6 @@ public sealed class WebWorkflowCommands(
 
             try
             {
-
                 await File.WriteAllTextAsync(
                     temporaryPath,
                     content,
@@ -484,30 +412,22 @@ public sealed class WebWorkflowCommands(
                     cancellationToken).ConfigureAwait(false);
 
                 File.Move(temporaryPath, fullPath, overwrite: true);
-
             }
             finally
             {
-
                 if (File.Exists(temporaryPath))
                 {
-
                     File.Delete(temporaryPath);
-
                 }
-
             }
 
             dispatcher.WriteDiagnostic($"Saved {fullPath}");
 
             return true;
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception exception)
             when (exception is IOException
@@ -515,26 +435,20 @@ public sealed class WebWorkflowCommands(
                 or ArgumentException
                 or NotSupportedException)
         {
-
             dispatcher.WriteDiagnostic(
                 $"Could not save the result: {exception.Message}");
 
             return false;
-
         }
-
     }
 
     private static string FormatAnswer(
         string answer,
         IReadOnlyList<WebWorkflowCitation> citations)
     {
-
         if (citations.Count == 0)
         {
-
             return answer;
-
         }
 
         return answer.TrimEnd()
@@ -548,18 +462,14 @@ public sealed class WebWorkflowCommands(
                         + (string.IsNullOrWhiteSpace(citation.Title)
                             ? string.Empty
                             : $" \"{citation.Title}\"")));
-
     }
 
     private static string FormatTerminal(
         WebResearchWorkflowResult result)
     {
-
         if (result.Citations.Length == 0)
         {
-
             return result.Answer;
-
         }
 
         return result.Answer.TrimEnd()
@@ -572,16 +482,13 @@ public sealed class WebWorkflowCommands(
                 result.Citations.Select(
                     static citation =>
                         $"  [{citation.Index}] {citation.Title ?? citation.Url} — {citation.Url}"));
-
     }
 
     private int WriteError(Error error)
     {
-
         dispatcher.WriteDiagnostic($"{error.Code}: {error.Message}");
 
-        return 1;
-
+        return CliFailureExit.ExitCode(error);
     }
 
     /// <summary>
@@ -598,28 +505,21 @@ public sealed class WebWorkflowCommands(
     /// </remarks>
     private void WriteAttachmentDiagnostic(Guid? attachmentId, string? attachmentError)
     {
-
         if (attachmentId is Guid id)
         {
-
             dispatcher.WriteDiagnostic(
                 $"Attached result to session as {id:D}.");
-
         }
 
         if (!string.IsNullOrWhiteSpace(attachmentError))
         {
-
             dispatcher.WriteDiagnostic(
                 $"The result could not be attached to the session: {attachmentError}");
-
         }
-
     }
 
     private readonly record struct SessionSelection(
         bool Success,
         bool Cancelled,
         Guid? Id);
-
 }

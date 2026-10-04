@@ -27,10 +27,8 @@ internal sealed class DataRetentionCommands(
     IConfirmationPrompt confirmationPrompt,
     CovenantExternalRetentionDisclosureWriter disclosureWriter)
 {
-
     public async Task<int> Status(CancellationToken cancellationToken)
     {
-
         Result<DataRetentionStatus> result = await apiClient
             .GetDataRetentionStatusAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -39,12 +37,10 @@ internal sealed class DataRetentionCommands(
             result,
             ArcanumJsonContext.Default.DataRetentionStatus,
             WriteStatus);
-
     }
 
     public async Task<int> RetentionShow(CancellationToken cancellationToken)
     {
-
         Result<RetentionSettings> result = await apiClient
             .GetDataRetentionSettingsAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -53,7 +49,6 @@ internal sealed class DataRetentionCommands(
             result,
             ArcanumJsonContext.Default.RetentionSettings,
             WriteSettings);
-
     }
 
     public async Task<int> RetentionSet(
@@ -61,27 +56,22 @@ internal sealed class DataRetentionCommands(
         string value,
         CancellationToken cancellationToken)
     {
-
         if (!DataRetentionDataClassParser.TryParse(
                 dataClass,
                 out _))
         {
-
             dispatcher.WriteDiagnostic(
                 "<data-class> must name a supported retention data class.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         if (!TryParseRetentionValue(value, out bool enabled, out int days))
         {
-
             dispatcher.WriteDiagnostic(
                 "<days|disabled> must be an integer number of days or 'disabled'.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         if (!await ConfirmMutationAsync(
@@ -89,11 +79,9 @@ internal sealed class DataRetentionCommands(
                 cancellationToken)
             .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic("Retention update cancelled.");
 
             return (int)CliExitCode.Success;
-
         }
 
         RetentionRuleUpdateRequest request = new(
@@ -109,7 +97,6 @@ internal sealed class DataRetentionCommands(
             result,
             ArcanumJsonContext.Default.RetentionSettings,
             WriteSettings);
-
     }
 
     public async Task<int> Prune(
@@ -117,22 +104,18 @@ internal sealed class DataRetentionCommands(
         bool apply,
         CancellationToken cancellationToken)
     {
-
         if (dryRun == apply)
         {
-
             dispatcher.WriteDiagnostic(
                 "Choose exactly one of --dry-run or --apply.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         DataRetentionRequest request = new(DataRetentionOperation.Prune);
 
         if (dryRun)
         {
-
             Result<DataRetentionPlan> plan = await apiClient
                 .PlanDataPruneAsync(request, cancellationToken)
                 .ConfigureAwait(false);
@@ -141,7 +124,6 @@ internal sealed class DataRetentionCommands(
                 plan,
                 ArcanumJsonContext.Default.DataRetentionPlan,
                 WritePlan);
-
         }
 
         Result<DataRetentionPlan> preview = await apiClient
@@ -150,18 +132,14 @@ internal sealed class DataRetentionCommands(
 
         if (preview.IsFailure)
         {
-
             return WriteError(preview.Error);
-
         }
 
         DataRetentionPlan exactPlan = preview.Value;
 
         if (!invocationContext.Options.Json)
         {
-
             WritePlan(exactPlan);
-
         }
 
         if (!await ConfirmMutationAsync(
@@ -172,11 +150,9 @@ internal sealed class DataRetentionCommands(
                 cancellationToken)
             .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic("Retention pruning cancelled.");
 
             return (int)CliExitCode.Success;
-
         }
 
         Result<DataRetentionApplyResult> result = await apiClient
@@ -186,7 +162,6 @@ internal sealed class DataRetentionCommands(
             .ConfigureAwait(false);
 
         return WriteApplyResult(result);
-
     }
 
     public Task<int> DeleteSession(
@@ -217,33 +192,26 @@ internal sealed class DataRetentionCommands(
         string? campaign,
         CancellationToken cancellationToken)
     {
-
         if (!TryParseMemoryScope(scope, out MemoryResetScope parsedScope))
         {
-
             dispatcher.WriteDiagnostic(
                 "--scope must be entry, attachments, workspace, saga, lexicon, or covenant.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Guid? campaignId = null;
 
         if (!string.IsNullOrWhiteSpace(campaign))
         {
-
             if (!Guid.TryParse(campaign, out Guid parsedCampaign))
             {
-
                 dispatcher.WriteDiagnostic("--campaign must be a GUID.");
 
                 return (int)CliExitCode.ConfigurationError;
-
             }
 
             campaignId = parsedCampaign;
-
         }
 
         // Written before the prompt, and before any operation starts. The order is the contract: an
@@ -257,9 +225,7 @@ internal sealed class DataRetentionCommands(
 
         if (preview.IsFailure)
         {
-
             return WriteError(preview.Error);
-
         }
 
         disclosureWriter.Write(preview.Value.Covenant);
@@ -274,7 +240,6 @@ internal sealed class DataRetentionCommands(
                     token),
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async Task<int> ConfirmAndApply(
@@ -283,22 +248,18 @@ internal sealed class DataRetentionCommands(
         Func<CancellationToken, Task<Result<DataRetentionApplyResult>>> action,
         CancellationToken cancellationToken)
     {
-
         if (!await ConfirmMutationAsync(question, cancellationToken)
                 .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic(cancelledMessage);
 
             return (int)CliExitCode.Success;
-
         }
 
         Result<DataRetentionApplyResult> result = await action(cancellationToken)
             .ConfigureAwait(false);
 
         return WriteApplyResult(result);
-
     }
 
     private Task<bool> ConfirmMutationAsync(
@@ -319,34 +280,25 @@ internal sealed class DataRetentionCommands(
         JsonTypeInfo<T> typeInfo,
         Action<T> writeHuman)
     {
-
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(result.Value, typeInfo);
-
         }
         else
         {
-
             writeHuman(result.Value);
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     private void WriteStatus(DataRetentionStatus status)
     {
-
         dispatcher.WritePayload("Data retention status");
 
         dispatcher.WritePayload($"Generated: {status.GeneratedAt:O}");
@@ -358,7 +310,6 @@ internal sealed class DataRetentionCommands(
 
         foreach (DataRetentionStatusItem item in status.Items)
         {
-
             string policy = item.PolicyEnabled
                 ? $"enabled, {item.RetentionDays?.ToString(CultureInfo.InvariantCulture) ?? "unspecified"} days"
                 : "disabled";
@@ -369,33 +320,26 @@ internal sealed class DataRetentionCommands(
                 + $"{FormatCount(item.Files)} files, "
                 + $"{FormatCount(item.EstimatedBytes)} bytes; "
                 + $"policy {policy}; store {item.Store}; provenance {item.Provenance}");
-
         }
 
         if (status.MemoryErasure is { } erasure)
         {
-
             dispatcher.WritePayload(
                 $"Erasure evidence: {FormatCount(erasure.Fingerprints)} fingerprints, "
                 + $"{FormatCount(erasure.Receipts)} receipts, "
                 + $"{FormatCount(erasure.ReceiptSubjects)} subjects; never aged out");
-
         }
 
         if (status.PreservedOutsideSelectedRoot.Length > 0)
         {
-
             dispatcher.WritePayload(
                 "Preserved outside selected root: "
                 + string.Join(", ", status.PreservedOutsideSelectedRoot));
-
         }
-
     }
 
     private void WriteSettings(RetentionSettings settings)
     {
-
         dispatcher.WritePayload("Retention settings");
 
         dispatcher.WritePayload(
@@ -442,7 +386,6 @@ internal sealed class DataRetentionCommands(
         WriteRule("sanctum-breaches", settings.SanctumBreaches);
 
         WriteRule("daemon-history", settings.DaemonHistory);
-
     }
 
     private void WriteRule(
@@ -454,7 +397,6 @@ internal sealed class DataRetentionCommands(
 
     private void WritePlan(DataRetentionPlan plan)
     {
-
         dispatcher.WritePayload($"Prune plan {plan.PlanId}");
 
         dispatcher.WritePayload($"Generated: {plan.GeneratedAt:O}");
@@ -486,39 +428,31 @@ internal sealed class DataRetentionCommands(
 
         foreach (DataRetentionPlanItem item in plan.Items)
         {
-
             dispatcher.WritePayload(
                 $"  {FormatName(item.DataClass)}: "
                 + $"{FormatCount(item.Rows)} rows, "
                 + $"{FormatCount(item.Files)} files, "
                 + $"{FormatCount(item.EstimatedBytes)} bytes, "
                 + $"{FormatCount(item.DerivedRecords)} derived records");
-
         }
 
         foreach (DataRetentionBlocker blocker in plan.Blockers)
         {
-
             dispatcher.WritePayload(
                 $"  Blocked {FormatName(blocker.DataClass)} "
                 + $"{blocker.ResourceId}: {blocker.ReasonCode} - {blocker.Message}");
-
         }
 
         foreach (DataRetentionConflict conflict in plan.Conflicts)
         {
-
             dispatcher.WritePayload(
                 $"  Conflict {conflict.ResourceId}: "
                 + $"{conflict.Code} - {conflict.Message}");
-
         }
-
     }
 
     private void WriteApplySummary(DataRetentionApplyResult result)
     {
-
         dispatcher.WritePayload("Apply complete");
 
         dispatcher.WritePayload($"Operation: {result.OperationId:D}");
@@ -538,22 +472,17 @@ internal sealed class DataRetentionCommands(
 
         foreach (DataRetentionBlocker blocker in result.Blockers)
         {
-
             dispatcher.WritePayload(
                 $"  Blocked {FormatName(blocker.DataClass)} "
                 + $"{blocker.ResourceId}: {blocker.ReasonCode} - {blocker.Message}");
-
         }
 
         foreach (DataRetentionConflict conflict in result.Conflicts)
         {
-
             dispatcher.WritePayload(
                 $"  Conflict {conflict.ResourceId}: "
                 + $"{conflict.Code} - {conflict.Message}");
-
         }
-
     }
 
     private static string FormatCount(long value) =>
@@ -564,38 +493,30 @@ internal sealed class DataRetentionCommands(
 
     private static string FormatName(RetentionDataClass dataClass)
     {
-
         string name = dataClass.ToString();
 
         StringBuilder formatted = new(name.Length + 4);
 
         for (int index = 0; index < name.Length; index++)
         {
-
             char character = name[index];
 
             if (index > 0 && char.IsUpper(character))
             {
-
                 formatted.Append('-');
-
             }
 
             formatted.Append(char.ToLowerInvariant(character));
-
         }
 
         return formatted.ToString();
-
     }
 
     private int WriteError(Error error)
     {
-
         dispatcher.WriteDiagnostic($"{error.Code}: {error.Message}");
 
-        return (int)CliExitCode.GenericError;
-
+        return CliFailureExit.ExitCode(error);
     }
 
     private static bool TryParseRetentionValue(
@@ -603,19 +524,16 @@ internal sealed class DataRetentionCommands(
         out bool enabled,
         out int days)
     {
-
         if (string.Equals(
                 value,
                 "disabled",
                 StringComparison.OrdinalIgnoreCase))
         {
-
             enabled = false;
 
             days = 0;
 
             return true;
-
         }
 
         enabled = true;
@@ -625,14 +543,12 @@ internal sealed class DataRetentionCommands(
             NumberStyles.Integer,
             CultureInfo.InvariantCulture,
             out days);
-
     }
 
     private static bool TryParseMemoryScope(
         string scope,
         out MemoryResetScope parsedScope)
     {
-
         parsedScope = default;
 
         string normalized = scope
@@ -646,7 +562,5 @@ internal sealed class DataRetentionCommands(
             ignoreCase: true,
             out parsedScope)
             && Enum.IsDefined(parsedScope);
-
     }
-
 }

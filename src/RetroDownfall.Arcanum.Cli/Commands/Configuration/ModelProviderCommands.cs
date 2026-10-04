@@ -14,20 +14,18 @@ public sealed class ModelCommands(
     IThemePalette themePalette,
     ICliResourceCatalog? resourceCatalog = null)
 {
-
     /// <summary>
     /// List configured models across all providers (GET /api/models).
     /// </summary>
     public async Task<int> List(CancellationToken cancellationToken)
     {
-
         Result<ModelInfoDto[]> result = await apiClient.GetModelsAsync(cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         Table table = new();
@@ -42,13 +40,11 @@ public sealed class ModelCommands(
 
         foreach (ModelInfoDto model in result.Value)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(model.Model))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(model.ProviderName))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(model.ProviderType))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(model.ContextWindowLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)))));
-
         }
 
         AnsiConsole.Write(table);
@@ -59,7 +55,6 @@ public sealed class ModelCommands(
         }
 
         return 0;
-
     }
 
     public async Task<int> Get(string? identifier, CancellationToken cancellationToken)
@@ -90,7 +85,6 @@ public sealed class ModelCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Type: {model.ProviderType}; context window: {model.ContextWindowLimit}")));
         return 0;
     }
-
 }
 
 /// <summary>
@@ -101,20 +95,18 @@ public sealed class ProviderCommands(
     IThemePalette themePalette,
     ICliResourceCatalog? resourceCatalog = null)
 {
-
     /// <summary>
     /// List configured providers with redacted secrets (GET /api/providers).
     /// </summary>
     public async Task<int> List(CancellationToken cancellationToken)
     {
-
         Result<ProviderInfoDto[]> result = await apiClient.GetProvidersAsync(cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         Table table = new();
@@ -131,14 +123,12 @@ public sealed class ProviderCommands(
 
         foreach (ProviderInfoDto provider in result.Value)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(provider.Name))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(provider.Type))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(provider.Endpoint))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(provider.Models.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(provider.ContextWindowLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)))));
-
         }
 
         AnsiConsole.Write(table);
@@ -149,7 +139,6 @@ public sealed class ProviderCommands(
         }
 
         return 0;
-
     }
 
     public async Task<int> Get(string? identifier, CancellationToken cancellationToken)
@@ -180,5 +169,4 @@ public sealed class ProviderCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Models: {string.Join(", ", provider.Models)}")));
         return 0;
     }
-
 }

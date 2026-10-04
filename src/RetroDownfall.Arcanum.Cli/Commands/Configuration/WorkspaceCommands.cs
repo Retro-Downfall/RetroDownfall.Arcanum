@@ -28,19 +28,15 @@ public sealed class WorkspaceCommands(
     IConsoleDispatcher dispatcher,
     ICliInvocationContext invocationContext)
 {
-
     public async Task<int> List(CancellationToken cancellationToken)
     {
-
         Result<WorkspaceInfo[]> result = await apiClient
             .GetWorkspacesAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         Table table = new();
@@ -55,33 +51,27 @@ public sealed class WorkspaceCommands(
 
         foreach (WorkspaceInfo workspace in result.Value)
         {
-
             table.AddRow(
                 new Markup(themePalette.MutedMarkup(Markup.Escape(workspace.Id))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(workspace.Name))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(workspace.Path))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(workspace.Type.ToString()))));
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Current(CancellationToken cancellationToken)
     {
-
         Result<WorkspaceInfo[]> workspaces = await apiClient
             .GetWorkspacesAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (workspaces.IsFailure)
         {
-
             return WriteError(workspaces.Error);
-
         }
 
         Result<CampaignDto[]> campaigns = await GetAllCampaignsAsync(cancellationToken)
@@ -89,9 +79,7 @@ public sealed class WorkspaceCommands(
 
         if (campaigns.IsFailure)
         {
-
             return WriteError(campaigns.Error);
-
         }
 
         string currentDirectory = Path.GetFullPath(Environment.CurrentDirectory);
@@ -130,24 +118,19 @@ public sealed class WorkspaceCommands(
 
         if (workspace is null)
         {
-
             AnsiConsole.MarkupLine(
                 themePalette.MutedMarkup(
                     "Register this directory with [bold]arcanum workspace register[/]."));
-
         }
 
         if (campaign is null)
         {
-
             AnsiConsole.MarkupLine(
                 themePalette.MutedMarkup(
                     "Campaign operations need a persistent project container. Register one with [bold]arcanum campaign create --name <name> --path <server-path>[/]."));
-
         }
 
         return 0;
-
     }
 
     public async Task<int> Register(
@@ -156,20 +139,17 @@ public sealed class WorkspaceCommands(
         string? type,
         CancellationToken cancellationToken)
     {
-
         string serverPath = string.IsNullOrWhiteSpace(path)
             ? Environment.CurrentDirectory
             : path.Trim();
 
         if (!TryParseWorkspaceType(type, out WorkspaceType workspaceType))
         {
-
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     "--type must be one of: spell, campaign, data, custom."));
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         string workspaceName = string.IsNullOrWhiteSpace(name)
@@ -187,9 +167,7 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(
@@ -198,23 +176,19 @@ public sealed class WorkspaceCommands(
                 Markup.Escape($"{result.Value.Name} [{result.Value.Id}] -> {result.Value.Path}")));
 
         return 0;
-
     }
 
     public async Task<int> Show(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         Result<WorkspaceInfo> result = await apiClient
@@ -225,15 +199,12 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         WriteWorkspace(result.Value);
 
         return 0;
-
     }
 
     public async Task<int> Tree(
@@ -241,16 +212,13 @@ public sealed class WorkspaceCommands(
         string? relativePath,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         string? cursor = null;
@@ -259,7 +227,6 @@ public sealed class WorkspaceCommands(
 
         do
         {
-
             Result<FileListResult> result = await apiClient
                 .ListWorkspaceFilesAsync(
                     resolution.Workspace!.Id,
@@ -271,9 +238,7 @@ public sealed class WorkspaceCommands(
 
             if (result.IsFailure)
             {
-
                 return WriteError(result.Error);
-
             }
 
             Table table = new();
@@ -286,12 +251,10 @@ public sealed class WorkspaceCommands(
 
             foreach (FileEntry entry in result.Value.Entries)
             {
-
                 table.AddRow(
                     new Markup(themePalette.TextMarkup(Markup.Escape(entry.RelativePath))),
                     new Markup(themePalette.MutedMarkup(Markup.Escape(entry.Type.ToString()))),
                     new Markup(themePalette.MutedMarkup(entry.Size.ToString(CultureInfo.InvariantCulture))));
-
             }
 
             AnsiConsole.Write(table);
@@ -303,18 +266,14 @@ public sealed class WorkspaceCommands(
             if (cursor is not null
                 && !seenCursors.Add(cursor))
             {
-
                 return WriteError(
                     new Error(
                         "Api.PaginationNoProgress",
                         "The workspace file listing returned a repeated continuation cursor. Retry after repairing or upgrading the host."));
-
             }
-
         } while (cursor is not null);
 
         return 0;
-
     }
 
     public async Task<int> Info(
@@ -322,16 +281,13 @@ public sealed class WorkspaceCommands(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         Result<FileEntry> result = await apiClient
@@ -343,9 +299,7 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         FileEntry entry = result.Value;
@@ -372,7 +326,6 @@ public sealed class WorkspaceCommands(
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Read(
@@ -380,16 +333,13 @@ public sealed class WorkspaceCommands(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         Result<FileReadResult> result = await apiClient
@@ -401,9 +351,7 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         // A structured document, not raw bytes, because the legacy --json text wrapper reaches
@@ -412,12 +360,10 @@ public sealed class WorkspaceCommands(
         // structured, so the buffer is replayed verbatim and the file can be reproduced from it.
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 BuildFileDocument(result.Value.RelativePath, result.Value.Content));
 
             return 0;
-
         }
 
         // Raw stdout: Spectre would render the file as a Text renderable and hard-wrap it at the
@@ -426,7 +372,6 @@ public sealed class WorkspaceCommands(
         Console.Out.Write(result.Value.Content);
 
         return 0;
-
     }
 
     /// <summary>
@@ -437,12 +382,10 @@ public sealed class WorkspaceCommands(
     /// </summary>
     private static JsonElement BuildFileDocument(string path, string content)
     {
-
         ArrayBufferWriter<byte> buffer = new();
 
         using (Utf8JsonWriter writer = new(buffer))
         {
-
             writer.WriteStartObject();
 
             writer.WriteString("path", path);
@@ -450,13 +393,11 @@ public sealed class WorkspaceCommands(
             writer.WriteString("content", content);
 
             writer.WriteEndObject();
-
         }
 
         using JsonDocument document = JsonDocument.Parse(buffer.WrittenMemory);
 
         return document.RootElement.Clone();
-
     }
 
     public async Task<int> Search(
@@ -465,16 +406,13 @@ public sealed class WorkspaceCommands(
         int? limit,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         Result<WorkspaceSearchResult[]> result = await apiClient
@@ -486,9 +424,7 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         Table table = new();
@@ -503,35 +439,29 @@ public sealed class WorkspaceCommands(
 
         foreach (WorkspaceSearchResult match in result.Value)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(match.RelativePath))),
                 new Markup(themePalette.MutedMarkup($"{match.ChunkIndex + 1}/{match.TotalChunks}")),
                 new Markup(themePalette.MutedMarkup(match.Similarity.ToString("0.000", CultureInfo.InvariantCulture))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(match.ContentPreview))));
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Index(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         Result<bool> result = await apiClient
@@ -542,9 +472,7 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(
@@ -553,23 +481,19 @@ public sealed class WorkspaceCommands(
                 Markup.Escape(resolution.Workspace.Name)));
 
         return 0;
-
     }
 
     public async Task<int> IndexStatus(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         Result<WorkspaceIndexStatusDto> result = await apiClient
@@ -580,9 +504,7 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         WorkspaceIndexStatusDto status = result.Value;
@@ -612,7 +534,6 @@ public sealed class WorkspaceCommands(
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Chunks(
@@ -622,16 +543,13 @@ public sealed class WorkspaceCommands(
         int? offset,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         Result<WorkspaceFileChunkPage> result = await apiClient
@@ -645,9 +563,7 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         Table table = new();
@@ -662,13 +578,11 @@ public sealed class WorkspaceCommands(
 
         foreach (WorkspaceFileChunkDto chunk in result.Value.Chunks)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(chunk.RelativePath))),
                 new Markup(themePalette.MutedMarkup($"{chunk.ChunkIndex + 1}/{chunk.TotalChunksForFile}")),
                 new Markup(themePalette.MutedMarkup($"{chunk.StartLine}-{chunk.EndLine}")),
                 new Markup(themePalette.TextMarkup(Markup.Escape(chunk.ContentPreview))));
-
         }
 
         AnsiConsole.Write(table);
@@ -679,23 +593,19 @@ public sealed class WorkspaceCommands(
                     $"Showing {result.Value.Chunks.Length} of {result.Value.Total} chunks from offset {result.Value.Offset}.")));
 
         return 0;
-
     }
 
     public async Task<int> Unregister(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         WorkspaceResolution resolution = await ResolveWorkspaceAsync(
             identifier,
             cancellationToken).ConfigureAwait(false);
 
         if (!resolution.IsSuccess)
         {
-
             return resolution.ExitCode;
-
         }
 
         Result result = await apiClient
@@ -706,9 +616,7 @@ public sealed class WorkspaceCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(
@@ -717,37 +625,30 @@ public sealed class WorkspaceCommands(
                 Markup.Escape(resolution.Workspace.Name)));
 
         return 0;
-
     }
 
     private async Task<WorkspaceResolution> ResolveWorkspaceAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         string? effectiveIdentifier = identifier;
 
         if (string.IsNullOrWhiteSpace(effectiveIdentifier)
             && !CliInvocationContext.Current.NoContext)
         {
-
             effectiveIdentifier = contextStore.Load().WorkspaceId;
-
         }
 
         if (string.IsNullOrWhiteSpace(effectiveIdentifier))
         {
-
             Result<WorkspaceInfo[]> workspaces = await apiClient
                 .GetWorkspacesAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (workspaces.IsFailure)
             {
-
                 return WorkspaceResolution.Failure(
                     WriteError(workspaces.Error));
-
             }
 
             WorkspaceInfo? detected = FindContaining(
@@ -757,11 +658,8 @@ public sealed class WorkspaceCommands(
 
             if (detected is not null)
             {
-
                 return WorkspaceResolution.Success(detected);
-
             }
-
         }
 
         ResourceSelectionResult<WorkspaceInfo> selection = await resourceCatalog
@@ -770,37 +668,30 @@ public sealed class WorkspaceCommands(
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return WorkspaceResolution.Failure(0);
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape(selection.Error!)));
 
             return WorkspaceResolution.Failure(1);
-
         }
 
         return WorkspaceResolution.Success(selection.Value!);
-
     }
 
     private async Task<Result<CampaignDto[]>> GetAllCampaignsAsync(
         CancellationToken cancellationToken)
     {
-
         List<CampaignDto> campaigns = [];
 
         int offset = 0;
 
         while (true)
         {
-
             Result<ListPageResult<CampaignDto>> result = await apiClient
                 .GetCampaignsPageAsync(
                     null,
@@ -811,9 +702,7 @@ public sealed class WorkspaceCommands(
 
             if (result.IsFailure)
             {
-
                 return Result<CampaignDto[]>.Failure(result.Error);
-
             }
 
             campaigns.AddRange(result.Value.Items);
@@ -821,32 +710,25 @@ public sealed class WorkspaceCommands(
             if (!result.Value.HasMore
                 || result.Value.NextOffset is not { } nextOffset)
             {
-
                 return Result<CampaignDto[]>.Success([.. campaigns]);
-
             }
 
             // A non-advancing offset would append the same page forever, so it fails here rather
             // than growing the accumulated list until the process runs out of memory.
             if (nextOffset <= offset)
             {
-
                 return Result<CampaignDto[]>.Failure(
                     new Error(
                         "Api.PaginationNoProgress",
                         $"The campaign list returned non-advancing offset {nextOffset} after {offset}. Retry after repairing or upgrading the host."));
-
             }
 
             offset = nextOffset;
-
         }
-
     }
 
     private void WriteWorkspace(WorkspaceInfo workspace)
     {
-
         Table table = DetailTable();
 
         table.AddRow("Id:", Markup.Escape(workspace.Id));
@@ -865,16 +747,13 @@ public sealed class WorkspaceCommands(
                     CultureInfo.InvariantCulture)));
 
         AnsiConsole.Write(table);
-
     }
 
     private int WriteError(Error error)
     {
-
         CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(error));
 
-        return 1;
-
+        return CliFailureExit.ExitCode(error);
     }
 
     private static T? FindContaining<T>(
@@ -893,24 +772,19 @@ public sealed class WorkspaceCommands(
         string? value,
         out WorkspaceType type)
     {
-
         if (string.IsNullOrWhiteSpace(value))
         {
-
             type = WorkspaceType.Custom;
 
             return true;
-
         }
 
         return Enum.TryParse(value, ignoreCase: true, out type)
             && Enum.IsDefined(type);
-
     }
 
     private static string InferName(string path)
     {
-
         string trimmed = path.TrimEnd('/', '\\');
 
         int separator = Math.Max(
@@ -924,12 +798,10 @@ public sealed class WorkspaceCommands(
         return string.IsNullOrWhiteSpace(name)
             ? "workspace"
             : name;
-
     }
 
     private static Table DetailTable()
     {
-
         Table table = new Table().Border(TableBorder.None).HideHeaders();
 
         table.AddColumn(string.Empty);
@@ -937,14 +809,12 @@ public sealed class WorkspaceCommands(
         table.AddColumn(string.Empty);
 
         return table;
-
     }
 
     private sealed record WorkspaceResolution(
         WorkspaceInfo? Workspace,
         int ExitCode)
     {
-
         public bool IsSuccess => Workspace is not null;
 
         public static WorkspaceResolution Success(WorkspaceInfo workspace) =>
@@ -952,7 +822,5 @@ public sealed class WorkspaceCommands(
 
         public static WorkspaceResolution Failure(int exitCode) =>
             new(null, exitCode);
-
     }
-
 }

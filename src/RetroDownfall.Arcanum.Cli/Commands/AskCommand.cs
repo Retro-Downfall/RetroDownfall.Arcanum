@@ -314,7 +314,7 @@ public sealed class AskCommand(
                         Markup.Escape("Error:"),
                         Markup.Escape(synchronized.Error.Message)));
 
-                return 1;
+                return CliFailureExit.ExitCode(synchronized.Error);
             }
 
             ChronosyncReport chronosyncDelta = synchronized.Value;

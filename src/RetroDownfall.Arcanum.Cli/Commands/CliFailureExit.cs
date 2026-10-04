@@ -17,12 +17,18 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// </summary>
 internal static class CliFailureExit
 {
-
     private const string ConnectionErrorPrefix = "Connection.";
 
     /// <summary>The exit code a failed <see cref="Result"/> should return, mirroring BudgetCommands.Show.</summary>
     public static int ExitCode(Error error) =>
-        IsConnectionFailure(error)
+        ExitCode(error.Code);
+
+    /// <summary>
+    /// The exit code for a failure known only by its error code, such as the code a research stream's
+    /// error frame carries.
+    /// </summary>
+    public static int ExitCode(string? errorCode) =>
+        IsConnectionFailure(errorCode)
             ? (int)CliExitCode.NetworkError
             : (int)CliExitCode.GenericError;
 
@@ -37,6 +43,8 @@ internal static class CliFailureExit
             : error;
 
     private static bool IsConnectionFailure(Error error) =>
-        error.Code.StartsWith(ConnectionErrorPrefix, StringComparison.Ordinal);
+        IsConnectionFailure(error.Code);
 
+    private static bool IsConnectionFailure(string? errorCode) =>
+        errorCode?.StartsWith(ConnectionErrorPrefix, StringComparison.Ordinal) == true;
 }
