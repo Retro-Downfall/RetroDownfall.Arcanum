@@ -38,7 +38,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
             Assert.False(lane.IsConditional);
 
-            Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+            Assert.Contains(PinnedSdkInput, lane.Body, StringComparison.Ordinal);
 
             Assert.Contains("--configuration Release", lane.Body, StringComparison.Ordinal);
 
@@ -425,7 +425,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("--filter \"Category!=Perf&(" + expected + ")\"", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+        Assert.Contains(PinnedSdkInput, lane.Body, StringComparison.Ordinal);
 
         Assert.Contains("Assert the SDK is native to win-arm64", lane.Body, StringComparison.Ordinal);
     }
@@ -446,7 +446,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         const string project = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/"
             + "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj";
 
-        int sdk = lane.Body.IndexOf("dotnet-version: \"10.0.401\"", StringComparison.Ordinal);
+        int sdk = lane.Body.IndexOf(PinnedSdkInput, StringComparison.Ordinal);
 
         int build = lane.Body.IndexOf("dotnet build " + project, StringComparison.Ordinal);
 
@@ -727,7 +727,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
                 matching.Add(identity);
 
-                if (!job.Body.Contains("dotnet-version: \"10.0.401\"", StringComparison.Ordinal)
+                if (!job.Body.Contains(PinnedSdkInput, StringComparison.Ordinal)
                     || job.Body.Contains("ld64.lld", StringComparison.Ordinal)
                     || job.Body.Contains("brew install lld", StringComparison.Ordinal))
                 {
@@ -737,9 +737,18 @@ public sealed class ContinuousIntegrationWorkflowTests
         }
 
         Assert.Contains("release-macos-arm64.yml: release-macos-arm64", matching);
+
+        // The pin every one of these lanes reads must itself be the serviced SDK that carries the Apple
+        // linker path, not merely some version.
+        using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(Path.Combine(FindRepositoryRoot(), "global.json")));
+
+        Assert.True(
+            Version.Parse(globalJson.RootElement.GetProperty("sdk").GetProperty("version").GetString()!) >= new Version(10, 0, 401),
+            "global.json pins an SDK older than the serviced 10.0.401 that the macOS Native AOT lanes require.");
+
         Assert.True(
             offenders.Count == 0,
-            "A macOS Native AOT lane does not pin .NET SDK 10.0.401 with its compatible Apple "
+            "A macOS Native AOT lane does not read the pinned .NET SDK from global.json with its compatible Apple "
             + "linker, or still forces LLVM lld:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
@@ -889,6 +898,85 @@ public sealed class ContinuousIntegrationWorkflowTests
             "The Windows release must clear its AOT diagnostic profile before creating archives.");
         Assert.Contains("RID: ${{ inputs.rid }}", package.Body, StringComparison.Ordinal);
         Assert.Contains("rg --version", package.Body, StringComparison.Ordinal);
+    }
+
+    private const string PinnedSdkInput = "global-json-file: global.json";
+
+    /// <summary>
+    /// One SDK for every workflow. The gating lanes pinned 10.0.401 by hand while the Windows shipping
+    /// builds floated on <c>10.0.x</c>, so a release could be built by an SDK no gate had ever run.
+    /// The repository's <c>global.json</c> is the single statement, and every <c>setup-dotnet</c>
+    /// step reads it, so raising the pin (in lockstep with the macOS portable-pack SHA table in
+    /// <c>Directory.Build.targets</c>) is one edit.
+    /// </summary>
+    [Fact]
+    public void Every_workflow_pins_the_same_dotnet_sdk_version()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        string globalJsonPath = Path.Combine(repositoryRoot, "global.json");
+
+        Assert.True(File.Exists(globalJsonPath), "The repository has no global.json, so no single SDK version is pinned.");
+
+        using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(globalJsonPath));
+
+        JsonElement sdk = globalJson.RootElement.GetProperty("sdk");
+
+        string version = sdk.GetProperty("version").GetString()!;
+
+        Assert.Matches(@"^10\.0\.\d{3}$", version);
+
+        Assert.Contains(sdk.GetProperty("rollForward").GetString(), new[] { "disable", "latestPatch" });
+
+        List<string> offenders = [];
+
+        int setups = 0;
+
+        foreach (string workflow in WorkflowFiles(repositoryRoot))
+        {
+            string[] lines = File.ReadAllLines(workflow);
+
+            for (int index = 0; index < lines.Length; index++)
+            {
+                if (!lines[index].TrimStart().StartsWith("uses: actions/setup-dotnet@", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                setups++;
+
+                int indent = WorkflowIndentOf(lines[index]);
+
+                StringBuilder step = new();
+
+                for (int next = index + 1; next < lines.Length; next++)
+                {
+                    if (lines[next].Trim().Length > 0 && WorkflowIndentOf(lines[next]) < indent)
+                    {
+                        break;
+                    }
+
+                    step.AppendLine(lines[next]);
+                }
+
+                string body = step.ToString();
+
+                if (!body.Contains(PinnedSdkInput, StringComparison.Ordinal)
+                    || body.Contains("dotnet-version:", StringComparison.Ordinal))
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}:{index + 1}");
+                }
+            }
+        }
+
+        Assert.True(setups > 0, "No workflow sets .NET up, so there is nothing to pin.");
+
+        Assert.True(
+            offenders.Count == 0,
+            $"A setup-dotnet step does not read the SDK from `{PinnedSdkInput}` (or still names a "
+            + "literal dotnet-version), so that workflow can build with an SDK no gate ran:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
     }
 
     /// <summary>
