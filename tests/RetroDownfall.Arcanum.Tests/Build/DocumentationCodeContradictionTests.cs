@@ -331,6 +331,29 @@ public sealed class DocumentationCodeContradictionTests
         Assert.DoesNotContain("macOS 14", header, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void The_engineering_house_style_states_the_same_blank_line_rule_as_agents_md()
+    {
+        string agents = File
+            .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "AGENTS.md"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        const string rule = "never immediately after an opening or before a closing parenthesis, bracket, or brace";
+
+        Assert.Contains(rule, agents, StringComparison.Ordinal);
+
+        string engineering = ReadDocument("Arcanum.Engineering.md");
+
+        string section = DocumentSection(engineering, "### 7. C# house style", "> **Note on org-wide rules:**");
+
+        // The older wording ("one blank line after each line ... curly braces do not require blank
+        // lines around them") told contributors the opposite of what the formatter and AGENTS.md rule
+        // 4 enforce around delimiters.
+        Assert.Contains(rule, section, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Curly braces do not require blank lines around them", section, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
