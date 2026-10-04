@@ -1288,7 +1288,7 @@ public sealed class InstallationFactoryResetCommandTests
                 false,
                 [
                     new InstallationResetIssueSummary(
-                        ErrorCodes.Data.RecoveryRequired,
+                        ErrorCodes.Data.ResetCancelled,
                         "Installation reset was cancelled after its active record was published."),
                 ]),
         };
@@ -1310,6 +1310,40 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(
             ErrorCodes.Data.RecoveryRequired,
             output.RootElement.GetProperty("errorCode").GetString());
+    }
+
+    /// <summary>
+    /// A recovery-required issue whose prose happens to contain "cancel" is not the operator's
+    /// cancellation: the verdict comes from the typed issue code, not from the wording of server text.
+    /// </summary>
+    [Fact]
+    public void Recovery_required_issue_mentioning_cancel_for_another_reason_is_not_130()
+    {
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
+
+        InstallationResetResult incomplete = CreateResult(
+            plan,
+            InstallationResetPhase.Prepared,
+            verificationSucceeded: false,
+            resumeRequired: true,
+            errorCode: ErrorCodes.Data.RecoveryRequired) with
+        {
+            Verification = new InstallationResetVerification(
+                false,
+                [
+                    new InstallationResetIssueSummary(
+                        ErrorCodes.Data.RecoveryRequired,
+                        "A credential helper cancelled its own removal; recovery is required."),
+                ]),
+        };
+
+        CliTestResult result = RunCommand(
+            new FakeInstallationResetService(
+                Result<InstallationResetPlan>.Success(plan),
+                Result<InstallationResetResult>.Success(incomplete)),
+            ["--json", "--yes", "data", "factory-reset", "--global", "--apply", "--force"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
     }
 
     [Theory]
