@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Familiars;
 /// </summary>
 public sealed record FamiliarProcessRequest
 {
-
     /// <summary>The binary to spawn: an operator override, or a bare name resolved through PATH.</summary>
     public required string FileName { get; init; }
 
@@ -32,7 +31,6 @@ public sealed record FamiliarProcessRequest
     /// the deadline is mandatory in practice — the default is generous, not absent.
     /// </summary>
     public TimeSpan Timeout { get; init; } = FamiliarProcessLimits.DefaultTimeout;
-
 }
 
 /// <summary>
@@ -42,7 +40,6 @@ public sealed record FamiliarProcessRequest
 /// </summary>
 public enum FamiliarProcessFailure
 {
-
     None,
 
     /// <summary>The binary is not where Arcanum was told to look, or not on PATH.</summary>
@@ -56,7 +53,6 @@ public enum FamiliarProcessFailure
 
     /// <summary>The CLI exceeded its deadline and its process tree was killed.</summary>
     TimedOut,
-
 }
 
 /// <summary>Buffered outcome, used where a classification is wanted instead of an exception.</summary>
@@ -76,13 +72,11 @@ public sealed class FamiliarProcessException(
     int exitCode = 0,
     string standardError = "") : Exception(message)
 {
-
     public FamiliarProcessFailure Failure { get; } = failure;
 
     public int ExitCode { get; } = exitCode;
 
     public string StandardError { get; } = standardError;
-
 }
 
 /// <summary>
@@ -96,7 +90,6 @@ public sealed class FamiliarProcessException(
 /// </remarks>
 internal static class FamiliarProcessLimits
 {
-
     /// <summary>
     /// Long enough for a reasoning-heavy turn on a slow link, short enough that a wedged CLI is
     /// eventually reaped rather than holding an HTTP request forever.
@@ -115,7 +108,12 @@ internal static class FamiliarProcessLimits
     /// <summary>Enough stderr to explain a refusal; the rest is dropped rather than buffered.</summary>
     public const int MaxStandardErrorCharacters = 64 * 1024;
 
+    /// <summary>
+    /// How much of the stderr tail an exception <em>message</em> may carry. The message is forwarded to
+    /// the caller; the full tail stays on <see cref="FamiliarProcessException.StandardError"/>.
+    /// </summary>
+    public const int MaxExceptionMessageExcerptCharacters = 512;
+
     /// <summary>Buffered stdout ceiling for the probe path.</summary>
     public const int MaxBufferedStandardOutputCharacters = 1024 * 1024;
-
 }
