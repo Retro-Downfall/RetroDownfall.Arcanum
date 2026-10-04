@@ -514,9 +514,9 @@ Controls the OS background service and the server-owned Unseen Servant scheduler
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum daemon install` | Install and start the Arcanum background daemon. | None beyond global or inherited family options. |
-| `arcanum daemon uninstall` | Stop and uninstall the Arcanum background daemon. | None beyond global or inherited family options. |
-| `arcanum daemon status` | Show whether the Arcanum daemon is running. | None beyond global or inherited family options. |
+| `arcanum daemon install` | Install and start the Arcanum background daemon (a launchd agent on macOS, a Windows Service, or a systemd user unit). The progress line is a platform-neutral diagnostic on stderr; the result stays on stdout. | None beyond global or inherited family options. |
+| `arcanum daemon uninstall` | Stop and uninstall the Arcanum background daemon. The progress line is a platform-neutral diagnostic on stderr; the result stays on stdout. | None beyond global or inherited family options. |
+| `arcanum daemon status` | Show whether the Arcanum daemon is running. The progress line is a platform-neutral diagnostic on stderr; the status text is the stdout payload. | None beyond global or inherited family options. |
 | `arcanum daemon jobs` | List Unseen Servant jobs (requires API: arcanum serve). | None beyond global or inherited family options. |
 | `arcanum daemon initiative <job-name> <minutes>` | Set the adaptive polling interval for a job; minutes must be between 1 and 10080 (requires API: arcanum serve). A name not configured under `Arcanum:Daemon:Jobs` is rejected with `404 Daemon.NotFound` naming `arcanum daemon jobs` rather than reported as applied. | None beyond global or inherited family options. |
 | `arcanum daemon alert <message>` | Send a Comm Link test alert (requires API: arcanum serve). | `-t, --title <title>` — Alert title.<br>`-s, --severity <severity>` — Severity: Info, Warning, or Critical.<br>`--source <source>` — The alert source label. |
