@@ -244,6 +244,50 @@ public sealed class DocumentationCodeContradictionTests
         }
     }
 
+    /// <summary>
+    /// <c>SessionTurnClaimStore</c> is registered but nothing in production resolves it, and the design
+    /// says so instead of listing it as the owner of durable Session turn claims. The claim stays true
+    /// only while the declaration, the store, and the registration are the only files naming the
+    /// coordinator; the day a turn path consumes it this fails, and the section has to be rewritten
+    /// with the wiring rather than left saying "unconsumed".
+    /// </summary>
+    [Fact]
+    public void The_session_turn_claim_coordinator_is_documented_as_installed_but_unconsumed()
+    {
+        string section = DocumentSection(
+            ReadDocument("Arcanum.DESIGN.md"),
+            "### 10.18 ",
+            "### 10.19 ");
+
+        Assert.Contains("installed but unconsumed", section, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("| Durable Session turn claims |", section, StringComparison.Ordinal);
+
+        string[] namingFiles =
+        [
+            .. Directory
+                .EnumerateFiles(
+                    Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src"),
+                    "*.cs",
+                    SearchOption.AllDirectories)
+                .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                    && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                .Where(static path => File
+                    .ReadAllText(path)
+                    .Contains("ISessionTurnClaimCoordinator", StringComparison.Ordinal))
+                .Select(static path => Path.GetFileName(path))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(
+            [
+                "ISessionTurnClaimCoordinator.cs",
+                "ServiceCollectionExtensions.cs",
+                "SessionTurnClaimStore.cs",
+            ],
+            namingFiles);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
