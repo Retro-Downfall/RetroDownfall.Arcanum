@@ -37,6 +37,15 @@ public sealed partial class ArcanumApiClient(
 
     public const string RequestHttpClientName = "ArcanumApiRequest";
 
+    /// <summary>
+    /// How long a call on the short-call client may wait for the host to start answering. It bounds
+    /// only the time to the response headers: never a response body, a stream, or any call routed to
+    /// the unbounded streaming client (DESIGN 2.1).
+    /// </summary>
+    internal static readonly TimeSpan DefaultRequestResponseHeadersTimeout = TimeSpan.FromMinutes(5);
+
+    internal TimeSpan RequestResponseHeadersTimeout { get; init; } = DefaultRequestResponseHeadersTimeout;
+
     /// <summary>Operator-facing copy when an SSE/NDJSON stream disconnects mid-flight.</summary>
     public const string StreamDisconnectMessage =
         "The connection to the Arcanum API was lost before the stream completed.";
@@ -250,6 +259,8 @@ public sealed partial class ArcanumApiClient(
                     return request;
                 }
 
+                // Only the short-call client carries the headers deadline; the streaming client is the
+                // home of every call that has no expected duration and stays unbounded.
                 using ArcanumAuthenticatedHttpResponse sent =
                     await ArcanumAuthenticatedHttpSender.SendAsync(
                         client,
@@ -257,7 +268,11 @@ public sealed partial class ArcanumApiClient(
                         CreateRequest,
                         HttpCompletionOption.ResponseHeadersRead,
                         canReplayAfterUnauthorized: true,
-                        cancellationToken)
+                        ArcanumAuthenticatedHttpSender.PresenceProbeTimeout,
+                        cancellationToken,
+                        string.Equals(httpClientName, RequestHttpClientName, StringComparison.Ordinal)
+                            ? RequestResponseHeadersTimeout
+                            : null)
                     .ConfigureAwait(false);
 
                 if (!sent.IsAuthenticated)
@@ -507,7 +522,8 @@ public sealed partial class ArcanumApiClient(
 
     /// <summary>
     /// Dispatches a Sending to a remote A2A agent and waits for its terminal result. Cancelling
-    /// <paramref name="cancellationToken"/> also cancels the remote task.
+    /// <paramref name="cancellationToken"/> also cancels the remote task. The wait has no expected
+    /// duration, so the call uses the unbounded streaming client rather than the headers deadline.
     /// </summary>
     public Task<Result<SendingDispatchDto>> DispatchSendingAsync(
         string agentUrl,
@@ -536,7 +552,8 @@ public sealed partial class ArcanumApiClient(
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
     }
 
     public Task<Result<SendingDispatchDto>> ContinueSendingAsync(
@@ -558,7 +575,8 @@ public sealed partial class ArcanumApiClient(
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
     }
 
     #endregion
@@ -1951,7 +1969,8 @@ public sealed partial class ArcanumApiClient(
             null,
             null,
             ArcanumJsonContext.Default.ApiResponseCompactResult,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
 
     public Task<Result> DeleteSessionEntryAsync(
         Guid sessionId,

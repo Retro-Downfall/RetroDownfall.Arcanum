@@ -804,6 +804,145 @@ public sealed class ArcanumApiClientTests
         Assert.Equal("Connection.Timeout", result.Error.Code);
     }
 
+    /// <summary>
+    /// Neither HttpClient the CLI registers has a timeout, so the "timed out" paths below the sender
+    /// were unreachable and a hung local host wedged every short call. A request now carries its own
+    /// response-headers deadline, which maps to the same typed timeout.
+    /// </summary>
+    [Fact]
+    public async Task Request_returns_timeout_error_when_host_never_responds_headers()
+    {
+        TaskCompletionSource<HttpResponseMessage> never = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        RecordingHandler handler = new((_, cancellationToken) =>
+            never.Task.WaitAsync(cancellationToken));
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        // Only the client's own deadline can finish this request; the outer bound is a hang guard.
+        Result<bool> result = await client.QuitServerAsync(CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Connection.Timeout, result.Error.Code);
+
+        Assert.Single(handler.Requests);
+    }
+
+    /// <summary>
+    /// The deadline is for the response headers. A body that takes longer than the deadline to arrive
+    /// is a slow answer, not a hung host, and must not be cut off.
+    /// </summary>
+    [Fact]
+    public async Task Request_headers_deadline_does_not_bound_the_response_body()
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<bool>(true, true, null),
+            ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new DelayedStartStream(json, TimeSpan.FromMilliseconds(400))),
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        Result<bool> result = await client.QuitServerAsync(CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(result.IsSuccess);
+
+        Assert.True(result.Value);
+    }
+
+    /// <summary>
+    /// Streams and operations that have no expected duration stay on the unbounded client: the
+    /// headers deadline belongs to the short-call client only.
+    /// </summary>
+    [Fact]
+    public async Task Streaming_requests_are_not_bounded_by_the_headers_deadline()
+    {
+        byte[] line = JsonSerializer.SerializeToUtf8Bytes(
+            new IntelligenceEvent(IntelligenceEventType.Token, "late"),
+            ArcanumJsonContext.Default.IntelligenceEvent);
+
+        RecordingHandler handler = new(async (_, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([.. line, (byte)'\n']),
+            };
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        List<IntelligenceEvent> events = [];
+
+        await foreach (IntelligenceEvent evt in client.AskStreamAsync(new PingRequest("hello"), CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        Assert.Equal(IntelligenceEventType.Token, events[0].Type);
+
+        Assert.DoesNotContain(
+            events,
+            static evt => string.Equals(evt.Message, ArcanumApiClient.StreamTimeoutMessage, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Session compaction waits on a model summary and a Sending waits for a remote agent to settle;
+    /// neither has an Arcanum-owned duration, so neither may sit behind the short-call deadline.
+    /// </summary>
+    [Fact]
+    public async Task Operations_without_an_expected_duration_are_not_bounded_by_the_headers_deadline()
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<CompactResult>(null, false, new Error("Test.Marker", "reached the host")),
+            ArcanumJsonContext.Default.ApiResponseCompactResult);
+
+        RecordingHandler handler = new(async (_, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(json),
+            };
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        Result<CompactResult> compact = await client.CompactSessionAsync(Guid.NewGuid(), CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal("Test.Marker", compact.Error.Code);
+
+        Result<SendingDispatchDto> sending = await client
+            .DispatchSendingAsync(
+                "https://agent.example/a2a",
+                "goal",
+                name: null,
+                cancellationToken: CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.NotEqual(ErrorCodes.Connection.Timeout, sending.Error.Code);
+
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
     [Fact]
     public async Task AskStreamAsync_yields_error_when_stream_disconnects_mid_read()
     {
@@ -1435,6 +1574,20 @@ public sealed class ArcanumApiClientTests
             ArcanumApiCredentialLeaseTestFactory.Create(apiKey));
     }
 
+    private static ArcanumApiClient CreateClientWithHeadersDeadline(
+        HttpMessageHandler handler,
+        TimeSpan responseHeadersTimeout)
+    {
+        FakeHttpClientFactory factory = new(handler, requestTimeout: null);
+
+        return new ArcanumApiClient(
+            factory,
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"))
+        {
+            RequestResponseHeadersTimeout = responseHeadersTimeout,
+        };
+    }
+
     private static HttpResponseMessage CreatePromptResponse(ApiResponse<PromptResponseDto> envelope, HttpStatusCode status = HttpStatusCode.OK)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, ArcanumJsonContext.Default.ApiResponsePromptResponseDto);
@@ -1550,6 +1703,54 @@ public sealed class ArcanumApiClientTests
 
             return await _responder(request, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private sealed class DelayedStartStream(byte[] payload, TimeSpan delay) : Stream
+    {
+        private readonly MemoryStream _inner = new(payload);
+
+        private bool _delayed;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_delayed)
+            {
+                _delayed = true;
+
+                await Task.Delay(delay, cancellationToken);
+            }
+
+            return await _inner.ReadAsync(buffer, cancellationToken);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class FaultingErrorBodyHandler : HttpMessageHandler

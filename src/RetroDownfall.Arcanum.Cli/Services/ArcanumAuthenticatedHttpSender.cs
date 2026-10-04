@@ -36,7 +36,8 @@ internal static class ArcanumAuthenticatedHttpSender
         HttpCompletionOption completionOption,
         bool canReplayAfterUnauthorized,
         TimeSpan credentialTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? responseHeadersTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(credentialLease);
@@ -47,6 +48,13 @@ internal static class ArcanumAuthenticatedHttpSender
             throw new ArgumentOutOfRangeException(
                 nameof(credentialTimeout),
                 "The credential-resolution timeout must be positive.");
+        }
+
+        if (responseHeadersTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(responseHeadersTimeout),
+                "The response-headers timeout must be positive.");
         }
 
         RejectDefaultCredentialHeaders(client);
@@ -84,8 +92,21 @@ internal static class ArcanumAuthenticatedHttpSender
                     ArcanumApiHeaders.ProcessCapability,
                     capability);
 
+                // The deadline belongs to this one send, after the credential has been resolved, so a
+                // slow operating-system credential dialog is never counted against it; and it ends when
+                // the headers arrive, so a response body is never cut short by it. A deadline that
+                // lapses surfaces as an OperationCanceledException the caller's own token did not
+                // request, which every client maps to its typed timeout.
+                using CancellationTokenSource? headersDeadline = CreateHeadersDeadline(
+                    responseHeadersTimeout,
+                    completionOption,
+                    cancellationToken);
+
                 response = await client
-                    .SendAsync(request, completionOption, cancellationToken)
+                    .SendAsync(
+                        request,
+                        completionOption,
+                        headersDeadline?.Token ?? cancellationToken)
                     .ConfigureAwait(false);
 
                 if (response.StatusCode != HttpStatusCode.Unauthorized)
@@ -148,6 +169,31 @@ internal static class ArcanumAuthenticatedHttpSender
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// A token that lapses <paramref name="responseHeadersTimeout"/> after the send starts, or
+    /// <see langword="null"/> when no deadline applies. Only <see cref="HttpCompletionOption.ResponseHeadersRead"/>
+    /// has a "headers arrived" moment for the deadline to end at; any other completion option would
+    /// bound the body as well, so it gets no deadline.
+    /// </summary>
+    private static CancellationTokenSource? CreateHeadersDeadline(
+        TimeSpan? responseHeadersTimeout,
+        HttpCompletionOption completionOption,
+        CancellationToken cancellationToken)
+    {
+        if (responseHeadersTimeout is not { } deadline
+            || completionOption != HttpCompletionOption.ResponseHeadersRead)
+        {
+            return null;
+        }
+
+        CancellationTokenSource headersDeadline =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        headersDeadline.CancelAfter(deadline);
+
+        return headersDeadline;
     }
 
     private static void RejectDefaultCredentialHeaders(HttpClient client)

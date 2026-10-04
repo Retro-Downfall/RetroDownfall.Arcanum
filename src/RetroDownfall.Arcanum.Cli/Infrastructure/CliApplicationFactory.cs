@@ -161,6 +161,8 @@ internal static class CliApplicationFactory
 
                 client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(settings.Host));
 
+                // No HttpClient-wide timeout: the short-call deadline is per request and bounds only
+                // the wait for response headers (ArcanumApiClient.RequestResponseHeadersTimeout).
                 client.Timeout = Timeout.InfiniteTimeSpan;
             })
             .ConfigurePrimaryHttpMessageHandler(CreateLocalApiHttpMessageHandler);
