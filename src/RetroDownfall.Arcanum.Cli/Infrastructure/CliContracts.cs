@@ -803,7 +803,9 @@ internal static class CliFailureMapper
             ? new CliFailure(CliExitCode.ConfigurationError, unavailable)
             : exception switch
         {
-            HttpRequestException => new CliFailure(
+            // HttpIOException derives from IOException but is a transport fault, so it has to be
+            // matched here, before the local-file arm below claims every IOException.
+            HttpRequestException or HttpIOException => new CliFailure(
                 CliExitCode.NetworkError,
                 "A network operation failed."),
             NonInteractiveConfirmationException => new CliFailure(
@@ -818,6 +820,11 @@ internal static class CliFailureMapper
             OperationCanceledException => new CliFailure(
                 CliExitCode.Cancelled,
                 "The operation was cancelled."),
+            // The exception message of a file fault is a path the operator did not ask us to echo, so
+            // the line names the class of failure only; `-v` adds the exception type.
+            IOException or UnauthorizedAccessException => new CliFailure(
+                CliExitCode.GenericError,
+                "Local file access failed. Check the path and its permissions."),
             _ => new CliFailure(
                 CliExitCode.GenericError,
                 "An unexpected CLI error occurred."),

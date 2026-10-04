@@ -590,6 +590,16 @@ internal static class CliApplicationFactory
 
             dispatcher.WriteDiagnostic(failure.SafeMessage);
 
+            // The invocation scope that carried the parsed options was disposed while the exception
+            // unwound, so the dispatcher cannot see `-v` here; the options captured above can. Only
+            // the type is named: an upstream message can carry a secret or a path.
+            if (activeOptions.Verbose
+                && exception is not OperationCanceledException)
+            {
+                dispatcher.WriteDiagnostic(
+                    $"Exception type: {exception.GetType().FullName}");
+            }
+
             return (int)failure.ExitCode;
         }
     }
