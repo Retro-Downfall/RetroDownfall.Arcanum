@@ -192,7 +192,7 @@ public sealed class McpToolCommandTests
 
         CliTestResult trust = RunCommand(
             handler,
-            ["mcp", "trust", "/srv/workspace"]);
+            ["--yes", "mcp", "trust", "/srv/workspace"]);
 
         Assert.Equal(0, reload.ExitCode);
 
@@ -208,6 +208,168 @@ public sealed class McpToolCommandTests
                 "\"workingDirectory\":\"/srv/workspace\"",
                 ReadBody(request),
                 StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// R-336: <c>mcp trust</c> grants a workspace-local <c>mcp.json</c> the right to launch its commands,
+    /// so it shows the servers and commands in the file it is about to trust and asks first. A refusal
+    /// never reaches the host.
+    /// </summary>
+    [Fact]
+
+    public void Trust_asks_for_confirmation_and_does_not_call_the_host_when_declined()
+    {
+        string workspace = CreateWorkspaceWithMcpJson(
+            """
+            {
+              "mcpServers": {
+                "build-helper": { "command": "/bin/sh", "args": ["-c", "echo pwned"], "env": { "API_TOKEN": "hunter2" } },
+                "remote": { "url": "https://example.test/mcp" }
+              }
+            }
+            """);
+
+        try
+        {
+            RecordingPrompt prompt = new(answer: false);
+
+            RecordingHandler handler = new(_ => BooleanResponse());
+
+            CliTestResult result = RunCommand(handler, ["mcp", "trust", workspace], prompt);
+
+            Assert.Equal(0, result.ExitCode);
+
+            Assert.Empty(handler.Requests);
+
+            string question = Assert.Single(prompt.Questions);
+
+            Assert.Contains(workspace, question, StringComparison.Ordinal);
+
+            Assert.Contains("build-helper", result.Error, StringComparison.Ordinal);
+
+            Assert.Contains("/bin/sh -c echo pwned", result.Error, StringComparison.Ordinal);
+
+            Assert.Contains("remote", result.Error, StringComparison.Ordinal);
+
+            Assert.Contains("https://example.test/mcp", result.Error, StringComparison.Ordinal);
+
+            Assert.Contains("API_TOKEN", result.Error, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("hunter2", result.Output + result.Error, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("trusted", result.Output, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+
+    public void Trust_calls_the_host_once_the_preview_is_confirmed()
+    {
+        string workspace = CreateWorkspaceWithMcpJson(
+            """{ "mcpServers": { "files": { "command": "npx", "args": ["-y", "server-files"] } } }""");
+
+        try
+        {
+            RecordingHandler handler = new(_ => BooleanResponse());
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["mcp", "trust", workspace],
+                new RecordingPrompt(answer: true));
+
+            Assert.Equal(0, result.ExitCode);
+
+            HttpRequestMessage request = Assert.Single(handler.Requests);
+
+            Assert.Equal("/api/mcp/trust-workspace", request.RequestUri!.AbsolutePath);
+
+            Assert.Contains("npx -y server-files", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+
+    public void Trust_strips_terminal_control_sequences_from_the_previewed_configuration()
+    {
+        string workspace = CreateWorkspaceWithMcpJson(
+            """{ "mcpServers": { "evil\u001b]52;c;AAAA\u0007": { "command": "run\u001b[2Jme" } } }""");
+
+        try
+        {
+            CliTestResult result = RunCommand(
+                new RecordingHandler(_ => BooleanResponse()),
+                ["mcp", "trust", workspace],
+                new RecordingPrompt(answer: false));
+
+            Assert.Equal(0, result.ExitCode);
+
+            Assert.DoesNotContain('\u001b', result.Error);
+
+            Assert.DoesNotContain('\u0007', result.Error);
+
+            Assert.Contains("evil", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+
+    public void Trust_with_an_unreadable_configuration_says_it_cannot_preview_and_still_asks()
+    {
+        RecordingPrompt prompt = new(answer: false);
+
+        RecordingHandler handler = new(_ => BooleanResponse());
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["mcp", "trust", "/srv/workspace-that-does-not-exist-here"],
+            prompt);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Single(prompt.Questions);
+
+        Assert.Contains("cannot be previewed", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CreateWorkspaceWithMcpJson(string json)
+    {
+        string workspace = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-mcp-trust-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(workspace);
+
+        File.WriteAllText(Path.Combine(workspace, "mcp.json"), json);
+
+        return workspace;
+    }
+
+    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    {
+        public List<string> Questions { get; } = [];
+
+        public Task<bool> PromptForConfirmationAsync(
+            string question,
+            CancellationToken cancellationToken)
+        {
+            Questions.Add(question);
+
+            return Task.FromResult(answer);
+        }
     }
 
     [Fact]
@@ -672,7 +834,8 @@ public sealed class McpToolCommandTests
 
     private static CliTestResult RunCommand(
         RecordingHandler handler,
-        string[] args)
+        string[] args,
+        IConfirmationPrompt? prompt = null)
     {
         ServiceCollection services = new();
 
@@ -693,6 +856,13 @@ public sealed class McpToolCommandTests
         CliTestHarness.AddKeyedArcanumResponder(
             services,
             "test-key");
+
+        if (prompt is not null)
+        {
+            services.RemoveAll<IConfirmationPrompt>();
+
+            services.AddSingleton(prompt);
+        }
 
         return CliTestHarness.Run(services, args);
     }

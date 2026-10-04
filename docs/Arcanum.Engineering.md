@@ -964,7 +964,7 @@ Repeat `--event-type <value>` or `--tool <value>` (`--tool-name` alias) for case
 
 ### MCP and diagnostic tools
 
-The MCP family is a safe API client for the existing lifecycle and diagnostic endpoints. Status output includes scope, transport, trust, lifecycle, tool count, and last error. It deliberately omits subprocess commands/arguments, URLs, environment variables, and secrets. `--workspace` selects a workspace-local scope; an omitted selector can open the interactive picker.
+The MCP family is a safe API client for the existing lifecycle and diagnostic endpoints. Status output includes scope, transport, trust, lifecycle, tool count, and last error. It deliberately omits subprocess commands/arguments, URLs, environment variables, and secrets; `mcp trust` is the one verb that prints a file's commands and URLs (and environment variable names, never values), because it asks the operator to approve them. `--workspace` selects a workspace-local scope; an omitted selector can open the interactive picker.
 
 ```bash
 arcanum mcp list

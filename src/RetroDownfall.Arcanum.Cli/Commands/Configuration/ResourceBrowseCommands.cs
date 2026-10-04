@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Api.Mcp;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
+using RetroDownfall.Arcanum.Cli.Infrastructure;
+
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Cli.UX;
@@ -30,6 +32,8 @@ public sealed class McpCommands(
     IResourcePicker picker,
     IRecentResourceStore recentStore,
     IThemePalette themePalette,
+    IConsoleDispatcher dispatcher,
+    IConfirmationPrompt confirmationPrompt,
     ICliResourceCatalog? resourceCatalog = null)
 {
     public async Task<int> List(
@@ -221,6 +225,26 @@ public sealed class McpCommands(
         }
 
         string workspace = scope.Path ?? Environment.CurrentDirectory;
+
+        // Trust lets the file's commands run, so the operator sees what the file names before the host
+        // binds trust to its bytes, and nothing reaches the host unless they approve it.
+        foreach (string line in await McpTrustPreview
+                     .DescribeAsync(workspace, cancellationToken)
+                     .ConfigureAwait(false))
+        {
+            dispatcher.WriteDiagnostic(line);
+        }
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    $"Trust the MCP configuration in {McpTrustPreview.Display(workspace)}? Its servers will be allowed to run the commands listed above.",
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+            dispatcher.WriteDiagnostic("Workspace MCP trust cancelled; nothing was changed.");
+
+            return 0;
+        }
 
         Result<bool> result = await apiClient
             .TrustMcpWorkspaceAsync(
