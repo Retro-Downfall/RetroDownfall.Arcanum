@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -10,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </summary>
 public sealed class CovenantToolInvocationContextTests
 {
-
     private static readonly Guid TurnId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
 
     [Fact]
@@ -146,6 +146,59 @@ public sealed class CovenantToolInvocationContextTests
         await disposal;
 
         Assert.Equal(CovenantToolCapabilityState.Disposed, fixture.Context.State);
+    }
+
+    /// <summary>
+    /// Disposal cancels the closing token and then waits for every outstanding use to drain. A probe
+    /// that was handed only its caller's token never observes that cancellation, so a probe that
+    /// blocks until cancelled stalls disposal -- and with it the turn's teardown -- for as long as the
+    /// caller's own token lives. Each probe has to be bound to the capability's closing token too.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Disposal_cancels_a_pending_probe(int probeKind)
+    {
+        BlockingHeadProbe probe = new();
+
+        using CapabilityFixture fixture = new(probe);
+
+        _ = fixture.Context.TryTake(fixture.Nonce);
+
+        // The caller's own token is never cancelled: only the capability closing can release the probe.
+        using CancellationTokenSource caller = new();
+
+        try
+        {
+            Task pending = probeKind switch
+            {
+                0 => fixture.Context.ProbeLaneHeadAsync(
+                    fixture.Nonce,
+                    CovenantLane.Proposed,
+                    "some.key",
+                    caller.Token).AsTask(),
+                1 => fixture.Context.ProbeSectionAsync(
+                    fixture.Nonce,
+                    CovenantLane.Proposed,
+                    [],
+                    caller.Token).AsTask(),
+                _ => fixture.Context.ProbeScopeAsync(fixture.Nonce, [], caller.Token).AsTask()
+            };
+
+            await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await fixture.Context.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+        finally
+        {
+            // Releases the probe if the assertion above failed, so fixture cleanup cannot hang.
+            await caller.CancelAsync();
+
+            probe.Release();
+        }
     }
 
     [Fact]
@@ -303,12 +356,66 @@ public sealed class CovenantToolInvocationContextTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>A probe that does not answer until its token is cancelled or it is released.</summary>
+    private sealed class BlockingHeadProbe : ICovenantTurnHeadProbe
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => _release.TrySetResult();
+
+        public async ValueTask<Result<CovenantLaneHeadProbe>> ProbeAsync(
+            CovenantLane lane,
+            string normalizedKey,
+            CancellationToken cancellationToken)
+        {
+            await BlockAsync(cancellationToken);
+
+            return Result<CovenantLaneHeadProbe>.Failure(Released());
+        }
+
+        public async ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
+            CovenantLane lane,
+            ImmutableArray<string> excludedKeys,
+            CancellationToken cancellationToken)
+        {
+            await BlockAsync(cancellationToken);
+
+            return Result<CovenantSectionOccupancy>.Failure(Released());
+        }
+
+        public async ValueTask<Result<CovenantQuotaSnapshot>> ProbeScopeAsync(
+            ImmutableArray<string> excludedKeys,
+            CancellationToken cancellationToken)
+        {
+            await BlockAsync(cancellationToken);
+
+            return Result<CovenantQuotaSnapshot>.Failure(Released());
+        }
+
+        public ValueTask<Result<CovenantRetirementPreflight>> ResolveRetirementPreflightAsync(
+            CovenantLane lane,
+            string normalizedKey,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        private async Task BlockAsync(CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+
+            await _release.Task.WaitAsync(cancellationToken);
+        }
+
+        private static Error Released() =>
+            new(ErrorCodes.Covenant.LifecycleConflict, "The blocking probe was released.");
+    }
+
     private sealed class CapabilityFixture : IDisposable
     {
-
         private readonly CancellationTokenSource _turn = new();
 
-        public CapabilityFixture()
+        public CapabilityFixture(ICovenantTurnHeadProbe? headProbe = null)
         {
             CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
 
@@ -321,7 +428,7 @@ public sealed class CovenantToolInvocationContextTests
                 CovenantCapabilityFixtures.Campaign(),
                 CovenantCapabilityFixtures.Admission(plan),
                 CovenantCapabilityFixtures.Materialization(),
-            new CovenantCapabilityFixtures.StubHeadProbe(),
+            headProbe ?? new CovenantCapabilityFixtures.StubHeadProbe(),
                 Nonce,
                 CovenantToolNames.ProposeCovenant,
                 "call-1",
@@ -343,7 +450,5 @@ public sealed class CovenantToolInvocationContextTests
 
             _turn.Dispose();
         }
-
     }
-
 }

@@ -324,6 +324,16 @@ internal static class CovenantSectionRenderer
             return [];
         }
 
+        // The entry ceiling is a stored-state condition exactly as the byte ceiling is: a restore, a
+        // limit change or a direct edit can leave more entries than the write path would admit. It
+        // raises the same typed exception so the linker degrades the turn, instead of the digest
+        // constructor's ArgumentException (a programming-error signal) escaping past the gate.
+        if (decisions.Length > CovenantSectionCapacity.MaximumEntries(placement))
+        {
+            throw new CovenantSectionBoundExceededException(
+                "The Covenant Section exceeds its placement entry bound.");
+        }
+
         return placement switch
         {
             CovenantPlacement.GlobalConfirmed or CovenantPlacement.CampaignConfirmed =>

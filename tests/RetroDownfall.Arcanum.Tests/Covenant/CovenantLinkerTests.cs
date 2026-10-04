@@ -741,6 +741,50 @@ public sealed class CovenantLinkerTests
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, linked.Error.Code);
     }
 
+    [Fact]
+    public void A_section_with_too_many_entries_degrades_rather_than_throwing()
+    {
+        // The write path caps each placement's entries, but a restore, a limit change or a direct
+        // edit can leave more behind. The entry-count overflow must take the same degrade channel as
+        // the byte overflow; the Link catch stays narrow, so the renderer has to raise the typed bound
+        // exception rather than letting the digest's ArgumentException through.
+        CovenantSnapshotCandidate[] global = Enumerable.Range(0, CovenantLimits.MaxGlobalConfirmedEntries + 1)
+            .Select(static index => CovenantTask6Fixture.GlobalConfirmed(
+                $"global.{index}",
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                (ulong)(index + 1),
+                1))
+            .ToArray();
+
+        Result<CovenantTurnPlan> linked = new CovenantLinker().Link(CovenantTask6Fixture.Snapshot(null, global));
+
+        Assert.True(linked.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, linked.Error.Code);
+    }
+
+    [Fact]
+    public void A_proposed_section_with_too_many_entries_degrades_rather_than_throwing()
+    {
+        CovenantSnapshotCandidate[] proposed = Enumerable.Range(0, CovenantLimits.MaxCampaignProposedEntries + 1)
+            .Select(static index => CovenantTask6Fixture.CampaignProposed(
+                $"proposed.{index}",
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                (ulong)(index + 1),
+                1,
+                CovenantTask6Fixture.CampaignId))
+            .ToArray();
+
+        Result<CovenantTurnPlan> linked = new CovenantLinker().Link(
+            CovenantTask6Fixture.Snapshot(CovenantTask6Fixture.CampaignId, proposed));
+
+        Assert.True(linked.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, linked.Error.Code);
+    }
+
     private static CovenantSnapshotCandidate Oversized(
         string key,
         Guid entryId,

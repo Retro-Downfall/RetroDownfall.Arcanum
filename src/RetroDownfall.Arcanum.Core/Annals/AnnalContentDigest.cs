@@ -19,9 +19,15 @@ public static class AnnalContentDigest
     /// <summary>
     /// Separates a Lexicon entry's type from its fact set. Without it a type ending in text that the
     /// fact set begins with would hash identically to a different pair, and two distinct states of one
-    /// entry would share a binding. A unit separator cannot occur in either field: both are collapsed
-    /// and control-stripped long before they reach durable storage.
+    /// entry would share a binding.
     /// </summary>
+    /// <remarks>
+    /// The separator is not exclusive. The Lexicon normalizer trims and bounds both fields but does not
+    /// strip control characters, so a type or a fact may itself contain U+001F and the pairs
+    /// <c>("a\u001Fb", "c")</c> and <c>("a", "b\u001Fc")</c> share one format-1 binding. That is a
+    /// known boundary of format 1, pinned by <c>AnnalContentDigestTests</c>; changing the framing would
+    /// change every stored binding, so the bytes are left exactly as they are.
+    /// </remarks>
     private const char FieldSeparator = '\u001F';
 
     /// <summary>The binding for one Saga memory's stored content.</summary>

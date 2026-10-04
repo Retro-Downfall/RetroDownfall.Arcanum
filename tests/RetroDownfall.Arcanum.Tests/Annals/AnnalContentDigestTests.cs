@@ -7,11 +7,9 @@ namespace RetroDownfall.Arcanum.Tests.Annals;
 /// </summary>
 public sealed class AnnalContentDigestTests
 {
-
     [Fact]
     public void A_saga_digest_is_thirty_two_bytes_and_stable_for_the_same_content()
     {
-
         byte[] first = AnnalContentDigest.ForSagaMemory("the operator prefers tabs");
 
         byte[] second = AnnalContentDigest.ForSagaMemory("the operator prefers tabs");
@@ -19,7 +17,6 @@ public sealed class AnnalContentDigestTests
         Assert.Equal(32, first.Length);
 
         Assert.Equal(first, second);
-
     }
 
     [Fact]
@@ -33,11 +30,9 @@ public sealed class AnnalContentDigestTests
     [Fact]
     public void Different_saga_content_digests_differently()
     {
-
         Assert.NotEqual(
             AnnalContentDigest.ForSagaMemory("one conclusion"),
             AnnalContentDigest.ForSagaMemory("another conclusion"));
-
     }
 
     /// <summary>
@@ -47,11 +42,22 @@ public sealed class AnnalContentDigestTests
     [Fact]
     public void A_lexicon_digest_separates_the_type_from_the_fact_set()
     {
-
         Assert.NotEqual(
             AnnalContentDigest.ForLexiconEntry("Person", "alpha"),
-            AnnalContentDigest.ForLexiconEntry("PersonAlpha", string.Empty));
+            AnnalContentDigest.ForLexiconEntry("Persona", "lpha"));
+    }
 
+    /// <summary>
+    /// The separator is not exclusive: the normalizer does not strip control characters, so a field
+    /// may carry U+001F itself and shift the boundary. Format 1 cannot change without invalidating
+    /// every stored binding, so the collision is documented here rather than silently relied on.
+    /// </summary>
+    [Fact]
+    public void A_lexicon_format_1_digest_documents_its_known_boundary_collisions()
+    {
+        Assert.Equal(
+            AnnalContentDigest.ForLexiconEntry("a\u001Fb", "c"),
+            AnnalContentDigest.ForLexiconEntry("a", "b\u001Fc"));
     }
 
     [Fact]
@@ -71,19 +77,14 @@ public sealed class AnnalContentDigestTests
     [Fact]
     public void A_lexicon_digest_is_stable_for_the_same_type_and_fact_set()
     {
-
         Assert.Equal(
             AnnalContentDigest.ForLexiconEntry("Project", "ships on Friday\nwritten in C#"),
             AnnalContentDigest.ForLexiconEntry("Project", "ships on Friday\nwritten in C#"));
-
     }
 
     [Fact]
     public void A_lexicon_digest_is_thirty_two_bytes()
     {
-
         Assert.Equal(32, AnnalContentDigest.ForLexiconEntry("Person", "alpha").Length);
-
     }
-
 }
