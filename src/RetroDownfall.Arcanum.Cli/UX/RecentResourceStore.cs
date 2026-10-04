@@ -62,26 +62,20 @@ public sealed class RecentResourceStore : IRecentResourceStore
             .RunAsync(
                 async token =>
                 {
-
                     Result<bool> revalidated = await revalidateAsync(token)
                         .ConfigureAwait(false);
 
                     if (revalidated.IsFailure || !revalidated.Value)
                     {
-
                         return false;
-
                     }
 
                     lock (_gate)
                     {
-
                         RememberUnderExclusive(resourceKind, id);
-
                     }
 
                     return true;
-
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -89,7 +83,6 @@ public sealed class RecentResourceStore : IRecentResourceStore
 
     private void RememberUnderExclusive(string resourceKind, string id)
     {
-
         try
         {
             List<RecentEntry> entries = ReadEntries()
@@ -110,50 +103,34 @@ public sealed class RecentResourceStore : IRecentResourceStore
 
             try
             {
-
-                using (FileStream stream = new(
-                    temp,
-                    FileMode.CreateNew,
-                    FileAccess.Write,
-                    FileShare.None))
+                // Owner-only before the first byte is written, not narrowed after the stream opened.
+                using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(temp))
                 using (StreamWriter writer = new(stream, Encoding.UTF8))
                 {
-
-                    SecureFilePermissions.ApplyOwnerOnlyFile(temp);
-
                     foreach (RecentEntry entry in entries)
                     {
-
                         writer.WriteLine(Serialize(entry));
-
                     }
 
                     writer.Flush();
 
                     stream.Flush(flushToDisk: true);
-
                 }
 
                 File.Move(temp, _path, overwrite: true);
 
                 SecureFilePermissions.ApplyOwnerOnlyFile(_path);
-
             }
             finally
             {
-
                 try
                 {
-
                     File.Delete(temp);
-
                 }
                 catch (Exception cleanupException) when (
                     cleanupException is IOException or UnauthorizedAccessException)
                 {
-
                 }
-
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
