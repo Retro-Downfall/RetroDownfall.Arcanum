@@ -1640,7 +1640,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IEventBus>(),
                 sp.GetRequiredService<ITrustedMcpWorkspaceStore>(),
                 sp.GetRequiredService<IHttpClientFactory>(),
-                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>());
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                sp.GetRequiredService<ILoggerFactory>());
 
             manager.ConfigureGlobalAdmission(
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>());

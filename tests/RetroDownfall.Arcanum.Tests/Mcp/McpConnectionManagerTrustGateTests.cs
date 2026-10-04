@@ -1034,7 +1034,8 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             new FakeEventBus(),
             trustStore,
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLoggerFactory.Instance);
 
         manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));

@@ -670,7 +670,9 @@ public sealed partial class McpConnectionManager
                 a2aClientEffective,
                 attachmentsToolEnabled,
                 GetClampedMcpMaxJsonRpcLineBytes(),
-                logger: null,
+                // Only the in-process server's own category. The SDK client side deliberately gets no
+                // logger factory (see the loggerFactory field remarks).
+                logger: loggerFactory.CreateLogger<ArcanumInternalToolServer>(),
                 allowHostProcessTools: allowHostProcessTools,
                 codingToolsSettings: settings.CurrentValue.ResolveCodingTools(),
                 workspaceCheckRuntime: new WorkspaceCheckRuntime(

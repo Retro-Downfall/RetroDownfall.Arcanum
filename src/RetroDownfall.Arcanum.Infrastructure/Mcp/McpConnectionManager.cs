@@ -41,6 +41,14 @@ public sealed partial class McpConnectionManager :
 {
     private readonly ILogger<McpConnectionManager> logger;
 
+    /// <summary>
+    /// Used only to create the in-process internal tool server's logger. It is deliberately never handed
+    /// to the Streamable HTTP or stdio SDK clients: the named <c>McpHttp</c> client strips every logger
+    /// because hosted MCP endpoints embed bearer tokens in the URL path, and SDK client logs could copy
+    /// that endpoint into the rolling log and <c>GET /api/logs</c>.
+    /// </summary>
+    private readonly ILoggerFactory loggerFactory;
+
     private readonly IHumanPromptRegistry humanPromptRegistry;
 
     private readonly IServiceScopeFactory scopeFactory;
@@ -159,9 +167,14 @@ public sealed partial class McpConnectionManager :
         IEventBus eventBus,
         ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
         IHttpClientFactory httpClientFactory,
-        IOptionsMonitor<ArcanumSettings> settings)
+        IOptionsMonitor<ArcanumSettings> settings,
+        ILoggerFactory loggerFactory)
     {
+        ArgumentNullException.ThrowIfNull(loggerFactory);
+
         this.logger = logger;
+
+        this.loggerFactory = loggerFactory;
 
         this.humanPromptRegistry = humanPromptRegistry;
 
