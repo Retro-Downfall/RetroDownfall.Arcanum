@@ -164,10 +164,10 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
     /// </summary>
     /// <remarks>
     /// Credential Manager deletes by target name, so between the reread that compared the record and
-    /// the delete there is a window in which a replacement would be removed. The window is
-    /// microseconds and the readback afterwards reports a surviving record as a mismatch rather
-    /// than as a delete, but a contract that did not say so would read as an atomicity guarantee
-    /// the Windows arm does not provide.
+    /// the delete there is a window in which a replacement is deleted and reported as
+    /// <c>Deleted</c>, because the readback then sees an empty slot; the readback detects only a
+    /// record re-created after the delete. The window is microseconds, but a contract that did not
+    /// say so would read as an atomicity guarantee the Windows arm does not provide.
     /// </remarks>
     [Fact]
     public void The_capability_contract_names_the_windows_compare_delete_window()

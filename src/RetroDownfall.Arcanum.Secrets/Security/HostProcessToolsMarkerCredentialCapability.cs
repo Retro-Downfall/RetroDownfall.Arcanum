@@ -67,9 +67,11 @@ internal interface IHostProcessToolsMarkerNativeRecordCapability : IDisposable
     /// open is a different item and is never touched. Windows has no handle to retain and deletes by
     /// target name: the reread compares the whole record, last-written stamp included, but between
     /// that comparison and the delete there is a window of a few microseconds in which a replacement
-    /// would be removed. It is closed afterwards rather than before — the readback reports a surviving
-    /// record as <see cref="HostProcessToolsMarkerCredentialDeleteStatus.Mismatch"/> and never as a
-    /// delete — and it does not make an absent slot look present. Linux retains nothing and reports
+    /// would be deleted too, and the operation then reports
+    /// <see cref="HostProcessToolsMarkerCredentialDeleteStatus.Deleted"/>, because the readback sees
+    /// an empty slot. The readback detects only a record re-created after the delete
+    /// (<see cref="HostProcessToolsMarkerCredentialDeleteStatus.Mismatch"/>), not one that was
+    /// replaced inside the window. Linux retains nothing and reports
     /// <see cref="HostProcessToolsMarkerCredentialOpenStatus.Unavailable"/>.</para>
     /// </remarks>
     HostProcessToolsMarkerCredentialDeleteStatus CompareDeleteExact(
