@@ -571,109 +571,13 @@ public sealed partial class McpConnectionManager :
                             "Mcp.ClientDisposalIncomplete",
                             entry.ErrorMessage);
                     }
-                    else if (cancellationToken.IsCancellationRequested)
-                    {
-                        // The old server is already stopped, so this is no longer "nothing happened":
-                        // throwing here would leave the caller unable to tell a restart that never began
-                        // from one that stopped the server and then lost its caller. Say what state the
-                        // server is in instead, and do not start a replacement for a caller that left.
-                        result = new Error(
-                            "Mcp.RestartCanceled",
-                            $"The restart of MCP server '{entry.Name}' was canceled after the server was stopped; the server is stopped. Start it again to restore it.");
-                    }
-                    else if (entry.Transport is McpServerTransport.Sse)
-                    {
-                        entry.State = McpServerState.Error;
-
-                        entry.ErrorMessage = "SSE transport is not yet supported.";
-
-                        pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
-
-                        result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
-                    }
-                    else if (!await IsWorkspaceServerVisibleAsync(
-                                 entry,
-                                 cancellationToken)
-                             .ConfigureAwait(false))
-                    {
-                        Error notTrusted = IsCurrentRegistryEntry(entry)
-                            ? WorkspaceNotTrustedError()
-                            : EntryNotFoundError(entry);
-
-                        entry.State = McpServerState.Error;
-
-                        entry.ErrorMessage = notTrusted.Message;
-
-                        pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
-
-                        result = notTrusted;
-                    }
                     else
                     {
-                        entry.State = McpServerState.Starting;
-
-                        pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
-
-                        Result startResult = await StartManagedServerWithCancellationHandlingAsync(entry, pendingEvents, cancellationToken)
-                            .ConfigureAwait(false);
-
-                        if (startResult.IsFailure)
-                        {
-                            entry.State = McpServerState.Error;
-
-                            entry.ErrorMessage = startResult.Error.Message;
-
-                            ScheduleRestartBackoff(entry);
-
-                            pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
-
-                            result = startResult;
-                        }
-                        else if (!await IsWorkspaceServerVisibleAsync(
-                                          entry,
-                                          cancellationToken)
-                                      .ConfigureAwait(false))
-                        {
-                            _ = await StopManagedServerCoreAsync(
-                                    entry)
-                                .ConfigureAwait(false);
-
-                            Error notTrusted = IsCurrentRegistryEntry(entry)
-                                ? WorkspaceNotTrustedError()
-                                : EntryNotFoundError(entry);
-
-                            entry.State = McpServerState.Error;
-
-                            entry.Tools = [];
-
-                            entry.ErrorMessage = notTrusted.Message;
-
-                            pendingEvents.Add(BuildEvent(
+                        result = await StartReplacementAfterStopAsync(
                                 entry,
-                                McpServerState.Error,
-                                entry.ErrorMessage,
-                                []));
-
-                            result = notTrusted;
-                        }
-                        else
-                        {
-                            entry.State = McpServerState.Running;
-
-                            entry.LastConnectedAt = DateTimeOffset.UtcNow;
-
-                            entry.ErrorMessage = null;
-
-                            entry.RestartAfterUtc = null;
-
-                            pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
-
-                            InvalidateCachesForServer(entry);
-
-                            SyncPartitionServerMetadata(entry);
-
-                            result = Result.Success();
-                        }
+                                pendingEvents,
+                                cancellationToken)
+                            .ConfigureAwait(false);
                     }
                 }
             }
@@ -684,9 +588,9 @@ public sealed partial class McpConnectionManager :
         }
         finally
         {
-            // A finally (rather than a plain statement after the try) so a canceled restart still
-            // publishes the Error-state event queued by StartManagedServerWithCancellationHandlingAsync
-            // before the OperationCanceledException propagates to the caller.
+            // A finally (rather than a plain statement after the try) so the lifecycle events queued so
+            // far (the stop, an Error-state event from a canceled replacement start) are published even
+            // when something unexpected propagates out of the restart.
             foreach (McpServerEvent ev in pendingEvents)
             {
                 PublishEvent(ev);
@@ -695,6 +599,154 @@ public sealed partial class McpConnectionManager :
 
         return result;
     }
+
+    /// <summary>
+    /// The part of a restart that runs once the old server has stopped: refuse an unsupported transport or
+    /// an unapproved workspace, start the replacement, and re-check the approval. The old server is gone by
+    /// now, so a caller that cancels from here on can no longer be answered with a bare
+    /// <see cref="OperationCanceledException"/>, which reads as "nothing happened". A cancellation observed
+    /// before the replacement starts, or one that interrupts its handshake, is reported as
+    /// <c>Mcp.RestartCanceled</c> with the state the server was left in. Once the replacement has started
+    /// the restart is committed: the approval re-check that follows is bounded local work and finishes on
+    /// <see cref="CancellationToken.None"/>, rather than abandoning a started client in the Starting state.
+    /// </summary>
+    private async Task<Result> StartReplacementAfterStopAsync(
+        ManagedMcpServerEntry entry,
+        List<McpServerEvent> pendingEvents,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return RestartCanceledError(entry, "the server is stopped");
+        }
+
+        if (entry.Transport is McpServerTransport.Sse)
+        {
+            entry.State = McpServerState.Error;
+
+            entry.ErrorMessage = "SSE transport is not yet supported.";
+
+            pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+            return new Error("Mcp.SseNotSupported", entry.ErrorMessage);
+        }
+
+        bool visibleBeforeStart;
+
+        try
+        {
+            visibleBeforeStart = await IsWorkspaceServerVisibleAsync(
+                    entry,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            // The caller left during the approval read. The entry is still Stopped from the line above.
+            return RestartCanceledError(entry, "the server is stopped");
+        }
+
+        if (!visibleBeforeStart)
+        {
+            Error notTrusted = IsCurrentRegistryEntry(entry)
+                ? WorkspaceNotTrustedError()
+                : EntryNotFoundError(entry);
+
+            entry.State = McpServerState.Error;
+
+            entry.ErrorMessage = notTrusted.Message;
+
+            pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+            return notTrusted;
+        }
+
+        entry.State = McpServerState.Starting;
+
+        pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
+
+        Result startResult;
+
+        try
+        {
+            startResult = await StartManagedServerWithCancellationHandlingAsync(entry, pendingEvents, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            // The wrapper above has already left the entry in Error and queued that event, and the start
+            // disposed the half-started client. No restart backoff: a caller leaving is not a server fault.
+            return RestartCanceledError(
+                entry,
+                "its replacement had not finished starting, so the server is not running");
+        }
+
+        if (startResult.IsFailure)
+        {
+            entry.State = McpServerState.Error;
+
+            entry.ErrorMessage = startResult.Error.Message;
+
+            ScheduleRestartBackoff(entry);
+
+            pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+            return startResult;
+        }
+
+        // The replacement is running, so the restart is committed. A caller that cancels now must not
+        // turn the approval re-check into an OperationCanceledException that strands the started client.
+        if (!await IsWorkspaceServerVisibleAsync(
+                    entry,
+                    CancellationToken.None)
+                .ConfigureAwait(false))
+        {
+            _ = await StopManagedServerCoreAsync(
+                    entry)
+                .ConfigureAwait(false);
+
+            Error notTrusted = IsCurrentRegistryEntry(entry)
+                ? WorkspaceNotTrustedError()
+                : EntryNotFoundError(entry);
+
+            entry.State = McpServerState.Error;
+
+            entry.Tools = [];
+
+            entry.ErrorMessage = notTrusted.Message;
+
+            pendingEvents.Add(BuildEvent(
+                entry,
+                McpServerState.Error,
+                entry.ErrorMessage,
+                []));
+
+            return notTrusted;
+        }
+
+        entry.State = McpServerState.Running;
+
+        entry.LastConnectedAt = DateTimeOffset.UtcNow;
+
+        entry.ErrorMessage = null;
+
+        entry.RestartAfterUtc = null;
+
+        pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+
+        InvalidateCachesForServer(entry);
+
+        SyncPartitionServerMetadata(entry);
+
+        return Result.Success();
+    }
+
+    private static Error RestartCanceledError(ManagedMcpServerEntry entry, string outcome) =>
+        new(
+            "Mcp.RestartCanceled",
+            $"The restart of MCP server '{entry.Name}' was canceled after the old server was stopped; {outcome}. Start it again to restore it.");
 
     /// <inheritdoc />
     public async Task<McpServerInfo?> GetStatusAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default)

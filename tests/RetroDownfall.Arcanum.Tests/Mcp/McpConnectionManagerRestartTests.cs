@@ -63,6 +63,64 @@ public sealed class McpConnectionManagerRestartTests
     }
 
     [Fact]
+    public async Task Restart_cancelled_while_the_replacement_is_starting_reports_the_stopped_server_in_result()
+    {
+        ScriptedMcpClientFactory clients = new();
+
+        await using McpConnectionManager manager = McpConnectionManagerHarness.Create();
+
+        manager.ClientFactoryForTests = clients.Create;
+
+        await RegisterAsync(manager);
+
+        Result started = await manager.StartAsync(ServerName, workingDirectory: null);
+
+        Assert.True(started.IsSuccess, started.IsFailure ? started.Error.Message : null);
+
+        ManagedMcpServerEntry entry = Assert.IsType<ManagedMcpServerEntry>(
+            manager.GetManagedEntryForTests(ServerName, workingDirectory: null));
+
+        ScriptedMcpClient first = Assert.Single(clients.Created);
+
+        using CancellationTokenSource cancellation = new();
+
+        // The old server stops normally. The caller then leaves in the middle of the replacement's
+        // initialize handshake, which is the longest wait of the whole restart.
+        clients.OnCreate = client =>
+        {
+            client.OnInitialize = async token =>
+            {
+                await cancellation.CancelAsync();
+
+                await Task.Delay(Timeout.Infinite, token);
+            };
+        };
+
+        Result result = await manager.RestartAsync(ServerName, workingDirectory: null, cancellation.Token);
+
+        // The old server is gone and the replacement never came up, so the answer has to say that
+        // rather than surface as a bare cancellation that reads as "nothing happened".
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Mcp.RestartCanceled", result.Error.Code);
+
+        Assert.Contains("not running", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(McpServerState.Error, entry.State);
+
+        Assert.Null(entry.Client);
+
+        Assert.Equal(1, first.DisposeCount);
+
+        // The half-started replacement was disposed rather than leaked.
+        ScriptedMcpClient replacement = clients.Created[1];
+
+        Assert.Equal(1, replacement.DisposeCount);
+
+        Assert.Equal(2, clients.Created.Count);
+    }
+
+    [Fact]
     public async Task Restart_without_cancellation_replaces_the_client()
     {
         ScriptedMcpClientFactory clients = new();

@@ -11,9 +11,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// Stateless merge of MCP tool rows into a workspace tool surface: internal → global → local with local-wins dedup (Ordinal tool names)
 /// among external servers only. An internal tool's name is never replaced by an external server's.
+/// A workspace-local server is held to a stricter rule than a global one: it may not claim any name the
+/// in-process server registers a handler for, whether or not this session advertises that tool.
 /// </summary>
 internal static class McpToolMerger
 {
+    /// <summary>
+    /// The names no external server (global or workspace-local) may claim, whatever the session advertises.
+    /// </summary>
     private static readonly HashSet<string> ReservedInternalToolNames =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -31,6 +36,18 @@ internal static class McpToolMerger
 
             CovenantToolNames.RetireCovenant,
         };
+
+    /// <summary>
+    /// Every name the in-process server registers a handler for, matched in any letter case. Workspace-local
+    /// rows are checked against this set rather than only against the rows a session advertises: a built-in
+    /// that is gated off for one session (<c>ask_human</c> on a non-streaming turn, <c>scribe_lexicon</c>
+    /// with the Lexicon feature off, the Conclave, Saga, A2A and attachment tools behind their own flags,
+    /// the file tools without a workspace root) has no advertised row to collide with, and an approved
+    /// <c>mcp.json</c> could otherwise answer to the built-in's name exactly when the built-in is unavailable.
+    /// Global servers are the operator's own configuration and are not held to it.
+    /// </summary>
+    private static readonly HashSet<string> InProcessServerToolNames =
+        new(ArcanumInternalToolServer.RegisteredToolNames, StringComparer.OrdinalIgnoreCase);
 
     internal readonly record struct GlobalDedupResult(
         Dictionary<string, LoadedMcpToolRow> FirstByToolName,
@@ -114,10 +131,11 @@ internal static class McpToolMerger
         // Every internal tool this surface advertises is as unshadowable as the intrinsic names, not
         // just the static few: a workspace-local server's same-named tool would otherwise be bridged
         // in place of the sandboxed built-in while the model, the name-keyed pipeline policy and the
-        // operator all still believed they were talking to the built-in. The static list stays in
-        // force on top of this because an internal tool gated off for this session (for example
-        // ask_human on a non-streaming turn) is absent from internalTagged, and a purely dynamic set
-        // would let an external server claim exactly the names whose built-in is unavailable.
+        // operator all still believed they were talking to the built-in. A static set stays in force
+        // on top of the advertised rows (InProcessServerToolNames, checked in ApplyLocalOverrides)
+        // because an internal tool gated off for this session is absent from internalTagged, and a
+        // purely dynamic set would let a workspace-local server claim exactly the names whose
+        // built-in is unavailable.
         HashSet<string> internalNames = new(StringComparer.OrdinalIgnoreCase);
 
         foreach (LoadedMcpToolRow row in internalTagged)
@@ -171,7 +189,9 @@ internal static class McpToolMerger
         {
             string name = localRow.Tool.Name;
 
-            if (IsReservedInternalName(name) || internalNames.Contains(name))
+            if (IsReservedInternalName(name)
+                || InProcessServerToolNames.Contains(name)
+                || internalNames.Contains(name))
             {
                 LogExternalCollision(bridgeFallbackLogger, name, "workspace");
 

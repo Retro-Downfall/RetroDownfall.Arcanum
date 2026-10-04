@@ -17,7 +17,14 @@ internal sealed class ScriptedMcpClient(long transportGeneration) : IMcpClient
 
     public Action? OnDispose { get; set; }
 
-    public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    /// <summary>
+    /// Runs in place of the handshake, so a test can cancel its caller (or hold the start open) at the
+    /// instant the replacement client is being initialized. Unset, the handshake completes at once.
+    /// </summary>
+    public Func<CancellationToken, Task>? OnInitialize { get; set; }
+
+    public Task InitializeAsync(CancellationToken cancellationToken = default) =>
+        OnInitialize?.Invoke(cancellationToken) ?? Task.CompletedTask;
 
     public Task<IReadOnlyList<McpBridgeTool>> GetToolsAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<McpBridgeTool>>([]);
@@ -48,6 +55,9 @@ internal sealed class ScriptedMcpClientFactory
 
     private readonly List<ScriptedMcpClient> _created = [];
 
+    /// <summary>Runs on each client right after it is created and recorded, before the start uses it.</summary>
+    public Action<ScriptedMcpClient>? OnCreate { get; set; }
+
     public IReadOnlyList<ScriptedMcpClient> Created
     {
         get
@@ -67,6 +77,8 @@ internal sealed class ScriptedMcpClientFactory
         {
             _created.Add(client);
         }
+
+        OnCreate?.Invoke(client);
 
         return client;
     }

@@ -912,6 +912,102 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Restart_cancelled_while_the_trust_snapshot_is_read_after_the_stop_reports_the_stopped_server_in_result()
+    {
+        const string serverName = "restart-cancelled-at-trust";
+
+        (McpConnectionManager manager, DigestTrustStore trust, ManagedMcpServerEntry entry) =
+            await RegisterWorkspaceServerAsync(serverName);
+
+        await using McpConnectionManager disposable = manager;
+
+        ScriptedMcpClient old = new(entry.TransportGeneration);
+
+        entry.Client = old;
+
+        entry.State = McpServerState.Running;
+
+        using CancellationTokenSource cancellation = new();
+
+        // The caller leaves while the manager re-reads the workspace approval, which is after the old
+        // client has been stopped and before any replacement exists. This is how a restart is most
+        // often cancelled: the approval read is the first awaited step once the stop completes.
+        trust.BeforeSnapshotReturn = async (_, token) =>
+        {
+            await cancellation.CancelAsync();
+
+            token.ThrowIfCancellationRequested();
+        };
+
+        Result result = await manager.RestartAsync(serverName, _workspace.Root, cancellation.Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Mcp.RestartCanceled", result.Error.Code);
+
+        Assert.Contains("stopped", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(McpServerState.Stopped, entry.State);
+
+        Assert.Null(entry.Client);
+
+        Assert.Equal(1, old.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Restart_whose_caller_cancels_after_the_replacement_started_completes_instead_of_throwing()
+    {
+        const string serverName = "restart-cancelled-after-start";
+
+        (McpConnectionManager manager, DigestTrustStore trust, ManagedMcpServerEntry entry) =
+            await RegisterWorkspaceServerAsync(serverName);
+
+        await using McpConnectionManager disposable = manager;
+
+        ScriptedMcpClientFactory clients = new();
+
+        manager.ClientFactoryForTests = clients.Create;
+
+        ScriptedMcpClient old = new(entry.TransportGeneration);
+
+        entry.Client = old;
+
+        entry.State = McpServerState.Running;
+
+        using CancellationTokenSource cancellation = new();
+
+        // The first approval read (before the replacement starts) answers normally. The caller leaves
+        // during the second, which re-checks the approval after the replacement is already running.
+        // That is the tail of a restart that has already stopped one server and started another: the
+        // restart finishes it rather than abandoning a started client in the Starting state.
+        trust.BeforeSnapshotReturn = (_, _) =>
+        {
+            trust.BeforeSnapshotReturn = async (_, token) =>
+            {
+                await cancellation.CancelAsync();
+
+                token.ThrowIfCancellationRequested();
+            };
+
+            return Task.CompletedTask;
+        };
+
+        Result result = await manager.RestartAsync(serverName, _workspace.Root, cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(McpServerState.Running, entry.State);
+
+        Assert.Equal(1, old.DisposeCount);
+
+        ScriptedMcpClient replacement = Assert.Single(clients.Created);
+
+        Assert.Same(replacement, entry.Client);
+
+        Assert.Equal(0, replacement.DisposeCount);
+    }
+
+    [Fact]
     public async Task Oversized_workspace_config_retires_previously_registered_entries()
     {
         const string config =
@@ -1006,6 +1102,39 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => manager.TrustWorkspaceAsync(_workspace.Root, canceled.Token));
+    }
+
+    /// <summary>
+    /// Registers one approved stdio workspace server (never auto-started) and returns the manager, the
+    /// trust store that approved it, and its registry entry, so a restart test can hand the entry a
+    /// scripted client and drive the real restart path.
+    /// </summary>
+    private async Task<(McpConnectionManager Manager, DigestTrustStore Trust, ManagedMcpServerEntry Entry)>
+        RegisterWorkspaceServerAsync(string serverName)
+    {
+        string path = _workspace.WriteFile(
+            "mcp.json",
+            $$"""
+            {
+              "mcpServers": {
+                "{{serverName}}": {
+                  "command": "arcanum-nonexistent-binary-zzz",
+                  "alwaysOn": false
+                }
+              }
+            }
+            """);
+
+        DigestTrustStore trust = new() { ApprovedDigest = await ComputeSha256HexAsync(path) };
+
+        McpConnectionManager manager = CreateManager(trust);
+
+        await manager.GetAvailableToolsAsync(_workspace.Root);
+
+        ManagedMcpServerEntry entry = Assert.IsType<ManagedMcpServerEntry>(
+            manager.GetManagedEntryForTests(serverName, _workspace.Root));
+
+        return (manager, trust, entry);
     }
 
     private McpConnectionManager CreateManager(ITrustedMcpWorkspaceStore trustStore)

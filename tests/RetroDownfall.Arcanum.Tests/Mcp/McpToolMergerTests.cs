@@ -284,6 +284,102 @@ public sealed class McpToolMergerTests
         }
     }
 
+    [Theory]
+    [InlineData("ask_human")]
+    [InlineData("scribe_lexicon")]
+    [InlineData("delete_lexicon")]
+    [InlineData("search_archives")]
+    [InlineData("cast_sending")]
+    [InlineData("dispatch_sending")]
+    [InlineData("continue_sending")]
+    [InlineData("read_saga")]
+    [InlineData("attach_session_file")]
+    [InlineData("refresh_session_file")]
+    [InlineData("write_file")]
+    [InlineData("Scribe_Lexicon")]
+    public void MergeWorkspaceSurface_workspace_local_server_cannot_claim_an_internal_tool_the_session_does_not_advertise(
+        string internalName)
+    {
+        // The built-in is gated off for this session (ask_human on a non-streaming turn, scribe_lexicon
+        // with the Lexicon feature off, no workspace root for the file tools), so no internal row exists
+        // to collide with. The name is still the built-in's: handing it to an approved workspace
+        // mcp.json would let that file answer to a name the model and the name-keyed policy attribute to
+        // the sandboxed built-in.
+        LoadedMcpToolRow localClaim = Row(internalName, "workspace-local");
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+            [],
+
+            new Dictionary<string, LoadedMcpToolRow>(),
+
+            [localClaim]);
+
+        Assert.Empty(merged);
+    }
+
+    [Fact]
+    public void MergeWorkspaceSurface_every_registered_internal_tool_name_is_reserved_when_the_built_in_is_not_advertised()
+    {
+        IReadOnlyCollection<string> registeredNames = RegisteredInternalToolNames();
+
+        // Guards the generator itself: an empty registry would make the loop below vacuous.
+        Assert.Contains("ask_human", registeredNames);
+
+        Assert.Contains("scribe_lexicon", registeredNames);
+
+        foreach (string name in registeredNames)
+        {
+            IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+                [],
+
+                new Dictionary<string, LoadedMcpToolRow>(),
+
+                [Row(name, "workspace-local")]);
+
+            Assert.True(
+                merged.Count == 0,
+                $"A workspace-local server claimed the internal tool name '{name}' while its built-in was not advertised.");
+        }
+    }
+
+    [Fact]
+    public void The_static_internal_tool_name_set_is_exactly_the_registered_handler_names()
+    {
+        // The static set is what keeps a gated-off built-in's name reserved. A handler registered
+        // without being added to it (or a name left in it after its handler is removed) would silently
+        // reopen, or pointlessly widen, that reservation, so the two are compared one-for-one.
+        string[] registered = [.. RegisteredInternalToolNames().Order(StringComparer.Ordinal)];
+
+        string[] reserved = [.. ArcanumInternalToolServer.RegisteredToolNames.Order(StringComparer.Ordinal)];
+
+        Assert.Equal(registered, reserved);
+    }
+
+    [Fact]
+    public void MergeWorkspaceSurface_global_server_keeps_a_tool_named_like_an_internal_tool_the_session_does_not_advertise()
+    {
+        // The reservation against a gated-off built-in is for approved workspace mcp.json files. A global
+        // server is the operator's own configuration (a filesystem server's write_file or list_directory
+        // in a session with no workspace root is ordinary), so it is not swept up in it.
+        LoadedMcpToolRow globalRow = Row("list_directory", "global");
+
+        Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
+        {
+            ["list_directory"] = globalRow,
+        };
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+            [],
+
+            globalMap,
+
+            [Row("local_only", "workspace-local")]);
+
+        Assert.Equal(["list_directory", "local_only"], merged.Select(static t => t.Name).ToArray());
+
+        Assert.Same(globalRow.Tool, merged[0]);
+    }
+
     [Fact]
     public void MergeWorkspaceSurface_local_wins_same_registration()
     {

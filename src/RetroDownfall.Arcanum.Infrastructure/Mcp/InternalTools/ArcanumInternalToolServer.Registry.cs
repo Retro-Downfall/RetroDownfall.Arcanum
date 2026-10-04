@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private delegate Task<McpToolsCallResultWire> InternalToolHandler(
         JsonElement arguments,
         CancellationToken cancellationToken);
@@ -20,12 +19,71 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     internal IReadOnlyCollection<string> RegisteredToolHandlerNamesForTests => _toolHandlers.Keys;
 
+    /// <summary>
+    /// Every tool name this server registers a handler for, independent of which of them a given
+    /// session's feature gates, workspace root or turn shape actually advertise. <see cref="McpToolMerger"/>
+    /// reserves these names against workspace-local servers: a built-in that is gated off for one session
+    /// (<c>ask_human</c> on a non-streaming turn, <c>scribe_lexicon</c> with the Lexicon feature off)
+    /// is absent from that session's advertised rows, and a name reserved only while its row exists would
+    /// be claimable by an approved <c>mcp.json</c> exactly when the built-in is unavailable. Keep this set
+    /// in step with <see cref="BuildToolHandlerRegistry"/>; a test compares the two.
+    /// </summary>
+    internal static IReadOnlySet<string> RegisteredToolNames { get; } =
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "read_file_chunk",
+
+            "replace_text_block",
+
+            "write_file",
+
+            "list_directory",
+
+            ToolRiskClassifier.SearchWorkspaceToolName,
+
+            ToolRiskClassifier.ApplyPatchToolName,
+
+            ToolRiskClassifier.WorkspaceCheckToolName,
+
+            ToolRiskClassifier.ExecuteCommandToolName,
+
+            "read_command_output",
+
+            "adjust_initiative",
+
+            "send_commlink_alert",
+
+            "petition_dungeon_master",
+
+            "cast_sending",
+
+            "dispatch_sending",
+
+            "continue_sending",
+
+            "ask_human",
+
+            "scribe_lexicon",
+
+            "delete_lexicon",
+
+            "search_archives",
+
+            CovenantToolNames.ProposeCovenant,
+
+            CovenantToolNames.RetireCovenant,
+
+            "read_saga",
+
+            "attach_session_file",
+
+            "refresh_session_file",
+        };
+
     private Dictionary<string, InternalToolHandler> BuildToolHandlerRegistry()
     {
-
         Dictionary<string, InternalToolHandler> handlers = new(StringComparer.Ordinal)
         {
-
             ["read_file_chunk"] = ExecuteReadFileChunkAsync,
 
             ["replace_text_block"] = ExecuteReplaceTextBlockAsync,
@@ -75,11 +133,8 @@ internal sealed partial class ArcanumInternalToolServer
             ["attach_session_file"] = ExecuteAttachSessionFileAsync,
 
             ["refresh_session_file"] = ExecuteRefreshSessionFileAsync,
-
         };
 
         return handlers;
-
     }
-
 }
