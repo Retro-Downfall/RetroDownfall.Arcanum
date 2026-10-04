@@ -1481,6 +1481,36 @@ public sealed class CovenantOperationGateTests
 
     }
 
+    /// <summary>
+    /// The owner's operation code is judged before the scope is looked at, so an owner this shape cannot
+    /// serve is refused as a wrong shape whatever it is paired with.
+    /// </summary>
+    /// <remarks>
+    /// Paired with a scope that would answer <c>InvalidScope</c> on its own, so an acquisition that looked
+    /// at the scope first would give a different, misleading diagnosis for the same mistake.
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Entry_erasure_refuses_a_wrong_owner_before_it_looks_at_the_scope(bool reclaimsKey)
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        Result<CovenantEntryErasureLease> refused = await gate.AcquireEntryErasureAsync(
+            default,
+            reclaimsKey,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+        await using CovenantInstallationReadLease open = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Assert.Equal(CovenantLeaseKind.InstallationRead, open.Snapshot.Kind);
+
+    }
+
     [Fact]
     public async Task Entry_erasure_owner_is_never_adopted_durably()
     {
@@ -1490,21 +1520,43 @@ public sealed class CovenantOperationGateTests
         CovenantExclusiveRecoveryOwner owner =
             CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure);
 
-        // The exact type, not any ArgumentException: an entry erasure is refused for having no durable
-        // owner by design, which is a different diagnosis from an unclassified operation code.
-        _ = Assert.Throws<ArgumentException>(
+        // The exact type and the diagnosis, not any ArgumentException: an entry erasure is refused for
+        // having no durable owner by design, which is a different diagnosis from an unclassified
+        // operation code, and the two differ in type and in what they say.
+        ArgumentException global = Assert.Throws<ArgumentException>(
             () => gate.AdoptDurableRecoveryOwner(owner, scope: null, cleanupOnlyHistoricalCampaign: false));
 
-        _ = Assert.Throws<ArgumentException>(
+        ArgumentException campaign = Assert.Throws<ArgumentException>(
             () => gate.AdoptDurableRecoveryOwner(
                 owner,
                 CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
                 cleanupOnlyHistoricalCampaign: false));
 
-        // Neither refusal installed a closure that no later process could ever resume.
-        await using CovenantInstallationReadLease open = (await gate.AcquireInstallationReadAsync(Token)).Value;
+        foreach (ArgumentException refusal in new[] { global, campaign })
+        {
 
-        Assert.Equal(CovenantLeaseKind.InstallationRead, open.Snapshot.Kind);
+            Assert.Equal("owner", refusal.ParamName);
+
+            Assert.Contains("never has a durable recovery owner", refusal.Message, StringComparison.Ordinal);
+
+        }
+
+        // Neither refusal installed a closure that no later process could ever resume: the installation
+        // reads, and the same entry erasure the refused adoption named is still free to be taken.
+        await using (CovenantInstallationReadLease open = (await gate.AcquireInstallationReadAsync(Token)).Value)
+        {
+
+            Assert.Equal(CovenantLeaseKind.InstallationRead, open.Snapshot.Kind);
+
+        }
+
+        await using CovenantEntryErasureLease erasure = (await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: false,
+            owner,
+            Token)).Value;
+
+        Assert.Equal(CovenantLeaseKind.EntryErasure, erasure.Snapshot.Kind);
 
     }
 
