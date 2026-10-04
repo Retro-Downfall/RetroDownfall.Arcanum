@@ -124,7 +124,7 @@ Some options are nullable in the generated parser so handlers can resolve saved 
 
 A bare interactive invocation opens Command Center. A non-interactive invocation, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage instead. `ARCANUM_NO_AUTO_SERVE=1` disables interactive host auto-start; `NO_COLOR` or `ARCANUM_NO_COLOR` selects a monochrome theme but does not disable the UI. Command Center requires at least an 80-by-12 terminal after UI initialization; a smaller terminal or UI-bootstrap failure exits with code 1.
 
-`arcanum center` is the explicit alias, and `arcanum open center` reaches the same in-process host. Unlike the automatic bare launch, an explicit request is not suppressed by `ARCANUM_NO_COMMAND_CENTER`; the normal terminal and UI requirements still apply. All three accept `-c`/`--continue` to reopen the most recent Session and `-r`/`--resume [<id>]` to reopen a named one, matching the one-shot entry.
+`arcanum center` is the explicit spelling, and `arcanum open center` behaves the same and reaches the same in-process host. Unlike the automatic bare launch, an explicit request is not suppressed by `ARCANUM_NO_COMMAND_CENTER`; the normal terminal and UI requirements still apply. All three accept `-c`/`--continue` to reopen the most recent Session and `-r`/`--resume [<id>]` to reopen a named one, matching the one-shot entry.
 
 Command Center is the only interactive turn entry. A terminal that cannot host it — redirected stdin or stdout, `ARCANUM_NO_COMMAND_CENTER=1`, or a window under 80×12 — gets usage naming `arcanum run` rather than a degraded second REPL.
 
@@ -272,7 +272,7 @@ Launch Command Center, The Forge, or Compendium, optionally at one server-owned 
 
 | Command | Destination | Additional command options |
 |---|---|---|
-| `arcanum open center` | Command Center in the current `arcanum` process. | None beyond global or inherited family options. |
+| `arcanum open center` | Command Center in the current `arcanum` process. | `-c, --continue` — Reopen the most recent Session. Cannot be combined with `--resume`.<br>`-r, --resume [<session>]` — Reopen a Session by GUID, exact title, or unique title prefix; omit the value for an interactive picker. |
 | `arcanum open theforge` | The Forge shell. | None beyond global or inherited family options. |
 | `arcanum open compendium` | Compendium at configuration settings. | None beyond global or inherited family options. |
 | `arcanum open session [<session>]` | The Forge Workbench at the selected Session. | None beyond global or inherited family options. |
@@ -289,7 +289,7 @@ Discovery checks platform application bundles and executables, including Windows
 
 ### `arcanum center`
 
-Explicitly open Command Center in the current process. This is an alias for `arcanum open center`; the full interactive input table is in [Bare `arcanum`: Command Center](#bare-arcanum-command-center).
+Explicitly open Command Center in the current process. It behaves the same as `arcanum open center` (a separate command registered under both names, not an alias) and takes the same options; the full interactive input table is in [Bare `arcanum`: Command Center](#bare-arcanum-command-center).
 
 **Syntax:** `arcanum center [-c] [-r [<session>]]`
 
