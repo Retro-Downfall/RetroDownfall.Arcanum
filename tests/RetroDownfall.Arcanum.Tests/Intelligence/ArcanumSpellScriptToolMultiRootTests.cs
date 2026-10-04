@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Collection("ProcessEnvironment")]
 public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 {
-
     private readonly string _baseDir;
 
     private readonly string _rootA;
@@ -142,6 +141,77 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
         Assert.NotNull(result);
 
         Assert.Contains("unsupported script type", result, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Invoke_SymlinkWithAllowedNameToDisallowedTarget_IsRefusedWithoutFault()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Symbolic links need elevation or developer mode on Windows.");
+
+        // The link's own name passes the extension allow-list; the file it points at does not. The
+        // interpreter used to be re-derived from the target, which threw out of the tool.
+        string payload = Path.Combine(_rootA, "payload.bin");
+
+        await File.WriteAllTextAsync(payload, "not a real interpreter target");
+
+        File.CreateSymbolicLink(Path.Combine(_rootA, "alias.sh"), payload);
+
+        ArcanumSpellScriptTool tool = new(
+            [_rootA],
+            allowUnsandboxedToolChildren: true);
+
+        string? result = await tool.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = "alias.sh" }))
+            as string;
+
+        Assert.NotNull(result);
+
+        Assert.Contains("unsupported script type '.bin'", result, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--- exit code ---", result, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Invoke_ArgumentQuoting_GroupsOnDoubleQuotesAndDropsThem()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "The argument-echo script is a POSIX shell script.");
+
+        string scriptPath = Path.Combine(_rootA, "args.sh");
+
+        await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\nfor a in \"$@\"; do echo \"[$a]\"; done\n");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        ArcanumSpellScriptTool tool = new(
+            [_rootA],
+            allowUnsandboxedToolChildren: true);
+
+        // Double quotes only group a token: they are removed, and neither \" nor "" spells a literal quote.
+        string? result = await tool.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["script_name"] = "args.sh",
+                    ["arguments"] = "one \"two words\" three\"\"four",
+                }))
+            as string;
+
+        Assert.NotNull(result);
+
+        Assert.Contains("[one]\n[two words]\n[threefour]\n", result, StringComparison.Ordinal);
+
+        string description = tool.JsonSchema
+            .GetProperty("properties")
+            .GetProperty("arguments")
+            .GetProperty("description")
+            .GetString()!;
+
+        Assert.Contains("double quote", description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("no escape", description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -312,5 +382,4 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
             ArcanumSpellScriptTool.ResolveLinkTargetFaultForTests = null;
         }
     }
-
 }

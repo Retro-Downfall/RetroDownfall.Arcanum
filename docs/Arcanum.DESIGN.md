@@ -1228,7 +1228,7 @@ Spell validation recognizes all canonical built-in names plus the legacy `browse
 
 All hub built-in tool ids use snake_case, consistent with in-process MCP tools.
 
-The canonical tool list is in §4.2. When its Development + startup-environment gate is open, `run_spell_script` runs with `UseShellExecute = false`, cwd fixed to the resolved spell's `scripts/` directory, bare filename only (prefix containment across primary + resonant roots), extension-based runner map, and the same no-total-duration, cooperative-cancel, and kill-tree behavior as `execute_command` (including `CancellationToken.Register` for immediate process kill).
+The canonical tool list is in §4.2. When its Development + startup-environment gate is open, `run_spell_script` runs with `UseShellExecute = false`, cwd fixed to the resolved spell's `scripts/` directory, bare filename only (prefix containment across primary + resonant roots), extension-based runner map (the interpreter is chosen from the file that will actually run, so a symlink whose own name is allowed but whose target type is not is refused with the standard unsupported-type message), a space-separated `arguments` string in which double quotes only group a token and are not passed through (there is no escape for a literal double quote), and the same no-total-duration, cooperative-cancel, and kill-tree behavior as `execute_command` (including `CancellationToken.Register` for immediate process kill).
 
 **Reliable workspace tools (`arcanum-internal`):**
 
