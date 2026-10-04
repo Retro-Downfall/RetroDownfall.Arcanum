@@ -131,6 +131,9 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         return _masterApiKey.PeekAsync(cancellationToken);
     }
 
+    /// <inheritdoc />
+    public bool ServesMasterApiKeyFromMirrorDuringOsFailure => _masterApiKey.ServingMirrorDuringOsFailure;
+
     public async Task SaveApiKeyAsync(string apiKey)
     {
         ArgumentNullException.ThrowIfNull(apiKey);

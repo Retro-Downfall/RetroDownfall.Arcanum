@@ -22,6 +22,14 @@ public interface ISecretStore
     Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(CancellationToken cancellationToken) =>
         PeekApiKeyReadResultAsync();
 
+    /// <summary>
+    /// True while this process's own <see cref="GetApiKeyReadResultAsync"/> was answered from the
+    /// encrypted mirror because OS key storage failed (a locked keychain at startup), and no OS read
+    /// has answered since. Peeks still fail closed in that state; only the request path may keep
+    /// authenticating the key this process adopted at startup (DESIGN §11.2 item 4).
+    /// </summary>
+    bool ServesMasterApiKeyFromMirrorDuringOsFailure => false;
+
     Task SaveApiKeyAsync(string apiKey);
 
     Task<string?> GetGrimoireEncryptionSecretAsync();

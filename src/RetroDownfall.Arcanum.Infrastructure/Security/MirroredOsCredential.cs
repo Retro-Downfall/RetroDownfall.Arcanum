@@ -75,8 +75,21 @@ internal sealed class MirroredOsCredential(
 
     private long _osReadStartedAt;
 
+    private volatile bool _servingMirrorDuringOsFailure;
+
+    /// <summary>
+    /// True while the last <see cref="GetAsync"/> was answered from the mirror because the OS read
+    /// failed, and no OS read has answered since. The permissive startup read adopted that value for
+    /// this process; <see cref="PeekAsync"/> still fails closed for it (DESIGN §11.2 item 4).
+    /// </summary>
+    internal bool ServingMirrorDuringOsFailure => _servingMirrorDuringOsFailure;
+
+    private string StaleMarkerPath => mirror.Path + ".stale";
+
     /// <summary>
     /// Reads the credential, preferring the OS copy and promoting a mirror into an empty OS store.
+    /// When the OS store cannot answer, a mirror is served — unless a mirror write after a committed
+    /// OS change failed and left it marked stale, in which case it is refused.
     /// </summary>
     internal async Task<SecretStoreReadResult> GetAsync(CancellationToken cancellationToken)
     {
@@ -88,6 +101,8 @@ internal sealed class MirroredOsCredential(
 
             if (os.Status == OsCredentialStoreStatus.Ok && !string.IsNullOrWhiteSpace(os.Value))
             {
+                _servingMirrorDuringOsFailure = false;
+
                 if (policy.SynchronizeMirrorFromOs)
                 {
                     await SynchronizeMirrorAsync(os.Value).ConfigureAwait(false);
@@ -106,6 +121,11 @@ internal sealed class MirroredOsCredential(
 
             SecretStoreReadResult fromMirror = await mirror.ReadAsync(cancellationToken).ConfigureAwait(false);
 
+            if (fromMirror.Status == SecretStoreReadStatus.Ok && MirrorIsMarkedStale())
+            {
+                return StaleMirrorRefusal();
+            }
+
             if (fromMirror.Status == SecretStoreReadStatus.Ok)
             {
                 if (os.Status is OsCredentialStoreStatus.NotFound or OsCredentialStoreStatus.Ok)
@@ -123,6 +143,12 @@ internal sealed class MirroredOsCredential(
                         "OS credential store unavailable ({Message}); using the encrypted mirror for {Credential}.",
                         os.Message,
                         policy.Description);
+                }
+                else
+                {
+                    // A locked keychain at startup: serve the current mirror (item 4) and remember that
+                    // this process adopted it without the OS store being able to confirm it.
+                    _servingMirrorDuringOsFailure = true;
                 }
 
                 return fromMirror;
@@ -173,6 +199,8 @@ internal sealed class MirroredOsCredential(
 
             if (os.Status == OsCredentialStoreStatus.Ok && !string.IsNullOrWhiteSpace(os.Value))
             {
+                _servingMirrorDuringOsFailure = false;
+
                 return SecretStoreReadResult.Ok(os.Value);
             }
 
@@ -183,7 +211,11 @@ internal sealed class MirroredOsCredential(
                     + (os.Message ?? policy.RecoveryHint));
             }
 
-            return await mirror.ReadAsync(cancellationToken).ConfigureAwait(false);
+            SecretStoreReadResult fromMirror = await mirror.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+            return fromMirror.Status == SecretStoreReadStatus.Ok && MirrorIsMarkedStale()
+                ? StaleMirrorRefusal()
+                : fromMirror;
         }
         finally
         {
@@ -205,6 +237,9 @@ internal sealed class MirroredOsCredential(
         {
             await WaitForOutstandingOsReadAsync(cancellationToken).ConfigureAwait(false);
 
+            // Whatever this process adopted at startup is superseded by the value being saved.
+            _servingMirrorDuringOsFailure = false;
+
             OsCredentialStoreResult os = osStore.Set(ArcanumCredentialIdentity.Service, account, value);
 
             if (os.Status == OsCredentialStoreStatus.Ok)
@@ -212,15 +247,20 @@ internal sealed class MirroredOsCredential(
                 try
                 {
                     await mirror.WriteAsync(value, CancellationToken.None).ConfigureAwait(false);
+
+                    ClearStaleMarker();
                 }
                 catch (Exception exception)
                 {
-                    // The OS credential is safely stored and authoritative. Keep serving while making
-                    // the failed mirror visible without disclosing the credential.
+                    // The OS credential is safely stored and authoritative. Keep serving, but the
+                    // mirror still holds the superseded value: mark it so no locked-keychain read can
+                    // ever serve it.
                     logger?.LogWarning(
                         exception,
                         "OS credential save succeeded for {Credential}, but its encrypted mirror failed.",
                         policy.Description);
+
+                    MarkMirrorStale();
                 }
 
                 return;
@@ -242,6 +282,8 @@ internal sealed class MirroredOsCredential(
             PurgeSupersededOsCredential(os);
 
             await mirror.WriteAsync(value, CancellationToken.None).ConfigureAwait(false);
+
+            ClearStaleMarker();
         }
         finally
         {
@@ -265,6 +307,11 @@ internal sealed class MirroredOsCredential(
             if (File.Exists(path))
             {
                 File.Delete(path);
+            }
+
+            if (File.Exists(StaleMarkerPath))
+            {
+                File.Delete(StaleMarkerPath);
             }
 
             if (os.Status == OsCredentialStoreStatus.Failed)
@@ -413,22 +460,102 @@ internal sealed class MirroredOsCredential(
         {
             SecretStoreReadResult current = await mirror.ReadAsync(CancellationToken.None).ConfigureAwait(false);
 
-            if (current.Status == SecretStoreReadStatus.Ok
-                && string.Equals(current.Value, value, StringComparison.Ordinal))
+            if (current.Status != SecretStoreReadStatus.Ok
+                || !string.Equals(current.Value, value, StringComparison.Ordinal))
             {
-                return;
+                await mirror.WriteAsync(value, CancellationToken.None).ConfigureAwait(false);
             }
 
-            await mirror.WriteAsync(value, CancellationToken.None).ConfigureAwait(false);
+            // The mirror now holds the canonical value, whether it already did or was just rewritten.
+            ClearStaleMarker();
         }
         catch (Exception exception)
         {
+            // The OS credential was rotated out of band (or the mirror was lost) and the copy could
+            // not follow it: the mirror may be stale.
             logger?.LogWarning(
                 exception,
                 "{Credential} was read from OS storage, but its encrypted mirror could not be synchronized.",
                 Capitalized(policy.Description));
+
+            MarkMirrorStale();
         }
     }
+
+    private bool MirrorIsMarkedStale() => File.Exists(StaleMarkerPath);
+
+    private SecretStoreReadResult StaleMirrorRefusal()
+    {
+        logger?.LogWarning(
+            "The encrypted mirror of {Credential} is marked stale and is not served while OS key storage cannot confirm it.",
+            policy.Description);
+
+        return SecretStoreReadResult.Corrupted(
+            $"The encrypted mirror of {policy.Description} may be older than the OS credential (a mirror "
+            + "write after a change failed), so it is not used while OS key storage cannot answer. "
+            + "Unlock or repair OS key storage and retry; an ordinary read re-synchronizes the mirror.");
+    }
+
+    /// <summary>
+    /// Durably records that the mirror may hold a superseded value. When even the marker cannot be
+    /// written the stale mirror is deleted instead: a missing mirror fails closed, a stale one would
+    /// be served.
+    /// </summary>
+    private void MarkMirrorStale()
+    {
+        try
+        {
+            string markerPath = StaleMarkerPath;
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(
+                Path.GetDirectoryName(markerPath) ?? throw new InvalidOperationException("Invalid mirror path."));
+
+            OwnerOnlyAtomicFile.Write(markerPath, StaleMarkerContent);
+
+            return;
+        }
+        catch (Exception markerFailure)
+        {
+            logger?.LogWarning(
+                markerFailure,
+                "Could not mark the encrypted mirror of {Credential} stale; removing the mirror instead.",
+                policy.Description);
+        }
+
+        try
+        {
+            File.Delete(mirror.Path);
+        }
+        catch (Exception deleteFailure) when (deleteFailure is IOException or UnauthorizedAccessException)
+        {
+            logger?.LogError(
+                deleteFailure,
+                "The encrypted mirror of {Credential} may be stale and could be neither marked nor removed.",
+                policy.Description);
+        }
+    }
+
+    private void ClearStaleMarker()
+    {
+        try
+        {
+            if (File.Exists(StaleMarkerPath))
+            {
+                File.Delete(StaleMarkerPath);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Left in place the marker keeps a now-current mirror refused, which fails closed.
+            logger?.LogWarning(
+                exception,
+                "Could not clear the stale marker of the encrypted mirror of {Credential}.",
+                policy.Description);
+        }
+    }
+
+    private static ReadOnlySpan<byte> StaleMarkerContent =>
+        "The encrypted mirror beside this file may be older than the OS credential.\n"u8;
 
     /// <summary>
     /// Reads prefer the OS credential over the mirror, so a failed OS write has to take the superseded

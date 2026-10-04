@@ -236,9 +236,18 @@ public sealed class ApiKeyAuthenticator(
 
         await refresh.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        return digestCache.TryGetDigest(out byte[]? currentDigest)
-            ? currentDigest
-            : null;
+        if (digestCache.TryGetDigest(out byte[]? currentDigest))
+        {
+            return currentDigest;
+        }
+
+        // A locked keychain at startup was answered from the current mirror (DESIGN §11.2 item 4) and
+        // peeks keep failing closed while it stays locked. Only then does the request path keep the
+        // key this process adopted, through the retained digest that rotation or invalidation clears.
+        return secretStore.ServesMasterApiKeyFromMirrorDuringOsFailure
+            && digestCache.TryGetPresenceDigest(out byte[]? adoptedDigest)
+                ? adoptedDigest
+                : null;
     }
 
     /// <summary>

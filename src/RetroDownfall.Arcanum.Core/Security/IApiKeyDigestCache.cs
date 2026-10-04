@@ -20,10 +20,12 @@ public interface IApiKeyDigestCache
     bool TryGetDigest(out byte[]? digest, out long generation);
 
     /// <summary>
-    /// Returns the process-lifetime digest used only to prove that the process answering the local
-    /// port is the installed Arcanum host. Implementations may retain this after the ordinary
-    /// authentication TTL; explicit key invalidation must clear both views. On success, the result
-    /// is a caller-owned defensive copy that the caller must zero.
+    /// Returns the process-lifetime digest used to prove that the process answering the local port
+    /// is the installed Arcanum host — and, while the secret store reports that this process adopted
+    /// the master key from its mirror during an OS-storage failure, to keep authenticating that key
+    /// after the ordinary TTL (DESIGN §11.2 item 4). Implementations may retain this after the
+    /// ordinary authentication TTL; explicit key invalidation must clear both views. On success, the
+    /// result is a caller-owned defensive copy that the caller must zero.
     /// </summary>
     bool TryGetPresenceDigest(out byte[]? digest) =>
         TryGetDigest(out digest);
