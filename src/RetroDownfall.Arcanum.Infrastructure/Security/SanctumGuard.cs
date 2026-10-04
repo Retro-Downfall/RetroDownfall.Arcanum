@@ -17,8 +17,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// <remarks>
 /// On macOS, network enforcement is advisory only (no kernel-level firewall): breaches are always
 /// logged; in <see cref="SanctumMode.Strict"/> mode the application blocks the tool call.
-/// <see cref="ResourceLimits.MaxFileWriteMb"/> is enforced on in-process file-write tools;
-/// runtime process/memory enforcement is deferred to phase 2 (container backend).
+/// <see cref="ResourceLimits.MaxFileWriteMb"/> is enforced on in-process file-write tools. The
+/// child-process ceilings this guard resolves (<see cref="GetEffectiveResourceLimitsForWorkspaceAsync"/>)
+/// are enforced by <c>ProcessResourceLimiter</c> and <c>CappedChildProcessRunner</c>, which fail closed
+/// when a limit cannot be applied; memory is one effective ceiling (the smaller non-zero of
+/// <see cref="ResourceLimits.MaxMemoryMb"/> and <see cref="ResourceLimits.MaxProcessMemoryMb"/>), and on
+/// macOS it is a sampled physical-footprint monitor because the kernel rejects RLIMIT_AS (DESIGN §11.15).
 /// Breaches are recorded inline to <see cref="ISanctumBreachRepository"/> (Grimoire-backed):
 /// both this guard and the repository are scoped and share the same <c>ArcanumDbContext</c>, so no
 /// fire-and-forget is needed. Breaches raised for an unparseable/unknown campaign id are logged only
@@ -30,7 +34,6 @@ public sealed class SanctumGuard(
     ILogger<SanctumGuard> logger,
     IDnsResolver? dnsResolver = null) : ISanctumGuard
 {
-
     /// <summary>
     /// Allow-list evaluation compares resolved addresses, so it needs a resolver. Production keeps
     /// the real one; tests substitute a deterministic fake rather than depending on live DNS.
@@ -624,7 +627,6 @@ public sealed class SanctumGuard(
 
     private static bool IsHostAllowed(string host, IReadOnlyList<string> allowedDomains)
     {
-
         foreach (string domain in allowedDomains)
         {
             if (string.IsNullOrWhiteSpace(domain))
@@ -787,5 +789,4 @@ public sealed class SanctumGuard(
         };
 
     private static SanctumResult AllowedResult() => new() { Allowed = true };
-
 }

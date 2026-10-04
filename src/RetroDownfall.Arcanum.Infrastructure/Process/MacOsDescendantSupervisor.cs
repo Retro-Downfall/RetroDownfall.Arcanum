@@ -19,7 +19,11 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     private readonly CancellationTokenSource _monitorCts = new();
     private readonly Func<Task>? _monitorTickHold;
 
+    private readonly long? _memoryLimitBytes;
+
     private readonly Task _monitorTask;
+
+    private volatile bool _memoryLimitExceeded;
 
     private long _fullScanCount;
 
@@ -32,28 +36,41 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         ProcessIdentity rootIdentity,
         int kernelQueue,
         IntPtr eventBuffer,
-        Func<Task>? monitorTickHold)
+        Func<Task>? monitorTickHold,
+        long? memoryLimitBytes)
     {
         _rootPid = rootPid;
         _rootIdentity = rootIdentity;
         _kernelQueue = kernelQueue;
         _eventBuffer = eventBuffer;
         _monitorTickHold = monitorTickHold;
+        _memoryLimitBytes = memoryLimitBytes;
         _tracked.Add(rootIdentity);
         _monitorTask = MonitorAsync();
     }
 
+    /// <param name="rootPid">The directly started child.</param>
     /// <param name="monitorTickHold">
     /// Always <c>null</c> in production. A test supplies it to park the monitor loop inside a tick
     /// and prove that disposal waits for the loop to finish before releasing the kqueue buffer; the
     /// window is a scheduling race that no wall-clock test could reproduce reliably.
     /// </param>
+    /// <param name="memoryLimitBytes">
+    /// The Sanctum memory ceiling macOS cannot enforce in the kernel (it rejects RLIMIT_AS). When
+    /// set, every monitor tick sums the physical footprint of the root and every tracked descendant
+    /// and, once the sum exceeds the ceiling, records <see cref="MemoryLimitExceeded"/> and kills the
+    /// root and the tracked tree. The supervisor is not returned when the root's footprint cannot be
+    /// read, so the caller fails closed rather than running an unmonitored child.
+    /// </param>
     internal static MacOsDescendantSupervisor? TryStart(
         int rootPid,
-        Func<Task>? monitorTickHold = null)
+        Func<Task>? monitorTickHold = null,
+        long? memoryLimitBytes = null)
     {
         if (!OperatingSystem.IsMacOS()
-            || !TryReadProcess(rootPid, out ProcessSnapshot root))
+            || !TryReadProcess(rootPid, out ProcessSnapshot root)
+            || (memoryLimitBytes is not null
+                && !TryReadPhysicalFootprint(rootPid, out _)))
         {
             return null;
         }
@@ -106,7 +123,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 root.Identity,
                 queue,
                 events,
-                monitorTickHold);
+                monitorTickHold,
+                memoryLimitBytes);
         }
         catch
         {
@@ -273,6 +291,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 // reduce it by making the scan itself cheaper, never by scanning less often.
                 DiscoverDescendants();
 
+                EnforceMemoryLimit();
+
                 if (_monitorTickHold is not null)
                 {
                     await _monitorTickHold().ConfigureAwait(false);
@@ -359,6 +379,83 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     /// Number of monitor-loop iterations performed so far.
     /// </summary>
     internal long MonitorTickCount => Interlocked.Read(ref _monitorTickCount);
+
+    /// <summary>
+    /// True once the monitored tree's summed physical footprint exceeded the configured memory
+    /// ceiling and the supervisor killed it. This is the authoritative evidence that a kill was the
+    /// Sanctum memory limit rather than an unrelated signal.
+    /// </summary>
+    internal bool MemoryLimitExceeded => _memoryLimitExceeded;
+
+    /// <summary>
+    /// Sums the physical footprint (private resident plus compressed memory, the figure macOS itself
+    /// uses for per-process memory limits) of the root and every tracked descendant whose identity
+    /// still matches, and kills the whole tree once it exceeds the ceiling. Sampling runs on every
+    /// monitor tick, so a child can overshoot for at most one tick before it is killed.
+    /// </summary>
+    private void EnforceMemoryLimit()
+    {
+        if (_memoryLimitBytes is not long limit
+            || _memoryLimitExceeded)
+        {
+            return;
+        }
+
+        ProcessIdentity[] tracked;
+
+        lock (_gate)
+        {
+            tracked = [.. _tracked];
+        }
+
+        long total = 0;
+
+        foreach (ProcessIdentity identity in tracked)
+        {
+            if (TryReadProcess(
+                    identity.Pid,
+                    out ProcessSnapshot current)
+                && current.Identity == identity
+                && TryReadPhysicalFootprint(
+                    identity.Pid,
+                    out long footprint))
+            {
+                total += footprint;
+            }
+        }
+
+        if (total <= limit)
+        {
+            return;
+        }
+
+        _memoryLimitExceeded = true;
+        KillIfIdentityMatches(_rootIdentity);
+        KillTracked();
+    }
+
+    private static bool TryReadPhysicalFootprint(
+        int pid,
+        out long footprintBytes)
+    {
+        footprintBytes = 0;
+
+        if (!OperatingSystem.IsMacOS()
+            || pid <= 0)
+        {
+            return false;
+        }
+
+        RusageInfoV0 usage = default;
+
+        if (ProcPidRusage(pid, 0, ref usage) != 0)
+        {
+            return false;
+        }
+
+        footprintBytes = (long)Math.Min(usage.PhysFootprint, long.MaxValue);
+        return true;
+    }
 
     private void DiscoverDescendants()
     {
@@ -616,6 +713,14 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         int bufferSize);
 
     [LibraryImport(
+        "/usr/lib/libproc.dylib",
+        EntryPoint = "proc_pid_rusage")]
+    private static partial int ProcPidRusage(
+        int pid,
+        int flavor,
+        ref RusageInfoV0 buffer);
+
+    [LibraryImport(
         "libc",
         EntryPoint = "kill",
         SetLastError = true)]
@@ -670,6 +775,17 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
 
         [FieldOffset(24)]
         internal ulong ParentUniqueId;
+    }
+
+    /// <summary>
+    /// <c>struct rusage_info_v0</c> (<c>RUSAGE_INFO_V0</c>): a 16-byte uuid followed by ten
+    /// <c>uint64_t</c> fields; <c>ri_phys_footprint</c> is the eighth.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 96)]
+    private struct RusageInfoV0
+    {
+        [FieldOffset(72)]
+        internal ulong PhysFootprint;
     }
 
     [StructLayout(LayoutKind.Sequential)]

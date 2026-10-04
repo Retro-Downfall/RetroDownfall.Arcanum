@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Core.Sanctum;
 /// </remarks>
 public sealed record SanctumConfig
 {
-
     /// <summary>
     /// Carries the declared default of every member whose default is not <c>default(T)</c>, so a
     /// partial payload cannot silently weaken the policy.
@@ -41,13 +40,11 @@ public sealed record SanctumConfig
         ResourceLimits? resourceLimits = null,
         int maxBreachCount = 1000)
     {
-
         EnforcePathBoundary = enforcePathBoundary;
 
         ResourceLimits = resourceLimits!;
 
         MaxBreachCount = maxBreachCount;
-
     }
 
     public bool Enabled { get; init; } = false;
@@ -64,7 +61,6 @@ public sealed record SanctumConfig
 
     public IReadOnlyList<string> AllowedPaths
     {
-
         // W3.6: return a non-downcastable read-only view so a consumer cannot cast back to
         // List<string> and mutate the sandbox allow-list after construction.
         get => _allowedPaths.AsReadOnly();
@@ -76,7 +72,6 @@ public sealed record SanctumConfig
         // body binding, surfacing as an unhandled 500 out of every containment check for the
         // campaign. Degrade to the empty (most restrictive) allow-list instead.
         init => _allowedPaths = value is null ? [] : new List<string>(value);
-
     }
 
     public NetworkPolicy NetworkPolicy { get; init; } = NetworkPolicy.AllowAll;
@@ -85,11 +80,9 @@ public sealed record SanctumConfig
 
     public IReadOnlyList<string> AllowedDomains
     {
-
         get => _allowedDomains.AsReadOnly();
 
         init => _allowedDomains = value is null ? [] : new List<string>(value);
-
     }
 
     private readonly ResourceLimits _resourceLimits = new();
@@ -99,25 +92,21 @@ public sealed record SanctumConfig
     /// </summary>
     public ResourceLimits ResourceLimits
     {
-
         get => _resourceLimits;
 
         // Same hazard the collections guard against, with a worse landing: an omitted or explicitly
         // null resourceLimits would otherwise bind null onto a non-nullable member and dereference
         // inside SanctumEndpoints' clamp, turning a partial body into an unhandled 500.
         init => _resourceLimits = value ?? new ResourceLimits();
-
     }
 
     private readonly List<string> _disabledTools = [];
 
     public IReadOnlyList<string> DisabledTools
     {
-
         get => _disabledTools.AsReadOnly();
 
         init => _disabledTools = value is null ? [] : new List<string>(value);
-
     }
 
     /// <summary>
@@ -129,27 +118,22 @@ public sealed record SanctumConfig
     /// minimum.
     /// </summary>
     public int MaxBreachCount { get; init; }
-
 }
 
 public enum SanctumMode
 {
-
     Strict,
 
     AuditOnly,
-
 }
 
 public enum NetworkPolicy
 {
-
     AllowAll,
 
     AllowList,
 
     DenyAll,
-
 }
 
 /// <summary>
@@ -159,16 +143,16 @@ public enum NetworkPolicy
 /// Positional so every ceiling is a real constructor parameter with a real default. Written as
 /// init-only auto-properties these would be pseudo constructor parameters to System.Text.Json's
 /// generated creator, and a body such as <c>{"resourceLimits":{}}</c> would zero all seven — which
-/// for <see cref="ProcessTimeoutSeconds"/>, <see cref="MaxCpuSeconds"/>, <see cref="MaxMemoryMb"/>,
-/// and <see cref="MaxFileDescriptors"/> means "unlimited", i.e. the omission would remove the
-/// ceiling rather than keep it.
+/// for <see cref="ProcessTimeoutSeconds"/>, <see cref="MaxCpuSeconds"/>, and
+/// <see cref="MaxFileDescriptors"/> means "unlimited" and for <see cref="MaxMemoryMb"/> leaves only the
+/// per-process ceiling, i.e. the omission would remove the ceiling rather than keep it.
 /// </remarks>
-/// <param name="MaxProcessMemoryMb">Maximum per-process memory in megabytes.</param>
+/// <param name="MaxProcessMemoryMb">Per-process memory ceiling in megabytes (clamped to 64-8192, so never "unlimited"). Combined with <see cref="MaxMemoryMb"/> into one effective child-process memory ceiling, the smaller of the two non-zero values, on every platform.</param>
 /// <param name="MaxProcessCount">Maximum concurrent child processes.</param>
 /// <param name="MaxFileWriteMb">Maximum single file-write size in megabytes.</param>
 /// <param name="ProcessTimeoutSeconds">Maximum wall-clock seconds per child process. Clamped to 10-3600 by <c>ArcanumSettingClamps.SanctumProcessTimeoutSeconds</c>, so 0 is not "unlimited" - it becomes the 10-second floor.</param>
 /// <param name="MaxCpuSeconds">Maximum CPU time in seconds per tool invocation, enforced at the OS level. 0 = unlimited.</param>
-/// <param name="MaxMemoryMb">Maximum resident memory in megabytes per tool invocation, enforced at the OS level. 0 = unlimited.</param>
+/// <param name="MaxMemoryMb">Maximum memory in megabytes per tool invocation. 0 = no per-invocation ceiling, leaving <see cref="MaxProcessMemoryMb"/> as the effective ceiling; otherwise the smaller of the two applies. Enforced by a Linux cgroups v2 scope (RLIMIT_AS fallback), a Windows Job Object, or on macOS — where the kernel rejects RLIMIT_AS — by sampling the child tree's physical footprint and killing it once the ceiling is crossed. A ceiling that cannot be applied or monitored fails the invocation closed.</param>
 /// <param name="MaxFileDescriptors">Maximum open file descriptors per tool invocation, enforced at the OS level. 0 = unlimited.</param>
 public sealed record ResourceLimits(
     int MaxProcessMemoryMb = 512,

@@ -10,13 +10,11 @@ namespace RetroDownfall.Arcanum.Core.Platform;
 /// </summary>
 public enum ResourceLimitKind
 {
-
     Cpu,
 
     Memory,
 
     FileDescriptors,
-
 }
 
 /// <summary>
@@ -55,21 +53,36 @@ public sealed record ResourceLimitError(string Message);
 /// treat the outcome as apply-failed — never leave the child running unbounded). Null on
 /// macOS/Linux, where limits are applied inside the child before/at exec.
 /// </param>
+/// <param name="MonitoredMemoryLimitBytes">
+/// Non-null on macOS when a memory ceiling is configured. macOS has no kernel primitive that bounds a
+/// child's physical memory (it rejects <c>RLIMIT_AS</c> outright), so the caller must sample the
+/// started child tree's physical footprint against this many bytes, kill the tree when it is
+/// exceeded and attribute that kill to <see cref="ResourceLimitKind.Memory"/>. A caller that cannot
+/// attach that monitor to a still-running child must kill it and treat the run as apply-failed.
+/// </param>
+/// <param name="PreExecFailureMarker">
+/// Non-null when the limiter rewrote the start into a shell prelude. The prelude exits 126 before
+/// <c>exec</c> when any limit cannot be applied and writes this per-run token to stderr only on that
+/// path, so a caller seeing exit 126 with the token reports an apply failure, while a target's own
+/// exit 126 stays an ordinary result.
+/// </param>
 public sealed record ProcessResourceLimiterResult(
     ResourceLimitError? Error,
     Func<int, Task>? CleanupAsync,
     Func<Task<bool>>? WasOomKilledAsync = null,
-    Func<Process, ResourceLimitError?>? AssignAfterStart = null);
+    Func<Process, ResourceLimitError?>? AssignAfterStart = null,
+    long? MonitoredMemoryLimitBytes = null,
+    string? PreExecFailureMarker = null);
 
 /// <summary>
 /// Applies OS-enforced resource limits (CPU time, memory, open file descriptors / process count)
-/// to a child process. Implementations are platform-specific: setrlimit on macOS, cgroups v2
+/// to a child process. Implementations are platform-specific: setrlimit for CPU time and descriptors
+/// plus a caller-sampled physical-footprint ceiling for memory on macOS, cgroups v2
 /// (with setrlimit fallback) on Linux, and Windows Job Objects (create in
 /// <see cref="Apply"/>, assign immediately after <see cref="Process.Start()"/>).
 /// </summary>
 public interface IProcessResourceLimiter
 {
-
     /// <summary>
     /// Applies <paramref name="limits"/> to <paramref name="startInfo"/> before the process is
     /// started. Implementations may rewrite <see cref="ProcessStartInfo.FileName"/> and
@@ -79,5 +92,4 @@ public interface IProcessResourceLimiter
     /// for post-start assignment (see remarks on the concrete implementation).
     /// </summary>
     ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits);
-
 }

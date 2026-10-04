@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Platform;
 /// </summary>
 internal interface IWindowsJobObjectApi
 {
-
     SafeJobHandle? CreateJobObject();
 
     bool ConfigureLimits(SafeJobHandle job, in WindowsJobObjectLimits limits);
@@ -23,7 +22,6 @@ internal interface IWindowsJobObjectApi
     bool AssignProcess(SafeJobHandle job, SafeHandle processHandle);
 
     int GetLastError();
-
 }
 
 /// <summary>
@@ -41,7 +39,6 @@ internal readonly record struct WindowsJobObjectLimits(
 /// </summary>
 internal sealed class SafeJobHandle : SafeHandleZeroOrMinusOneIsInvalid
 {
-
     public SafeJobHandle()
         : base(ownsHandle: true)
     {
@@ -50,25 +47,18 @@ internal sealed class SafeJobHandle : SafeHandleZeroOrMinusOneIsInvalid
     public SafeJobHandle(nint preexistingHandle, bool ownsHandle)
         : base(ownsHandle)
     {
-
         SetHandle(preexistingHandle);
-
     }
 
     protected override bool ReleaseHandle()
     {
-
         if (!OperatingSystem.IsWindows())
         {
-
             return true;
-
         }
 
         return WindowsJobObjectInterop.CloseHandle(handle);
-
     }
-
 }
 
 /// <summary>
@@ -78,7 +68,6 @@ internal sealed class SafeJobHandle : SafeHandleZeroOrMinusOneIsInvalid
 [ExcludeFromCodeCoverage] // Reason: Windows-only kernel interop; behavior covered via IWindowsJobObjectApi fakes + OS-conditional integration tests.
 internal static partial class WindowsJobObjectInterop
 {
-
     internal const int JobObjectInfoClassExtendedLimitInformation = 9;
 
     internal const uint JobObjectLimitProcessTime = 0x0000_0002;
@@ -96,16 +85,12 @@ internal static partial class WindowsJobObjectInterop
 
     internal static IWindowsJobObjectApi CreateDefaultApi()
     {
-
         if (!OperatingSystem.IsWindows())
         {
-
             throw new PlatformNotSupportedException("Windows Job Objects require Windows.");
-
         }
 
         return new NativeWindowsJobObjectApi();
-
     }
 
     [SupportedOSPlatform("windows")]
@@ -134,7 +119,6 @@ internal static partial class WindowsJobObjectInterop
     [StructLayout(LayoutKind.Sequential)]
     private struct JobObjectBasicLimitInformation
     {
-
         public long PerProcessUserTimeLimit;
 
         public long PerJobUserTimeLimit;
@@ -152,13 +136,11 @@ internal static partial class WindowsJobObjectInterop
         public uint PriorityClass;
 
         public uint SchedulingClass;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct IoCounters
     {
-
         public ulong ReadOperationCount;
 
         public ulong WriteOperationCount;
@@ -170,13 +152,11 @@ internal static partial class WindowsJobObjectInterop
         public ulong WriteTransferCount;
 
         public ulong OtherTransferCount;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct JobObjectExtendedLimitInformation
     {
-
         public JobObjectBasicLimitInformation BasicLimitInformation;
 
         public IoCounters IoInfo;
@@ -188,70 +168,55 @@ internal static partial class WindowsJobObjectInterop
         public nuint PeakProcessMemoryUsed;
 
         public nuint PeakJobMemoryUsed;
-
     }
 
     [SupportedOSPlatform("windows")]
     private sealed class NativeWindowsJobObjectApi : IWindowsJobObjectApi
     {
-
         public SafeJobHandle? CreateJobObject()
         {
-
             nint handle = CreateJobObjectW(0, null);
 
             if (handle == 0)
             {
-
                 return null;
-
             }
 
             return new SafeJobHandle(handle, ownsHandle: true);
-
         }
 
         public bool ConfigureLimits(SafeJobHandle job, in WindowsJobObjectLimits limits)
         {
-
             JobObjectExtendedLimitInformation info = default;
 
             uint flags = JobObjectLimitKillOnJobClose;
 
             if (limits.PerProcessUserTime100Ns is long cpuTicks and > 0)
             {
-
                 flags |= JobObjectLimitProcessTime;
 
                 info.BasicLimitInformation.PerProcessUserTimeLimit = cpuTicks;
-
             }
 
             if (limits.ActiveProcessLimit is uint active and > 0)
             {
-
                 flags |= JobObjectLimitActiveProcess;
 
                 info.BasicLimitInformation.ActiveProcessLimit = active;
-
             }
 
             if (limits.ProcessMemoryBytes is ulong processMemory and > 0)
             {
-
                 flags |= JobObjectLimitProcessMemory;
 
                 info.ProcessMemoryLimit = (nuint)processMemory;
-
             }
 
             if (limits.JobMemoryBytes is ulong jobMemory and > 0)
             {
-
                 flags |= JobObjectLimitJobMemory;
 
                 info.JobMemoryLimit = (nuint)jobMemory;
-
             }
 
             info.BasicLimitInformation.LimitFlags = flags;
@@ -261,16 +226,13 @@ internal static partial class WindowsJobObjectInterop
                 JobObjectInfoClassExtendedLimitInformation,
                 ref info,
                 (uint)Marshal.SizeOf<JobObjectExtendedLimitInformation>());
-
         }
 
         public bool AssignProcess(SafeJobHandle job, SafeHandle processHandle) =>
             AssignProcessToJobObject(job.DangerousGetHandle(), processHandle.DangerousGetHandle());
 
         public int GetLastError() => Marshal.GetLastPInvokeError();
-
     }
-
 }
 
 /// <summary>
@@ -279,18 +241,15 @@ internal static partial class WindowsJobObjectInterop
 /// </summary>
 internal sealed class WindowsJobObjectSession : IDisposable
 {
-
     private readonly IWindowsJobObjectApi _api;
 
     private SafeJobHandle? _job;
 
     private WindowsJobObjectSession(IWindowsJobObjectApi api, SafeJobHandle job)
     {
-
         _api = api;
 
         _job = job;
-
     }
 
     /// <summary>
@@ -299,7 +258,6 @@ internal sealed class WindowsJobObjectSession : IDisposable
     /// </summary>
     internal static WindowsJobObjectLimits? BuildLimits(ResourceLimits limits)
     {
-
         ulong? memoryBytes = ResolveMemoryBytes(limits);
 
         long? cpuTicks = limits.MaxCpuSeconds > 0
@@ -312,9 +270,7 @@ internal sealed class WindowsJobObjectSession : IDisposable
 
         if (memoryBytes is null && cpuTicks is null && activeProcesses is null)
         {
-
             return null;
-
         }
 
         return new WindowsJobObjectLimits(
@@ -322,7 +278,6 @@ internal sealed class WindowsJobObjectSession : IDisposable
             JobMemoryBytes: memoryBytes,
             PerProcessUserTime100Ns: cpuTicks,
             ActiveProcessLimit: activeProcesses);
-
     }
 
     internal static bool HasJobEnforceableLimits(ResourceLimits limits) =>
@@ -333,35 +288,29 @@ internal sealed class WindowsJobObjectSession : IDisposable
         IWindowsJobObjectApi api,
         out ResourceLimitError? error)
     {
-
         error = null;
 
         WindowsJobObjectLimits? built = BuildLimits(limits);
 
         if (built is null)
         {
-
             return null;
-
         }
 
         SafeJobHandle? job = api.CreateJobObject();
 
         if (job is null || job.IsInvalid)
         {
-
             job?.Dispose();
 
             error = new ResourceLimitError(
                 "execute_command: Windows Job Object could not be created for resource-limited execution.");
 
             return null;
-
         }
 
         if (!api.ConfigureLimits(job, built.Value))
         {
-
             int lastError = api.GetLastError();
 
             job.Dispose();
@@ -370,45 +319,35 @@ internal sealed class WindowsJobObjectSession : IDisposable
                 $"execute_command: Windows Job Object limits could not be configured (Win32 error {lastError}).");
 
             return null;
-
         }
 
         return new WindowsJobObjectSession(api, job);
-
     }
 
     internal ResourceLimitError? Assign(Process process)
     {
-
         SafeJobHandle? job = _job;
 
         if (job is null || job.IsInvalid)
         {
-
             return new ResourceLimitError(
                 "execute_command: Windows Job Object handle was already closed before assignment.");
-
         }
 
         SafeHandle processHandle;
 
         try
         {
-
             processHandle = process.SafeHandle;
-
         }
         catch (InvalidOperationException)
         {
-
             return new ResourceLimitError(
                 "execute_command: child process handle was unavailable for Job Object assignment.");
-
         }
 
         if (!_api.AssignProcess(job, processHandle))
         {
-
             int lastError = _api.GetLastError();
 
             // ERROR_ACCESS_DENIED (5) / ERROR_INVALID_PARAMETER (87): process already belongs to an
@@ -416,55 +355,27 @@ internal sealed class WindowsJobObjectSession : IDisposable
             return new ResourceLimitError(
                 $"execute_command: child process could not be assigned to the Sanctum Job Object (Win32 error {lastError}). "
                 + "The process may already belong to an incompatible job.");
-
         }
 
         return null;
-
     }
 
     public void Dispose()
     {
-
         SafeJobHandle? job = Interlocked.Exchange(ref _job, null);
 
         job?.Dispose();
-
     }
 
     private static ulong? ResolveMemoryBytes(ResourceLimits limits)
     {
-
-        int memoryMb = 0;
-
-        if (limits.MaxMemoryMb > 0 && limits.MaxProcessMemoryMb > 0)
-        {
-
-            memoryMb = Math.Min(limits.MaxMemoryMb, limits.MaxProcessMemoryMb);
-
-        }
-        else if (limits.MaxMemoryMb > 0)
-        {
-
-            memoryMb = limits.MaxMemoryMb;
-
-        }
-        else if (limits.MaxProcessMemoryMb > 0)
-        {
-
-            memoryMb = limits.MaxProcessMemoryMb;
-
-        }
+        int memoryMb = ProcessResourceLimiter.EffectiveMemoryLimitMb(limits);
 
         if (memoryMb <= 0)
         {
-
             return null;
-
         }
 
         return (ulong)memoryMb * 1024UL * 1024UL;
-
     }
-
 }
