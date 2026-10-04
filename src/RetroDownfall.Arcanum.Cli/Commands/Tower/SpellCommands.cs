@@ -111,7 +111,7 @@ public sealed class SpellCommands(
                 CliErrorOutput.WriteMarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape(message)));
 
-                return 1;
+                return CliFailureExit.ExitCode(workspaceSelection.ErrorCode);
             }
 
             workspace = workspaceSelection.Value!.Path;
@@ -130,7 +130,7 @@ public sealed class SpellCommands(
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-                return 1;
+                return CliFailureExit.ExitCode(selection.ErrorCode);
             }
 
             name = selection.Value!.Name;

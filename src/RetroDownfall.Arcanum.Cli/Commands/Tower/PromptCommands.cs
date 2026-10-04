@@ -128,7 +128,7 @@ public sealed class PromptCommands(
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-                return 1;
+                return CliFailureExit.ExitCode(selection.ErrorCode);
             }
 
             promptId = selection.Value!.Id;
@@ -354,8 +354,8 @@ public sealed class PromptCommands(
             return (int)CliExitCode.ConfigurationError;
         }
 
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         string? resolvedTemplate = null;
 
@@ -406,8 +406,8 @@ public sealed class PromptCommands(
     /// <param name="id">Prompt GUID.</param>
     public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync($"Delete prompt {promptId:D}?", cancellationToken)
@@ -439,8 +439,8 @@ public sealed class PromptCommands(
     /// <param name="param">Template parameter as key=value; pass multiple times for several parameters.</param>
     public async Task<int> Render(string? id, string[]? param = null, CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (!CliArgReader.TryParseKeyValuePairs(param, out Dictionary<string, string> parameters, out string? paramError))
         {
@@ -471,8 +471,8 @@ public sealed class PromptCommands(
     /// <param name="id">Prompt GUID.</param>
     public async Task<int> Test(string? id, CancellationToken cancellationToken)
     {
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         TestPromptRequest request = new(
             WorkingDirectory: Environment.CurrentDirectory,
@@ -509,8 +509,8 @@ public sealed class PromptCommands(
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrEmpty(input))
         {
@@ -580,8 +580,8 @@ public sealed class PromptCommands(
         string? campaign = null,
         CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrWhiteSpace(newName) || string.IsNullOrWhiteSpace(newVersion))
         {
@@ -669,8 +669,8 @@ public sealed class PromptCommands(
     /// <param name="output">Write exported JSON to this file instead of stdout.</param>
     public async Task<int> Export(string? id, string? output = null, CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         Result<PromptExportDto> result = await apiClient.ExportPromptAsync(promptId, cancellationToken).ConfigureAwait(false);
 
@@ -714,19 +714,19 @@ public sealed class PromptCommands(
     /// </summary>
     /// <param name="file">Path to a prompt export JSON file.</param>
     /// <param name="campaignId">--campaign-id, Campaign GUID to associate the import with.</param>
-    private async Task<(bool Resolved, bool Cancelled, Guid Id)> ResolvePromptIdAsync(
+    private async Task<(bool Resolved, bool Cancelled, Guid Id, int ExitCode)> ResolvePromptIdAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
         if (CliArgReader.TryParseGuid(identifier, out Guid id))
         {
-            return (true, false, id);
+            return (true, false, id, 0);
         }
 
         if (resourceCatalog is null)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-            return (false, false, default);
+            return (false, false, default, (int)CliExitCode.GenericError);
         }
 
         ResourceSelectionResult<PromptSummaryDto> selection = await resourceCatalog
@@ -734,16 +734,16 @@ public sealed class PromptCommands(
             .ConfigureAwait(false);
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-            return (false, true, default);
+            return (false, true, default, 0);
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-            return (false, false, default);
+            return (false, false, default, CliFailureExit.ExitCode(selection.ErrorCode));
         }
 
-        return (true, false, selection.Value!.Id);
+        return (true, false, selection.Value!.Id, 0);
     }
 
     public async Task<int> Import(string? file = null, string? campaignId = null, CancellationToken cancellationToken = default)

@@ -317,7 +317,9 @@ public sealed class ContextCommands(
                 dispatcher.WriteDiagnostic(
                     resolved.Error ?? "CLI context could not be resolved.");
 
-                return (int)CliExitCode.ConfigurationError;
+                return (int)CliFailureExit.Classify(
+                    resolved.ErrorCode,
+                    CliExitCode.ConfigurationError);
             }
 
             foreach (string warning in resolved.Warnings)

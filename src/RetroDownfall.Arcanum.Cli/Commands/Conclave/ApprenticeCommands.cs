@@ -226,7 +226,7 @@ public sealed class ApprenticeCommands(
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-                return 1;
+                return CliFailureExit.ExitCode(selection.ErrorCode);
             }
 
             apprenticeId = selection.Value!.Id;
@@ -318,19 +318,19 @@ public sealed class ApprenticeCommands(
         return 0;
     }
 
-    private async Task<(bool Resolved, bool Cancelled, Guid Id)> ResolveApprenticeIdAsync(
+    private async Task<(bool Resolved, bool Cancelled, Guid Id, int ExitCode)> ResolveApprenticeIdAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
         if (CliArgReader.TryParseGuid(identifier, out Guid id))
         {
-            return (true, false, id);
+            return (true, false, id, 0);
         }
 
         if (resourceCatalog is null)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-            return (false, false, default);
+            return (false, false, default, (int)CliExitCode.GenericError);
         }
 
         ResourceSelectionResult<ApprenticeSummaryDto> selection = await resourceCatalog
@@ -338,16 +338,16 @@ public sealed class ApprenticeCommands(
             .ConfigureAwait(false);
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-            return (false, true, default);
+            return (false, true, default, 0);
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-            return (false, false, default);
+            return (false, false, default, CliFailureExit.ExitCode(selection.ErrorCode));
         }
 
-        return (true, false, selection.Value!.Id);
+        return (true, false, selection.Value!.Id, 0);
     }
 
     /// <summary>
@@ -356,8 +356,8 @@ public sealed class ApprenticeCommands(
     /// <param name="id">Apprentice GUID.</param>
     public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync($"Delete Apprentice {apprenticeId:D}?", cancellationToken)
@@ -422,8 +422,8 @@ public sealed class ApprenticeCommands(
         CancellationToken cancellationToken,
         Func<Guid, string>? confirmationQuestion = null)
     {
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         // Stopping work in progress is not undone by starting it again, so like delete it asks first;
         // --yes answers the question.
@@ -458,8 +458,8 @@ public sealed class ApprenticeCommands(
     /// <param name="plan">JSON array of plan steps: inline text, or @filename to read from a file.</param>
     public async Task<int> Reweave(string? id, string? plan = null, CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrEmpty(plan))
         {
@@ -532,8 +532,8 @@ public sealed class ApprenticeCommands(
     /// <param name="guidance">Guidance text for the escalated Apprentice.</param>
     public async Task<int> Intervene(string? id, string? guidance = null, CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrWhiteSpace(guidance))
         {
@@ -568,8 +568,8 @@ public sealed class ApprenticeCommands(
         string? name = null,
         CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrWhiteSpace(goal))
         {

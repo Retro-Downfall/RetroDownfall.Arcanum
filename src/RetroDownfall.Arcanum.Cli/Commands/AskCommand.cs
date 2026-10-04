@@ -270,7 +270,7 @@ public sealed class AskCommand(
                         palette.ErrorMarkup(
                             Markup.Escape(contextResult.Error ?? "CLI context could not be resolved.")));
 
-                    return 1;
+                    return CliFailureExit.ExitCode(contextResult.ErrorCode);
                 }
 
                 effectiveContext = contextResult.Context!;

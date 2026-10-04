@@ -139,7 +139,6 @@ public sealed class ResourceSelectorTests
     [Fact]
     public async Task Interactive_omission_fetches_only_the_page_the_picker_needs()
     {
-
         FakePicker picker = new() { SelectedId = "one" };
 
         FakeRecentResourceStore recent = new();
@@ -161,7 +160,6 @@ public sealed class ResourceSelectorTests
                 static x => [x.Name, x.Summary]),
             (token, _) =>
             {
-
                 calls++;
 
                 ResourcePage<Candidate> page = token is null
@@ -174,7 +172,6 @@ public sealed class ResourceSelectorTests
 
                 return Task.FromResult(
                     Result<ResourcePage<Candidate>>.Success(page));
-
             });
 
         ResourceSelectionResult<Candidate> result = await selector.SelectAsync(request);
@@ -186,20 +183,16 @@ public sealed class ResourceSelectorTests
         Assert.Equal(1, calls);
 
         Assert.Equal(["one"], picker.LastChoiceIds);
-
     }
 
     [Fact]
     public async Task Interactive_omission_loads_the_next_page_only_when_the_picker_requests_it()
     {
-
         FakePicker picker = new()
         {
-
             SelectedId = "two",
 
             RequestNextPageBeforeSelection = true,
-
         };
 
         FakeRecentResourceStore recent = new();
@@ -221,7 +214,6 @@ public sealed class ResourceSelectorTests
                 static x => [x.Name, x.Summary]),
             (token, _) =>
             {
-
                 calls++;
 
                 ResourcePage<Candidate> page = token is null
@@ -234,7 +226,6 @@ public sealed class ResourceSelectorTests
 
                 return Task.FromResult(
                     Result<ResourcePage<Candidate>>.Success(page));
-
             });
 
         ResourceSelectionResult<Candidate> result = await selector.SelectAsync(request);
@@ -248,7 +239,6 @@ public sealed class ResourceSelectorTests
         Assert.Equal(2, picker.CallCount);
 
         Assert.Equal([["one"], ["two"]], picker.ChoiceHistory);
-
     }
 
     [Fact]
@@ -271,7 +261,6 @@ public sealed class ResourceSelectorTests
     [Fact]
     public async Task Selection_awaits_optional_recency_persistence_before_returning()
     {
-
         SelectionFixture fixture = new(
             new Candidate("one", "Mordain", "active"));
 
@@ -292,7 +281,6 @@ public sealed class ResourceSelectorTests
         Assert.Equal(ResourceSelectionStatus.Selected, result.Status);
 
         Assert.Equal("one", result.Value!.Id);
-
     }
 
     [Fact]
@@ -366,6 +354,104 @@ public sealed class ResourceSelectorTests
         Assert.Equal(101, calls);
     }
 
+    /// <summary>
+    /// A host failure while listing is not the resolver's own verdict. Its code has to survive onto the
+    /// selection, or a command can only print the message and exit 1, which a wrapper that retries on
+    /// exit 3 cannot tell from a name that matched nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("target", false)]
+    [InlineData(null, false)]
+    [InlineData(null, true)]
+    public async Task A_failed_host_page_keeps_its_error_code_on_the_selection(
+        string? identifier,
+        bool interactive)
+    {
+        ResourceSelector<Candidate> selector = new(new FakePicker(), new FakeRecentResourceStore());
+
+        ResourceSelectionResult<Candidate> result = await selector.SelectAsync(
+            RequestFetching(
+                identifier,
+                interactive,
+                (_, _) => Task.FromResult(
+                    Result<ResourcePage<Candidate>>.Failure(
+                        new Error(ErrorCodes.Connection.Unreachable, "API is unreachable.")))));
+
+        Assert.Equal(ResourceSelectionStatus.Error, result.Status);
+        Assert.Equal("API is unreachable.", result.Error);
+        Assert.Equal(ErrorCodes.Connection.Unreachable, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task A_host_failure_while_narrowing_an_ambiguous_name_keeps_its_error_code()
+    {
+        ResourceSelector<Candidate> selector = new(new FakePicker(), new FakeRecentResourceStore());
+
+        int calls = 0;
+
+        ResourceSelectionResult<Candidate> result = await selector.SelectAsync(
+            RequestFetching(
+                "mor",
+                interactive: true,
+                (_, _) => Task.FromResult(
+                    ++calls == 1
+                        ? Result<ResourcePage<Candidate>>.Success(
+                            new ResourcePage<Candidate>(
+                                [
+                                    new Candidate("one", "Mordain", "active"),
+                                    new Candidate("two", "Mortimer", "paused"),
+                                ],
+                                null))
+                        : Result<ResourcePage<Candidate>>.Failure(
+                            new Error(ErrorCodes.Connection.Timeout, "The host timed out."))),
+                pickAmbiguousIdentifiers: true));
+
+        Assert.Equal(2, calls);
+        Assert.Equal(ResourceSelectionStatus.Error, result.Status);
+        Assert.Equal(ErrorCodes.Connection.Timeout, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task A_resolver_verdict_carries_no_host_error_code()
+    {
+        SelectionFixture fixture = new(
+            new Candidate("one", "Mordain", "active"),
+            new Candidate("two", "Mortimer", "paused"));
+
+        ResourceSelectionResult<Candidate> noMatch = await fixture.SelectAsync("zzz", interactive: false);
+
+        ResourceSelectionResult<Candidate> ambiguous = await fixture.SelectAsync("mor", interactive: false);
+
+        ResourceSelectionResult<Candidate> noPicker = await fixture.SelectAsync(null, interactive: false);
+
+        Assert.All(
+            new[] { noMatch, ambiguous, noPicker },
+            verdict =>
+            {
+                Assert.Equal(ResourceSelectionStatus.Error, verdict.Status);
+                Assert.Null(verdict.ErrorCode);
+            });
+    }
+
+    private static ResourceSelectionRequest<Candidate> RequestFetching(
+        string? identifier,
+        bool interactive,
+        Func<string?, CancellationToken, Task<Result<ResourcePage<Candidate>>>> fetch,
+        bool pickAmbiguousIdentifiers = false) =>
+        new(
+            "candidate",
+            identifier,
+            interactive,
+            new ResourceDescriptor<Candidate>(
+                "candidate",
+                ["Name", "Summary"],
+                static x => x.Id,
+                static x => x.Name,
+                static x => x.Summary,
+                static x => [x.Name, x.Summary]),
+            fetch,
+            PickAmbiguousIdentifiers: pickAmbiguousIdentifiers);
+
     private sealed record Candidate(string Id, string Name, string Summary);
 
     private sealed class SelectionFixture
@@ -435,9 +521,7 @@ public sealed class ResourceSelectorTests
 
             if (RequestNextPageBeforeSelection && CallCount == 1)
             {
-
                 return Task.FromResult(ResourcePickerResult<T>.NextPage());
-
             }
 
             T? selected = request.Choices.FirstOrDefault(
@@ -465,13 +549,11 @@ public sealed class ResourceSelectorTests
             Func<CancellationToken, Task<Result<bool>>> revalidateAsync,
             CancellationToken cancellationToken = default)
         {
-
             Remembered.Add((resourceKind, id));
 
             _ = revalidateAsync;
 
             await Persistence.WaitAsync(cancellationToken);
-
         }
     }
 }

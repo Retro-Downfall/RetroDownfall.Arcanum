@@ -76,7 +76,7 @@ public sealed class ModelCommands(
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-            return 1;
+            return CliFailureExit.ExitCode(selection.ErrorCode);
         }
 
         ModelInfoDto model = selection.Value!;
@@ -160,7 +160,7 @@ public sealed class ProviderCommands(
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-            return 1;
+            return CliFailureExit.ExitCode(selection.ErrorCode);
         }
 
         ProviderInfoDto provider = selection.Value!;

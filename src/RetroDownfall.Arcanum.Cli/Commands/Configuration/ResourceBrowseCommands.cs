@@ -124,7 +124,7 @@ public sealed class McpCommands(
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            return WriteError(selection.Error!);
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         McpServerInfo selected = selection.Value!;
@@ -269,7 +269,7 @@ public sealed class McpCommands(
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            return WriteError(selection.Error!);
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         McpServerInfo server = selection.Value!;
@@ -386,7 +386,7 @@ public sealed class McpCommands(
 
             if (serverSelection.Status == ResourceSelectionStatus.Error)
             {
-                return WriteError(serverSelection.Error!);
+                return WriteError(serverSelection.Error!, serverSelection.ErrorCode);
             }
 
             externalServers = [serverSelection.Value!];
@@ -416,7 +416,7 @@ public sealed class McpCommands(
 
         if (toolSelection.Status == ResourceSelectionStatus.Error)
         {
-            return WriteError(toolSelection.Error!);
+            return WriteError(toolSelection.Error!, toolSelection.ErrorCode);
         }
 
         DiagnosticTool selected = toolSelection.Value!;
@@ -482,7 +482,7 @@ public sealed class McpCommands(
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            return WriteError(selection.Error!);
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         McpServerInfo server = selection.Value!;
@@ -731,7 +731,9 @@ public sealed class McpCommands(
         {
             return new WorkspaceScope(
                 null,
-                WriteError(string.IsNullOrWhiteSpace(selection.Error) ? "Workspace selection failed." : selection.Error));
+                WriteError(
+                    string.IsNullOrWhiteSpace(selection.Error) ? "Workspace selection failed." : selection.Error,
+                    selection.ErrorCode));
         }
 
         return new WorkspaceScope(selection.Value!.Path, null);
@@ -746,12 +748,12 @@ public sealed class McpCommands(
         return CliFailureExit.ExitCode(error);
     }
 
-    private int WriteError(string error)
+    private int WriteError(string error, string? errorCode = null)
     {
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(Markup.Escape(error)));
 
-        return 1;
+        return CliFailureExit.ExitCode(errorCode);
     }
 
     private sealed record DiagnosticTool(

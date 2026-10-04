@@ -33,6 +33,18 @@ internal static class CliFailureExit
             : (int)CliExitCode.GenericError;
 
     /// <summary>
+    /// The exit code for a failure known by its error code where the calling command reports its own
+    /// failures under a code other than <see cref="CliExitCode.GenericError"/> (a resolver that fails
+    /// with <see cref="CliExitCode.ConfigurationError"/> when a name matches nothing, for one): a
+    /// <c>Connection.*</c> code is still <see cref="CliExitCode.NetworkError"/>, because the host was
+    /// never asked, and every other failure keeps <paramref name="fallback"/>.
+    /// </summary>
+    public static CliExitCode Classify(string? errorCode, CliExitCode fallback) =>
+        IsConnectionFailure(errorCode)
+            ? CliExitCode.NetworkError
+            : fallback;
+
+    /// <summary>
     /// Names the base address the client tried on a <c>Connection.*</c> failure, so an operator on a
     /// non-default <c>Arcanum:Host</c> can see which address was unreachable; every other error is
     /// returned unchanged.

@@ -53,7 +53,7 @@ internal sealed class AttachmentCommands(
 
         if (!session.Success)
         {
-            return session.Cancelled ? 0 : 1;
+            return session.Cancelled ? 0 : session.FailureExitCode;
         }
 
         Result<SessionAttachmentDto[]> result = await apiClient
@@ -86,7 +86,7 @@ internal sealed class AttachmentCommands(
 
         if (!session.Success)
         {
-            return session.Cancelled ? 0 : 1;
+            return session.Cancelled ? 0 : session.FailureExitCode;
         }
 
         string fileName;
@@ -187,7 +187,7 @@ internal sealed class AttachmentCommands(
 
         if (!session.Success)
         {
-            return session.Cancelled ? 0 : 1;
+            return session.Cancelled ? 0 : session.FailureExitCode;
         }
 
         WorkspaceResolution workspaceResolution = await ResolveWorkspaceAsync(
@@ -197,7 +197,7 @@ internal sealed class AttachmentCommands(
 
         if (!workspaceResolution.Success)
         {
-            return workspaceResolution.Cancelled ? 0 : 1;
+            return workspaceResolution.Cancelled ? 0 : workspaceResolution.FailureExitCode;
         }
 
         CreateSessionAttachmentReferenceRequest request = new(
@@ -243,7 +243,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         WriteRow(resolution.SessionId, resolution.Value!);
@@ -264,7 +264,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         SessionAttachmentDto[] versions = resolution.AllRows
@@ -294,7 +294,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<AttachmentRefreshEvent> result = await apiClient
@@ -338,7 +338,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         SessionAttachmentDto attachment = resolution.Value!;
@@ -379,7 +379,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         string target = resolution.Value!.Id.ToString("D");
@@ -440,7 +440,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         if (string.Equals(output?.Trim(), "-", StringComparison.Ordinal))
@@ -533,7 +533,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         if (!TryResolveStoredPath(
@@ -598,7 +598,7 @@ internal sealed class AttachmentCommands(
         dispatcher.WriteDiagnostic(
             selection.Error ?? "A session could not be selected.");
 
-        return SessionResolution.Failure();
+        return SessionResolution.Failure(selection.ErrorCode);
     }
 
     private async Task<WorkspaceResolution> ResolveWorkspaceAsync(
@@ -628,7 +628,7 @@ internal sealed class AttachmentCommands(
         dispatcher.WriteDiagnostic(
             selection.Error ?? "A workspace could not be selected.");
 
-        return WorkspaceResolution.Failure();
+        return WorkspaceResolution.Failure(selection.ErrorCode);
     }
 
     private async Task<AttachmentResolution> ResolveAttachmentAsync(
@@ -645,7 +645,7 @@ internal sealed class AttachmentCommands(
         {
             return session.Cancelled
                 ? AttachmentResolution.Cancel()
-                : AttachmentResolution.Failure();
+                : AttachmentResolution.Failure(session.ErrorCode);
         }
 
         Result<SessionAttachmentDto[]> result = await apiClient
@@ -656,7 +656,7 @@ internal sealed class AttachmentCommands(
         {
             _ = WriteError(result.Error);
 
-            return AttachmentResolution.Failure();
+            return AttachmentResolution.Failure(result.Error.Code);
         }
 
         SessionAttachmentDto[] all = result.Value;
@@ -728,7 +728,7 @@ internal sealed class AttachmentCommands(
         dispatcher.WriteDiagnostic(
             selection.Error ?? "An attachment could not be selected.");
 
-        return AttachmentResolution.Failure();
+        return AttachmentResolution.Failure(selection.ErrorCode);
     }
 
     private void WriteRows(
@@ -1065,31 +1065,37 @@ internal sealed class AttachmentCommands(
     private readonly record struct SessionResolution(
         bool Success,
         bool Cancelled,
-        Guid Id)
+        Guid Id,
+        string? ErrorCode = null)
     {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+
         public static SessionResolution Resolved(Guid id) =>
             new(true, false, id);
 
         public static SessionResolution Cancel() =>
             new(false, true, default);
 
-        public static SessionResolution Failure() =>
-            new(false, false, default);
+        public static SessionResolution Failure(string? errorCode = null) =>
+            new(false, false, default, errorCode);
     }
 
     private readonly record struct WorkspaceResolution(
         bool Success,
         bool Cancelled,
-        string? Id)
+        string? Id,
+        string? ErrorCode = null)
     {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+
         public static WorkspaceResolution Resolved(string? id) =>
             new(true, false, id);
 
         public static WorkspaceResolution Cancel() =>
             new(false, true, null);
 
-        public static WorkspaceResolution Failure() =>
-            new(false, false, null);
+        public static WorkspaceResolution Failure(string? errorCode = null) =>
+            new(false, false, null, errorCode);
     }
 
     private sealed record AttachmentResolution(
@@ -1097,8 +1103,11 @@ internal sealed class AttachmentCommands(
         bool Cancelled,
         Guid SessionId,
         SessionAttachmentDto? Value,
-        SessionAttachmentDto[] AllRows)
+        SessionAttachmentDto[] AllRows,
+        string? ErrorCode = null)
     {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+
         public static AttachmentResolution Resolved(
             Guid sessionId,
             SessionAttachmentDto value,
@@ -1108,8 +1117,8 @@ internal sealed class AttachmentCommands(
         public static AttachmentResolution Cancel() =>
             new(false, true, default, null, []);
 
-        public static AttachmentResolution Failure() =>
-            new(false, false, default, null, []);
+        public static AttachmentResolution Failure(string? errorCode = null) =>
+            new(false, false, default, null, [], errorCode);
     }
 }
 

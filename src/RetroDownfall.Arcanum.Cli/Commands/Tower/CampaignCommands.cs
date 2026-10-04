@@ -14,7 +14,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 
 internal static class CampaignCommandSupport
 {
-    public static async Task<(bool Resolved, bool Cancelled, Guid Id)> ResolveCampaignIdAsync(
+    public static async Task<(bool Resolved, bool Cancelled, Guid Id, int ExitCode)> ResolveCampaignIdAsync(
         string? identifier,
         ICliResourceCatalog? resourceCatalog,
         IThemePalette themePalette,
@@ -22,13 +22,13 @@ internal static class CampaignCommandSupport
     {
         if (CliArgReader.TryParseGuid(identifier, out Guid id))
         {
-            return (true, false, id);
+            return (true, false, id, 0);
         }
 
         if (resourceCatalog is null)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-            return (false, false, default);
+            return (false, false, default, (int)CliExitCode.GenericError);
         }
 
         ResourceSelectionResult<CampaignDto> selection = await resourceCatalog
@@ -36,16 +36,16 @@ internal static class CampaignCommandSupport
             .ConfigureAwait(false);
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-            return (false, true, default);
+            return (false, true, default, 0);
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-            return (false, false, default);
+            return (false, false, default, CliFailureExit.ExitCode(selection.ErrorCode));
         }
 
-        return (true, false, selection.Value!.Id);
+        return (true, false, selection.Value!.Id, 0);
     }
 
     public static bool TryParseWorkspaceType(string? value, out WorkspaceType type)
@@ -228,7 +228,7 @@ public sealed class CampaignCommands(
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-                return 1;
+                return CliFailureExit.ExitCode(selection.ErrorCode);
             }
 
             campaignId = selection.Value!.Id;
@@ -319,8 +319,8 @@ public sealed class CampaignCommands(
             return (int)CliExitCode.ConfigurationError;
         }
 
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         UpdateCampaignRequest request = new(name, null, null, null);
 
@@ -345,8 +345,8 @@ public sealed class CampaignCommands(
     /// <param name="id">Campaign GUID.</param>
     public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync($"Delete campaign {campaignId:D}?", cancellationToken)
@@ -378,8 +378,8 @@ public sealed class CampaignCommands(
     /// <param name="output">Write exported JSON to this file instead of stdout.</param>
     public async Task<int> Export(string? id, string? output = null, CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         Result<CampaignExportDto> result = await apiClient.ExportCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
@@ -425,8 +425,8 @@ public sealed class CampaignCommands(
     /// <param name="file">Path to a campaign export JSON file (as produced by 'campaign export').</param>
     public async Task<int> Import(string? id, string? file = null, CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrWhiteSpace(file))
         {
@@ -510,8 +510,8 @@ public sealed class CampaignCommands(
         string? tool = null,
         CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         Result<SpellSummary[]> result = await apiClient
             .GetCampaignSpellsAsync(campaignId, query, tag, tool, cancellationToken)
@@ -541,8 +541,8 @@ public sealed class CampaignCommands(
         string? tag = null,
         CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         // Every prompt of the campaign, not the first page the host bounds the answer to.
         Result<HostListing<PromptSummaryDto>> result = await HostPageWalker
@@ -613,8 +613,8 @@ public sealed class CampaignCommands(
         string? beforeUpdatedAt = null,
         CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         DateTimeOffset? beforeUpdatedAtParsed = null;
 
@@ -739,8 +739,8 @@ public sealed class CampaignCodexCommands(
     /// <param name="id">Campaign GUID.</param>
     public async Task<int> Get(string? id, CancellationToken cancellationToken)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         Result<CodexContentDto> result = await apiClient.GetCampaignCodexAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
@@ -770,8 +770,8 @@ public sealed class CampaignCodexCommands(
     /// <param name="file">Path to a file whose contents become CODEX.md.</param>
     public async Task<int> Put(string? id, string? file = null, CancellationToken cancellationToken = default)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrWhiteSpace(file))
         {
@@ -807,8 +807,8 @@ public sealed class CampaignCodexCommands(
     /// <param name="id">Campaign GUID.</param>
     public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
-        (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync($"Delete CODEX.md for campaign {campaignId:D}?", cancellationToken)

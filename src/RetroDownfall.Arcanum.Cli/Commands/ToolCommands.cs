@@ -72,7 +72,7 @@ public sealed class ToolCommands(
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            return WriteError(selection.Error!);
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         Table table = new Table().Border(TableBorder.None).HideHeaders();
@@ -122,7 +122,7 @@ public sealed class ToolCommands(
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-            return WriteError(selection.Error!);
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         Result<RetroDownfall.Arcanum.Api.Models.ToolInvokeResponse> result =
@@ -155,7 +155,8 @@ public sealed class ToolCommands(
         if (arsenal.IsFailure)
         {
             return ResourceSelectionResult<BuiltInTool>.Failure(
-                $"{arsenal.Error.Code}: {arsenal.Error.Message}");
+                $"{arsenal.Error.Code}: {arsenal.Error.Message}",
+                arsenal.Error.Code);
         }
 
         BuiltInTool[] tools = arsenal.Value.NativeTools
@@ -197,12 +198,12 @@ public sealed class ToolCommands(
         return CliFailureExit.ExitCode(error);
     }
 
-    private int WriteError(string error)
+    private int WriteError(string error, string? errorCode = null)
     {
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(Markup.Escape(error)));
 
-        return 1;
+        return CliFailureExit.ExitCode(errorCode);
     }
 
     private sealed record BuiltInTool(string Name);

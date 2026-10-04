@@ -39,7 +39,7 @@ public sealed class WebWorkflowCommands(
 
         if (!attachment.Success)
         {
-            return attachment.Cancelled ? 0 : 1;
+            return attachment.Cancelled ? 0 : attachment.FailureExitCode;
         }
 
         Result<WebSearchWorkflowResult> response = await apiClient
@@ -107,7 +107,7 @@ public sealed class WebWorkflowCommands(
 
         if (!attachment.Success)
         {
-            return attachment.Cancelled ? 0 : 1;
+            return attachment.Cancelled ? 0 : attachment.FailureExitCode;
         }
 
         Result<WebBrowseWorkflowResult> response = await apiClient
@@ -179,7 +179,7 @@ public sealed class WebWorkflowCommands(
 
         if (!continuation.Success)
         {
-            return continuation.Cancelled ? 0 : 1;
+            return continuation.Cancelled ? 0 : continuation.FailureExitCode;
         }
 
         SessionSelection attachment = await ResolveSessionAsync(
@@ -188,7 +188,7 @@ public sealed class WebWorkflowCommands(
 
         if (!attachment.Success)
         {
-            return attachment.Cancelled ? 0 : 1;
+            return attachment.Cancelled ? 0 : attachment.FailureExitCode;
         }
 
         string format = CliInvocationContext.Current.Json
@@ -365,7 +365,7 @@ public sealed class WebWorkflowCommands(
             dispatcher.WriteDiagnostic(
                 selection.Error ?? "Session selection failed.");
 
-            return default;
+            return new SessionSelection(false, false, null, selection.ErrorCode);
         }
 
         return new SessionSelection(
@@ -521,5 +521,9 @@ public sealed class WebWorkflowCommands(
     private readonly record struct SessionSelection(
         bool Success,
         bool Cancelled,
-        Guid? Id);
+        Guid? Id,
+        string? ErrorCode = null)
+    {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+    }
 }

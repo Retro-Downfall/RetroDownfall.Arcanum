@@ -677,7 +677,7 @@ public sealed class WorkspaceCommands(
                 themePalette.ErrorMarkup(
                     Markup.Escape(selection.Error!)));
 
-            return WorkspaceResolution.Failure(1);
+            return WorkspaceResolution.Failure(CliFailureExit.ExitCode(selection.ErrorCode));
         }
 
         return WorkspaceResolution.Success(selection.Value!);

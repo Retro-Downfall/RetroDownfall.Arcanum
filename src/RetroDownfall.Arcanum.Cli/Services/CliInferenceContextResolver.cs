@@ -21,29 +21,26 @@ public sealed record CliInferenceContextResult(
     bool IsCancelled,
     CliEffectiveContext? Context,
     string[] Warnings,
-    string? Error)
+    string? Error,
+    string? ErrorCode = null)
 {
-
     public static CliInferenceContextResult Success(
         CliEffectiveContext context,
         IEnumerable<string> warnings) =>
         new(true, false, context, [.. warnings], null);
 
-    public static CliInferenceContextResult Failure(string error) =>
-        new(false, false, null, [], error);
+    public static CliInferenceContextResult Failure(string error, string? errorCode = null) =>
+        new(false, false, null, [], error, errorCode);
 
     public static CliInferenceContextResult Cancelled() =>
         new(false, true, null, [], null);
-
 }
 
 public interface ICliInferenceContextResolver
 {
-
     Task<CliInferenceContextResult> ResolveAsync(
         CliInferenceContextRequest request,
         CancellationToken cancellationToken);
-
 }
 
 public sealed class CliInferenceContextResolver(
@@ -51,12 +48,10 @@ public sealed class CliInferenceContextResolver(
     ICliResourceCatalog resources,
     IOptions<ArcanumSettings> settings) : ICliInferenceContextResolver
 {
-
     public async Task<CliInferenceContextResult> ResolveAsync(
         CliInferenceContextRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         CliContextValidation validation = await contextService
@@ -75,71 +70,55 @@ public sealed class CliInferenceContextResolver(
 
         if (!string.IsNullOrWhiteSpace(request.Campaign))
         {
-
             ResourceSelectionResult<CampaignDto> campaign = await resources
                 .SelectCampaignAsync(request.Campaign, cancellationToken)
                 .ConfigureAwait(false);
 
             if (!TrySelected(campaign, out CampaignDto? selected, out string? error))
             {
-
-                return SelectionFailure(campaign.Status, error);
-
+                return SelectionFailure(campaign.Status, error, campaign.ErrorCode);
             }
 
             explicitCampaignId = selected!.Id;
-
         }
 
         if (!string.IsNullOrWhiteSpace(request.Workspace))
         {
-
             ResourceSelectionResult<WorkspaceInfo> workspace = await resources
                 .SelectWorkspaceAsync(request.Workspace, cancellationToken)
                 .ConfigureAwait(false);
 
             if (!TrySelected(workspace, out WorkspaceInfo? selected, out string? error))
             {
-
-                return SelectionFailure(workspace.Status, error);
-
+                return SelectionFailure(workspace.Status, error, workspace.ErrorCode);
             }
 
             explicitWorkspacePath = selected!.Path.Trim();
-
         }
 
         if (!string.IsNullOrWhiteSpace(request.Model))
         {
-
             ResourceSelectionResult<ModelInfoDto> model = await resources
                 .SelectModelAsync(request.Model, cancellationToken)
                 .ConfigureAwait(false);
 
             if (TrySelected(model, out ModelInfoDto? selected, out string? error))
             {
-
                 explicitModel = selected!.Model;
-
             }
             else if (model.Status == ResourceSelectionStatus.Cancelled)
             {
-
-                return SelectionFailure(model.Status, error);
-
+                return SelectionFailure(model.Status, error, model.ErrorCode);
             }
             else
             {
-
                 // A name the listing does not contain is not necessarily wrong. The listing omits
                 // models the operator hid, and a Familiar's catalogue belongs to the vendor rather
                 // than to arcanum.json — so gating here would refuse exactly the two cases the
                 // hide-list and pass-through rules exist to allow. The host is the authority: it
                 // resolves the name, or answers Hub.Model with the reason it could not.
                 explicitModel = request.Model.Trim();
-
             }
-
         }
 
         // A bare --resume asks for the picker explicitly, which is not the same as an absent
@@ -147,7 +126,6 @@ public sealed class CliInferenceContextResolver(
         if (request.SessionPicker
             || !string.IsNullOrWhiteSpace(request.Session))
         {
-
             ResourceSelectionResult<SessionSummaryDto> session = await resources
                 .SelectSessionAsync(
                     request.SessionPicker ? null : request.Session,
@@ -156,13 +134,10 @@ public sealed class CliInferenceContextResolver(
 
             if (!TrySelected(session, out explicitSession, out string? error))
             {
-
-                return SelectionFailure(session.Status, error);
-
+                return SelectionFailure(session.Status, error, session.ErrorCode);
             }
 
             explicitSessionId = explicitSession!.Id;
-
         }
 
         CliContextDocument active = request.NewSession
@@ -193,10 +168,8 @@ public sealed class CliInferenceContextResolver(
                 request.CurrentDirectory,
                 workspacePath))
         {
-
             warnings.Add(
                 $"Current directory is outside the selected workspace {workspacePath}.");
-
         }
 
         Guid? sessionCampaignId = explicitSession?.CampaignId
@@ -206,17 +179,14 @@ public sealed class CliInferenceContextResolver(
             && effective.Campaign.Value is { } campaignId
             && sessionCampaignId != campaignId)
         {
-
             warnings.Add(
                 "The selected session belongs to another campaign; start a new session or align the campaign before operating.");
 
             return CliInferenceContextResult.Failure(
                 string.Join(' ', warnings));
-
         }
 
         return CliInferenceContextResult.Success(effective, warnings);
-
     }
 
     private static bool TrySelected<T>(
@@ -225,7 +195,6 @@ public sealed class CliInferenceContextResolver(
         out string? error)
         where T : class
     {
-
         value = result.Value;
 
         error = result.Status switch
@@ -237,15 +206,15 @@ public sealed class CliInferenceContextResolver(
 
         return result.Status == ResourceSelectionStatus.Selected
             && value is not null;
-
     }
 
     private static CliInferenceContextResult SelectionFailure(
         ResourceSelectionStatus status,
-        string? error) =>
+        string? error,
+        string? errorCode) =>
         status == ResourceSelectionStatus.Cancelled
             ? CliInferenceContextResult.Cancelled()
             : CliInferenceContextResult.Failure(
-                error ?? "The resource could not be selected.");
-
+                error ?? "The resource could not be selected.",
+                errorCode);
 }

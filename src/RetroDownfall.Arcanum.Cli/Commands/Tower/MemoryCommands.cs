@@ -45,7 +45,7 @@ public sealed partial class MemoryCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<MemoryStatusDto> result = await apiClient
@@ -197,7 +197,7 @@ public sealed partial class MemoryCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<MemorySourcesDto> result = await apiClient
@@ -274,7 +274,7 @@ public sealed partial class MemoryCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         MemorySearchRequest request = new(
@@ -379,7 +379,7 @@ public sealed partial class MemoryCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<MemoryExplainDto> result = await apiClient
@@ -568,7 +568,7 @@ public sealed partial class MemoryCommands(
         {
             dispatcher.WriteDiagnostic(selection.Error ?? "Session selection failed.");
 
-            return default;
+            return new SessionResolution(false, false, null, selection.ErrorCode);
         }
 
         return new SessionResolution(true, false, selection.Value!.Id);
@@ -584,5 +584,9 @@ public sealed partial class MemoryCommands(
     private readonly record struct SessionResolution(
         bool Success,
         bool Cancelled,
-        Guid? Id);
+        Guid? Id,
+        string? ErrorCode = null)
+    {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+    }
 }

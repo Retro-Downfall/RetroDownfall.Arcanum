@@ -140,7 +140,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Task<Result<SessionDetailDto>> detailTask = apiClient.GetSessionAsync(resolution.Id, cancellationToken);
@@ -221,7 +221,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<EntryDto[]> result = await apiClient
@@ -257,7 +257,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         if (!TryParseOptionalGuid(upToEntry, "--up-to-entry", out Guid? upToEntryId)
@@ -306,7 +306,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<SessionDetailDto> result = await apiClient
@@ -341,7 +341,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result result = await apiClient
@@ -369,7 +369,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         SessionExportFormat exportFormat;
@@ -419,7 +419,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result result = await apiClient.RestAsync(resolution.Id, cancellationToken).ConfigureAwait(false);
@@ -444,7 +444,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<SessionAttachmentDto[]> result = await apiClient
@@ -530,7 +530,7 @@ public sealed class SessionCommands(
 
         if (!resolution.Success)
         {
-            return resolution.Cancelled ? 0 : 1;
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<CompactResult> result = await apiClient
@@ -653,7 +653,7 @@ public sealed class SessionCommands(
 
         if (!session.Success)
         {
-            return session.Cancelled ? 0 : 1;
+            return session.Cancelled ? 0 : session.FailureExitCode;
         }
 
         EntryResolution entry = await ResolveEntryAsync(
@@ -664,7 +664,7 @@ public sealed class SessionCommands(
 
         if (!entry.Success)
         {
-            return entry.Cancelled ? 0 : 1;
+            return entry.Cancelled ? 0 : entry.FailureExitCode;
         }
 
         if (string.Equals(action, "delete", StringComparison.Ordinal)
@@ -722,7 +722,7 @@ public sealed class SessionCommands(
         {
             WriteArgumentError(selection.Error ?? "Session selection failed.");
 
-            return default;
+            return new SessionResolution(false, false, default, selection.ErrorCode);
         }
 
         return new SessionResolution(true, false, selection.Value!.Id);
@@ -758,7 +758,7 @@ public sealed class SessionCommands(
         {
             WriteArgumentError(selection.Error ?? "Entry selection failed.");
 
-            return default;
+            return new EntryResolution(false, false, default, selection.ErrorCode);
         }
 
         return new EntryResolution(true, false, selection.Value!.Id);
@@ -878,10 +878,18 @@ public sealed class SessionCommands(
     private readonly record struct SessionResolution(
         bool Success,
         bool Cancelled,
-        Guid Id);
+        Guid Id,
+        string? ErrorCode = null)
+    {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+    }
 
     private readonly record struct EntryResolution(
         bool Success,
         bool Cancelled,
-        Guid Id);
+        Guid Id,
+        string? ErrorCode = null)
+    {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+    }
 }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -50,11 +51,67 @@ public sealed class ConnectionFailureExitCodeTests
         { "saga stats" },
         { "saga delete 11111111-1111-4111-8111-111111111111 --yes" },
         { "model list" },
+        { "watch health" },
+        { "watch logs" },
+        { "watch mcp" },
+        { "watch daemons" },
         { "provider list" },
+    };
+
+    /// <summary>
+    /// Every verb that accepts a name or unique prefix in place of an id lists the host to resolve it.
+    /// A transport failure while resolving is the same unreachable host as a failure on the verb's own
+    /// request, so it must reach exit 3 too: a wrapper that retries on 3 would otherwise treat
+    /// <c>apprentice show &lt;name&gt;</c> as a domain failure and never retry it.
+    /// </summary>
+    public static TheoryData<string> NameResolvedVerbs => new()
+    {
+        { "apprentice show named-thing" },
+        { "apprentice cancel named-thing --yes" },
+        { "apprentice delete named-thing --yes" },
+        { "mcp show named-thing" },
+        { "mcp start named-thing" },
+        { "mcp stop named-thing" },
+        { "mcp restart named-thing" },
+        { "mcp tools named-thing" },
+        { "tool show named-thing" },
+        { "tool invoke named-thing" },
+        { "campaign show named-thing" },
+        { "campaign update named-thing --name other" },
+        { "campaign delete named-thing --yes" },
+        { "campaign prompts named-thing" },
+        { "prompt show named-thing" },
+        { "prompt delete named-thing --yes" },
+        { "spell show named-thing" },
+        { "session show named-thing" },
+        { "session rename named-thing --title other" },
+        { "model show named-thing" },
+        { "provider show named-thing" },
+        { "workspace show named-thing" },
+        { "open session named-thing" },
+        { "open campaign named-thing" },
+        { "attachment list named-thing" },
+        { "watch session named-thing" },
+        { "watch apprentice named-thing" },
+        { "memory search anything --session named-thing" },
+        { "use campaign named-thing" },
+        { "mcp list --workspace named-thing" },
+        { "spell show named-thing --workspace named-workspace" },
+        { "open prompt named-thing" },
+        { "open apprentice named-thing" },
+        { "open spell named-thing" },
+        { "search anything --attach-to-session named-thing" },
+        { "browse https://example.com/ --attach-to-session named-thing" },
+        { $"attachment show notes --session {SessionId}" },
+        { $"attachment reference notes.md --workspace named-thing --session {SessionId}" },
+        { $"session delete-entry some-entry --session {SessionId} --yes" },
+        { "run --campaign named-thing hello" },
+        { "run --spell named-thing hello" },
     };
 
     [Theory]
     [MemberData(nameof(Verbs))]
+    [MemberData(nameof(NameResolvedVerbs))]
     public void A_host_that_cannot_be_reached_exits_3_with_nothing_on_stdout(string commandLine)
     {
         CliTestResult result = RunCommand(commandLine.Split(' '));
@@ -64,6 +121,31 @@ public sealed class ConnectionFailureExitCodeTests
             $"exit {result.ExitCode}; stderr: {result.Error}");
 
         Assert.Equal(string.Empty, result.Output.Trim());
+    }
+
+    /// <summary>
+    /// The same signal under <c>--json</c>: the exit code is the contract a wrapper reads, so structured
+    /// output must not change it, and whatever the verb writes to stdout is at most one JSON document.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Verbs))]
+    [MemberData(nameof(NameResolvedVerbs))]
+    public void A_host_that_cannot_be_reached_exits_3_under_json_too(string commandLine)
+    {
+        CliTestResult result = RunCommand([.. commandLine.Split(' '), "--json"]);
+
+        Assert.True(
+            result.ExitCode == (int)CliExitCode.NetworkError,
+            $"exit {result.ExitCode}; stdout: {result.Output}; stderr: {result.Error}");
+
+        string stdout = result.Output.Trim();
+
+        if (stdout.Length > 0)
+        {
+            using JsonDocument document = JsonDocument.Parse(stdout);
+
+            Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+        }
     }
 
     private static CliTestResult RunCommand(string[] args)
