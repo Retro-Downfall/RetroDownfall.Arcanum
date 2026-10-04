@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -11,13 +10,11 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 /// <summary>
 /// Sole semantic consumer of <see cref="TurnEvent"/>s. Applies exactly one projection per request.
 /// Does not serialize HTTP — streaming projections write typed output into transport channels.
-/// Production <c>/v1</c> currently selects the native intelligence-event projection and performs a
-/// parity-tested OpenAI reshape in the endpoint writer; <see cref="OpenAiSseProjection"/> remains a
-/// separate semantic projection path rather than the instance used by that route.
+/// Production <c>/v1</c> selects the native intelligence-event projection and performs the OpenAI
+/// reshape in the endpoint writer (<c>OpenAiV1Endpoints</c>); there is no second OpenAI projection.
 /// </summary>
 internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource) : ITurnExecutionFacade
 {
-
     private readonly ITurnEventSource _turnEventSource =
         turnEventSource ?? throw new ArgumentNullException(nameof(turnEventSource));
 
@@ -142,79 +139,6 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
         }
     }
 
-    public IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseAsync(
-        PingRequest request,
-        ArcanumInvocationContext invocationContext,
-        bool hasIdempotencyKey,
-        string completionId,
-        string model,
-        CancellationToken executionToken)
-    {
-        ArgumentNullException.ThrowIfNull(invocationContext);
-
-        TurnExecutionRequest turnRequest = new(
-            request,
-            invocationContext,
-            TurnResponseMode.Streaming,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: true,
-            hasIdempotencyKey,
-            AccountingHandle: TurnAccountingAmbient.Current);
-
-        return ExecuteOpenAiSseCoreAsync(turnRequest, completionId, model, executionToken);
-    }
-
-    public async IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseCoreAsync(
-        TurnExecutionRequest request,
-        string completionId,
-        string model,
-        [EnumeratorCancellation] CancellationToken executionToken)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-
-        if (request.ResponseMode != TurnResponseMode.Streaming)
-        {
-            throw new ArgumentException(
-                "OpenAI SSE projection requires TurnResponseMode.Streaming.",
-                nameof(request));
-        }
-
-        Channel<OpenAiChatChunk> transport = Channel.CreateBounded<OpenAiChatChunk>(
-            new BoundedChannelOptions(256)
-            {
-                SingleReader = true,
-                SingleWriter = true,
-                FullMode = BoundedChannelFullMode.Wait,
-            });
-
-        OpenAiSseProjection projection = new(transport.Writer, completionId, model);
-
-        using CancellationTokenSource producerCancellation =
-            CancellationTokenSource.CreateLinkedTokenSource(executionToken);
-
-        Task produce = ProjectOpenAiAsync(
-            request,
-            projection,
-            transport.Writer,
-            producerCancellation.Token);
-
-        bool drained = false;
-
-        try
-        {
-            await foreach (OpenAiChatChunk chunk in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
-            {
-                yield return chunk;
-            }
-
-            drained = true;
-        }
-        finally
-        {
-            await JoinProducerAsync(produce, producerCancellation, drained).ConfigureAwait(false);
-        }
-    }
-
     /// <summary>
     /// Never returns to the endpoint with the producer still running. A client disconnect breaks or
     /// cancels the drain above, and the pipeline behind <paramref name="produce"/> is still in its
@@ -280,32 +204,4 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
             _ = writer.TryComplete();
         }
     }
-
-    private async Task ProjectOpenAiAsync(
-        TurnExecutionRequest request,
-        OpenAiSseProjection projection,
-        ChannelWriter<OpenAiChatChunk> writer,
-        CancellationToken executionToken)
-    {
-        try
-        {
-            IAsyncEnumerable<TurnEvent> events = _turnEventSource is TurnEngine engine
-                ? engine.RunTurnAsync(request, auditContext: null, executionToken)
-                : _turnEventSource.RunTurnAsync(request, executionToken);
-
-            await foreach (TurnEvent evt in events.ConfigureAwait(false))
-            {
-                await projection.ApplyAsync(evt, executionToken).ConfigureAwait(false);
-            }
-        }
-        catch (Exception exception) when (writer.TryComplete(exception))
-        {
-            // The channel propagates producer failures to its reader.
-        }
-        finally
-        {
-            _ = writer.TryComplete();
-        }
-    }
-
 }

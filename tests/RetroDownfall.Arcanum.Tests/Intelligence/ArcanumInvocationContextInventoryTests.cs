@@ -22,7 +22,6 @@ public sealed class ArcanumInvocationContextInventoryTests
         { typeof(IContextPreviewService), nameof(IContextPreviewService.PreviewContextAsync) },
         { typeof(ITurnExecutionFacade), nameof(ITurnExecutionFacade.ExecuteBufferedAsync) },
         { typeof(ITurnExecutionFacade), nameof(ITurnExecutionFacade.ExecuteIntelligenceStreamAsync) },
-        { typeof(ITurnExecutionFacade), nameof(ITurnExecutionFacade.ExecuteOpenAiSseAsync) },
     };
 
     [Theory]
@@ -161,7 +160,6 @@ public sealed class ArcanumInvocationContextInventoryTests
         "StreamPromptAsync",
         "PreviewContextAsync",
         "ExecuteIntelligenceStreamAsync",
-        "ExecuteOpenAiSseAsync",
     ];
 
     /// <summary>

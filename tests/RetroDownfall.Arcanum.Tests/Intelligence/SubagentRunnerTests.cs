@@ -6,8 +6,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 
-using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
-
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
@@ -484,15 +482,6 @@ public sealed class SubagentRunnerTests
             bool hasIdempotencyKey,
             CancellationToken executionToken,
             InferenceAuditContext? auditContext = null) =>
-            throw new NotSupportedException();
-
-        public IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseAsync(
-            PingRequest request,
-            ArcanumInvocationContext invocationContext,
-            bool hasIdempotencyKey,
-            string completionId,
-            string model,
-            CancellationToken executionToken) =>
             throw new NotSupportedException();
     }
 

@@ -1,9 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Intelligence;
-using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
-using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -19,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class TurnDisconnectAndIdempotencyCharacterizationTests
 {
-
     [Fact]
     public void CaptureOnly_RequiresIdempotencyKey_UnderAutoPolicy()
     {
@@ -91,32 +88,4 @@ public sealed class TurnDisconnectAndIdempotencyCharacterizationTests
 
         Assert.False(request.HasIdempotencyKey);
     }
-
-    [Fact]
-    public void OpenAiSseProjection_ToolCallIndexes_AreMonotonicAcrossCalls()
-    {
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-
-        OpenAiSseProjection projection = new(channel.Writer, "chatcmpl-test", "gpt-test", createdUnixSeconds: 1);
-        TurnEventEmitter emitter = new(Guid.NewGuid());
-
-        OpenAiChatChunk first = Assert.Single(projection.Map(new ToolCallProposed(
-            emitter.NextCorrelation(),
-            "c1",
-            "t1",
-            "{}",
-            ToolCallDisposition.ServerExecution)));
-
-        OpenAiChatChunk second = Assert.Single(projection.Map(new ToolCallProposed(
-            emitter.NextCorrelation(),
-            "c2",
-            "t2",
-            "{}",
-            ToolCallDisposition.ServerExecution)));
-
-        Assert.Equal(0, first.Choices[0].Delta!.ToolCalls![0].Index);
-        Assert.Equal(1, second.Choices[0].Delta!.ToolCalls![0].Index);
-    }
-
 }
