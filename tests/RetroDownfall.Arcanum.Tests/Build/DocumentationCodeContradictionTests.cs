@@ -398,6 +398,66 @@ public sealed class DocumentationCodeContradictionTests
             namingFiles);
     }
 
+    [Fact]
+    public void The_context_preview_billing_text_says_each_embedding_is_ledgered_and_only_the_model_calls_are_not()
+    {
+        // The claims below are true only while these five source facts hold.
+        Assert.Contains(
+            ".EmbedAsync(userPrompt,",
+            Compact(ReadSource("Api", "Intelligence", "SemanticSpellRouter.cs")),
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            ".EmbedBatchAsync(descriptions,",
+            Compact(ReadSource("Infrastructure", "Weave", "SpellWeaveCache.cs")),
+            StringComparison.Ordinal);
+
+        string weave = ReadSource("Api", "Intelligence", "WeaveService.cs");
+
+        Assert.Contains("TurnAccountingHandle? accounting = TurnAccountingAmbient.Current;", weave, StringComparison.Ordinal);
+
+        Assert.Contains("surface: \"embedding\"", weave, StringComparison.Ordinal);
+
+        Assert.Contains("BillableOperationType.Embedding", weave, StringComparison.Ordinal);
+
+        // The preview publishes no ambient accounting, so every embedding takes the owning branch above.
+        Assert.DoesNotContain(
+            "TurnAccountingAmbient",
+            ReadSource("Api", "Intelligence", "WizardIntelligenceProvider.ContextPreview.cs"),
+            StringComparison.Ordinal);
+
+        // The model-backed auxiliary calls report to the response and then have nothing to record into.
+        Assert.Contains(
+            "if (TurnAccountingAmbient.Current is not TurnAccountingHandle accounting)",
+            ReadSource("Api", "Intelligence", "WizardIntelligenceProvider.cs"),
+            StringComparison.Ordinal);
+
+        string bullet = DocumentSection(
+            ReadDocument("Arcanum.DESIGN.md"),
+            "- **Billable boundary.**",
+            "- **Usage authority.**");
+
+        // Semantic Spell routing embeds the prompt (and, on a cache miss, the catalog) through the same
+        // WeaveService call as the query embedding, so each opens its own run and is ledgered.
+        Assert.DoesNotContain("writes no turn run", bullet, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("routing and extraction usage is reported in the response but not recorded in the ledger", bullet, StringComparison.Ordinal);
+
+        Assert.Contains("Every embedding it makes", bullet, StringComparison.Ordinal);
+
+        Assert.Contains("opens, reserves, settles, and closes its own short `embedding` run", bullet, StringComparison.Ordinal);
+
+        // What is not ledgered is the model-backed pair, named by their purposes.
+        Assert.Contains("`routing`", bullet, StringComparison.Ordinal);
+
+        Assert.Contains("`lexicon`", bullet, StringComparison.Ordinal);
+
+        Assert.Contains("`TryRecordAuxiliaryUsageAsync`", bullet, StringComparison.Ordinal);
+    }
+
+    private static string Compact(string source) =>
+        string.Concat(source.Where(static character => !char.IsWhiteSpace(character)));
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
