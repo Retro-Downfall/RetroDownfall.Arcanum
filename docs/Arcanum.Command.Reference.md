@@ -835,7 +835,7 @@ The Conclave and its A2A surface (requires arcanum serve). See DESIGN §5.7.1 fo
 
 Remote cost is reported as **unknown** when the peer publishes no usage — never as zero. A2A has no standard usage field, so only a peer that supplies one (which includes another Arcanum) yields real figures.
 
-An inbound Sending *is* an Apprentice, so `arcanum apprentice list/get/cancel` and `arcanum watch apprentice` are the surfaces for observing and cancelling work other agents send here. `arcanum watch apprentice` renders the four Sending frames distinguishably — dispatched, in-flight remote state, and the terminal frame with its response or failure reason, external cost, and remote duration.
+An inbound Sending *is* an Apprentice, so `arcanum apprentice list/show/cancel` and `arcanum watch apprentice` are the surfaces for observing and cancelling work other agents send here. `arcanum watch apprentice` renders the four Sending frames distinguishably — dispatched, in-flight remote state, and the terminal frame with its response or failure reason, external cost, and remote duration.
 
 ### `arcanum model`
 
