@@ -10,32 +10,33 @@
         <Configuration>
           <Format>cobertura</Format>
           <!--
-            Gate assemblies: Core, Infrastructure, Api.
-            Cli is exercised by scenario tests but excluded from the Include denominator
-            (Terminal.Gui / interactive surfaces are not line-covered).
-            Api.DevHost is WAF-only and must stay out of the denominator.
+            Aggregate gate assemblies: Core, Infrastructure, Api. The 80/70 aggregate floors in
+            scripts/coverage_threshold.py are computed over these three only.
+            Cli and Secrets are instrumented too so that they appear in the report with their own
+            line and branch rates, but they are reported assemblies, not aggregate-gate assemblies:
+            the threshold script gives each its own per-assembly floor (COVERAGE_CLI_LINE_TARGET,
+            COVERAGE_SECRETS_LINE_TARGET) and removes them from the aggregate, so neither a large
+            interactive surface nor a small platform-specific one can move the floors the three
+            gate assemblies are held to. Api.DevHost is WAF-only and must stay out of the report.
 
-            KNOWN GAP, recorded rather than silent: RetroDownfall.Arcanum.Secrets is a first-party
-            shipping assembly (every OS credential store) and is NOT in this filter. It was created
-            after the filter was written and was never added, so it is instrumented by nothing and
-            contributes no lines or branches to the 80/70 floors. Widening the filter is not a
-            one-line change: WindowsOsCredentialStore, MacOsCredentialStore and LinuxOsCredentialStore
-            are mutually exclusive by platform, so whichever two do not match the runner would park
-            structurally unreachable lines in the denominator on every lane and must be excluded by
-            type at the same time. The platform-neutral remainder is about 720 lines against a
-            denominator of roughly 335,000, so the aggregate impact is small, but it has not been
-            measured against the live floors and must be before the filter changes.
-            The historical WindowsOsCredentialStore defect is pinned by OsCredentialStoreRoundTripTests
-            against the real backend on the Windows lane, not by this gate.
+            Cli: the Terminal.Gui Command Center UX is interactive and is not line-coverable, so every
+            file under Cli/CommandCenter is excluded by file (ExcludeByFile below). All Terminal.Gui
+            references live in that directory.
+
+            Secrets: WindowsOsCredentialStore, MacOsCredentialStore and LinuxOsCredentialStore, and the
+            three platform marker slots, are mutually exclusive by platform, so whichever do not match
+            the runner would park structurally unreachable lines in the report on every lane; they are
+            excluded by type. The historical WindowsOsCredentialStore defect is pinned by
+            OsCredentialStoreRoundTripTests against the real backend on the Windows lane, not by this gate.
           -->
-          <Include>[RetroDownfall.Arcanum.Core]*,[RetroDownfall.Arcanum.Infrastructure]*,[RetroDownfall.Arcanum.Api]*</Include>
+          <Include>[RetroDownfall.Arcanum.Core]*,[RetroDownfall.Arcanum.Infrastructure]*,[RetroDownfall.Arcanum.Api]*,[RetroDownfall.Arcanum.Cli]*,[RetroDownfall.Arcanum.Secrets]*</Include>
           <!--
             JSON source-gen contexts and EF migrations are not meaningful coverage surface.
             OpenAI /v1 contract POCOs use ExcludeFromCodeCoverage in source.
           -->
-          <Exclude>[*]*.Migrations*,[*]*JsonContext*,[*]*JsonSerializerContext*</Exclude>
+          <Exclude>[*]*.Migrations*,[*]*JsonContext*,[*]*JsonSerializerContext*,[RetroDownfall.Arcanum.Secrets]*WindowsOsCredentialStore*,[RetroDownfall.Arcanum.Secrets]*MacOsCredentialStore*,[RetroDownfall.Arcanum.Secrets]*LinuxOsCredentialStore*,[RetroDownfall.Arcanum.Secrets]*WindowsHostProcessToolsMarkerSlot*,[RetroDownfall.Arcanum.Secrets]*MacOsHostProcessToolsMarkerSlot*,[RetroDownfall.Arcanum.Secrets]*LinuxHostProcessToolsMarkerSlot*</Exclude>
           <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverage</ExcludeByAttribute>
-          <ExcludeByFile>**/obj/**/*.cs,**/*.g.cs,**/Migrations/**/*.cs</ExcludeByFile>
+          <ExcludeByFile>**/obj/**/*.cs,**/*.g.cs,**/Migrations/**/*.cs,**/RetroDownfall.Arcanum.Cli/CommandCenter/**/*.cs</ExcludeByFile>
           <IncludeTestAssembly>false</IncludeTestAssembly>
           <SkipAutoProps>true</SkipAutoProps>
           <SingleHit>false</SingleHit>

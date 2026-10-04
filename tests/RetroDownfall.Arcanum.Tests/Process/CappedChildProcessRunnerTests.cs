@@ -8,13 +8,11 @@ namespace RetroDownfall.Arcanum.Tests.ProcessExecution;
 [Collection("ChildProcess")]
 public sealed class CappedChildProcessRunnerTests
 {
-
     private const string SentinelToken = "ARCANUM_RUNNER_TEST";
 
     [Fact]
     public async Task RunAsync_infinite_timeout_harmless_echo_returns_exit_code_zero()
     {
-
         ProcessStartInfo psi = CreateHarmlessEchoProcessStartInfo();
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
@@ -31,13 +29,11 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Contains(SentinelToken, result.Stdout.Text, StringComparison.Ordinal);
 
         Assert.Equal(0, result.ExitCode);
-
     }
 
     [Fact]
     public async Task RunAsync_closes_child_stdin_so_a_reading_child_sees_eof_instead_of_the_host_console()
     {
-
         // RunAsync has no way to feed a child input, so every tool child must receive a closed pipe
         // on fd 0 rather than the host's inherited console. Without the redirect a child that reads
         // stdin (`cat`, `git commit`, `ssh`, `sudo`) blocks on the operator's terminal, and since
@@ -71,13 +67,11 @@ public sealed class CappedChildProcessRunnerTests
         Assert.True(
             stopwatch.Elapsed < TimeSpan.FromSeconds(5),
             $"A child reading stdin must see EOF immediately; took {stopwatch.Elapsed}.");
-
     }
 
     [Fact]
     public async Task RunAsync_truncates_stdout_when_exceeding_per_stream_cap()
     {
-
         ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharCount: 5000);
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
@@ -94,13 +88,11 @@ public sealed class CappedChildProcessRunnerTests
         Assert.True(result.Stdout.Truncated);
 
         Assert.Equal(1024L, result.PerStreamCapBytes);
-
     }
 
     [Fact]
     public async Task RunAsync_spills_complete_stdout_after_preview_cap()
     {
-
         string spillDirectory = Path.Combine(
             Path.GetTempPath(),
             "arcanum-command-output-test-" + Guid.NewGuid().ToString("N"));
@@ -109,7 +101,6 @@ public sealed class CappedChildProcessRunnerTests
 
         try
         {
-
             const int payloadCharacters = 25_000;
 
             ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharacters);
@@ -137,21 +128,16 @@ public sealed class CappedChildProcessRunnerTests
             Assert.Equal(
                 new FileInfo(spillPath).Length,
                 result.Stdout.TotalBytes);
-
         }
         finally
         {
-
             Directory.Delete(spillDirectory, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task RunAsync_cancellation_deletes_partial_spilled_output()
     {
-
         string spillDirectory = Path.Combine(
             Path.GetTempPath(),
             "arcanum-command-output-cancel-test-" + Guid.NewGuid().ToString("N"));
@@ -160,7 +146,6 @@ public sealed class CappedChildProcessRunnerTests
 
         try
         {
-
             ProcessStartInfo psi = CreateLargeOutputThenSleepProcessStartInfo(
                 payloadCharCount: 500_000,
                 seconds: 60);
@@ -180,21 +165,16 @@ public sealed class CappedChildProcessRunnerTests
             Assert.Equal(CappedChildProcessOutcome.Canceled, result.Outcome);
 
             Assert.Empty(Directory.EnumerateFiles(spillDirectory));
-
         }
         finally
         {
-
             Directory.Delete(spillDirectory, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Abandoned_output_reader_spill_is_deleted_when_that_reader_completes()
     {
-
         // Cancellation/timeout paths give up on a stream reader after five seconds, which happens
         // when an orphaned descendant still holds the inherited pipe open. The reader keeps running
         // with its spill writer open, and it may not even have crossed the preview cap yet — so the
@@ -208,7 +188,6 @@ public sealed class CappedChildProcessRunnerTests
 
         try
         {
-
             string spillPath = Path.Combine(
                 spillDirectory,
                 "stdout-" + Guid.NewGuid().ToString("N") + ".utf8");
@@ -231,27 +210,20 @@ public sealed class CappedChildProcessRunnerTests
 
             for (int attempt = 0; attempt < 100 && File.Exists(spillPath); attempt++)
             {
-
                 await Task.Delay(50);
-
             }
 
             Assert.Empty(Directory.EnumerateFiles(spillDirectory));
-
         }
         finally
         {
-
             Directory.Delete(spillDirectory, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task RunAsync_spill_storage_failure_kills_process_instead_of_discarding_output()
     {
-
         string missingSpillDirectory = Path.Combine(
             Path.GetTempPath(),
             "arcanum-command-output-missing-test-" + Guid.NewGuid().ToString("N"),
@@ -284,13 +256,11 @@ public sealed class CappedChildProcessRunnerTests
             $"Expected output preservation failure to terminate the child promptly; took {stopwatch.Elapsed}.");
 
         Assert.False(Directory.Exists(missingSpillDirectory));
-
     }
 
     [Fact]
     public async Task RunAsync_spill_honors_existing_sanctum_file_write_policy()
     {
-
         string spillDirectory = Path.Combine(
             Path.GetTempPath(),
             "arcanum-command-output-budget-test-" + Guid.NewGuid().ToString("N"));
@@ -299,7 +269,6 @@ public sealed class CappedChildProcessRunnerTests
 
         try
         {
-
             ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharCount: 2_000_000);
 
             CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
@@ -320,21 +289,16 @@ public sealed class CappedChildProcessRunnerTests
 
             Assert.IsType<CommandOutputSpillLimitException>(
                 result.FaultException?.GetBaseException());
-
         }
         finally
         {
-
             Directory.Delete(spillDirectory, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task RunAsync_drains_output_past_cap_so_chatty_process_still_exits_promptly()
     {
-
         // A payload well beyond a typical OS pipe buffer (a few tens of KB): without continuing to
         // drain the pipe after the cap is hit, the child would block on its next write() once the
         // kernel pipe buffer fills, and RunAsync would only unblock via the timeout below — this
@@ -361,13 +325,11 @@ public sealed class CappedChildProcessRunnerTests
         // Well under the timeout — proves the child exited on its own because the pipe kept
         // draining, rather than RunAsync only unblocking once the timeout killed the process tree.
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(20), $"Expected a prompt exit; took {stopwatch.Elapsed}.");
-
     }
 
     [Fact]
     public async Task RunAsync_times_out_and_kills_long_running_process()
     {
-
         ProcessStartInfo psi = CreateSleepProcessStartInfo(seconds: 60);
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
@@ -380,7 +342,6 @@ public sealed class CappedChildProcessRunnerTests
             CancellationToken.None);
 
         Assert.Equal(CappedChildProcessOutcome.TimedOut, result.Outcome);
-
     }
 
     [SkippableFact]
@@ -432,7 +393,6 @@ public sealed class CappedChildProcessRunnerTests
     [SkippableFact]
     public async Task RunAsync_kills_process_group_descendants_after_normal_parent_exit()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "Unix process-group cleanup is covered on Unix hosts.");
@@ -464,7 +424,6 @@ public sealed class CappedChildProcessRunnerTests
 
         try
         {
-
             using global::System.Diagnostics.Process descendant =
                 global::System.Diagnostics.Process.GetProcessById(descendantPid);
             Assert.True(
@@ -472,38 +431,20 @@ public sealed class CappedChildProcessRunnerTests
                     descendantPid,
                     TimeSpan.FromSeconds(2)),
                 $"Detached descendant {descendantPid} survived normal parent exit.");
-
         }
         catch (ArgumentException)
         {
-
             // Process no longer exists.
-
         }
         finally
         {
-
-            try
-            {
-
-                using global::System.Diagnostics.Process descendant =
-                    global::System.Diagnostics.Process.GetProcessById(descendantPid);
-                descendant.Kill(entireProcessTree: true);
-
-            }
-            catch (Exception)
-            {
-
-            }
-
+            KillDescendantIfStillRunning(descendantPid);
         }
-
     }
 
     [SkippableFact]
     public async Task RunAsync_kills_process_group_descendants_on_timeout()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "Unix process-group cleanup is covered on Unix hosts.");
@@ -553,16 +494,7 @@ public sealed class CappedChildProcessRunnerTests
         }
         finally
         {
-            try
-            {
-                using global::System.Diagnostics.Process descendant =
-                    global::System.Diagnostics.Process.GetProcessById(
-                        descendantPid);
-                descendant.Kill(entireProcessTree: true);
-            }
-            catch (Exception)
-            {
-            }
+            KillDescendantIfStillRunning(descendantPid);
         }
     }
 
@@ -626,16 +558,7 @@ public sealed class CappedChildProcessRunnerTests
         }
         finally
         {
-            try
-            {
-                using global::System.Diagnostics.Process descendant =
-                    global::System.Diagnostics.Process.GetProcessById(
-                        descendantPid);
-                descendant.Kill(entireProcessTree: true);
-            }
-            catch (Exception)
-            {
-            }
+            KillDescendantIfStillRunning(descendantPid);
         }
     }
 
@@ -663,7 +586,6 @@ public sealed class CappedChildProcessRunnerTests
 
         try
         {
-
             ProcessStartInfo psi = new()
             {
                 FileName = "/usr/bin/ruby",
@@ -717,14 +639,11 @@ public sealed class CappedChildProcessRunnerTests
             Assert.True(
                 stopwatch.Elapsed < TimeSpan.FromSeconds(13),
                 $"Abandoning the drain took {stopwatch.Elapsed}.");
-
         }
         finally
         {
-
             try
             {
-
                 using global::System.Diagnostics.Process descendant =
                     global::System.Diagnostics.Process.GetProcessById(
                         int.Parse(
@@ -732,21 +651,20 @@ public sealed class CappedChildProcessRunnerTests
                             System.Globalization.CultureInfo.InvariantCulture));
 
                 descendant.Kill(entireProcessTree: true);
-
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is IOException or FormatException or ArgumentException or InvalidOperationException or global::System.ComponentModel.Win32Exception)
             {
+                // The descendant may never have written its pid file, or may already be gone; either way
+                // there is nothing left to kill and the test's own assertions have already run.
             }
 
             Directory.Delete(pidDirectory, recursive: true);
-
         }
     }
 
     [Fact]
     public async Task RunAsync_revalidates_trusted_identity_immediately_before_spawn()
     {
-
         ProcessStartInfo psi = CreateHarmlessEchoProcessStartInfo();
         int validationCount = 0;
 
@@ -777,7 +695,6 @@ public sealed class CappedChildProcessRunnerTests
     [Fact]
     public async Task RunAsync_rechecks_outer_cancellation_after_prestart_validation()
     {
-
         ProcessStartInfo startInfo = CreateHarmlessEchoProcessStartInfo();
         using CancellationTokenSource cancellation = new();
 
@@ -803,18 +720,14 @@ public sealed class CappedChildProcessRunnerTests
             CappedChildProcessOutcome.CanceledBeforeStart,
             result.Outcome);
         Assert.Empty(result.Stdout.Text ?? string.Empty);
-
     }
 
     [Fact]
     public void ApplyProfile_ToolExec_strips_arcanum_prefixed_keys_and_keeps_others()
     {
-
         ProcessStartInfo psi = new()
         {
-
             FileName = "noop",
-
         };
 
         psi.Environment["ARCANUM_Arcanum__Providers__0__ApiKey"] = "sk-secret";
@@ -834,18 +747,14 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Equal("/usr/bin", psi.Environment["PATH"]);
 
         Assert.Equal("/home/user", psi.Environment["HOME"]);
-
     }
 
     [Fact]
     public void ApplyProfile_ToolExec_strips_hijackable_variables_but_preserves_path()
     {
-
         ProcessStartInfo psi = new()
         {
-
             FileName = "noop",
-
         };
 
         // Interpreter/dynamic-linker preload hooks, credential-phishing SSH/Git helpers, TLS key
@@ -886,18 +795,14 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Equal("/usr/bin", psi.Environment["PATH"]);
 
         Assert.Equal("/home/user", psi.Environment["HOME"]);
-
     }
 
     [Fact]
     public void ApplyProfile_SpellScript_strips_arcanum_and_hijack_vars_like_ToolExec()
     {
-
         ProcessStartInfo psi = new()
         {
-
             FileName = "noop",
-
         };
 
         psi.Environment["ARCANUM_Arcanum__Providers__0__ApiKey"] = "sk-secret";
@@ -925,7 +830,6 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Equal("/usr/bin", psi.Environment["PATH"]);
 
         Assert.Equal("/home/user", psi.Environment["HOME"]);
-
     }
 
     [Theory]
@@ -934,7 +838,6 @@ public sealed class CappedChildProcessRunnerTests
     public void ApplyProfile_strips_operator_declared_secret_variables_by_name(
         ChildProcessEnvironmentProfile profile)
     {
-
         // Arcanum's own secrets need not carry the ARCANUM_ prefix. The operator can point
         // Arcanum:Providers:*:CredentialEnvironmentVariable — and the HTTPS certificate password,
         // the Comm Link webhook URL, the web-research key, the A2A outbound credential — at any
@@ -943,9 +846,7 @@ public sealed class CappedChildProcessRunnerTests
         // the prefix scrub is the backstop and the operator-declared names are the control.
         ProcessStartInfo psi = new()
         {
-
             FileName = "noop",
-
         };
 
         psi.Environment["MY_OPENAI_KEY"] = "sk-secret";
@@ -970,13 +871,11 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Equal("/usr/bin", psi.Environment["PATH"]);
 
         Assert.Equal("/home/user", psi.Environment["HOME"]);
-
     }
 
     [Fact]
     public async Task RunAsync_strips_operator_declared_secret_variables_from_the_child()
     {
-
         ProcessStartInfo psi = CreateEnvironmentEchoProcessStartInfo("MY_OPENAI_KEY");
 
         psi.Environment["MY_OPENAI_KEY"] = "sk-secret";
@@ -997,13 +896,11 @@ public sealed class CappedChildProcessRunnerTests
             "sk-secret",
             result.Stdout.Text,
             StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task RunAsync_SigKillExit_NotClassifiedAsMemory_WhenNoOomEvidence()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "No POSIX signal-exit-code semantics on Windows; nothing to verify on this host.");
@@ -1024,13 +921,11 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
 
         Assert.Null(result.ExceededResource);
-
     }
 
     [SkippableFact]
     public async Task RunAsync_SigKillExit_ClassifiedAsMemory_WhenOomEvidenceConfirmed()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "No POSIX signal-exit-code semantics on Windows; nothing to verify on this host.");
@@ -1051,13 +946,11 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Equal(CappedChildProcessOutcome.ResourceLimitExceeded, result.Outcome);
 
         Assert.Equal(ResourceLimitKind.Memory, result.ExceededResource);
-
     }
 
     private static ProcessStartInfo CreateSelfSigKillProcessStartInfo() =>
         new()
         {
-
             FileName = "/bin/sh",
 
             ArgumentList = { "-c", "kill -9 $$" },
@@ -1069,7 +962,6 @@ public sealed class CappedChildProcessRunnerTests
             UseShellExecute = false,
 
             CreateNoWindow = true,
-
         };
 
     /// <summary>
@@ -1079,21 +971,16 @@ public sealed class CappedChildProcessRunnerTests
     /// </summary>
     private sealed class FakeResourceLimiter(bool? wasOomKilled) : IProcessResourceLimiter
     {
-
         public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits) =>
             new(null, null, wasOomKilled is null ? null : () => Task.FromResult(wasOomKilled.Value));
-
     }
 
     private static ProcessStartInfo CreateHarmlessEchoProcessStartInfo()
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
-
                 FileName = "powershell.exe",
 
                 RedirectStandardOutput = true,
@@ -1105,14 +992,11 @@ public sealed class CappedChildProcessRunnerTests
                 CreateNoWindow = true,
 
                 ArgumentList = { "-NoProfile", "-Command", $"Write-Output {SentinelToken}" },
-
             };
-
         }
 
         return new ProcessStartInfo
         {
-
             FileName = "/bin/echo",
 
             RedirectStandardOutput = true,
@@ -1124,20 +1008,15 @@ public sealed class CappedChildProcessRunnerTests
             CreateNoWindow = true,
 
             ArgumentList = { SentinelToken },
-
         };
-
     }
 
     private static ProcessStartInfo CreateEnvironmentEchoProcessStartInfo(string variableName)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
-
                 FileName = "powershell.exe",
 
                 RedirectStandardOutput = true,
@@ -1154,14 +1033,11 @@ public sealed class CappedChildProcessRunnerTests
                     "-Command",
                     $"Write-Output $env:{variableName}",
                 },
-
             };
-
         }
 
         return new ProcessStartInfo
         {
-
             FileName = "/bin/sh",
 
             RedirectStandardOutput = true,
@@ -1173,9 +1049,7 @@ public sealed class CappedChildProcessRunnerTests
             CreateNoWindow = true,
 
             ArgumentList = { "-c", $"printf '%s' \"${variableName}\"" },
-
         };
-
     }
 
     /// <summary>
@@ -1184,13 +1058,10 @@ public sealed class CappedChildProcessRunnerTests
     /// </summary>
     private static ProcessStartInfo CreateStdinReadingProcessStartInfo()
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
-
                 FileName = "powershell.exe",
 
                 RedirectStandardOutput = true,
@@ -1207,14 +1078,11 @@ public sealed class CappedChildProcessRunnerTests
                     "-Command",
                     $"$null = [Console]::In.ReadToEnd(); Write-Output {SentinelToken}",
                 },
-
             };
-
         }
 
         return new ProcessStartInfo
         {
-
             FileName = "/bin/sh",
 
             RedirectStandardOutput = true,
@@ -1226,20 +1094,15 @@ public sealed class CappedChildProcessRunnerTests
             CreateNoWindow = true,
 
             ArgumentList = { "-c", $"cat > /dev/null; echo {SentinelToken}" },
-
         };
-
     }
 
     private static ProcessStartInfo CreateLargeOutputProcessStartInfo(int payloadCharCount)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
-
                 FileName = "powershell.exe",
 
                 RedirectStandardOutput = true,
@@ -1256,14 +1119,11 @@ public sealed class CappedChildProcessRunnerTests
                     "-Command",
                     $"Write-Output ('x' * {payloadCharCount})",
                 },
-
             };
-
         }
 
         return new ProcessStartInfo
         {
-
             FileName = "/bin/sh",
 
             RedirectStandardOutput = true,
@@ -1275,22 +1135,17 @@ public sealed class CappedChildProcessRunnerTests
             CreateNoWindow = true,
 
             ArgumentList = { "-c", $"printf '%*s' {payloadCharCount} | tr ' ' 'x'" },
-
         };
-
     }
 
     private static ProcessStartInfo CreateLargeOutputThenSleepProcessStartInfo(
         int payloadCharCount,
         int seconds)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
-
                 FileName = "powershell.exe",
 
                 RedirectStandardOutput = true,
@@ -1307,14 +1162,11 @@ public sealed class CappedChildProcessRunnerTests
                     "-Command",
                     $"[Console]::Out.Write(('x' * {payloadCharCount})); Start-Sleep -Seconds {seconds}",
                 },
-
             };
-
         }
 
         return new ProcessStartInfo
         {
-
             FileName = "/bin/sh",
 
             RedirectStandardOutput = true,
@@ -1330,9 +1182,7 @@ public sealed class CappedChildProcessRunnerTests
                 "-c",
                 $"printf '%*s' {payloadCharCount} | tr ' ' 'x'; sleep {seconds}",
             },
-
         };
-
     }
 
     private static async Task<bool> WaitForProcessExitOrZombieAsync(
@@ -1398,13 +1248,10 @@ public sealed class CappedChildProcessRunnerTests
 
     private static ProcessStartInfo CreateSleepProcessStartInfo(int seconds)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
-
                 FileName = "powershell.exe",
 
                 RedirectStandardOutput = true,
@@ -1416,14 +1263,11 @@ public sealed class CappedChildProcessRunnerTests
                 CreateNoWindow = true,
 
                 ArgumentList = { "-NoProfile", "-Command", $"Start-Sleep -Seconds {seconds}" },
-
             };
-
         }
 
         return new ProcessStartInfo
         {
-
             FileName = "/bin/sleep",
 
             RedirectStandardOutput = true,
@@ -1435,9 +1279,21 @@ public sealed class CappedChildProcessRunnerTests
             CreateNoWindow = true,
 
             ArgumentList = { seconds.ToString() },
-
         };
-
     }
 
+    private static void KillDescendantIfStillRunning(int descendantPid)
+    {
+        try
+        {
+            using global::System.Diagnostics.Process descendant =
+                global::System.Diagnostics.Process.GetProcessById(descendantPid);
+
+            descendant.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or global::System.ComponentModel.Win32Exception)
+        {
+            // The descendant already exited, which is the outcome the test wants; nothing is left to kill.
+        }
+    }
 }

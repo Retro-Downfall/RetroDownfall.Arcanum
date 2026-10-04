@@ -294,15 +294,16 @@ public sealed class DocumentationCodeContradictionTests
     }
 
     [Fact]
-    public void The_design_places_cli_diagnostics_outside_the_coverage_denominator_and_names_the_real_ci_runner()
+    public void The_design_places_cli_diagnostics_in_the_report_but_outside_the_aggregate_and_names_the_real_ci_runner()
     {
         string root = TestRepositoryPaths.RepositoryRoot();
 
         string runsettings = File.ReadAllText(
             Path.Combine(root, "tests", "RetroDownfall.Arcanum.Tests", "coverage.runsettings"));
 
-        // The claim below is false for as long as the Include filter omits Cli.
-        Assert.DoesNotContain("[RetroDownfall.Arcanum.Cli]", runsettings, StringComparison.Ordinal);
+        // The claim below holds while the Include filter instruments Cli (so its checks are in the report)
+        // and the gate script removes it from the aggregate.
+        Assert.Contains("[RetroDownfall.Arcanum.Cli]*", runsettings, StringComparison.Ordinal);
 
         string design = ReadDocument("Arcanum.DESIGN.md");
 
@@ -311,6 +312,8 @@ public sealed class DocumentationCodeContradictionTests
         Assert.DoesNotContain("All of those are inside the coverage denominator", placement, StringComparison.Ordinal);
 
         Assert.Contains("outside", placement, StringComparison.Ordinal);
+
+        Assert.Contains("removed from the aggregate", placement, StringComparison.Ordinal);
 
         string workflow = File
             .ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"))

@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Collection("ProcessEnvironment")]
 public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 {
-
     private readonly string _baseDir;
 
     private readonly string _rootA;
@@ -43,16 +42,7 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
         // test that threw before its own finally ran would otherwise leak the fault into every later test.
         ArcanumSpellScriptTool.ResolveLinkTargetFaultForTests = null;
 
-        try
-        {
-            if (Directory.Exists(_baseDir))
-            {
-                Directory.Delete(_baseDir, recursive: true);
-            }
-        }
-        catch
-        {
-        }
+        _ = TestDirectoryCleanup.TryDelete(_baseDir, nameof(ArcanumSpellScriptToolMultiRootTests));
     }
 
     [Fact]
@@ -312,5 +302,4 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
             ArcanumSpellScriptTool.ResolveLinkTargetFaultForTests = null;
         }
     }
-
 }

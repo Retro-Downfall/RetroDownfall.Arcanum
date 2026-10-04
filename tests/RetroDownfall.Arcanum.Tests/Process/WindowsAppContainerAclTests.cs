@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
 
@@ -30,13 +31,7 @@ public sealed class WindowsAppContainerAclTests : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (Exception)
-        {
-        }
+        _ = TestDirectoryCleanup.TryDelete(_root, nameof(WindowsAppContainerAclTests));
     }
 
     [SkippableFact]

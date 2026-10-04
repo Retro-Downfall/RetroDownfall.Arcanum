@@ -639,8 +639,10 @@ public sealed class WatchSseTransportTests
                 {
                     _ = await move.WaitAsync(AsyncTestTimeout);
                 }
-                catch (Exception)
+                catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
                 {
+                    // The assertions above already pinned the cancellation (or failed the test on a move
+                    // that never settled); this wait only drains the task before the frames are disposed.
                 }
             }
 

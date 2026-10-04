@@ -26,20 +26,16 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ApiHost")]
 public sealed class SessionEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public SessionEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task GetEntries_CountOnly_ReturnsEntryCount()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(3);
@@ -57,13 +53,11 @@ public sealed class SessionEndpointTests
         Assert.NotNull(body.Data);
         Assert.True(body.IsSuccess);
         Assert.Equal(3, body.Data.Count);
-
     }
 
     [SkippableFact]
     public async Task GetEntries_CountOnly_UnknownSession_Returns404()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid unknownId = Guid.NewGuid();
@@ -72,13 +66,11 @@ public sealed class SessionEndpointTests
         HttpResponseMessage response = await client.GetAsync($"/api/sessions/{unknownId}/entries?countOnly=true");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task GetEntries_WithoutCountOnly_ReturnsEntries()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(2);
@@ -96,7 +88,6 @@ public sealed class SessionEndpointTests
         Assert.NotNull(body.Data);
         Assert.True(body.IsSuccess);
         Assert.Equal(2, body.Data.Length);
-
     }
 
     [SkippableFact]
@@ -104,7 +95,6 @@ public sealed class SessionEndpointTests
     public async Task GetStream_WithEntryCursor_ReplaysOnlyLaterEntries()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(3);
@@ -114,7 +104,6 @@ public sealed class SessionEndpointTests
         using HttpClient client = _factory.CreateAuthenticatedClient();
 
         using HttpResponseMessage response = await client.GetAsync(
-
             $"/api/sessions/{sessionId:D}/stream?since={entryIds[0]:D}",
 
             HttpCompletionOption.ResponseHeadersRead);
@@ -134,7 +123,6 @@ public sealed class SessionEndpointTests
         while (true)
 
         {
-
             string? line = await reader.ReadLineAsync(timeout.Token);
 
             Assert.NotNull(line);
@@ -142,21 +130,16 @@ public sealed class SessionEndpointTests
             if (string.Equals(line, "data: {\"type\":\"live\"}", StringComparison.Ordinal))
 
             {
-
                 break;
-
             }
 
             if (!line.StartsWith("data: ", StringComparison.Ordinal))
 
             {
-
                 continue;
-
             }
 
             EntryDto? entry = JsonSerializer.Deserialize(
-
                 line["data: ".Length..],
 
                 ArcanumJsonContext.Default.EntryDto);
@@ -164,11 +147,9 @@ public sealed class SessionEndpointTests
             Assert.NotNull(entry);
 
             replayedIds.Add(entry.Id);
-
         }
 
         Assert.Equal(entryIds[1..], replayedIds);
-
     }
 
     [SkippableFact]
@@ -176,7 +157,6 @@ public sealed class SessionEndpointTests
     public async Task GetStream_WithMissingOrForeignEntryCursor_Returns404WithoutSseHeaders()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(1);
@@ -192,9 +172,7 @@ public sealed class SessionEndpointTests
         foreach (Guid cursor in new[] { missingEntryId, foreignEntryId })
 
         {
-
             using HttpResponseMessage response = await client.GetAsync(
-
                 $"/api/sessions/{sessionId:D}/stream?since={cursor:D}");
 
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -214,15 +192,12 @@ public sealed class SessionEndpointTests
             Assert.False(body.IsSuccess);
 
             Assert.Equal(ErrorCodes.Session.EntryNotFound, body.Error?.Code);
-
         }
-
     }
 
     [SkippableFact]
     public async Task GetStream_ReplayFailure_ReleasesTheSessionEventHubSubscription()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -240,37 +215,32 @@ public sealed class SessionEndpointTests
 
         try
         {
-
             using HttpResponseMessage response = await client.GetAsync(
                 $"/api/sessions/{sessionId:D}/stream",
                 HttpCompletionOption.ResponseContentRead);
 
             Assert.NotEqual(HttpStatusCode.NotFound, response.StatusCode);
-
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException)
         {
-            // The replay fault may surface as a transport failure rather than a status code; either
-            // way the endpoint has finished and the pump subscription must be gone.
+            // The replay fault (the repository's InvalidOperationException) may surface as a transport
+            // failure rather than a status code; either way the endpoint has finished and the pump
+            // subscription must be gone.
         }
 
         SessionEventHub hub = factory.Services.GetRequiredService<SessionEventHub>();
 
         for (int attempt = 0; attempt < 100 && hub.GetSubscriberCount(sessionId) > 0; attempt++)
         {
-
             await Task.Delay(50);
-
         }
 
         Assert.Equal(0, hub.GetSubscriberCount(sessionId));
-
     }
 
     [SkippableFact]
     public async Task GetAttachments_UnknownSession_Returns404()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid unknownId = Guid.NewGuid();
@@ -288,13 +258,11 @@ public sealed class SessionEndpointTests
         Assert.NotNull(body);
         Assert.False(body.IsSuccess);
         Assert.Equal(ErrorCodes.Session.NotFound, body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task GetAttachments_ReturnsBoundRowsOnly()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -303,7 +271,6 @@ public sealed class SessionEndpointTests
 
         using (IServiceScope scope = _factory.Services.CreateScope())
         {
-
             ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
 
             bound = await store.PersistNewAsync(
@@ -325,7 +292,6 @@ public sealed class SessionEndpointTests
                 Encoding.UTF8.GetBytes("pending-bytes"),
                 mimeType: "text/plain",
                 SessionAttachmentKind.Text);
-
         }
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -354,13 +320,11 @@ public sealed class SessionEndpointTests
         Assert.Equal(bound.ByteLength, dto.ByteLength);
         Assert.Equal(SessionAttachmentKind.Text, dto.Kind);
         Assert.Equal(bound.ContentSha256, dto.ContentSha256);
-
     }
 
     [SkippableFact]
     public async Task GetAttachments_EmptySession_ReturnsEmptyArray()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -379,7 +343,6 @@ public sealed class SessionEndpointTests
         Assert.True(body.IsSuccess);
         Assert.NotNull(body.Data);
         Assert.Empty(body.Data);
-
     }
 
     [SkippableFact]
@@ -387,13 +350,11 @@ public sealed class SessionEndpointTests
     public async Task Tracked_attachment_get_detects_drift_and_refresh_endpoint_confirms_live_version()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
 
         string sourcePath = Path.Combine(
-
             _factory.TempHome,
 
             "issue16-" + Guid.NewGuid().ToString("N") + ".txt");
@@ -401,7 +362,6 @@ public sealed class SessionEndpointTests
         try
 
         {
-
             byte[] before = Encoding.UTF8.GetBytes("before");
 
             await File.WriteAllBytesAsync(sourcePath, before);
@@ -411,13 +371,11 @@ public sealed class SessionEndpointTests
             using (IServiceScope scope = _factory.Services.CreateScope())
 
             {
-
                 ISessionAttachmentStore store = scope.ServiceProvider
 
                     .GetRequiredService<ISessionAttachmentStore>();
 
                 original = await store.PersistNewFromSourceAsync(
-
                     sessionId,
 
                     pendingTurnId: null,
@@ -435,7 +393,6 @@ public sealed class SessionEndpointTests
                     SessionAttachmentKind.Text,
 
                     new AttachmentSourceClaim(sourcePath));
-
             }
 
             await File.WriteAllBytesAsync(sourcePath, Encoding.UTF8.GetBytes("after"));
@@ -445,7 +402,6 @@ public sealed class SessionEndpointTests
             ApiResponse<SessionAttachmentDto[]>? stale = await client
 
                 .GetFromJsonAsync(
-
                     $"/api/sessions/{sessionId:D}/attachments",
 
                     ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
@@ -457,7 +413,6 @@ public sealed class SessionEndpointTests
             Assert.False(staleRow.IsRefreshable);
 
             HttpResponseMessage response = await client.PostAsync(
-
                 $"/api/sessions/{sessionId:D}/attachments/{original.Id:D}/refresh",
 
                 content: null);
@@ -467,7 +422,6 @@ public sealed class SessionEndpointTests
             ApiResponse<AttachmentRefreshEvent>? refreshed = await response.Content
 
                 .ReadFromJsonAsync(
-
                     ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent);
 
             Assert.NotNull(refreshed?.Data);
@@ -483,7 +437,6 @@ public sealed class SessionEndpointTests
             ApiResponse<SessionAttachmentDto[]>? live = await client
 
                 .GetFromJsonAsync(
-
                     $"/api/sessions/{sessionId:D}/attachments",
 
                     ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
@@ -499,22 +452,16 @@ public sealed class SessionEndpointTests
             Assert.True(latest.IsRefreshable);
 
             Assert.Equal(refreshed.Data.ContentSha256, latest.ContentSha256);
-
         }
         finally
 
         {
-
             if (File.Exists(sourcePath))
 
             {
-
                 File.Delete(sourcePath);
-
             }
-
         }
-
     }
 
     [SkippableFact]
@@ -522,7 +469,6 @@ public sealed class SessionEndpointTests
     public async Task PostAttachments_Multipart_CreatesBoundSnapshotOnlyRow()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -540,7 +486,6 @@ public sealed class SessionEndpointTests
         form.Add(fileContent, "file", "snapshot-notes.txt");
 
         HttpResponseMessage response = await client.PostAsync(
-
             $"/api/sessions/{sessionId:D}/attachments",
 
             form);
@@ -578,7 +523,6 @@ public sealed class SessionEndpointTests
         ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
 
         Assert.Equal(expectedBytes, (await store.ReadBytesAsync(row)).ToArray());
-
     }
 
     [SkippableFact]
@@ -586,7 +530,6 @@ public sealed class SessionEndpointTests
     public async Task PostAttachments_Multipart_AcceptsOneMaximumSizeFileWithEnvelopeOverhead()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -608,7 +551,6 @@ public sealed class SessionEndpointTests
         Assert.True(form.Headers.ContentLength > maximumReadBytes);
 
         HttpResponseMessage response = await client.PostAsync(
-
             $"/api/sessions/{sessionId:D}/attachments",
 
             form);
@@ -618,7 +560,6 @@ public sealed class SessionEndpointTests
         SessionAttachmentRecord row = Assert.Single(await GetBoundAttachmentsAsync(sessionId));
 
         Assert.Equal(maximumReadBytes, row.ByteLength);
-
     }
 
     [SkippableTheory]
@@ -628,11 +569,9 @@ public sealed class SessionEndpointTests
     [InlineData(true)]
 
     public async Task PostAttachments_Multipart_RejectsAggregateBodyAboveFileLimitAndEnvelopeAllowance(
-
         bool unknownLength)
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -658,29 +597,24 @@ public sealed class SessionEndpointTests
         form.Add(extraContent, "extra", "second.bin");
 
         using HttpRequestMessage request = new(
-
             HttpMethod.Post,
 
             $"/api/sessions/{sessionId:D}/attachments")
 
         {
-
             Content = unknownLength
 
                 ? new UnknownLengthHttpContent(form)
 
                 : form,
-
         };
 
         if (unknownLength)
 
         {
-
             request.Headers.TransferEncodingChunked = true;
 
             Assert.Null(request.Content.Headers.ContentLength);
-
         }
 
         HttpResponseMessage response = await client.SendAsync(request);
@@ -698,7 +632,6 @@ public sealed class SessionEndpointTests
         Assert.Equal(ErrorCodes.Attachment.TooLarge, payload.Error?.Code);
 
         Assert.Empty(await GetBoundAttachmentsAsync(sessionId));
-
     }
 
     [SkippableTheory]
@@ -706,7 +639,6 @@ public sealed class SessionEndpointTests
     [InlineData("application/pdf", "report.pdf", "application/pdf")]
 
     [InlineData(
-
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 
         "report.docx",
@@ -716,7 +648,6 @@ public sealed class SessionEndpointTests
     [InlineData("application/octet-stream", "payload.bin", "application/octet-stream")]
 
     public async Task PostAttachments_Multipart_KeepsUnsupportedBinaryAsValidNotEligibleSnapshot(
-
         string declaredMimeType,
 
         string fileName,
@@ -724,7 +655,6 @@ public sealed class SessionEndpointTests
         string expectedMimeType)
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -750,7 +680,6 @@ public sealed class SessionEndpointTests
         form.Add(fileContent, "file", fileName);
 
         HttpResponseMessage response = await client.PostAsync(
-
             $"/api/sessions/{sessionId:D}/attachments",
 
             form);
@@ -778,7 +707,6 @@ public sealed class SessionEndpointTests
         Assert.Equal(AttachmentSourceKind.SnapshotOnly, source.Kind);
 
         Assert.Equal(expectedBytes, (await ReadAttachmentBytesAsync(row)).ToArray());
-
     }
 
     [SkippableFact]
@@ -786,7 +714,6 @@ public sealed class SessionEndpointTests
     public async Task PostAttachments_Multipart_UnsupportedBinaryStillHonorsAttachmentByteBudget()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -812,7 +739,6 @@ public sealed class SessionEndpointTests
         form.Add(fileContent, "file", "oversized.bin");
 
         HttpResponseMessage response = await client.PostAsync(
-
             $"/api/sessions/{sessionId:D}/attachments",
 
             form);
@@ -820,7 +746,6 @@ public sealed class SessionEndpointTests
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
 
         Assert.Empty(await GetBoundAttachmentsAsync(sessionId));
-
     }
 
     [SkippableFact]
@@ -828,7 +753,6 @@ public sealed class SessionEndpointTests
     public async Task GetAttachmentContent_ReturnsPlaintextDownloadWithoutSourcePath()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -836,7 +760,6 @@ public sealed class SessionEndpointTests
         byte[] expectedBytes = Encoding.UTF8.GetBytes("downloaded snapshot bytes");
 
         string sourcePath = Path.Combine(
-
             _factory.TempHome,
 
             "issue26-content-" + Guid.NewGuid().ToString("N") + ".txt");
@@ -844,7 +767,6 @@ public sealed class SessionEndpointTests
         try
 
         {
-
             await File.WriteAllBytesAsync(sourcePath, expectedBytes);
 
             SessionAttachmentRecord attachment;
@@ -852,13 +774,11 @@ public sealed class SessionEndpointTests
             using (IServiceScope scope = _factory.Services.CreateScope())
 
             {
-
                 ISessionAttachmentStore store = scope.ServiceProvider
 
                     .GetRequiredService<ISessionAttachmentStore>();
 
                 attachment = await store.PersistNewFromSourceAsync(
-
                     sessionId,
 
                     pendingTurnId: null,
@@ -876,13 +796,11 @@ public sealed class SessionEndpointTests
                     SessionAttachmentKind.Text,
 
                     new AttachmentSourceClaim(sourcePath));
-
             }
 
             HttpClient client = _factory.CreateAuthenticatedClient();
 
             HttpResponseMessage response = await client.GetAsync(
-
                 $"/api/sessions/{sessionId:D}/attachments/{attachment.Id:D}/content");
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -894,7 +812,6 @@ public sealed class SessionEndpointTests
             Assert.NotNull(response.Content.Headers.ContentDisposition);
 
             Assert.Equal(
-
                 "attachment",
 
                 response.Content.Headers.ContentDisposition!.DispositionType);
@@ -902,7 +819,6 @@ public sealed class SessionEndpointTests
             Assert.Contains("no-store", response.Headers.CacheControl!.ToString(), StringComparison.Ordinal);
 
             Assert.Equal(
-
                 "nosniff",
 
                 Assert.Single(response.Headers.GetValues("X-Content-Type-Options")));
@@ -914,22 +830,16 @@ public sealed class SessionEndpointTests
             Assert.DoesNotContain(sourcePath, responseHeaders, StringComparison.Ordinal);
 
             Assert.DoesNotContain(_factory.TempHome, responseHeaders, StringComparison.Ordinal);
-
         }
         finally
 
         {
-
             if (File.Exists(sourcePath))
 
             {
-
                 File.Delete(sourcePath);
-
             }
-
         }
-
     }
 
     [SkippableFact]
@@ -937,7 +847,6 @@ public sealed class SessionEndpointTests
     public async Task RefreshAttachment_MissingAttachment_ReturnsNotFound()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -945,7 +854,6 @@ public sealed class SessionEndpointTests
         HttpClient client = _factory.CreateAuthenticatedClient();
 
         HttpResponseMessage response = await client.PostAsync(
-
             $"/api/sessions/{sessionId:D}/attachments/{Guid.NewGuid():D}/refresh",
 
             content: null);
@@ -961,7 +869,6 @@ public sealed class SessionEndpointTests
         Assert.False(payload.IsSuccess);
 
         Assert.Equal(ErrorCodes.Attachment.NotFound, payload.Error?.Code);
-
     }
 
     [SkippableFact]
@@ -969,7 +876,6 @@ public sealed class SessionEndpointTests
     public async Task PostAttachmentReference_WorkspaceFile_CreatesRefreshableRowFromCurrentBytes()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -983,7 +889,6 @@ public sealed class SessionEndpointTests
         try
 
         {
-
             await File.WriteAllBytesAsync(sourcePath, expectedBytes);
 
             HttpClient client = _factory.CreateAuthenticatedClient();
@@ -991,13 +896,10 @@ public sealed class SessionEndpointTests
             using JsonContent request = JsonContent.Create(new
 
             {
-
                 workspacePath = fileName,
-
             });
 
             HttpResponseMessage response = await client.PostAsync(
-
                 $"/api/sessions/{sessionId:D}/attachments/reference",
 
                 request);
@@ -1027,22 +929,16 @@ public sealed class SessionEndpointTests
             ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
 
             Assert.Equal(expectedBytes, (await store.ReadBytesAsync(row)).ToArray());
-
         }
         finally
 
         {
-
             if (File.Exists(sourcePath))
 
             {
-
                 File.Delete(sourcePath);
-
             }
-
         }
-
     }
 
     [SkippableFact]
@@ -1050,13 +946,11 @@ public sealed class SessionEndpointTests
     public async Task PostAttachmentReference_ExplicitRegisteredWorkspace_UsesSelectedRoot()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
 
         string workspaceRoot = Path.Combine(
-
             _factory.TempHome,
 
             "issue26-workspace-" + Guid.NewGuid().ToString("N"));
@@ -1068,17 +962,13 @@ public sealed class SessionEndpointTests
         try
 
         {
-
             using (IServiceScope scope = _factory.Services.CreateScope())
 
             {
-
                 IWorkspaceRegistry registry = scope.ServiceProvider.GetRequiredService<IWorkspaceRegistry>();
 
                 Result<WorkspaceInfo> registered = await registry.RegisterAsync(
-
                     new CreateWorkspaceRequest(
-
                         "issue26-" + Guid.NewGuid().ToString("N"),
 
                         workspaceRoot,
@@ -1090,7 +980,6 @@ public sealed class SessionEndpointTests
                 Assert.True(registered.IsSuccess, registered.Error.Message);
 
                 workspace = registered.Value;
-
             }
 
             string fileName = "selected-workspace.txt";
@@ -1098,7 +987,6 @@ public sealed class SessionEndpointTests
             byte[] expectedBytes = Encoding.UTF8.GetBytes("selected workspace bytes");
 
             await File.WriteAllBytesAsync(
-
                 Path.Combine(workspaceRoot, fileName),
 
                 expectedBytes);
@@ -1108,15 +996,12 @@ public sealed class SessionEndpointTests
             using JsonContent request = JsonContent.Create(new
 
             {
-
                 workspacePath = fileName,
 
                 workspaceId = workspace!.Id,
-
             });
 
             HttpResponseMessage response = await client.PostAsync(
-
                 $"/api/sessions/{sessionId:D}/attachments/reference",
 
                 request);
@@ -1134,34 +1019,26 @@ public sealed class SessionEndpointTests
             ISessionAttachmentStore store = readScope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
 
             Assert.Equal(expectedBytes, (await store.ReadBytesAsync(row)).ToArray());
-
         }
         finally
 
         {
-
             if (workspace is not null)
 
             {
-
                 using IServiceScope scope = _factory.Services.CreateScope();
 
                 IWorkspaceRegistry registry = scope.ServiceProvider.GetRequiredService<IWorkspaceRegistry>();
 
                 _ = await registry.UnregisterAsync(workspace.Id, CancellationToken.None);
-
             }
 
             if (Directory.Exists(workspaceRoot))
 
             {
-
                 Directory.Delete(workspaceRoot, recursive: true);
-
             }
-
         }
-
     }
 
     [SkippableFact]
@@ -1169,7 +1046,6 @@ public sealed class SessionEndpointTests
     public async Task PostAttachmentReference_ThenManualRefresh_PersistsNewCurrentVersion()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -1185,7 +1061,6 @@ public sealed class SessionEndpointTests
         try
 
         {
-
             await File.WriteAllBytesAsync(sourcePath, initialBytes);
 
             HttpClient client = _factory.CreateAuthenticatedClient();
@@ -1193,15 +1068,12 @@ public sealed class SessionEndpointTests
             using JsonContent request = JsonContent.Create(new
 
             {
-
                 workspacePath = fileName,
 
                 logicalName = "refreshable-notes",
-
             });
 
             HttpResponseMessage createdResponse = await client.PostAsync(
-
                 $"/api/sessions/{sessionId:D}/attachments/reference",
 
                 request);
@@ -1217,7 +1089,6 @@ public sealed class SessionEndpointTests
             await File.WriteAllBytesAsync(sourcePath, refreshedBytes);
 
             HttpResponseMessage refreshResponse = await client.PostAsync(
-
                 $"/api/sessions/{sessionId:D}/attachments/{created.Data.Id:D}/refresh",
 
                 content: null);
@@ -1241,7 +1112,6 @@ public sealed class SessionEndpointTests
             IReadOnlyList<SessionAttachmentRecord> rows = await GetBoundAttachmentsAsync(sessionId);
 
             SessionAttachmentRecord current = Assert.Single(
-
                 rows,
 
                 static row => row.Version == 2);
@@ -1251,22 +1121,16 @@ public sealed class SessionEndpointTests
             ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
 
             Assert.Equal(refreshedBytes, (await store.ReadBytesAsync(current)).ToArray());
-
         }
         finally
 
         {
-
             if (File.Exists(sourcePath))
 
             {
-
                 File.Delete(sourcePath);
-
             }
-
         }
-
     }
 
     [SkippableFact]
@@ -1274,7 +1138,6 @@ public sealed class SessionEndpointTests
     public async Task PostAttachmentReference_TraversalOutsideWorkspace_FailsWithoutPersistence()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionWithEntriesAsync(0);
@@ -1282,7 +1145,6 @@ public sealed class SessionEndpointTests
         string fileName = "issue26-outside-" + Guid.NewGuid().ToString("N") + ".txt";
 
         string outsidePath = Path.Combine(
-
             Path.GetDirectoryName(_factory.TempHome)!,
 
             fileName);
@@ -1290,7 +1152,6 @@ public sealed class SessionEndpointTests
         try
 
         {
-
             await File.WriteAllTextAsync(outsidePath, "outside workspace");
 
             HttpClient client = _factory.CreateAuthenticatedClient();
@@ -1298,13 +1159,10 @@ public sealed class SessionEndpointTests
             using JsonContent request = JsonContent.Create(new
 
             {
-
                 workspacePath = "../" + fileName,
-
             });
 
             HttpResponseMessage response = await client.PostAsync(
-
                 $"/api/sessions/{sessionId:D}/attachments/reference",
 
                 request);
@@ -1312,28 +1170,21 @@ public sealed class SessionEndpointTests
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
             Assert.Empty(await GetBoundAttachmentsAsync(sessionId));
-
         }
         finally
 
         {
-
             if (File.Exists(outsidePath))
 
             {
-
                 File.Delete(outsidePath);
-
             }
-
         }
-
     }
 
     private long ResolveMaximumAttachmentReadBytes()
 
     {
-
         ArcanumSettings settings = _factory.Services
 
             .GetRequiredService<IOptions<ArcanumSettings>>()
@@ -1341,38 +1192,31 @@ public sealed class SessionEndpointTests
             .Value;
 
         return SessionAttachmentContentPolicy.ResolveMaximumReadBytes(settings);
-
     }
 
     private async Task<IReadOnlyList<SessionAttachmentRecord>> GetBoundAttachmentsAsync(Guid sessionId)
 
     {
-
         using IServiceScope scope = _factory.Services.CreateScope();
 
         ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
 
         return await store.ListBoundAsync(sessionId);
-
     }
 
     private async Task<ReadOnlyMemory<byte>> ReadAttachmentBytesAsync(
-
         SessionAttachmentRecord attachment)
 
     {
-
         using IServiceScope scope = _factory.Services.CreateScope();
 
         ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
 
         return await store.ReadBytesAsync(attachment);
-
     }
 
     private async Task<Guid> CreateSessionWithEntriesAsync(int count)
     {
-
         using IServiceScope scope = _factory.Services.CreateScope();
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
@@ -1383,7 +1227,6 @@ public sealed class SessionEndpointTests
 
         for (int i = 0; i < count; i++)
         {
-
             Entry entry = new()
             {
                 SessionId = session.Id,
@@ -1394,19 +1237,16 @@ public sealed class SessionEndpointTests
             };
 
             _ = db.Entries.Add(entry);
-
         }
 
         await db.SaveChangesAsync();
 
         return session.Id;
-
     }
 
     private async Task<Guid[]> GetEntryIdsAsync(Guid sessionId)
 
     {
-
         using IServiceScope scope = _factory.Services.CreateScope();
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
@@ -1420,7 +1260,6 @@ public sealed class SessionEndpointTests
             .Select(entry => entry.Id)
 
             .ToArrayAsync();
-
     }
 
     /// <summary>
@@ -1430,7 +1269,6 @@ public sealed class SessionEndpointTests
     /// </summary>
     private sealed class ReplayFailingSessionRepository : ISessionRepository
     {
-
         public static readonly Guid SessionId = Guid.Parse("6f1b7d4c-5e4a-4a1b-9f2d-8c7b6a5d4e3f");
 
         public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) =>
@@ -1483,27 +1321,22 @@ public sealed class SessionEndpointTests
 
         public Task ArchiveAsync(Guid id, CancellationToken ct) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class UnknownLengthHttpContent : HttpContent
 
     {
-
         private readonly HttpContent _inner;
 
         public UnknownLengthHttpContent(HttpContent inner)
 
         {
-
             _inner = inner;
 
             foreach (KeyValuePair<string, IEnumerable<string>> header in inner.Headers)
 
             {
-
                 if (!string.Equals(
-
                         header.Key,
 
                         "Content-Length",
@@ -1511,17 +1344,12 @@ public sealed class SessionEndpointTests
                         StringComparison.OrdinalIgnoreCase))
 
                 {
-
                     _ = Headers.TryAddWithoutValidation(header.Key, header.Value);
-
                 }
-
             }
-
         }
 
         protected override Task SerializeToStreamAsync(
-
             Stream stream,
 
             TransportContext? context) =>
@@ -1531,29 +1359,21 @@ public sealed class SessionEndpointTests
         protected override bool TryComputeLength(out long length)
 
         {
-
             length = 0;
 
             return false;
-
         }
 
         protected override void Dispose(bool disposing)
 
         {
-
             if (disposing)
 
             {
-
                 _inner.Dispose();
-
             }
 
             base.Dispose(disposing);
-
         }
-
     }
-
 }

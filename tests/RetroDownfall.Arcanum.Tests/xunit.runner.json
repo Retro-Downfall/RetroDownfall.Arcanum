@@ -2,5 +2,6 @@
   "maxParallelThreads": 4,
   "parallelAlgorithm": "conservative",
   "parallelizeTestCollections": true,
-  "longRunningTestSeconds": 60
+  "longRunningTestSeconds": 60,
+  "diagnosticMessages": true
 }

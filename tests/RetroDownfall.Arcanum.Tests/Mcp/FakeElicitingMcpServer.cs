@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 /// </summary>
 internal sealed class FakeElicitingMcpServer : IAsyncDisposable
 {
-
     internal const string ToolName = "elicit_answer";
 
     internal const string Question = "What is the answer?";
@@ -55,7 +54,6 @@ internal sealed class FakeElicitingMcpServer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-
         await _lifetime.CancelAsync();
 
         _fromServer.Writer.TryComplete();
@@ -66,13 +64,13 @@ internal sealed class FakeElicitingMcpServer : IAsyncDisposable
         {
             await _loop.WaitAsync(Bound);
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
         {
-            // A loop that will not stop is reported by the test that observed it, not by disposal.
+            // A loop that will not stop within Bound is reported by the test that observed it, not by
+            // disposal. Any other fault from the loop is a defect in this fake and is not swallowed.
         }
 
         _lifetime.Dispose();
-
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -291,5 +289,4 @@ internal sealed class FakeElicitingMcpServer : IAsyncDisposable
 
     private async Task WriteAsync(JsonObject message, CancellationToken cancellationToken) =>
         await _fromServer.Writer.WriteAsync(message.ToJsonString(), cancellationToken);
-
 }

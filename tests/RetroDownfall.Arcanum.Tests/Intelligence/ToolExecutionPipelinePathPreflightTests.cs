@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ToolExecutionPipelinePathPreflightTests
 {
-
     [Fact]
     public void TryResolvePathUnderWorkspace_AllowsChildUnderRoot()
     {
@@ -84,13 +83,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         }
         finally
         {
-            try
-            {
-                Directory.Delete(root, recursive: true);
-            }
-            catch
-            {
-            }
+            _ = TestDirectoryCleanup.TryDelete(root, nameof(ToolExecutionPipelinePathPreflightTests));
         }
     }
 
@@ -146,7 +139,6 @@ public sealed class ToolExecutionPipelinePathPreflightTests
     [Fact]
     public void Apply_patch_preflight_uses_the_pure_parser_manifest_without_workspace_reads()
     {
-
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new
             {
@@ -171,7 +163,6 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         Assert.Equal(
             ["missing-old.txt", "missing-new.txt"],
             manifest!.NormalizedPaths);
-
     }
 
     [Fact]
@@ -210,7 +201,6 @@ public sealed class ToolExecutionPipelinePathPreflightTests
     [Fact]
     public void Apply_patch_preflight_propagates_parser_cancellation()
     {
-
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new
             {
@@ -232,13 +222,11 @@ public sealed class ToolExecutionPipelinePathPreflightTests
                 new WorkspacePatchSettings(),
                 cancellation.Token,
                 out _));
-
     }
 
     [Fact]
     public async Task Apply_patch_without_persisted_turn_records_ungated_resolution_before_rejection()
     {
-
         bool invoked = false;
         DenyingWard ward = new();
         ArcanumSettings settings = new()
@@ -316,7 +304,6 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         Assert.All(
             processed.WardEvents,
             static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
-
     }
 
     private sealed class DenyingWard : IWard
@@ -333,7 +320,6 @@ public sealed class ToolExecutionPipelinePathPreflightTests
             TimeSpan timeout,
             CancellationToken cancellationToken)
         {
-
             RequestCount++;
 
             return Task.FromResult(
@@ -341,7 +327,6 @@ public sealed class ToolExecutionPipelinePathPreflightTests
                     Allowed: false,
                     Reason: "test denial",
                     ResolvedAt: DateTimeOffset.UtcNow));
-
         }
 
         public ResolveStatus Resolve(
@@ -411,5 +396,4 @@ public sealed class ToolExecutionPipelinePathPreflightTests
             CancellationToken ct = default) =>
             Task.CompletedTask;
     }
-
 }

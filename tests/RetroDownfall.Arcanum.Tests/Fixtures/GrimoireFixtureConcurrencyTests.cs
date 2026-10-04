@@ -34,7 +34,6 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
     [Fact]
     public void Template_directory_is_private_to_this_test_process()
     {
-
         string shared = Path.Combine(Path.GetTempPath(), "arcanum-tests", "grimoire-template");
 
         Assert.NotEqual(shared, GrimoireFixture.TemplateDirectory);
@@ -53,20 +52,136 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
             GrimoireFixture.TemplateDirectory + Path.DirectorySeparatorChar,
             GrimoireFixture.TemplatePath,
             StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// A killed test process leaves its per-copy database files, its SQLCipher probe, its API-host
+    /// profile directory and its bare workspace directory behind, and only the template directory used
+    /// to be collected. Every shape it can leave must be swept once it is older than the grace period,
+    /// and nothing younger, nothing unrelated, and nothing another suite owns may be touched.
+    /// </summary>
+    [Fact]
+    public void Sweep_collects_abandoned_copy_probe_and_profile_files()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"arcanum-sweep-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            DateTime abandoned = DateTime.UtcNow - TimeSpan.FromHours(13);
+
+            string[] abandonedFiles =
+            [
+                $"grimoire-{Guid.NewGuid():N}.db",
+                $"grimoire-{Guid.NewGuid():N}.db.kdf",
+                $"grimoire-{Guid.NewGuid():N}.db-wal",
+                $"grimoire-{Guid.NewGuid():N}.db-shm",
+                $"probe-{Guid.NewGuid():N}.db",
+            ];
+
+            string[] abandonedDirectories =
+            [
+                $"grimoire-template-4242-{Guid.NewGuid():N}",
+                $"api-host-{Guid.NewGuid():N}",
+                Guid.NewGuid().ToString("N"),
+            ];
+
+            string[] youngFiles =
+            [
+                $"grimoire-{Guid.NewGuid():N}.db",
+                $"probe-{Guid.NewGuid():N}.db",
+            ];
+
+            string[] youngDirectories =
+            [
+                $"api-host-{Guid.NewGuid():N}",
+                Guid.NewGuid().ToString("N"),
+            ];
+
+            string[] oldButUnrelatedFiles = ["notes.txt", $"sidecar-{Guid.NewGuid():N}.db"];
+
+            string[] oldButUnrelatedDirectories = [$"sidecar-{Guid.NewGuid():N}", "not-a-guid-directory"];
+
+            foreach (string name in abandonedFiles.Concat(oldButUnrelatedFiles))
+            {
+                SeedFile(root, name, abandoned);
+            }
+
+            foreach (string name in abandonedDirectories.Concat(oldButUnrelatedDirectories))
+            {
+                SeedDirectory(root, name, abandoned);
+            }
+
+            foreach (string name in youngFiles)
+            {
+                SeedFile(root, name, DateTime.UtcNow);
+            }
+
+            foreach (string name in youngDirectories)
+            {
+                SeedDirectory(root, name, DateTime.UtcNow);
+            }
+
+            int removed = GrimoireFixture.SweepAbandonedTestArtifacts(root, TimeSpan.FromHours(12));
+
+            Assert.Equal(abandonedFiles.Length + abandonedDirectories.Length, removed);
+
+            foreach (string name in abandonedFiles)
+            {
+                Assert.False(File.Exists(Path.Combine(root, name)), name);
+            }
+
+            foreach (string name in abandonedDirectories)
+            {
+                Assert.False(Directory.Exists(Path.Combine(root, name)), name);
+            }
+
+            foreach (string name in youngFiles.Concat(oldButUnrelatedFiles))
+            {
+                Assert.True(File.Exists(Path.Combine(root, name)), name);
+            }
+
+            foreach (string name in youngDirectories.Concat(oldButUnrelatedDirectories))
+            {
+                Assert.True(Directory.Exists(Path.Combine(root, name)), name);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        static void SeedFile(string root, string name, DateTime lastWriteUtc)
+        {
+            string path = Path.Combine(root, name);
+
+            File.WriteAllText(path, "abandoned test artifact");
+
+            File.SetLastWriteTimeUtc(path, lastWriteUtc);
+        }
+
+        static void SeedDirectory(string root, string name, DateTime lastWriteUtc)
+        {
+            string path = Path.Combine(root, name);
+
+            Directory.CreateDirectory(path);
+
+            File.WriteAllText(Path.Combine(path, "child.db"), "abandoned test artifact");
+
+            Directory.SetLastWriteTimeUtc(path, lastWriteUtc);
+        }
     }
 
     [Fact]
     public void Probe_reports_unavailable_when_its_temp_directory_cannot_be_created()
     {
-
         string squatter = Path.Combine(Path.GetTempPath(), $"arcanum-probe-squatter-{Guid.NewGuid():N}");
 
         File.WriteAllText(squatter, "A file squats the probe's parent directory.");
 
         try
         {
-
             (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(
                 Path.Combine(squatter, "probe.db"),
                 "probe-passphrase");
@@ -74,48 +189,37 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
             Assert.False(available);
 
             Assert.NotEmpty(reason);
-
         }
         finally
         {
-
             File.Delete(squatter);
-
         }
-
     }
 
     [Fact]
     public void Probe_reports_unavailable_when_the_probe_database_cannot_be_opened()
     {
-
         string probePath = Path.Combine(Path.GetTempPath(), $"arcanum-probe-dir-{Guid.NewGuid():N}");
 
         Directory.CreateDirectory(probePath);
 
         try
         {
-
             (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(probePath, "probe-passphrase");
 
             Assert.False(available);
 
             Assert.NotEmpty(reason);
-
         }
         finally
         {
-
             Directory.Delete(probePath, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public void Probe_reports_available_and_removes_its_temp_database()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string probePath = Path.Combine(
@@ -130,13 +234,11 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
         Assert.Equal(string.Empty, reason);
 
         Assert.False(File.Exists(probePath));
-
     }
 
     [SkippableFact]
     public async Task CopyDatabase_waits_for_template_lifecycle_lock()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         object templateLock = typeof(GrimoireFixture)
@@ -152,14 +254,11 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
 
         try
         {
-
             copyTask = Task.Run(() =>
             {
-
                 copyStarted.Set();
 
                 return fixture.CopyDatabase();
-
             });
 
             Assert.True(copyStarted.Wait(TimeSpan.FromSeconds(5)));
@@ -167,13 +266,10 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
             Assert.False(
                 copyTask.Wait(TimeSpan.FromMilliseconds(500)),
                 "CopyDatabase completed while template remediation held its lifecycle lock.");
-
         }
         finally
         {
-
             Monitor.Exit(templateLock);
-
         }
 
         string copyPath = await copyTask;
@@ -181,13 +277,11 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
         Assert.True(File.Exists(copyPath));
 
         Assert.True(File.Exists(copyPath + ".kdf"));
-
     }
 
     [SkippableFact]
     public async Task Dispose_deletes_the_wal_and_shm_sidecars_of_every_copy()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireFixture scoped = new();
@@ -214,17 +308,13 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
 
         foreach (string suffix in suffixes)
         {
-
             Assert.False(File.Exists(copyPath + suffix), copyPath + suffix);
-
         }
-
     }
 
     [SkippableFact]
     public async Task Concurrent_template_rebuild_and_copies_produce_complete_databases()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string templatePath = GrimoireFixture.TemplatePath;
@@ -253,12 +343,10 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
 
         try
         {
-
             string[] copies = await Task.WhenAll(copyTasks);
 
             foreach (string copyPath in copies)
             {
-
                 Assert.True(File.Exists(copyPath), copyPath);
 
                 Assert.True(File.Exists(copyPath + ".kdf"), copyPath + ".kdf");
@@ -266,17 +354,11 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
                 await using var context = fixture.CreateContext(copyPath);
 
                 Assert.True(await context.Database.CanConnectAsync());
-
             }
-
         }
         finally
         {
-
             rebuilt.Dispose();
-
         }
-
     }
-
 }

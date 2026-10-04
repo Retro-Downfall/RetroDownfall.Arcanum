@@ -5437,14 +5437,9 @@ public sealed class CovenantErasureSameProcessTests
         {
             Release();
 
-            try
-            {
-                _ = await result.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch
-            {
-                // The owning assertion reports the task failure; disposal only guarantees release.
-            }
+            // WhenAny never rethrows the turn's own fault: the owning assertion reports that, and
+            // disposal only guarantees the turn was released and given time to settle.
+            _ = await Task.WhenAny(result, Task.Delay(TimeSpan.FromSeconds(5)));
         }
 
         private void Release()

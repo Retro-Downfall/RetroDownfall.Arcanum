@@ -34,16 +34,7 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            if (Directory.Exists(_root))
-            {
-                Directory.Delete(_root, recursive: true);
-            }
-        }
-        catch
-        {
-        }
+        _ = TestDirectoryCleanup.TryDelete(_root, nameof(CommandCenterTurnAttachmentBuilderTests));
     }
 
     [Fact]
@@ -199,16 +190,7 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            if (Directory.Exists(_root))
-            {
-                Directory.Delete(_root, recursive: true);
-            }
-        }
-        catch
-        {
-        }
+        _ = TestDirectoryCleanup.TryDelete(_root, nameof(CommandCenterTurnStartThreadingTests));
     }
 
     /// <summary>

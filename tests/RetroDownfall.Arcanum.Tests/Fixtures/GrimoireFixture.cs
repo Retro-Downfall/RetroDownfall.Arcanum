@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -31,18 +32,15 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </remarks>
 public enum GrimoireComposition
 {
-
     /// <summary>The offline CLI maintenance composition, <c>AddArcanumGrimoireForCli</c>.</summary>
     NonPooledCli = 1,
 
     /// <summary>The serving host composition, <c>AddArcanumInfrastructure</c>.</summary>
     PooledHost = 2,
-
 }
 
 public sealed class GrimoireFixture : IDisposable
 {
-
     public const string TestApiKey = "test-key";
 
     /// <summary>
@@ -59,6 +57,9 @@ public sealed class GrimoireFixture : IDisposable
     /// </summary>
     private static string TemplateRoot { get; } =
         Path.Combine(Path.GetTempPath(), "arcanum-tests");
+
+    /// <summary>Age beyond which an orphaned test artifact is assumed to belong to a dead process.</summary>
+    private static readonly TimeSpan AbandonedArtifactGracePeriod = TimeSpan.FromHours(12);
 
     /// <summary>
     /// Directory holding this process's cached template database.
@@ -103,7 +104,6 @@ public sealed class GrimoireFixture : IDisposable
 
     static GrimoireFixture()
     {
-
         // Use a deterministic salt for the template so every fixture instance in this process derives
         // the same passphrase without repeating the KDF. The KDF sidecar tests exercise random salt
         // generation separately.
@@ -113,7 +113,14 @@ public sealed class GrimoireFixture : IDisposable
             TestGrimoireSecret,
             _saltStatic);
 
-        SweepAbandonedTemplateDirectories();
+        try
+        {
+            _ = SweepAbandonedTestArtifacts(TemplateRoot, AbandonedArtifactGracePeriod);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The sweep is an optimisation; never let it fail the static initializer.
+        }
 
         AppDomain.CurrentDomain.ProcessExit += static (_, _) => DeleteTemplateDirectory();
 
@@ -124,7 +131,6 @@ public sealed class GrimoireFixture : IDisposable
         SqlCipherAvailable = available;
 
         SqlCipherUnavailableReason = reason;
-
     }
 
     /// <summary>
@@ -133,78 +139,87 @@ public sealed class GrimoireFixture : IDisposable
     /// </summary>
     private static void DeleteTemplateDirectory()
     {
-
         try
         {
-
             if (Directory.Exists(TemplateDirectory))
             {
-
                 Directory.Delete(TemplateDirectory, recursive: true);
-
             }
-
         }
         catch
         {
-
             // Best-effort: a crashed run's directory is collected by the sweep below instead.
-
         }
-
     }
 
     /// <summary>
-    /// Best-effort collection of template directories left behind by test processes that were killed
-    /// before their <see cref="AppDomain.ProcessExit"/> handler ran. Only directories older than the
-    /// grace period are touched, so a concurrently running process never loses its live template.
+    /// Directory names a test process creates directly under <see cref="TemplateRoot"/> and can leave
+    /// behind when it is killed: its template tree, an API-host profile, and a bare-GUID workspace root.
     /// </summary>
-    private static void SweepAbandonedTemplateDirectories()
+    private static readonly Regex AbandonableDirectoryName = new(
+        @"^(grimoire-template-.+|api-host-[0-9a-f]{32}|[0-9a-f]{32})$",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// File names a test process creates directly under <see cref="TemplateRoot"/>: a database copy with
+    /// its journal, WAL, shared-memory and KDF companions, and the SQLCipher availability probe.
+    /// </summary>
+    private static readonly Regex AbandonableFileName = new(
+        @"^(grimoire|probe)-[0-9a-f]{32}\.db(-wal|-shm|-journal|\.kdf)?$",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Best-effort collection of everything a killed test process leaves directly under
+    /// <paramref name="root"/>: its template directory, database copies (and their sidecars), SQLCipher
+    /// probe, API-host profile directory and bare workspace directory. Only entries older than the grace
+    /// period are touched, so a concurrently running process never loses a live file. Returns the number
+    /// of entries removed.
+    /// </summary>
+    internal static int SweepAbandonedTestArtifacts(string root, TimeSpan gracePeriod)
     {
+        int removed = 0;
 
-        try
+        if (!Directory.Exists(root))
         {
+            return removed;
+        }
 
-            if (!Directory.Exists(TemplateRoot))
+        DateTime cutoff = DateTime.UtcNow - gracePeriod;
+
+        foreach (string entry in Directory.EnumerateFileSystemEntries(root))
+        {
+            string name = Path.GetFileName(entry);
+
+            try
             {
-
-                return;
-
-            }
-
-            DateTime cutoff = DateTime.UtcNow - TimeSpan.FromHours(12);
-
-            foreach (string directory in Directory.EnumerateDirectories(TemplateRoot, "grimoire-template-*"))
-            {
-
-                try
+                if (Directory.Exists(entry))
                 {
-
-                    if (Directory.GetLastWriteTimeUtc(directory) < cutoff)
+                    if (AbandonableDirectoryName.IsMatch(name)
+                        && Directory.GetLastWriteTimeUtc(entry) < cutoff)
                     {
+                        TestDirectoryCleanup.DeleteTree(entry);
 
-                        Directory.Delete(directory, recursive: true);
-
+                        removed++;
                     }
-
                 }
-                catch
+                else if (AbandonableFileName.IsMatch(name)
+                    && File.GetLastWriteTimeUtc(entry) < cutoff)
                 {
+                    File.Delete(entry);
 
-                    // Another process may own it, or it may have vanished between enumeration and delete.
-
+                    removed++;
                 }
-
             }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Another process may own it, or it may have vanished between enumeration and delete.
 
+                TestDiagnostics.Report(
+                    $"Abandoned test artifact '{entry}' could not be swept ({ex.GetType().Name}): {ex.Message}");
+            }
         }
-        catch
-        {
 
-            // The sweep is an optimisation; never let it fail the static initializer.
-
-        }
-
+        return removed;
     }
 
     /// <summary>
@@ -219,7 +234,6 @@ public sealed class GrimoireFixture : IDisposable
     /// </remarks>
     internal static (bool Available, string Reason) ProbeSqlCipher(string probePath, string passphrase)
     {
-
         try
         {
             SqliteNativeRuntime.Instance.Initialize();
@@ -237,24 +251,22 @@ public sealed class GrimoireFixture : IDisposable
                 probe.Open();
 
                 probe.Close();
-
             }
 
-            TryDeleteProbe(probePath);
-
             return (true, string.Empty);
-
         }
         catch (Exception ex)
         {
-
             return (
                 false,
                 $"SQLCipher availability probe failed ({ex.GetType().Name}): {ex.Message}. "
                 + "Install e_sqlcipher runtimes or run on a supported RID.");
-
         }
-
+        finally
+        {
+            // A failed open can still have created the file, so the probe is removed on every path.
+            TryDeleteProbe(probePath);
+        }
     }
 
     /// <summary>
@@ -264,20 +276,14 @@ public sealed class GrimoireFixture : IDisposable
     /// </summary>
     private static void TryDeleteProbe(string probePath)
     {
-
         try
         {
-
             File.Delete(probePath);
-
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
-            // Best-effort cleanup of the probe database.
-
+            // Best-effort cleanup of the probe database; a later run's sweep collects it.
         }
-
     }
 
     private static readonly string _passphraseStatic = null!;
@@ -286,7 +292,6 @@ public sealed class GrimoireFixture : IDisposable
 
     public GrimoireFixture()
     {
-
         _passphrase = _passphraseStatic;
 
         Directory.CreateDirectory(TemplateDirectory);
@@ -304,8 +309,6 @@ public sealed class GrimoireFixture : IDisposable
 
         lock (BuildLock)
         {
-            using IDisposable processLock = AcquireCrossProcessTemplateLock();
-
             string currentFingerprint = ComputeSchemaFingerprint();
 
             if (File.Exists(_templatePath)
@@ -320,9 +323,7 @@ public sealed class GrimoireFixture : IDisposable
             DeleteTemplateFiles();
             BuildTemplateAsync(CancellationToken.None).GetAwaiter().GetResult();
             File.WriteAllText(_templateFingerprintPath, currentFingerprint);
-
         }
-
     }
 
     /// <summary>
@@ -335,35 +336,13 @@ public sealed class GrimoireFixture : IDisposable
 
     public string Passphrase => _passphrase;
 
-    private static readonly object BuildLock = new();
-
     /// <summary>
-    /// Serialises template build and copy. The name carries this process's template directory token so
-    /// two concurrent test processes never queue behind one another on a machine-global name — each
-    /// owns a private template and has nothing to serialise against the other.
+    /// Serialises template build and copy within this process. The template directory is private to the
+    /// process (see <see cref="TemplateDirectory"/>), so nothing outside it ever touches the template and
+    /// no cross-process lock is needed; a machine-global name would only let unrelated runs queue behind
+    /// one another.
     /// </summary>
-    private static readonly Mutex CrossProcessTemplateLock = new(
-        initiallyOwned: false,
-        name: $"RetroDownfall.Arcanum.Tests.GrimoireTemplate.{Path.GetFileName(TemplateDirectory)}");
-
-    private static IDisposable AcquireCrossProcessTemplateLock()
-    {
-        try
-        {
-            if (!CrossProcessTemplateLock.WaitOne(TimeSpan.FromMinutes(2)))
-            {
-                throw new TimeoutException(
-                    "Timed out waiting for the cross-process Grimoire template lock.");
-            }
-        }
-        catch (AbandonedMutexException)
-        {
-            // The prior process exited while owning the mutex. This process now owns it and
-            // validates/remediates the template before returning any copy.
-        }
-
-        return new CrossProcessMutexLease();
-    }
+    private static readonly object BuildLock = new();
 
     /// <summary>
     /// Every file a handed-out copy can put on disk, relative to its database path. The copies are
@@ -375,7 +354,6 @@ public sealed class GrimoireFixture : IDisposable
 
     public string CopyDatabase()
     {
-
         string copyPath = Path.Combine(TemplateRoot, $"grimoire-{Guid.NewGuid():N}.db");
 
         string copySidecarPath = copyPath + ".kdf";
@@ -384,59 +362,41 @@ public sealed class GrimoireFixture : IDisposable
 
         lock (BuildLock)
         {
-            using IDisposable processLock = AcquireCrossProcessTemplateLock();
-
             try
             {
-
                 File.Copy(_templatePath, copyPath, overwrite: true);
 
                 File.Copy(_templateSidecarPath, copySidecarPath, overwrite: true);
 
                 return copyPath;
-
             }
             catch
             {
-
                 DeleteCopyFiles(copyPath);
 
                 throw;
-
             }
-
         }
-
     }
 
     private static void DeleteCopyFiles(string copyPath)
     {
-
         foreach (string suffix in CopySuffixes)
         {
-
             try
             {
-
                 string path = copyPath + suffix;
 
                 if (File.Exists(path))
                 {
-
                     File.Delete(path);
-
                 }
-
             }
             catch
             {
-
                 // Best-effort cleanup; another test may still hold the handle.
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -451,7 +411,6 @@ public sealed class GrimoireFixture : IDisposable
     /// </remarks>
     public ArcanumDbContext CreateContext(string databasePath, bool pooled = false)
     {
-
         TestGrimoireDbPassphraseSource passphraseSource = new();
 
         passphraseSource.SetPassphrase(_passphrase);
@@ -477,7 +436,6 @@ public sealed class GrimoireFixture : IDisposable
         context.Database.OpenConnection();
 
         return context;
-
     }
 
     public IOptionsMonitor<ArcanumSettings> CreateOptionsMonitor() =>
@@ -508,12 +466,10 @@ public sealed class GrimoireFixture : IDisposable
     /// </remarks>
     public ServiceProvider CreateComposedProvider(GrimoireComposition composition)
     {
-
         ServiceCollection services = new();
 
         if (composition == GrimoireComposition.NonPooledCli)
         {
-
             _ = services.AddArcanumGrimoireForCli();
 
             // Composition-root inputs the CLI host supplies from outside this extension, not
@@ -528,13 +484,10 @@ public sealed class GrimoireFixture : IDisposable
             _ = services.AddSingleton<ISecretStore>(new TestSecretStore());
 
             _ = services.AddSingleton<IEncryptedBlobStore>(TestEncryptedBlobStore.Create());
-
         }
         else
         {
-
             _ = services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
-
         }
 
         string connectionString = new SqliteConnectionStringBuilder
@@ -578,18 +531,14 @@ public sealed class GrimoireFixture : IDisposable
 
         if (provider.GetRequiredService<IGrimoireDbPassphraseSource>() is GrimoireDbPassphraseSource source)
         {
-
             source.SetPassphrase(_passphrase);
-
         }
 
         return provider;
-
     }
 
     private async Task BuildTemplateAsync(CancellationToken cancellationToken)
     {
-
         DeleteTemplateFiles();
 
         // Opened through the central initializer rather than raw, exactly as the host bootstrapper
@@ -636,47 +585,34 @@ public sealed class GrimoireFixture : IDisposable
         };
 
         GrimoireKdfSidecarFile.Write(_templatePath, sidecar);
-
     }
 
     private void DeleteTemplateFiles()
     {
-
         string[] suffixes = ["", "-wal", "-shm", ".kdf", ".fingerprint"];
 
         foreach (string suffix in suffixes)
         {
-
             try
             {
-
                 string path = _templatePath + suffix;
 
                 if (File.Exists(path))
                 {
-
                     File.Delete(path);
-
                 }
-
             }
             catch
             {
-
                 // Best-effort cleanup of stale template files.
-
             }
-
         }
-
     }
 
     private static async Task<bool> CanOpenTemplateAsync(string templatePath, string passphrase, CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using SqliteConnection probe = new(new SqliteConnectionStringBuilder
             {
                 DataSource = templatePath,
@@ -691,48 +627,23 @@ public sealed class GrimoireFixture : IDisposable
             _ = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
             return true;
-
         }
         catch
         {
-
             return false;
-
         }
-
     }
 
     public void Dispose()
     {
-
         foreach (string copyPath in _copyPaths)
         {
-
             DeleteCopyFiles(copyPath);
-
-        }
-
-    }
-
-    private sealed class CrossProcessMutexLease : IDisposable
-    {
-        private bool _disposed;
-
-        public void Dispose()
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
-            CrossProcessTemplateLock.ReleaseMutex();
         }
     }
 
     private sealed class TestGrimoireDbPassphraseSource : IGrimoireDbPassphraseSource
     {
-
         private string? _passphrase;
 
         public string Passphrase =>
@@ -741,18 +652,14 @@ public sealed class GrimoireFixture : IDisposable
 
         public void SetPassphrase(string passphrase)
         {
-
             ArgumentException.ThrowIfNullOrEmpty(passphrase);
 
             _passphrase = passphrase;
-
         }
-
     }
 
     private sealed class TestSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>(null);
 
@@ -767,7 +674,5 @@ public sealed class GrimoireFixture : IDisposable
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
-
 }
