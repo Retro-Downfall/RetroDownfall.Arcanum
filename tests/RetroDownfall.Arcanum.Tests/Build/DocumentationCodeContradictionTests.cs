@@ -39,6 +39,75 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("republishes `CanonicalMutation`", section, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void The_design_does_not_call_a_mapped_or_registered_covenant_surface_absent()
+    {
+        string bootstrapper = ReadSource("Api", "ApiBootstrapper.cs");
+
+        Assert.Contains("MapCovenantMutationEndpoints()", bootstrapper, StringComparison.Ordinal);
+
+        Assert.Contains("MapCovenantInspectionEndpoints()", bootstrapper, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "memory.Add(BuildCovenant(sp));",
+            ReadSource("Cli", "Infrastructure", "CliCommandTree.Memory.cs"),
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "CovenantToolStagingAmbient.Push(",
+            ReadSource("Api", "Intelligence", "WizardIntelligenceProvider.cs"),
+            StringComparison.Ordinal);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        foreach (string stale in (string[])
+                 [
+                     "No route is mapped, no command is registered, no port has an implementation",
+                     "No dedicated Covenant management route is mapped",
+                     "There is no Covenant management route, no mutation route, and no command",
+                     "Agent-originated mutation is not yet live",
+                     "no turn mints a tool capability",
+                     "CovenantMemoryEndpoints",
+                     "and their dedicated CLI are not.**",
+                 ])
+        {
+            Assert.DoesNotContain(stale, design, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain(
+            "management routes, the Campaign-path and Session-binding administration surfaces, and the `arcanum memory covenant` commands are **not** included",
+            ReadDocument("Compendium.README.md"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_design_states_the_covenant_surfaces_that_are_still_absent()
+    {
+        // These two facts are what the absent paragraphs rest on; if either changes, the paragraphs are stale.
+        Assert.DoesNotContain(
+            "ICovenantMaintenanceService",
+            ReadSource("Infrastructure", "DependencyInjection", "ServiceCollectionExtensions.cs"),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "\"doctor\"",
+            ReadSource("Cli", "Infrastructure", "CliCommandTree.Covenant.cs"),
+            StringComparison.Ordinal);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        foreach ((string start, string end) in (ValueTuple<string, string>[])
+                 [
+                     ("### 10.17 Covenant maintenance and protected-erasure recovery", "### 10.18 Covenant operator surfaces, configuration, and the pre-binding authority boundary"),
+                     ("### 10.18 Covenant operator surfaces, configuration, and the pre-binding authority boundary", "### 10.19 Covenant backup, restore, and protected transfer"),
+                 ])
+        {
+            string section = DocumentSection(design, start, end);
+
+            Assert.Contains("registered in no container", section, StringComparison.Ordinal);
+        }
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
