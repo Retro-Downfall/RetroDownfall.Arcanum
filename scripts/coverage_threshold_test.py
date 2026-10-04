@@ -49,6 +49,7 @@ class CoverageThresholdParserTests(unittest.TestCase):
         partial: str | None = None,
         nested_partial: str | None = None,
         conditions: dict[str, str] | None = None,
+        nested_same_line: dict[str, str] | None = None,
         line_rate: str = "1.00",
         branch_rate: str = "1.00",
     ) -> str:
@@ -70,6 +71,18 @@ class CoverageThresholdParserTests(unittest.TestCase):
           </lines>
         </class>"""
             )
+
+            if security_type in (nested_same_line or {}):
+                # The state machine reports the same source line as the shell with its own,
+                # possibly worse, condition coverage.
+                classes.append(
+                    f"""
+        <class name="RetroDownfall.Arcanum.Security.{security_type}/&lt;RunAsync&gt;d__7" filename="{filename}" branch-rate="0.5">
+          <lines>
+            <line number="10" condition-coverage="{(nested_same_line or {})[security_type]}" />
+          </lines>
+        </class>"""
+                )
 
             if security_type != nested_partial:
                 continue
@@ -218,6 +231,40 @@ class CoverageThresholdParserTests(unittest.TestCase):
         path = self._write_xml(xml)
 
         self.assertEqual(coverage_threshold.main([str(path)]), 0)
+
+    def test_same_line_reported_by_shell_and_state_machine_uses_the_worse_rate(self) -> None:
+        # The synchronous shell reports line 10 fully covered; the state machine nested under the
+        # same type reports the same line at 50%. Keeping the best rate per (file, line) let the
+        # covered shell mask the uncovered state machine, which is exactly the async body the gate
+        # exists to inspect.
+        xml = self._coverage_xml(
+            nested_same_line={"OutboundUrlGuard": "50% (1/2)"},
+        )
+        path = self._write_xml(xml)
+
+        self.assertEqual(coverage_threshold.main([str(path)]), 1)
+
+    def test_powershell_same_line_uses_the_worse_rate(self) -> None:
+        pwsh = shutil.which("pwsh")
+        if pwsh is None:
+            self.skipTest("pwsh is not installed")
+
+        path = self._write_xml(
+            self._coverage_xml(
+                nested_same_line={"OutboundUrlGuard": "50% (1/2)"},
+            )
+        )
+        script = Path(__file__).parent / "coverage_threshold.ps1"
+
+        completed = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(script), str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("OutboundUrlGuard", completed.stderr)
 
     def test_powershell_gate_rejects_uncovered_nested_state_machine(self) -> None:
         pwsh = shutil.which("pwsh")

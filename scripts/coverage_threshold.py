@@ -120,7 +120,9 @@ def main(argv: list[str] | None = None) -> int:
     # One branch tally per security type, aggregated over the declaring class *and*
     # every compiler-generated state machine nested inside it. Keyed by
     # (source file, line number) so a line reported by both the synchronous shell and
-    # its async state machine is counted once, at its best observed condition coverage.
+    # its async state machine is counted once, at its *worst* observed condition coverage:
+    # keeping the best let a fully covered shell mask an uncovered state machine on the
+    # same line, which is the async body this gate exists to inspect.
     security_lines: dict[str, dict[tuple[str, str], tuple[int, int]]] = {}
 
     security_class_rates: dict[str, list[float]] = {}
@@ -137,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
 
         filename = cls.attrib.get("filename", "")
 
-        line_branch_best = security_lines.setdefault(short, {})
+        line_branch_worst = security_lines.setdefault(short, {})
 
         security_class_rates.setdefault(short, []).append(
             float(cls.attrib.get("branch-rate", "1")) * 100.0
@@ -162,26 +164,26 @@ def main(argv: list[str] | None = None) -> int:
 
             total_i = int(total_s)
 
-            if key not in line_branch_best:
-                line_branch_best[key] = (covered_i, total_i)
+            if key not in line_branch_worst:
+                line_branch_worst[key] = (covered_i, total_i)
 
                 continue
 
-            prev_covered, prev_total = line_branch_best[key]
+            prev_covered, prev_total = line_branch_worst[key]
 
             prev_rate = prev_covered / prev_total if prev_total else 1.0
 
             new_rate = covered_i / total_i if total_i else 1.0
 
-            if new_rate > prev_rate:
-                line_branch_best[key] = (covered_i, total_i)
+            if new_rate < prev_rate:
+                line_branch_worst[key] = (covered_i, total_i)
 
     for short in sorted(seen_security_types):
-        line_branch_best = security_lines[short]
+        line_branch_worst = security_lines[short]
 
-        branch_covered = sum(c for c, _ in line_branch_best.values())
+        branch_covered = sum(c for c, _ in line_branch_worst.values())
 
-        branch_count = sum(t for _, t in line_branch_best.values())
+        branch_count = sum(t for _, t in line_branch_worst.values())
 
         if branch_count == 0:
             # Fall back to the class branch-rate attributes; take the worst so a fully
