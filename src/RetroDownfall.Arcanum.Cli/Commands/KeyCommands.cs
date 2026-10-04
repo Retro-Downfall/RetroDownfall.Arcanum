@@ -25,7 +25,6 @@ public sealed class KeyCommands(
     IGrimoireCliInitialization initialization,
     IConfirmationPrompt confirmationPrompt)
 {
-
     /// <summary>Reserved credential name routed to the native web-research provider by default.</summary>
     public const string WebResearchProviderName = "perplexity";
 
@@ -56,7 +55,6 @@ public sealed class KeyCommands(
     /// </summary>
     public async Task<int> Show(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         SecretStoreReadResult result = await secretStore
@@ -65,23 +63,19 @@ public sealed class KeyCommands(
 
         if (result.Status == SecretStoreReadStatus.Missing)
         {
-
             console.WriteDiagnostic(
                 "No master API key found. Run 'arcanum serve' once to generate and store a key, "
                 + "or 'arcanum key set' to paste one into the OS credential store.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         if (result.Status == SecretStoreReadStatus.Corrupted)
         {
-
             console.WriteDiagnostic(
                 result.Message ?? "security.dat is present but could not be decrypted.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Console.Error.WriteLine(result.Value!);
@@ -91,61 +85,50 @@ public sealed class KeyCommands(
             + $"{ArcanumCredentialIdentity.MasterApiKeyAccount}.)");
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
     /// Store a master API key in the OS credential store (and mirror to security.dat when possible).
-    /// Pass the key as an argument, or omit it to read a single line from stdin.
+    /// The key is read from redirected stdin or a hidden prompt, never from the command line.
     /// </summary>
-    public async Task<int> Set(CancellationToken cancellationToken, string? apiKey = null)
+    public async Task<int> Set(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         SensitiveValueRead read = await ReadCredentialAsync(
-                apiKey,
                 "Master API key:",
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (!read.IsAvailable)
         {
-
             console.WriteDiagnostic(SensitiveValueInput.UnavailableDiagnostic);
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         string? key = read.Value;
 
         if (string.IsNullOrWhiteSpace(key))
         {
-
             console.WriteDiagnostic("API key must not be empty.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         int mutationExitCode = await RunMutationAsync(
                 token =>
                 {
-
                     token.ThrowIfCancellationRequested();
 
                     return secretStore.SaveApiKeyAsync(key.Trim());
-
                 },
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (mutationExitCode != (int)CliExitCode.Success)
         {
-
             return mutationExitCode;
-
         }
 
         console.WritePayload(
@@ -153,7 +136,6 @@ public sealed class KeyCommands(
             + $"{ArcanumCredentialIdentity.MasterApiKeyAccount}).");
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -162,7 +144,6 @@ public sealed class KeyCommands(
     /// </summary>
     public async Task<int> Inventory(CancellationToken cancellationToken)
     {
-
         List<CredentialInventoryEntryPayload> entries =
         [
             await BuildMasterEntryAsync(cancellationToken).ConfigureAwait(false),
@@ -173,12 +154,9 @@ public sealed class KeyCommands(
 
         foreach (ProviderSettings provider in settings.Value.Providers ?? [])
         {
-
             if (string.IsNullOrWhiteSpace(provider.Name))
             {
-
                 continue;
-
             }
 
             // A Familiar has no credential for Arcanum to inventory: its CLI signs in against the
@@ -188,33 +166,27 @@ public sealed class KeyCommands(
             // exist. `arcanum doctor` reports Familiar readiness instead.
             if (FamiliarProviders.IsFamiliar(provider))
             {
-
                 continue;
-
             }
 
             entries.Add(
                 await BuildInferenceProviderEntryAsync(provider, cancellationToken)
                     .ConfigureAwait(false));
-
         }
 
         CredentialInventoryPayload payload = new([.. entries]);
 
         if (invocationContext.Options.Json)
         {
-
             console.WriteJson(payload, CliJsonContext.Default.CredentialInventoryPayload);
 
             return (int)CliExitCode.Success;
-
         }
 
         console.WritePayload("Arcanum credential inventory (presence and status only)");
 
         foreach (CredentialInventoryEntryPayload entry in payload.Credentials)
         {
-
             console.WritePayload($"{entry.DisplayName} [{entry.Kind}] — {entry.Status}");
 
             console.WritePayload($"  Storage: {entry.Storage}");
@@ -226,15 +198,11 @@ public sealed class KeyCommands(
 
             if (entry.Status != "configured")
             {
-
                 console.WritePayload($"  Recovery: {entry.Recovery}");
-
             }
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -243,49 +211,40 @@ public sealed class KeyCommands(
     public async Task<int> SetProvider(
         string provider,
         CancellationToken cancellationToken,
-        string? kind = null,
-        string? apiKey = null)
+        string? kind = null)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!TryResolveKind(provider, kind, out bool webResearch))
         {
-
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         string prompt = webResearch
             ? "Perplexity API key:"
             : $"API key for provider '{provider.Trim()}':";
 
-        SensitiveValueRead read = await ReadCredentialAsync(apiKey, prompt, cancellationToken)
+        SensitiveValueRead read = await ReadCredentialAsync(prompt, cancellationToken)
             .ConfigureAwait(false);
 
         if (!read.IsAvailable)
         {
-
             console.WriteDiagnostic(SensitiveValueInput.UnavailableDiagnostic);
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         string? key = read.Value;
 
         if (string.IsNullOrWhiteSpace(key))
         {
-
             console.WriteDiagnostic("API key must not be empty.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         if (webResearch)
         {
-
             int webMutationExitCode = await RunMutationAsync(
                     token => webResearchCredentialStore
                         .SavePerplexityApiKeyAsync(key.Trim(), token),
@@ -294,9 +253,7 @@ public sealed class KeyCommands(
 
             if (webMutationExitCode != (int)CliExitCode.Success)
             {
-
                 return webMutationExitCode;
-
             }
 
             console.WritePayload(
@@ -304,7 +261,6 @@ public sealed class KeyCommands(
                 + $"{ArcanumCredentialIdentity.PerplexityApiKeyAccount}).");
 
             return (int)CliExitCode.Success;
-
         }
 
         int mutationExitCode = await RunMutationAsync(
@@ -315,9 +271,7 @@ public sealed class KeyCommands(
 
         if (mutationExitCode != (int)CliExitCode.Success)
         {
-
             return mutationExitCode;
-
         }
 
         console.WritePayload(
@@ -325,7 +279,6 @@ public sealed class KeyCommands(
             + $"{ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(provider.Trim())}).");
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -336,14 +289,11 @@ public sealed class KeyCommands(
         CancellationToken cancellationToken,
         string? kind = null)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!TryResolveKind(provider, kind, out bool webResearch))
         {
-
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         CredentialInventoryEntryPayload entry = webResearch
@@ -355,13 +305,10 @@ public sealed class KeyCommands(
 
         if (invocationContext.Options.Json)
         {
-
             console.WriteJson(entry, CliJsonContext.Default.CredentialInventoryEntryPayload);
-
         }
         else
         {
-
             console.WritePayload($"{entry.DisplayName} [{entry.Kind}] — {entry.Status}");
 
             console.WritePayload($"  Resolved source: {entry.Source}");
@@ -371,18 +318,14 @@ public sealed class KeyCommands(
 
             if (entry.Status != "configured")
             {
-
                 console.WritePayload($"  Recovery: {entry.Recovery}");
-
             }
-
         }
 
         return entry.Status == "configured"
 
             ? (int)CliExitCode.Success
             : (int)CliExitCode.ConfigurationError;
-
     }
 
     /// <summary>Delete one provider credential from all local secure stores.</summary>
@@ -391,14 +334,11 @@ public sealed class KeyCommands(
         CancellationToken cancellationToken,
         string? kind = null)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!TryResolveKind(provider, kind, out bool webResearch))
         {
-
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         string confirmationSubject = webResearch
@@ -409,16 +349,13 @@ public sealed class KeyCommands(
                 .PromptForConfirmationAsync($"Delete {confirmationSubject}?", cancellationToken)
                 .ConfigureAwait(false))
         {
-
             console.WriteDiagnostic("Credential deletion cancelled.");
 
             return (int)CliExitCode.Success;
-
         }
 
         if (webResearch)
         {
-
             int webMutationExitCode = await RunMutationAsync(
                     webResearchCredentialStore.DeletePerplexityApiKeyAsync,
                     cancellationToken)
@@ -426,15 +363,12 @@ public sealed class KeyCommands(
 
             if (webMutationExitCode != (int)CliExitCode.Success)
             {
-
                 return webMutationExitCode;
-
             }
 
             console.WritePayload("Perplexity API key deleted.");
 
             return (int)CliExitCode.Success;
-
         }
 
         int mutationExitCode = await RunMutationAsync(
@@ -445,30 +379,18 @@ public sealed class KeyCommands(
 
         if (mutationExitCode != (int)CliExitCode.Success)
         {
-
             return mutationExitCode;
-
         }
 
         console.WritePayload($"Provider API key deleted for '{provider.Trim()}'.");
 
         return (int)CliExitCode.Success;
-
     }
 
     private async Task<SensitiveValueRead> ReadCredentialAsync(
-        string? provided,
         string prompt,
         CancellationToken cancellationToken)
     {
-
-        if (!string.IsNullOrWhiteSpace(provided))
-        {
-
-            return SensitiveValueRead.From(provided);
-
-        }
-
         SensitiveValueRead read = await SensitiveValueInput
             .ReadAsync(
                 SystemSensitiveValueConsole.Instance,
@@ -478,7 +400,6 @@ public sealed class KeyCommands(
             .ConfigureAwait(false);
 
         return SensitiveValueInput.NormalizeCredential(read);
-
     }
 
     /// <summary>
@@ -496,87 +417,69 @@ public sealed class KeyCommands(
         Func<CancellationToken, Task> mutation,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             _ = await initialization
                 .RunExclusiveAsync(
                     async (_, token) =>
                     {
-
                         await mutation(token).ConfigureAwait(false);
 
                         return true;
-
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
 
             return (int)CliExitCode.Success;
-
         }
         catch (InvalidOperationException ex) when (ex.GetType() == typeof(InvalidOperationException))
         {
-
             console.WriteDiagnostic(ex.Message);
 
             return (int)CliExitCode.GenericError;
-
         }
-
     }
 
     private bool TryResolveKind(string? provider, string? kind, out bool webResearch)
     {
-
         webResearch = false;
 
         if (string.IsNullOrWhiteSpace(provider))
         {
-
             console.WriteDiagnostic(
                 "A provider name is required. Use 'arcanum key list' to see every credential identity.");
 
             return false;
-
         }
 
         if (string.IsNullOrWhiteSpace(kind))
         {
-
             webResearch = string.Equals(
                 provider.Trim(),
                 WebResearchProviderName,
                 StringComparison.OrdinalIgnoreCase);
 
             return true;
-
         }
 
         string normalized = kind.Trim();
 
         if (string.Equals(normalized, WebResearchKind, StringComparison.OrdinalIgnoreCase))
         {
-
             webResearch = true;
 
             return true;
-
         }
 
         if (string.Equals(normalized, InferenceKind, StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         console.WriteDiagnostic(
             $"Unknown credential kind '{kind}'. Supported kinds: {InferenceKind}, {WebResearchKind}.");
 
         return false;
-
     }
 
     /// <summary>
@@ -592,7 +495,6 @@ public sealed class KeyCommands(
     private async Task<CredentialInventoryEntryPayload> BuildMasterEntryAsync(
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         SecretStoreReadResult result = await secretStore
@@ -608,13 +510,11 @@ public sealed class KeyCommands(
             result.Status == SecretStoreReadStatus.Ok ? "secure-store" : "none",
             null,
             MasterRecovery);
-
     }
 
     private async Task<CredentialInventoryEntryPayload> BuildGrimoireEntryAsync(
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         SecretStoreReadResult result = await secretStore
@@ -630,13 +530,11 @@ public sealed class KeyCommands(
             result.Status == SecretStoreReadStatus.Ok ? "secure-store" : "none",
             null,
             GrimoireRecovery);
-
     }
 
     private async Task<CredentialInventoryEntryPayload> BuildFileEncryptionEntryAsync(
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         SecretStoreReadResult result = await secretStore
@@ -652,13 +550,11 @@ public sealed class KeyCommands(
             result.Status == SecretStoreReadStatus.Ok ? "secure-store" : "none",
             null,
             FileEncryptionRecovery);
-
     }
 
     private async Task<CredentialInventoryEntryPayload> BuildWebResearchEntryAsync(
         CancellationToken cancellationToken)
     {
-
         WebBrowsingSettings webResearch = settings.Value.ResolveWebBrowsing();
 
         string environmentVariable =
@@ -667,7 +563,6 @@ public sealed class KeyCommands(
         if (!string.IsNullOrWhiteSpace(
                 EnvironmentCredentialResolver.ResolveWebResearchApiKey(webResearch)))
         {
-
             return new CredentialInventoryEntryPayload(
                 ArcanumCredentialIdentity.PerplexityApiKeyAccount,
                 "web-research",
@@ -677,7 +572,6 @@ public sealed class KeyCommands(
                 "environment",
                 environmentVariable,
                 WebResearchRecovery);
-
         }
 
         SecretStoreReadResult result = await webResearchCredentialStore
@@ -693,21 +587,18 @@ public sealed class KeyCommands(
             result.Status == SecretStoreReadStatus.Ok ? "secure-store" : "none",
             environmentVariable,
             WebResearchRecovery);
-
     }
 
     private async Task<CredentialInventoryEntryPayload> BuildInferenceProviderEntryAsync(
         ProviderSettings provider,
         CancellationToken cancellationToken)
     {
-
         string environmentVariable =
             EnvironmentCredentialResolver.GetProviderApiKeyEnvironmentVariableName(provider);
 
         if (!string.IsNullOrWhiteSpace(
                 EnvironmentCredentialResolver.ResolveProviderApiKey(provider)))
         {
-
             return new CredentialInventoryEntryPayload(
                 ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(provider.Name),
                 "inference-provider",
@@ -717,7 +608,6 @@ public sealed class KeyCommands(
                 "environment",
                 environmentVariable,
                 ProviderRecovery);
-
         }
 
         SecretStoreReadResult result = await providerCredentialStore
@@ -733,7 +623,6 @@ public sealed class KeyCommands(
             result.Status == SecretStoreReadStatus.Ok ? "secure-store" : "none",
             environmentVariable,
             ProviderRecovery);
-
     }
 
     private static string Status(SecretStoreReadResult result) =>
@@ -743,5 +632,4 @@ public sealed class KeyCommands(
             SecretStoreReadStatus.Corrupted => "corrupt",
             _ => "missing",
         };
-
 }

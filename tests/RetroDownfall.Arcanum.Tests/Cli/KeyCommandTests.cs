@@ -20,13 +20,11 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class KeyCommandTests
 {
-
     private const string ProviderSecret = "sk-inference-provider-secret";
 
     [Fact]
     public void Key_help_lists_the_credential_inventory_and_provider_family()
     {
-
         CliTestResult result = CliTestHarness.Run(CreateServices(), "key", "--help");
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
@@ -34,13 +32,11 @@ public sealed class KeyCommandTests
         Assert.Contains("list", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("provider", result.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void Inventory_reports_every_owned_credential_identity_without_values()
     {
-
         FakeProviderCredentialStore providers = new();
 
         FakeWebResearchCredentialStore webResearch = new();
@@ -111,18 +107,14 @@ public sealed class KeyCommandTests
         Assert.True(secrets.PeekReadCount > 0);
 
         Assert.Equal(0, secrets.WriteCount);
-
     }
 
     [Fact]
     public async Task Show_peeks_the_master_key_without_persisting_or_repairing_it()
     {
-
         FakeSecretStore secrets = new()
         {
-
             MasterApiKey = "master-peek-secret",
-
         };
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -138,13 +130,51 @@ public sealed class KeyCommandTests
         Assert.Equal(1, secrets.PeekReadCount);
 
         Assert.Equal(0, secrets.WriteCount);
+    }
 
+    /// <summary>
+    /// R-328: a credential never travels as an argv value (DESIGN: "Secrets never appear in argv"), so
+    /// <c>key set</c> takes it from redirected stdin or the hidden prompt only. A key typed as an
+    /// argument is refused with exit 2, stores nothing, and is not echoed back to the terminal.
+    /// </summary>
+    [Fact]
+    public async Task Set_rejects_an_api_key_supplied_as_an_argument()
+    {
+        const string CommandLineKey = "arc_on_the_command_line_0123456789";
+
+        FakeSecretStore secrets = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(secretStore: secrets),
+            ["key", "set", CommandLineKey]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, secrets.WriteCount);
+
+        Assert.DoesNotContain(CommandLineKey, result.Output + result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("stdin", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Set_still_stores_a_key_read_from_redirected_stdin()
+    {
+        FakeSecretStore secrets = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(secretStore: secrets),
+            ["key", "set"],
+            "arc_from_stdin_0123456789\n");
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Equal(1, secrets.WriteCount);
     }
 
     [Fact]
     public void Inventory_reports_a_missing_inference_credential_as_missing()
     {
-
         CliTestResult result = CliTestHarness.Run(
             CreateServices(),
             "key",
@@ -162,13 +192,11 @@ public sealed class KeyCommandTests
         Assert.Equal("missing", provider.GetProperty("status").GetString());
 
         Assert.Equal("none", provider.GetProperty("source").GetString());
-
     }
 
     [Fact]
     public void Inventory_reports_a_corrupt_credential_without_disclosing_recovery_material()
     {
-
         FakeProviderCredentialStore providers = new();
 
         providers.Corrupt.Add("alpha");
@@ -193,13 +221,11 @@ public sealed class KeyCommandTests
             "arcanum setup",
             provider.GetProperty("recovery").GetString(),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Provider_set_stores_an_inference_credential_from_redirected_stdin()
     {
-
         FakeProviderCredentialStore providers = new();
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -214,13 +240,11 @@ public sealed class KeyCommandTests
         Assert.DoesNotContain(ProviderSecret, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(ProviderSecret, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Provider_status_reports_presence_without_the_value()
     {
-
         FakeProviderCredentialStore providers = new();
 
         providers.Stored["alpha"] = ProviderSecret;
@@ -234,13 +258,11 @@ public sealed class KeyCommandTests
         Assert.DoesNotContain(ProviderSecret, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(ProviderSecret, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Provider_delete_removes_only_the_named_inference_credential()
     {
-
         FakeProviderCredentialStore providers = new();
 
         providers.Stored["alpha"] = ProviderSecret;
@@ -256,14 +278,12 @@ public sealed class KeyCommandTests
         Assert.False(providers.Stored.ContainsKey("alpha"));
 
         Assert.Equal("sk-other", providers.Stored["beta"]);
-
     }
 
     /// <summary>An irreversible delete must ask before it acts.</summary>
     [Fact]
     public async Task Provider_delete_requires_confirmation_before_touching_any_store()
     {
-
         FakeProviderCredentialStore providers = new();
 
         providers.Stored["alpha"] = ProviderSecret;
@@ -279,7 +299,6 @@ public sealed class KeyCommandTests
         Assert.True(providers.Stored.ContainsKey("alpha"));
 
         Assert.Equal(0, providers.WriteCount);
-
     }
 
     /// <summary>
@@ -291,7 +310,6 @@ public sealed class KeyCommandTests
     [Fact]
     public async Task Provider_delete_surfaces_the_surviving_keychain_account_on_os_store_failure()
     {
-
         const string SurvivingAccountMessage =
             "The encrypted mirror was deleted, but the OS credential store could not delete the "
             + "credential for provider account arcanum/inference-key-alpha.";
@@ -312,13 +330,11 @@ public sealed class KeyCommandTests
         Assert.Contains(SurvivingAccountMessage, result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task Perplexity_still_routes_to_the_web_research_credential_by_default()
     {
-
         FakeProviderCredentialStore providers = new();
 
         FakeWebResearchCredentialStore webResearch = new();
@@ -333,13 +349,11 @@ public sealed class KeyCommandTests
         Assert.Equal("pplx-secret", webResearch.Stored);
 
         Assert.Empty(providers.Stored);
-
     }
 
     [Fact]
     public async Task An_explicit_kind_overrides_the_reserved_perplexity_routing()
     {
-
         FakeProviderCredentialStore providers = new();
 
         FakeWebResearchCredentialStore webResearch = new();
@@ -354,13 +368,11 @@ public sealed class KeyCommandTests
         Assert.Equal("sk-inference", providers.Stored["perplexity"]);
 
         Assert.Null(webResearch.Stored);
-
     }
 
     [Fact]
     public async Task An_empty_credential_is_rejected_without_writing_anything()
     {
-
         FakeProviderCredentialStore providers = new();
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -371,7 +383,6 @@ public sealed class KeyCommandTests
         Assert.NotEqual((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Empty(providers.Stored);
-
     }
 
     [Theory]
@@ -381,10 +392,8 @@ public sealed class KeyCommandTests
     public async Task Refused_exclusive_ownership_blocks_every_key_mutation_before_store_effects(
         string refusal)
     {
-
         foreach (string operation in new[]
                  {
-
                      "master-set",
 
                      "provider-set",
@@ -394,10 +403,8 @@ public sealed class KeyCommandTests
                      "web-set",
 
                      "web-delete",
-
                  })
         {
-
             FakeProviderCredentialStore providers = new();
 
             FakeWebResearchCredentialStore webResearch = new();
@@ -439,15 +446,12 @@ public sealed class KeyCommandTests
             Assert.Equal(0, webResearch.WriteCount);
 
             Assert.Equal(0, secrets.WriteCount);
-
         }
-
     }
 
     [Fact]
     public async Task Read_only_key_commands_never_request_exclusive_ownership()
     {
-
         RecordingGrimoireCliInitialization initialization = new(
             "Read-only key commands must not enter the writer boundary.");
 
@@ -470,13 +474,11 @@ public sealed class KeyCommandTests
             ["key", "provider", "status", "alpha"]);
 
         Assert.Equal(0, initialization.ExclusiveCalls);
-
     }
 
     [Fact]
     public async Task Key_mutation_keeps_exclusive_ownership_until_the_async_store_write_finishes()
     {
-
         TaskCompletionSource writeEntered = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -487,18 +489,14 @@ public sealed class KeyCommandTests
 
         FakeProviderCredentialStore providers = new()
         {
-
             SaveGate = async () =>
             {
-
                 Assert.True(initialization.IsInsideExclusiveCallback);
 
                 writeEntered.TrySetResult();
 
                 await releaseWrite.Task.WaitAsync(TimeSpan.FromSeconds(30));
-
             },
-
         };
 
         Task<CliTestResult> run = CliTestHarness.RunAsync(
@@ -525,7 +523,6 @@ public sealed class KeyCommandTests
         Assert.False(initialization.IsInsideExclusiveCallback);
 
         Assert.Equal(ProviderSecret, providers.Stored["alpha"]);
-
     }
 
     private static ServiceCollection CreateServices(
@@ -534,7 +531,6 @@ public sealed class KeyCommandTests
         FakeSecretStore? secretStore = null,
         IGrimoireCliInitialization? initialization = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -558,12 +554,10 @@ public sealed class KeyCommandTests
             new OptionsWrapper<ArcanumSettings>(
                 new ArcanumSettings
                 {
-
                     Providers =
                     [
                         new ProviderSettings
                         {
-
                             Name = "alpha",
 
                             Type = AiProviderKind.OpenAICompatible,
@@ -571,19 +565,15 @@ public sealed class KeyCommandTests
                             Endpoint = "https://example.test/v1",
 
                             Models = ["gpt-test"],
-
                         },
                     ],
-
                 }));
 
         return services;
-
     }
 
     private sealed class FakeProviderCredentialStore : IProviderCredentialStore
     {
-
         public Dictionary<string, string> Stored { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public HashSet<string> Corrupt { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -607,22 +597,18 @@ public sealed class KeyCommandTests
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             OrdinaryReadCount++;
 
             return Read(providerName);
-
         }
 
         public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             PeekReadCount++;
 
             return Read(providerName);
-
         }
 
         public async Task SaveApiKeyAsync(
@@ -630,38 +616,30 @@ public sealed class KeyCommandTests
             string apiKey,
             CancellationToken cancellationToken = default)
         {
-
             WriteCount++;
 
             if (SaveGate is not null)
             {
-
                 await SaveGate().ConfigureAwait(false);
-
             }
 
             Stored[providerName] = apiKey;
-
         }
 
         public Task DeleteApiKeyAsync(
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             WriteCount++;
 
             _ = Stored.Remove(providerName);
 
             if (DeleteFailure is not null)
             {
-
                 throw DeleteFailure;
-
             }
 
             return Task.CompletedTask;
-
         }
 
         private Task<SecretStoreReadResult> Read(string providerName) =>
@@ -671,12 +649,10 @@ public sealed class KeyCommandTests
                     : Stored.TryGetValue(providerName, out string? value)
                         ? SecretStoreReadResult.Ok(value)
                         : SecretStoreReadResult.Missing());
-
     }
 
     private sealed class FakeWebResearchCredentialStore : IWebResearchCredentialStore
     {
-
         public string? Stored { get; private set; }
 
         public int OrdinaryReadCount { get; private set; }
@@ -688,45 +664,37 @@ public sealed class KeyCommandTests
         public Task<SecretStoreReadResult> GetPerplexityApiKeyReadResultAsync(
             CancellationToken cancellationToken = default)
         {
-
             OrdinaryReadCount++;
 
             return Read();
-
         }
 
         public Task<SecretStoreReadResult> PeekPerplexityApiKeyReadResultAsync(
             CancellationToken cancellationToken = default)
         {
-
             PeekReadCount++;
 
             return Read();
-
         }
 
         public Task SavePerplexityApiKeyAsync(
             string apiKey,
             CancellationToken cancellationToken = default)
         {
-
             WriteCount++;
 
             Stored = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public Task DeletePerplexityApiKeyAsync(CancellationToken cancellationToken = default)
         {
-
             WriteCount++;
 
             Stored = null;
 
             return Task.CompletedTask;
-
         }
 
         private Task<SecretStoreReadResult> Read() =>
@@ -734,12 +702,10 @@ public sealed class KeyCommandTests
                 Stored is null
                     ? SecretStoreReadResult.Missing()
                     : SecretStoreReadResult.Ok(Stored));
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public string? MasterApiKey { get; init; }
 
         public int OrdinaryReadCount { get; private set; }
@@ -750,38 +716,30 @@ public sealed class KeyCommandTests
 
         public Task<string?> GetApiKeyAsync()
         {
-
             OrdinaryReadCount++;
 
             return Task.FromResult(MasterApiKey);
-
         }
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync()
         {
-
             OrdinaryReadCount++;
 
             return MasterRead();
-
         }
 
         public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
         {
-
             PeekReadCount++;
 
             return MasterRead();
-
         }
 
         public Task SaveApiKeyAsync(string apiKey)
         {
-
             WriteCount++;
 
             return Task.CompletedTask;
-
         }
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() =>
@@ -792,20 +750,16 @@ public sealed class KeyCommandTests
 
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync()
         {
-
             OrdinaryReadCount++;
 
             return Task.FromResult(SecretStoreReadResult.Missing());
-
         }
 
         public Task<SecretStoreReadResult> PeekFileEncryptionSecretReadResultAsync()
         {
-
             PeekReadCount++;
 
             return Task.FromResult(SecretStoreReadResult.Missing());
-
         }
 
         private Task<SecretStoreReadResult> MasterRead() =>
@@ -813,7 +767,5 @@ public sealed class KeyCommandTests
                 string.IsNullOrWhiteSpace(MasterApiKey)
                     ? SecretStoreReadResult.Missing()
                     : SecretStoreReadResult.Ok(MasterApiKey));
-
     }
-
 }
