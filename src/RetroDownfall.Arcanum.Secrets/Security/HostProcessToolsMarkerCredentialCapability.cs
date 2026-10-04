@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 /// </remarks>
 internal enum HostProcessToolsMarkerCredentialOpenStatus : byte
 {
-
     Opened = 1,
 
     Absent = 2,
@@ -19,31 +18,26 @@ internal enum HostProcessToolsMarkerCredentialOpenStatus : byte
     Unavailable = 3,
 
     PresentInvalid = 4,
-
 }
 
 /// <summary>The closed outcome of a compare-and-delete against one retained native record.</summary>
 internal enum HostProcessToolsMarkerCredentialDeleteStatus : byte
 {
-
     Deleted = 1,
 
     Mismatch = 2,
 
     Unavailable = 3,
-
 }
 
 /// <summary>The closed outcome of one durable absence proof over the fixed slot.</summary>
 internal enum HostProcessToolsMarkerCredentialAbsenceStatus : byte
 {
-
     Absent = 1,
 
     Present = 2,
 
     Unavailable = 3,
-
 }
 
 /// <summary>
@@ -59,7 +53,6 @@ internal enum HostProcessToolsMarkerCredentialAbsenceStatus : byte
 /// </remarks>
 internal interface IHostProcessToolsMarkerNativeRecordCapability : IDisposable
 {
-
     /// <summary>
     /// Rereads the retained record, compares it with the caller's expected bytes, deletes it, runs
     /// the platform durability barrier, and reads the slot back — as one operation.
@@ -68,10 +61,19 @@ internal interface IHostProcessToolsMarkerNativeRecordCapability : IDisposable
     /// One method rather than four, because the sequence is the guarantee. A caller that could run
     /// the delete without the readback, or insert its own step between them, would be able to report
     /// an absence nothing established.
+    ///
+    /// <para>What "exact" can mean differs by platform, and the difference is part of the contract.
+    /// macOS deletes the very keychain item reference it retained, so a replacement written after the
+    /// open is a different item and is never touched. Windows has no handle to retain and deletes by
+    /// target name: the reread compares the whole record, last-written stamp included, but between
+    /// that comparison and the delete there is a window of a few microseconds in which a replacement
+    /// would be removed. It is closed afterwards rather than before — the readback reports a surviving
+    /// record as <see cref="HostProcessToolsMarkerCredentialDeleteStatus.Mismatch"/> and never as a
+    /// delete — and it does not make an absent slot look present. Linux retains nothing and reports
+    /// <see cref="HostProcessToolsMarkerCredentialOpenStatus.Unavailable"/>.</para>
     /// </remarks>
     HostProcessToolsMarkerCredentialDeleteStatus CompareDeleteExact(
         ReadOnlySpan<byte> expectedEncodedSecretUtf8);
-
 }
 
 /// <summary>
@@ -85,11 +87,11 @@ internal interface IHostProcessToolsMarkerNativeRecordCapability : IDisposable
 /// <para>No string and no buffer is exposed. A caller asks for the length, allocates its own bounded
 /// destination, copies into it, and zeroes that copy when it is done; the secret therefore never
 /// becomes an interned, relocatable, garbage-collected <see cref="string"/> the way every other
-/// credential in this project does.</para>
+/// credential in this project does. That holds on every platform arm, including Windows, whose
+/// native snapshot keeps only a zeroable UTF-16 blob and re-encodes it directly to these bytes.</para>
 /// </remarks>
 internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
 {
-
     /// <summary>
     /// The pinned resource bound on one fixed-slot value.
     /// </summary>
@@ -112,11 +114,9 @@ internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
         byte[] ownedEncodedSecretUtf8,
         IHostProcessToolsMarkerNativeRecordCapability ownedNativeCapability)
     {
-
         _encodedSecretUtf8 = ownedEncodedSecretUtf8;
 
         _nativeCapability = ownedNativeCapability;
-
     }
 
     /// <summary>How many bytes a destination has to hold to receive the exact encoded secret.</summary>
@@ -132,14 +132,11 @@ internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
     /// </remarks>
     internal bool TryCopyEncodedSecretUtf8(Span<byte> destination, out int bytesWritten)
     {
-
         bytesWritten = 0;
 
         if (_disposed || _consumed || destination.Length < _encodedSecretUtf8.Length)
         {
-
             return false;
-
         }
 
         _encodedSecretUtf8.CopyTo(destination);
@@ -147,7 +144,6 @@ internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
         bytesWritten = _encodedSecretUtf8.Length;
 
         return true;
-
     }
 
     /// <summary>
@@ -169,29 +165,22 @@ internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
     internal HostProcessToolsMarkerCredentialDeleteStatus CompareDeleteExact(
         ReadOnlySpan<byte> expectedEncodedSecretUtf8)
     {
-
         if (_disposed || _consumed || _nativeCapability is not { } native)
         {
-
             return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
         }
 
         _consumed = true;
 
         if (!CryptographicOperations.FixedTimeEquals(expectedEncodedSecretUtf8, _encodedSecretUtf8))
         {
-
             return HostProcessToolsMarkerCredentialDeleteStatus.Mismatch;
-
         }
 
         try
         {
-
             return native.CompareDeleteExact(expectedEncodedSecretUtf8) switch
             {
-
                 HostProcessToolsMarkerCredentialDeleteStatus.Deleted =>
                     HostProcessToolsMarkerCredentialDeleteStatus.Deleted,
 
@@ -201,17 +190,12 @@ internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
                 // Includes an out-of-range value: an unrecognized status is uncertainty, and
                 // uncertainty about a delete is never a report that the slot is now empty.
                 _ => HostProcessToolsMarkerCredentialDeleteStatus.Unavailable,
-
             };
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
         }
-
     }
 
     /// <summary>
@@ -226,33 +210,26 @@ internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
         ReadOnlySpan<byte> encodedSecretUtf8,
         IHostProcessToolsMarkerNativeRecordCapability ownedNativeCapability)
     {
-
         ArgumentNullException.ThrowIfNull(ownedNativeCapability);
 
         if (encodedSecretUtf8.IsEmpty || encodedSecretUtf8.Length > MaxEncodedSecretUtf8Bytes)
         {
-
             throw new ArgumentOutOfRangeException(
                 nameof(encodedSecretUtf8),
                 "The host-tools marker slot value is empty or beyond its pinned bound.");
-
         }
 
         return new HostProcessToolsMarkerCredentialCapability(
             encodedSecretUtf8.ToArray(),
             ownedNativeCapability);
-
     }
 
     /// <summary>Zeroes the owned copy and releases the record, exactly once.</summary>
     public void Dispose()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -264,9 +241,7 @@ internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
         _nativeCapability = null;
 
         native?.Dispose();
-
     }
-
 }
 
 /// <summary>The result of one attempt to open the fixed host-tools marker slot.</summary>
@@ -276,16 +251,13 @@ internal sealed class HostProcessToolsMarkerCredentialCapability : IDisposable
 /// </remarks>
 internal sealed class HostProcessToolsMarkerCredentialOpenResult
 {
-
     private HostProcessToolsMarkerCredentialOpenResult(
         HostProcessToolsMarkerCredentialOpenStatus status,
         HostProcessToolsMarkerCredentialCapability? capability)
     {
-
         Status = status;
 
         Capability = capability;
-
     }
 
     internal HostProcessToolsMarkerCredentialOpenStatus Status { get; }
@@ -307,7 +279,6 @@ internal sealed class HostProcessToolsMarkerCredentialOpenResult
 
     internal static HostProcessToolsMarkerCredentialOpenResult PresentInvalid() =>
         new(HostProcessToolsMarkerCredentialOpenStatus.PresentInvalid, null);
-
 }
 
 /// <summary>The result of one durable absence proof over the fixed host-tools marker slot.</summary>
@@ -317,7 +288,6 @@ internal sealed class HostProcessToolsMarkerCredentialOpenResult
 /// </remarks>
 internal sealed class HostProcessToolsMarkerCredentialAbsenceResult
 {
-
     private HostProcessToolsMarkerCredentialAbsenceResult(
         HostProcessToolsMarkerCredentialAbsenceStatus status) =>
         Status = status;
@@ -332,7 +302,6 @@ internal sealed class HostProcessToolsMarkerCredentialAbsenceResult
 
     internal static HostProcessToolsMarkerCredentialAbsenceResult Unavailable() =>
         new(HostProcessToolsMarkerCredentialAbsenceStatus.Unavailable);
-
 }
 
 /// <summary>
@@ -346,7 +315,6 @@ internal sealed class HostProcessToolsMarkerCredentialAbsenceResult
 /// </remarks>
 internal interface IHostProcessToolsMarkerCredentialCapabilitySource
 {
-
     /// <summary>Opens the fixed slot, retaining the record behind whatever it found.</summary>
     HostProcessToolsMarkerCredentialOpenResult OpenFixedSlot();
 
@@ -361,5 +329,4 @@ internal interface IHostProcessToolsMarkerCredentialCapabilitySource
     /// <see cref="HostProcessToolsMarkerCredentialAbsenceStatus.Unavailable"/>.
     /// </remarks>
     HostProcessToolsMarkerCredentialAbsenceResult ProveFixedSlotDurablyAbsent();
-
 }

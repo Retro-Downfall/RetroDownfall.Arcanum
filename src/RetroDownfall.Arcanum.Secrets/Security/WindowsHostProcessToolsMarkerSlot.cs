@@ -20,85 +20,65 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 internal sealed partial class WindowsHostProcessToolsMarkerSlot
     : IHostProcessToolsMarkerCredentialCapabilitySource
 {
-
     private const int CredTypeGeneric = 1;
 
     private const int ErrorNotFound = 1168;
 
     public HostProcessToolsMarkerCredentialOpenResult OpenFixedSlot()
     {
-
         CredentialSnapshot? snapshot = Read(out SlotObservation observation);
 
         if (observation is SlotObservation.NotFound)
         {
-
             return HostProcessToolsMarkerCredentialOpenResult.Absent();
-
         }
 
         if (observation is SlotObservation.Unavailable)
         {
-
             return HostProcessToolsMarkerCredentialOpenResult.Unavailable();
-
         }
 
         if (snapshot is not { } record
-            || !HostProcessToolsMarkerSlotIdentity.TryEncode(record.Value, out byte[] encoded))
+            || !HostProcessToolsMarkerSlotIdentity.TryEncodeUtf16Blob(record.Blob, out byte[] encoded))
         {
-
             snapshot?.Clear();
 
             return HostProcessToolsMarkerCredentialOpenResult.PresentInvalid();
-
         }
 
         try
         {
-
             return HostProcessToolsMarkerCredentialOpenResult.Opened(
                 HostProcessToolsMarkerCredentialCapability.CreateOwned(
                     encoded,
                     new WindowsRetainedRecord(record)));
-
         }
         catch (ArgumentOutOfRangeException)
         {
-
             record.Clear();
 
             return HostProcessToolsMarkerCredentialOpenResult.PresentInvalid();
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(encoded);
-
         }
-
     }
 
     public HostProcessToolsMarkerCredentialAbsenceResult ProveFixedSlotDurablyAbsent()
     {
-
         CredentialSnapshot? first = Read(out SlotObservation firstObservation);
 
         first?.Clear();
 
         if (firstObservation is SlotObservation.Unavailable)
         {
-
             return HostProcessToolsMarkerCredentialAbsenceResult.Unavailable();
-
         }
 
         if (firstObservation is SlotObservation.Present)
         {
-
             return HostProcessToolsMarkerCredentialAbsenceResult.Present();
-
         }
 
         Barrier();
@@ -109,15 +89,12 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
 
         return secondObservation switch
         {
-
             SlotObservation.NotFound => HostProcessToolsMarkerCredentialAbsenceResult.Absent(),
 
             SlotObservation.Present => HostProcessToolsMarkerCredentialAbsenceResult.Present(),
 
             _ => HostProcessToolsMarkerCredentialAbsenceResult.Unavailable(),
-
         };
-
     }
 
     /// <summary>
@@ -132,23 +109,19 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
 
     private static CredentialSnapshot? Read(out SlotObservation observation)
     {
-
         string target = TargetName();
 
         if (!CredReadW(target, CredTypeGeneric, 0, out nint credentialPtr))
         {
-
             observation = Marshal.GetLastPInvokeError() == ErrorNotFound
                 ? SlotObservation.NotFound
                 : SlotObservation.Unavailable;
 
             return null;
-
         }
 
         try
         {
-
             CREDENTIAL credential = Marshal.PtrToStructure<CREDENTIAL>(credentialPtr);
 
             observation = SlotObservation.Present;
@@ -158,25 +131,18 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
                     checked((int)credential.CredentialBlobSize),
                     out byte[] blob))
             {
-
                 return null;
-
             }
 
             // The stored blob is UTF-16 with a trailing terminator, exactly as the ordinary store
-            // writes it; the capability's own copy is the UTF-8 of that decoded value.
-            string value = Encoding.Unicode.GetString(blob).TrimEnd('\0');
-
-            return new CredentialSnapshot(blob, credential.LastWritten, value);
-
+            // writes it. It stays a byte[] this arm can zero: the capability's own copy is the UTF-8
+            // re-encoding of it, produced without ever decoding the value into a string.
+            return new CredentialSnapshot(blob, credential.LastWritten);
         }
         finally
         {
-
             CredFree(credentialPtr);
-
         }
-
     }
 
     private static string TargetName() =>
@@ -184,50 +150,39 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
 
     private enum SlotObservation : byte
     {
-
         NotFound = 1,
 
         Present = 2,
 
         Unavailable = 3,
-
     }
 
     /// <summary>The complete credential record as it stood when the slot was opened.</summary>
-    private sealed record CredentialSnapshot(byte[] Blob, long LastWritten, string Value)
+    private sealed record CredentialSnapshot(byte[] Blob, long LastWritten)
     {
-
         internal void Clear() => CryptographicOperations.ZeroMemory(Blob);
-
     }
 
     private sealed class WindowsRetainedRecord(CredentialSnapshot opened)
         : IHostProcessToolsMarkerNativeRecordCapability
     {
-
         private CredentialSnapshot? _opened = opened;
 
         public HostProcessToolsMarkerCredentialDeleteStatus CompareDeleteExact(
             ReadOnlySpan<byte> expectedEncodedSecretUtf8)
         {
-
             if (_opened is not { } retained)
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
             }
 
             CredentialSnapshot? current = Read(out SlotObservation observation);
 
             try
             {
-
                 if (observation is SlotObservation.Unavailable)
                 {
-
                     return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
                 }
 
                 // The complete record has to still be the one that was opened: same bytes, same
@@ -236,11 +191,9 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
                     || current is not { } live
                     || live.LastWritten != retained.LastWritten
                     || !CryptographicOperations.FixedTimeEquals(live.Blob, retained.Blob)
-                    || !HostProcessToolsMarkerSlotIdentity.TryEncode(live.Value, out byte[] encoded))
+                    || !HostProcessToolsMarkerSlotIdentity.TryEncodeUtf16Blob(live.Blob, out byte[] encoded))
                 {
-
                     return HostProcessToolsMarkerCredentialDeleteStatus.Mismatch;
-
                 }
 
                 bool matches = CryptographicOperations.FixedTimeEquals(
@@ -251,25 +204,18 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
 
                 if (!matches)
                 {
-
                     return HostProcessToolsMarkerCredentialDeleteStatus.Mismatch;
-
                 }
-
             }
             finally
             {
-
                 current?.Clear();
-
             }
 
             if (!CredDeleteW(TargetName(), CredTypeGeneric, 0)
                 && Marshal.GetLastPInvokeError() != ErrorNotFound)
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
             }
 
             Barrier();
@@ -280,28 +226,22 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
 
             return after switch
             {
-
                 SlotObservation.NotFound => HostProcessToolsMarkerCredentialDeleteStatus.Deleted,
 
                 SlotObservation.Present => HostProcessToolsMarkerCredentialDeleteStatus.Mismatch,
 
                 _ => HostProcessToolsMarkerCredentialDeleteStatus.Unavailable,
-
             };
-
         }
 
         public void Dispose()
         {
-
             CredentialSnapshot? held = _opened;
 
             _opened = null;
 
             held?.Clear();
-
         }
-
     }
 
     [LibraryImport("advapi32.dll", EntryPoint = "CredReadW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
@@ -318,7 +258,6 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
     [StructLayout(LayoutKind.Sequential)]
     private struct CREDENTIAL
     {
-
         public uint Flags;
 
         public int Type;
@@ -342,7 +281,5 @@ internal sealed partial class WindowsHostProcessToolsMarkerSlot
         public nint TargetAlias;
 
         public nint UserName;
-
     }
-
 }

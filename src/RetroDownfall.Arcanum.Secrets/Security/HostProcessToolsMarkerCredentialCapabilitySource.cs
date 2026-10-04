@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace RetroDownfall.Arcanum.Secrets.Security;
@@ -16,7 +17,6 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 internal sealed class HostProcessToolsMarkerCredentialCapabilitySource
     : IHostProcessToolsMarkerCredentialCapabilitySource
 {
-
     private readonly IHostProcessToolsMarkerCredentialCapabilitySource _inner;
 
     internal HostProcessToolsMarkerCredentialCapabilitySource() =>
@@ -29,83 +29,60 @@ internal sealed class HostProcessToolsMarkerCredentialCapabilitySource
 
     public HostProcessToolsMarkerCredentialOpenResult OpenFixedSlot()
     {
-
         try
         {
-
             return _inner.OpenFixedSlot();
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             return HostProcessToolsMarkerCredentialOpenResult.Unavailable();
-
         }
-
     }
 
     public HostProcessToolsMarkerCredentialAbsenceResult ProveFixedSlotDurablyAbsent()
     {
-
         try
         {
-
             return _inner.ProveFixedSlotDurablyAbsent();
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             return HostProcessToolsMarkerCredentialAbsenceResult.Unavailable();
-
         }
-
     }
 
     private static IHostProcessToolsMarkerCredentialCapabilitySource CreatePlatformSource()
     {
-
         if (OperatingSystem.IsMacOS())
         {
-
             return new MacOsHostProcessToolsMarkerSlot();
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return new WindowsHostProcessToolsMarkerSlot();
-
         }
 
         if (OperatingSystem.IsLinux())
         {
-
             return new LinuxHostProcessToolsMarkerSlot();
-
         }
 
         // A platform with no credential backend cannot be holding a marker, but it also cannot prove
         // one absent, and this source is only ever consulted by a reset that has to know which.
         return new UnavailableHostProcessToolsMarkerSlot();
-
     }
-
 }
 
 /// <summary>The arm for a platform with no credential backend at all.</summary>
 internal sealed class UnavailableHostProcessToolsMarkerSlot
     : IHostProcessToolsMarkerCredentialCapabilitySource
 {
-
     public HostProcessToolsMarkerCredentialOpenResult OpenFixedSlot() =>
         HostProcessToolsMarkerCredentialOpenResult.Unavailable();
 
     public HostProcessToolsMarkerCredentialAbsenceResult ProveFixedSlotDurablyAbsent() =>
         HostProcessToolsMarkerCredentialAbsenceResult.Unavailable();
-
 }
 
 /// <summary>
@@ -123,7 +100,6 @@ internal sealed class UnavailableHostProcessToolsMarkerSlot
 internal sealed class InMemoryHostProcessToolsMarkerSlot
     : IHostProcessToolsMarkerCredentialCapabilitySource
 {
-
     private readonly object _gate = new();
 
     private long _nextRecordId = 1;
@@ -144,18 +120,14 @@ internal sealed class InMemoryHostProcessToolsMarkerSlot
 
     internal void Set(ReadOnlySpan<byte> encodedSecretUtf8)
     {
-
         lock (_gate)
         {
-
             _value = encodedSecretUtf8.ToArray();
 
             _recordId = _nextRecordId++;
 
             _presentInvalid = false;
-
         }
-
     }
 
     /// <summary>Writes a new record over the slot, the way a live replacement would.</summary>
@@ -163,103 +135,75 @@ internal sealed class InMemoryHostProcessToolsMarkerSlot
 
     internal void Clear()
     {
-
         lock (_gate)
         {
-
             _value = null;
 
             _recordId = 0;
 
             _presentInvalid = false;
-
         }
-
     }
 
     /// <summary>Makes the slot definitely present and definitely unusable.</summary>
     internal void SetPresentInvalid()
     {
-
         lock (_gate)
         {
-
             _value = null;
 
             _recordId = _nextRecordId++;
 
             _presentInvalid = true;
-
         }
-
     }
 
     internal void SetUnavailable(bool unavailable)
     {
-
         lock (_gate)
         {
-
             _unavailable = unavailable;
-
         }
-
     }
 
     public HostProcessToolsMarkerCredentialOpenResult OpenFixedSlot()
     {
-
         lock (_gate)
         {
-
             if (_unavailable)
             {
-
                 return HostProcessToolsMarkerCredentialOpenResult.Unavailable();
-
             }
 
             if (_presentInvalid)
             {
-
                 return HostProcessToolsMarkerCredentialOpenResult.PresentInvalid();
-
             }
 
             if (_value is not { Length: > 0 } value)
             {
-
                 return HostProcessToolsMarkerCredentialOpenResult.Absent();
-
             }
 
             if (value.Length > HostProcessToolsMarkerCredentialCapability.MaxEncodedSecretUtf8Bytes)
             {
-
                 return HostProcessToolsMarkerCredentialOpenResult.PresentInvalid();
-
             }
 
             return HostProcessToolsMarkerCredentialOpenResult.Opened(
                 HostProcessToolsMarkerCredentialCapability.CreateOwned(
                     value,
                     new InMemoryRecord(this, _recordId)));
-
         }
-
     }
 
     public HostProcessToolsMarkerCredentialAbsenceResult ProveFixedSlotDurablyAbsent()
     {
-
         lock (_gate)
         {
-
             if (_unavailable)
             {
-
                 return HostProcessToolsMarkerCredentialAbsenceResult.Unavailable();
-
             }
 
             bool firstPresent = _value is not null || _presentInvalid;
@@ -279,24 +223,18 @@ internal sealed class InMemoryHostProcessToolsMarkerSlot
             return firstPresent || secondPresent
                 ? HostProcessToolsMarkerCredentialAbsenceResult.Present()
                 : HostProcessToolsMarkerCredentialAbsenceResult.Absent();
-
         }
-
     }
 
     private HostProcessToolsMarkerCredentialDeleteStatus CompareDelete(
         long recordId,
         ReadOnlySpan<byte> expected)
     {
-
         lock (_gate)
         {
-
             if (_unavailable)
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
             }
 
             // Reread the retained record, not the slot by name. A replacement written since the open
@@ -307,9 +245,7 @@ internal sealed class InMemoryHostProcessToolsMarkerSlot
                     expected,
                     current))
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Mismatch;
-
             }
 
             _value = null;
@@ -323,15 +259,12 @@ internal sealed class InMemoryHostProcessToolsMarkerSlot
             return _value is null
                 ? HostProcessToolsMarkerCredentialDeleteStatus.Deleted
                 : HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
         }
-
     }
 
     private sealed class InMemoryRecord(InMemoryHostProcessToolsMarkerSlot owner, long recordId)
         : IHostProcessToolsMarkerNativeRecordCapability
     {
-
         private bool _disposed;
 
         public HostProcessToolsMarkerCredentialDeleteStatus CompareDeleteExact(
@@ -341,15 +274,12 @@ internal sealed class InMemoryHostProcessToolsMarkerSlot
                 : owner.CompareDelete(recordId, expectedEncodedSecretUtf8);
 
         public void Dispose() => _disposed = true;
-
     }
-
 }
 
 /// <summary>The shared fixed-slot names every backend is handed.</summary>
 internal static class HostProcessToolsMarkerSlotIdentity
 {
-
     internal static string Service => ArcanumCredentialIdentity.Service;
 
     internal static string Account => ArcanumCredentialIdentity.HostProcessToolsTaintAccount;
@@ -366,59 +296,115 @@ internal static class HostProcessToolsMarkerSlotIdentity
     /// </remarks>
     internal static bool TryEncode(string? value, out byte[] encodedSecretUtf8)
     {
-
         encodedSecretUtf8 = [];
 
         if (value is not { Length: > 0 })
         {
-
             return false;
-
         }
 
         byte[] bytes;
 
         try
         {
-
             bytes = new UTF8Encoding(false, true).GetBytes(value);
-
         }
         catch (EncoderFallbackException)
         {
-
             return false;
-
         }
 
         if (bytes.Length == 0
             || bytes.Length > HostProcessToolsMarkerCredentialCapability.MaxEncodedSecretUtf8Bytes
             || !string.Equals(Encoding.UTF8.GetString(bytes), value, StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         encodedSecretUtf8 = bytes;
 
         return true;
+    }
 
+    /// <summary>
+    /// Re-encodes a UTF-16 credential blob as the exact UTF-8 bytes the marker codec compares,
+    /// without ever materializing the value as a <see cref="string"/>.
+    /// </summary>
+    /// <remarks>
+    /// The Windows ordinary credential store writes a value as UTF-16 with trailing terminators.
+    /// Decoding that into a string to hand to <see cref="TryEncode"/> left a second, unzeroable copy
+    /// of the marker value alive for the garbage collector, which is the one thing this capability's
+    /// contract says never happens. The intermediate characters here live in a buffer this method
+    /// clears before it returns, and a value that is not strictly valid UTF-16, is empty after its
+    /// terminators, or is beyond the pinned bound is definitely-present, definitely-unusable data.
+    /// </remarks>
+    internal static bool TryEncodeUtf16Blob(ReadOnlySpan<byte> blob, out byte[] encodedSecretUtf8)
+    {
+        encodedSecretUtf8 = [];
+
+        if (blob.IsEmpty || blob.Length > HostProcessToolsMarkerCredentialCapability.MaxEncodedSecretUtf8Bytes)
+        {
+            return false;
+        }
+
+        char[] characters = new char[blob.Length / 2 + 1];
+
+        byte[]? bytes = null;
+
+        try
+        {
+            int count = new UnicodeEncoding(false, false, true).GetChars(blob, characters);
+
+            while (count > 0 && characters[count - 1] == '\0')
+            {
+                count--;
+            }
+
+            if (count == 0)
+            {
+                return false;
+            }
+
+            bytes = new byte[new UTF8Encoding(false, true).GetByteCount(characters.AsSpan(0, count))];
+
+            new UTF8Encoding(false, true).GetBytes(characters.AsSpan(0, count), bytes);
+
+            if (bytes.Length == 0 || bytes.Length > HostProcessToolsMarkerCredentialCapability.MaxEncodedSecretUtf8Bytes)
+            {
+                CryptographicOperations.ZeroMemory(bytes);
+
+                return false;
+            }
+
+            encodedSecretUtf8 = bytes;
+
+            return true;
+        }
+        catch (Exception exception) when (exception is DecoderFallbackException or EncoderFallbackException or ArgumentException)
+        {
+            if (bytes is not null)
+            {
+                CryptographicOperations.ZeroMemory(bytes);
+            }
+
+            return false;
+        }
+        finally
+        {
+            Array.Clear(characters);
+        }
     }
 
     /// <summary>Copies a native buffer without letting its length overrun the pinned bound.</summary>
     internal static bool TryCopyNative(nint pointer, int length, out byte[] bytes)
     {
-
         bytes = [];
 
         if (pointer == nint.Zero
             || length <= 0
             || length > HostProcessToolsMarkerCredentialCapability.MaxEncodedSecretUtf8Bytes)
         {
-
             return false;
-
         }
 
         byte[] copied = new byte[length];
@@ -428,7 +414,5 @@ internal static class HostProcessToolsMarkerSlotIdentity
         bytes = copied;
 
         return true;
-
     }
-
 }

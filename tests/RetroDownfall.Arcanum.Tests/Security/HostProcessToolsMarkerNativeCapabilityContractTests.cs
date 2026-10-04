@@ -2,6 +2,7 @@ using System.Text;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
@@ -22,7 +23,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </remarks>
 public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
 {
-
     private const string OptInVariable = "ARCANUM_TEST_OS_CREDENTIAL_STORE";
 
     private const string CapabilityFile = "HostProcessToolsMarkerCredentialCapability.cs";
@@ -49,7 +49,6 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
     [Fact]
     public void Only_the_secrets_fixed_slot_backends_mint_a_capability()
     {
-
         string[] permitted = [CapabilityFile, SourceFile, MacOsFile, WindowsFile];
 
         string[] offenders =
@@ -67,7 +66,6 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
             "Minting a fixed-slot capability is minting deletion authority over the host-tools "
             + "marker. Only the Secrets backends that read the slot may do it: "
             + string.Join(", ", offenders));
-
     }
 
     /// <summary>
@@ -85,7 +83,6 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
     [InlineData("IOsCredentialStore")]
     public void No_fixed_slot_backend_reaches_a_name_addressed_credential_operation(string forbidden)
     {
-
         string[] backends = [SourceFile, MacOsFile, WindowsFile, LinuxFile];
 
         string[] offenders =
@@ -98,14 +95,12 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
         ];
 
         Assert.True(offenders.Length == 0, $"{forbidden} must not be reachable from: " + string.Join(", ", offenders));
-
     }
 
     /// <summary>The macOS arm deletes the reference it retained, and releases it exactly once.</summary>
     [Fact]
     public void The_macos_arm_rereads_and_deletes_the_exact_retained_item_reference()
     {
-
         string source = Source(MacOsFile);
 
         // The reread comes from the retained reference rather than from a fresh lookup by name.
@@ -122,14 +117,12 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
         Assert.Contains("CFRelease(held)", source, StringComparison.Ordinal);
 
         Assert.Contains("FixedTimeEquals", source, StringComparison.Ordinal);
-
     }
 
     /// <summary>The Windows arm compares the complete record, stamp included, before deleting.</summary>
     [Fact]
     public void The_windows_arm_compares_the_complete_record_immediately_before_deleting()
     {
-
         string source = Source(WindowsFile);
 
         Assert.Contains("LastWritten", source, StringComparison.Ordinal);
@@ -142,7 +135,77 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
         Assert.Equal(1, Occurrences(source, "CredDeleteW(TargetName(), CredTypeGeneric, 0)"));
 
         Assert.Equal(2, Occurrences(source, "CredDeleteW("));
+    }
 
+    /// <summary>
+    /// The Windows arm keeps the marker value only in buffers it can zero.
+    /// </summary>
+    /// <remarks>
+    /// The capability's contract is that the secret never becomes a garbage-collected string. The
+    /// Windows snapshot used to carry the decoded value beside the blob, which is a second,
+    /// unzeroable copy of exactly what the capability exists not to create.
+    /// </remarks>
+    [Fact]
+    public void The_windows_arm_never_decodes_the_marker_value_into_a_string()
+    {
+        string source = Source(WindowsFile);
+
+        Assert.DoesNotContain("string Value", source, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Encoding.Unicode.GetString", source, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(".Value)", source, StringComparison.Ordinal);
+
+        Assert.Contains("TryEncodeUtf16Blob(", source, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The capability contract names the one property Windows cannot give: an atomic compare and delete.
+    /// </summary>
+    /// <remarks>
+    /// Credential Manager deletes by target name, so between the reread that compared the record and
+    /// the delete there is a window in which a replacement would be removed. The window is
+    /// microseconds and the readback afterwards reports a surviving record as a mismatch rather
+    /// than as a delete, but a contract that did not say so would read as an atomicity guarantee
+    /// the Windows arm does not provide.
+    /// </remarks>
+    [Fact]
+    public void The_capability_contract_names_the_windows_compare_delete_window()
+    {
+        // The raw file rather than the inventory's text: the contract lives in the remarks, and the
+        // inventory strips comments.
+        string source = File.ReadAllText(Path.Combine(
+            NativeSqlCipherTestPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Secrets",
+            "Security",
+            CapabilityFile));
+
+        Assert.Contains("microsecond", source, StringComparison.Ordinal);
+
+        Assert.Contains("Windows", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_utf16_marker_blob_encodes_to_exactly_its_utf8_bytes_without_a_string_round_trip()
+    {
+        byte[] blob = Encoding.Unicode.GetBytes("QUJD\u00e9\0");
+
+        Assert.True(HostProcessToolsMarkerSlotIdentity.TryEncodeUtf16Blob(blob, out byte[] encoded));
+
+        Assert.Equal(Encoding.UTF8.GetBytes("QUJD\u00e9"), encoded);
+    }
+
+    [Theory]
+    [InlineData(new byte[0])]
+    [InlineData(new byte[] { 0, 0 })]
+    [InlineData(new byte[] { 0x41, 0x00, 0x42 })]
+    [InlineData(new byte[] { 0x41, 0x00, 0x00, 0xD8, 0x00, 0x00 })]
+    public void An_unusable_utf16_marker_blob_is_present_but_invalid(byte[] blob)
+    {
+        Assert.False(HostProcessToolsMarkerSlotIdentity.TryEncodeUtf16Blob(blob, out byte[] encoded));
+
+        Assert.Empty(encoded);
     }
 
     /// <summary>
@@ -157,7 +220,6 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
     [Fact]
     public void The_linux_arm_refuses_rather_than_clearing_by_attributes()
     {
-
         string source = Source(LinuxFile);
 
         Assert.Contains("HostProcessToolsMarkerCredentialOpenResult.Unavailable()", source, StringComparison.Ordinal);
@@ -170,14 +232,12 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("CreateOwned", source, StringComparison.Ordinal);
-
     }
 
     /// <summary>The reset adapter is the only production implementation of the reset port.</summary>
     [Fact]
     public void One_production_type_implements_the_reset_operating_system_port()
     {
-
         string[] implementers =
         [
             .. ProductionSourceInventory.Sources()
@@ -187,7 +247,6 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
         ];
 
         Assert.Equal([AdapterFile], implementers);
-
     }
 
     /// <summary>
@@ -201,7 +260,6 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
     [SkippableFact]
     public void The_macos_arm_opens_compare_deletes_and_proves_the_real_fixed_slot_absent()
     {
-
         Skip.IfNot(OperatingSystem.IsMacOS(), "The macOS keychain arm runs only on macOS.");
 
         Skip.IfNot(
@@ -226,7 +284,6 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
 
         try
         {
-
             Assert.Equal(
                 OsCredentialStoreStatus.Ok,
                 credentials.Set(
@@ -258,17 +315,13 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
             Assert.Equal(
                 HostProcessToolsMarkerCredentialAbsenceStatus.Absent,
                 source.ProveFixedSlotDurablyAbsent().Status);
-
         }
         finally
         {
-
             _ = credentials.Delete(
                 ArcanumCredentialIdentity.Service,
                 ArcanumCredentialIdentity.HostProcessToolsTaintAccount);
-
         }
-
     }
 
     private static string Source(string fileName) =>
@@ -276,22 +329,17 @@ public sealed class HostProcessToolsMarkerNativeCapabilityContractTests
 
     private static int Occurrences(string source, string value)
     {
-
         int count = 0;
 
         int offset = 0;
 
         while ((offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
         {
-
             count++;
 
             offset += value.Length;
-
         }
 
         return count;
-
     }
-
 }
