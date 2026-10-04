@@ -482,7 +482,7 @@ Reads and writes secure local credentials without an HTTP request. Master-key ou
 | Credential | Storage | Notes |
 |---|---|---|
 | Master API key | OS credential store with an owner-only Data Protection mirror (`security.dat`) | Generated on the first server start after the foreground command explains the possible operating-system password prompt; readable with `arcanum key show`. |
-| Grimoire encryption secret | OS credential store with an owner-only Data Protection mirror | A corrupt secret fails closed and is never replaced while encrypted data exists. |
+| Grimoire encryption secret | Owner-only Data Protection file only (`grimoire-key.dat`); no OS credential store copy | A corrupt secret fails closed and is never replaced while encrypted data exists. The file is protected from other local users, not from a reader of the whole disk (DESIGN §11.2). |
 | File-encryption master key | OS credential store with an owner-only Data Protection mirror | Not created merely by starting the host; generated on the first attachment/upload/batch write. Existing ciphertext requires the matching key at startup and fails closed if it is missing. Recover from the OS store, the mirror plus key ring, or one verified `.arcbackup` generation. |
 | Web research (Perplexity) | `ARCANUM_PERPLEXITY_API_KEY` (or the configured reference), otherwise the OS credential store with an encrypted mirror | The environment reference wins when both are present. |
 | Inference provider API key | `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY` (or the configured reference), otherwise the OS credential store with an encrypted mirror | One credential per provider name; the environment reference wins when both are present. |
