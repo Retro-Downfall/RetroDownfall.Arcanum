@@ -25,7 +25,10 @@ public enum MemoryErasureKeyProbe
     /// <summary>For automatic callers: the store is asked at most once per process.</summary>
     UseLatched = 1,
 
-    /// <summary>For operator calls: anything short of <see cref="MemoryErasureKeyState.Present"/> is asked again.</summary>
+    /// <summary>
+    /// For operator calls: anything short of <see cref="MemoryErasureKeyState.Present"/> is asked again, and a
+    /// present latch is asked only whether the key's item still exists, never for the key itself.
+    /// </summary>
     Reprobe = 2,
 }
 
@@ -47,7 +50,8 @@ public sealed record MemoryErasureKeyLatch(MemoryErasureKeyState State, byte[]? 
 /// <remarks>
 /// One process-wide latch backs every call. <see cref="Latch"/> and <see cref="TryCopyLatched"/> never
 /// perform credential I/O and never wait for a probe another caller has in flight, and neither does
-/// <see cref="OpenExisting"/> when the latch already answers it. Every key returned is a private copy.
+/// <see cref="OpenExisting"/> when the latch already answers an automatic caller. Every key returned is a
+/// private copy.
 /// </remarks>
 public interface IMemoryErasureKeyProvider
 {

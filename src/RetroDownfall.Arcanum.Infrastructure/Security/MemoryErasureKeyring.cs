@@ -44,12 +44,17 @@ internal interface IMemoryErasureKeyCreator
 /// asked for them at most once per process, and a failure is remembered rather than retried per call.
 /// Operator calls re-probe anything short of Present and publish what they find into the same latch,
 /// so a transient failure at the first automatic probe clears at the next operator status or erase.
-/// A Present latch is never re-probed: only <see cref="CreateForReset()"/> reads the account whatever is
-/// latched, and <c>reset-key</c> reaches it only after the latch read Absent. So once this process
-/// holds a key it keeps it until it restarts, even if the account is overwritten or deleted meanwhile:
-/// a second test home that overwrites the shared account cannot swap the key under this process, and
-/// whatever that home records carries a key identifier this process can tell apart. A deleted account
-/// is reported as lost only after a restart.</para>
+/// A Present latch is never read again, but an operator call over one asks the store whether the key's
+/// item still exists, a metadata-only question that reads no secret and cannot raise a keychain prompt.
+/// While the item stands the operator is answered from the latch, so a second test home that overwrites
+/// the shared account cannot swap the key under this process, and whatever that home records carries a
+/// key identifier this process can tell apart. When the item is gone the call reads the account as any
+/// operator probe does and publishes the absence, so a key deleted while the host runs is reported lost
+/// at the next status and refused at the next prepare instead of after a restart, and <c>reset-key</c>
+/// can recover it. When the question itself fails the call answers Unavailable and leaves the latch
+/// alone, because a fault in asking says nothing about whether the item is gone. A store with no such
+/// probe cannot be asked, so its latch answers. An automatic caller is never made to ask: it keeps the
+/// lock-free latch, and only <see cref="CreateForReset()"/> reads the account whatever is latched.</para>
 ///
 /// <para>Every read, write, and read-back runs under one lock, so concurrent first erasures create
 /// exactly one key. A create writes canonical unpadded base64url, reads it back, and compares in
@@ -60,8 +65,10 @@ internal interface IMemoryErasureKeyCreator
 /// it. <see cref="Latch"/> and <see cref="TryCopyLatched"/> may be read while a Covenant lease is held,
 /// and a probe can sit behind a keychain prompt for as long as the operator leaves it there, so those
 /// two must never wait for the lock a probe holds. Neither does <see cref="OpenExisting"/> when the
-/// latch already answers it: a present latch, or any resolved latch for an automatic caller. Only a call
-/// that has to probe takes the lock.</para>
+/// latch already answers it: any resolved latch for an automatic caller, and a present one for an
+/// operator call over a store that cannot be asked whether the item exists. Only a call that has to
+/// probe, or to ask, takes the lock, so an operator's call may wait behind another operator's probe and
+/// an automatic one never does.</para>
 ///
 /// <para>Construction performs no credential I/O, and nothing here logs.</para>
 /// </remarks>
@@ -129,14 +136,16 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
     {
         // An answer the latch already holds needs no credential I/O, so it takes no lock either: an
         // automatic caller, which may hold a Covenant lease, must never wait behind an operator's probe
-        // that is parked in a keychain prompt. A present latch answers every caller with a copy, and a
-        // resolved one answers an automatic caller with its state. Anything else, and a present latch
-        // that was replaced while it was copied, is decided again under the lock.
+        // that is parked in a keychain prompt. A present latch answers an automatic caller with a copy, and
+        // so answers an operator call when the store cannot be asked whether the item still exists; a
+        // resolved one answers an automatic caller with its state. Anything else, and a present latch that
+        // was replaced while it was copied, is decided again under the lock.
         Latched latched = Volatile.Read(ref _latched);
 
         if (latched.State is MemoryErasureKeyState.Present)
         {
-            if (TryCopyLatched() is { } copy)
+            if ((probe is not MemoryErasureKeyProbe.Reprobe || _credentials is not IOsCredentialPresenceProbe)
+                && TryCopyLatched() is { } copy)
             {
                 return new MemoryErasureKeyOpenResult(MemoryErasureKeyState.Present, copy);
             }
@@ -155,10 +164,12 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
 
             if (_latched.State is MemoryErasureKeyState.Present)
             {
-                return CopyPresent();
+                if (AnswerPresentLatch(operatorCall: probe is MemoryErasureKeyProbe.Reprobe) is { } answered)
+                {
+                    return answered;
+                }
             }
-
-            if (probe is not MemoryErasureKeyProbe.Reprobe
+            else if (probe is not MemoryErasureKeyProbe.Reprobe
                 && _latched.State is not MemoryErasureKeyState.Unresolved)
             {
                 return new MemoryErasureKeyOpenResult(_latched.State, null);
@@ -180,9 +191,12 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
                 return new MemoryErasureKeyOpenResult(MemoryErasureKeyState.Unavailable, null);
             }
 
-            if (_latched.State is MemoryErasureKeyState.Present)
+            // A prepare is an operator call: a held key whose item has been deleted is read as the absence
+            // it is, which is lost while evidence exists and a proven absence when none does.
+            if (_latched.State is MemoryErasureKeyState.Present
+                && AnswerPresentLatch(operatorCall: true) is { } answered)
             {
-                return CopyPresent();
+                return answered;
             }
 
             (MemoryErasureKeyState state, byte[]? key) = Probe();
@@ -248,26 +262,46 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
     {
         lock (_gate)
         {
-            if (_disposed)
-            {
-                return OsCredentialStoreStatus.Unavailable;
-            }
-
-            if (_credentials is not IOsCredentialPresenceProbe presence)
-            {
-                return null;
-            }
-
-            try
-            {
-                return presence.ProbePresence(ArcanumCredentialIdentity.Service, Account);
-            }
-            catch (Exception exception) when (IsStoreFault(exception))
-            {
-                return OsCredentialStoreStatus.Unavailable;
-            }
+            return _disposed ? OsCredentialStoreStatus.Unavailable : ProbePresenceCore();
         }
     }
+
+    /// <summary>The presence question itself, asked under <see cref="_gate"/>.</summary>
+    private OsCredentialStoreStatus? ProbePresenceCore()
+    {
+        if (_credentials is not IOsCredentialPresenceProbe presence)
+        {
+            return null;
+        }
+
+        try
+        {
+            return presence.ProbePresence(ArcanumCredentialIdentity.Service, Account);
+        }
+        catch (Exception exception) when (IsStoreFault(exception))
+        {
+            return OsCredentialStoreStatus.Unavailable;
+        }
+    }
+
+    /// <summary>
+    /// Answers a call over a present latch from under <see cref="_gate"/>, or null when the call has to
+    /// read the account instead.
+    /// </summary>
+    /// <remarks>
+    /// An automatic caller, and an operator call over a store that cannot be asked, is answered from the
+    /// latch. An operator call asks only whether the item still exists: a key that is there is answered
+    /// from the latch, a question that cannot be answered is Unavailable and leaves the latch alone, and
+    /// an item that is gone is not answered at all, so the caller reads the account and publishes the
+    /// absence like any other operator probe.
+    /// </remarks>
+    private MemoryErasureKeyOpenResult? AnswerPresentLatch(bool operatorCall) =>
+        (operatorCall ? ProbePresenceCore() : null) switch
+        {
+            null or OsCredentialStoreStatus.Ok => CopyPresent(),
+            OsCredentialStoreStatus.NotFound => null,
+            _ => new MemoryErasureKeyOpenResult(MemoryErasureKeyState.Unavailable, null),
+        };
 
     /// <summary>Zeroes the cached key. Every later call reads as Unavailable and performs no I/O.</summary>
     public void Dispose()

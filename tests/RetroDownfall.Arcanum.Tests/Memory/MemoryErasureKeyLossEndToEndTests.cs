@@ -198,6 +198,102 @@ public sealed class MemoryErasureKeyLossEndToEndTests
         AssertStores(present.Stores, covenant: (0, 0, 0), saga: (0, 0, 0), lexicon: (0, 0, 0));
     }
 
+    /// <summary>
+    /// An operator who deletes the key's OS item while the host is running is told so by the very next
+    /// status, is refused the next erase prepare before any fingerprint is recorded under a key the
+    /// operating system no longer holds, and recovers with <c>reset-key</c> without a restart.
+    /// </summary>
+    [SkippableFact]
+    public async Task Deleting_the_key_item_while_the_host_runs_is_noticed_by_status_and_prepare_and_reset_key_recovers_it()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(credentials);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        MemoryErasureRouteDriver driver = new(client);
+
+        string first = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
+
+        string second = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "The tide table is kept in the chapel.");
+
+        _ = await driver.EraseSagaAsync(first);
+
+        Assert.Equal(MemoryErasureKeyStatus.Present, (await StatusAsync(client)).KeyStatus);
+
+        // The host's own latch still holds the key it created; only the operating system's item goes.
+        Assert.Equal(OsCredentialStoreStatus.Ok, credentials.Delete(Service, Account).Status);
+
+        MemoryErasureStatusDto lost = await StatusAsync(client);
+
+        Assert.Equal(MemoryErasureKeyStatus.Lost, lost.KeyStatus);
+
+        AssertStores(lost.Stores, covenant: (0, 0, 0), saga: (1, 1, 1), lexicon: (0, 0, 0));
+
+        SagaMemoryDetail detail;
+
+        using (HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{second}"))
+        {
+            detail = await MemoryErasureRouteDriver.ReadDataAsync(shown, ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail);
+        }
+
+        using (HttpResponseMessage refused = await driver.PostAsync(
+            "/api/memory/saga/erase/prepare",
+            new SagaErasePrepareRequest(second, detail.ContentHash, detail.Claim?.CurrentVersionId, Guid.NewGuid()),
+            ArcanumJsonContext.Default.SagaErasePrepareRequest))
+        {
+            Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+
+            Assert.Equal(ErrorCodes.MemoryErasure.KeyLost, await MemoryErasureRouteDriver.ReadErrorCodeAsync(refused));
+        }
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        // The refused prepare minted nothing: only reset-key may write a key over evidence.
+        Assert.Equal(OsCredentialStoreStatus.NotFound, credentials.ProbePresence(Service, Account));
+
+        MemoryErasureKeyResetPreflightDto prepared;
+
+        using (HttpResponseMessage response = await client.PostAsync("/api/memory/erasure/reset-key/prepare", content: null))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            prepared = await MemoryErasureRouteDriver.ReadDataAsync(
+                response,
+                ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetPreflightDto);
+        }
+
+        Assert.Equal(MemoryErasureKeyStatus.Lost, prepared.KeyStatus);
+
+        using (HttpResponseMessage response = await driver.PostAsync(
+            "/api/memory/erasure/reset-key",
+            new MemoryErasureKeyResetRequest(prepared.PreflightToken),
+            ArcanumJsonContext.Default.MemoryErasureKeyResetRequest))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            Assert.Equal(
+                new MemoryErasureKeyResetResultDto(MemoryErasureKeyStatus.Present, 1, 1, KeyCreated: true),
+                await MemoryErasureRouteDriver.ReadDataAsync(response, ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetResultDto));
+        }
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, credentials.ProbePresence(Service, Account));
+
+        // No restart: the new key records the next erase, and status reads it present.
+        _ = await driver.EraseSagaAsync(second);
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        MemoryErasureStatusDto recovered = await StatusAsync(client);
+
+        Assert.Equal(MemoryErasureKeyStatus.Present, recovered.KeyStatus);
+
+        AssertStores(recovered.Stores, covenant: (0, 0, 0), saga: (1, 0, 1), lexicon: (0, 0, 0));
+    }
+
     private static ArcanumWebApplicationFactory Host(
         InMemoryOsCredentialStore inner,
         SecretAccessRecordingCredentialStore credentials,

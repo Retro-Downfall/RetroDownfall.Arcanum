@@ -35,8 +35,9 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </summary>
 /// <remarks>
 /// Automatic callers read the latch and never write; operator calls re-probe anything short of
-/// <see cref="MemoryErasureKeyState.Present"/>; creation happens once, under the keyring's lock, and
-/// only after a proven absence with no evidence rows. Every store here is a fake over
+/// <see cref="MemoryErasureKeyState.Present"/> and ask a present latch whether the key's item still
+/// exists; creation happens once, under the keyring's lock, and only after a proven absence with no
+/// evidence rows. Every store here is a fake over
 /// <see cref="InMemoryOsCredentialStore"/> or a script, so no test reaches the real keychain.
 /// </remarks>
 public sealed class MemoryErasureKeyringTests
@@ -466,13 +467,16 @@ public sealed class MemoryErasureKeyringTests
     }
 
     /// <summary>
-    /// A resolved latch answers an automatic open, and a present one answers any open, without waiting
-    /// behind an operator's probe that is parked inside the credential store.
+    /// A resolved latch answers an automatic open without waiting behind an operator's probe that is
+    /// parked inside the credential store, and a present one answers an operator open the same way over
+    /// a store that cannot be asked whether the item exists.
     /// </summary>
     /// <remarks>
     /// Taking the keyring's lock for an answer that needs no I/O would put every automatic caller,
     /// including the ones that hold a Covenant lease, behind a keychain prompt for as long as the
-    /// operator leaves it up. The operator's own probe is the one that is allowed to wait.
+    /// operator leaves it up. The operator's own probe is the one that is allowed to wait, and so is an
+    /// operator open that has to ask the store whether a present key's item still exists: this fixture's
+    /// store has no such probe, which is what lets its operator open answer from the latch.
     /// </remarks>
     [Theory]
     [InlineData("Absent")]
@@ -535,7 +539,8 @@ public sealed class MemoryErasureKeyringTests
 
                 Assert.True(automaticKey.HasKeyId(IndependentKeyId(FixedKey)));
 
-                // An operator open of a present latch is answered from the latch too, and never probes.
+                // An operator open of a present latch over a store that cannot be asked whether the item
+                // exists is answered from the latch too, and never probes.
                 MemoryErasureKeyOpenResult operatorOpen = await Task
                     .Run(() => keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe))
                     .WaitAsync(prompt);
@@ -736,6 +741,11 @@ public sealed class MemoryErasureKeyringTests
     /// A second test home that overwrites the shared account does not change a latched key, and
     /// anything written under the old key is detectably foreign to a keyring that reads the new one.
     /// </summary>
+    /// <remarks>
+    /// An overwritten item still exists, so the operator's presence question answers from the latch too.
+    /// Only a deleted item is reported, by
+    /// <see cref="An_operator_open_of_a_present_latch_asks_whether_the_item_exists_and_an_automatic_open_never_does"/>.
+    /// </remarks>
     [Fact]
     public void An_overwritten_account_keeps_the_latched_key_and_its_key_id_mismatch_is_detectable()
     {
@@ -1261,6 +1271,246 @@ public sealed class MemoryErasureKeyringTests
         Assert.Equal(2, store.ProbeCount);
     }
 
+    /// <summary>
+    /// An operator's open of a present latch asks the store whether the key's item still exists, and an
+    /// automatic open never does.
+    /// </summary>
+    /// <remarks>
+    /// The question is metadata only, so it reads no secret and cannot raise a keychain prompt. While the
+    /// item stands, the operator is answered from the latch. Once it is gone the operator is told so and the
+    /// absence is published, as any operator probe publishes what it finds; until then an automatic caller
+    /// keeps the lock-free latch it always had.
+    /// </remarks>
+    [Fact]
+    public void An_operator_open_of_a_present_latch_asks_whether_the_item_exists_and_an_automatic_open_never_does()
+    {
+        InMemoryOsCredentialStore inner = new();
+
+        CountingCredentialStore store = new(inner);
+
+        using MemoryErasureKeyring keyring = new(store);
+
+        using (MemoryErasureKey? created = keyring.OpenOrCreate(evidenceRowsExist: false).Key)
+        {
+            Assert.NotNull(created);
+        }
+
+        int reads = store.TryGetCount;
+
+        int probes = store.ProbeCount;
+
+        using (MemoryErasureKey? automatic = keyring.OpenExisting(MemoryErasureKeyProbe.UseLatched).Key)
+        {
+            Assert.NotNull(automatic);
+        }
+
+        Assert.Equal(probes, store.ProbeCount);
+
+        MemoryErasureKeyOpenResult standing = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
+
+        using (MemoryErasureKey? operatorKey = standing.Key)
+        {
+            Assert.Equal(MemoryErasureKeyState.Present, standing.State);
+
+            Assert.NotNull(operatorKey);
+        }
+
+        Assert.Equal(probes + 1, store.ProbeCount);
+
+        Assert.Equal(reads, store.TryGetCount);
+
+        _ = inner.Delete(Service, Account);
+
+        // Nothing has asked yet, so the automatic caller still holds the key it was given.
+        using (MemoryErasureKey? stale = keyring.OpenExisting(MemoryErasureKeyProbe.UseLatched).Key)
+        {
+            Assert.NotNull(stale);
+        }
+
+        MemoryErasureKeyOpenResult gone = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
+
+        Assert.Equal(MemoryErasureKeyState.Absent, gone.State);
+
+        Assert.Null(gone.Key);
+
+        Assert.Equal(MemoryErasureKeyState.Absent, keyring.Latch.State);
+
+        Assert.Null(keyring.TryCopyLatched());
+
+        Assert.Equal(MemoryErasureKeyState.Absent, keyring.OpenExisting(MemoryErasureKeyProbe.UseLatched).State);
+
+        // Only the creation wrote: neither the asking nor the finding of the absence wrote or deleted anything.
+        Assert.Equal(1, store.SetCount);
+
+        Assert.Equal(0, store.DeleteCount);
+    }
+
+    /// <summary>
+    /// An automatic open of a present latch never waits behind an operator's presence question that is
+    /// parked inside the credential store, whatever store it is.
+    /// </summary>
+    /// <remarks>
+    /// The question takes the keyring's lock, and a store can sit behind a prompt for as long as the
+    /// operator leaves it up, so the lock-free latch an automatic caller holds under a Covenant lease is
+    /// what keeps that wait away from it.
+    /// </remarks>
+    [Fact]
+    public async Task An_automatic_open_of_a_present_latch_never_waits_behind_an_operators_presence_question()
+    {
+        TimeSpan prompt = TimeSpan.FromSeconds(5);
+
+        using GatedPresenceCredentialStore store = new(new InMemoryOsCredentialStore());
+
+        using MemoryErasureKeyring keyring = new(store);
+
+        using (MemoryErasureKey? created = keyring.OpenOrCreate(evidenceRowsExist: false).Key)
+        {
+            Assert.NotNull(created);
+        }
+
+        store.Hold();
+
+        Task<MemoryErasureKeyOpenResult> parked = Task.Run(() => keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe));
+
+        Assert.True(await store.WaitUntilHeldAsync());
+
+        MemoryErasureKeyOpenResult automatic = await Task
+            .Run(() => keyring.OpenExisting(MemoryErasureKeyProbe.UseLatched))
+            .WaitAsync(prompt);
+
+        using (MemoryErasureKey? automaticKey = automatic.Key)
+        {
+            Assert.Equal(MemoryErasureKeyState.Present, automatic.State);
+
+            Assert.NotNull(automaticKey);
+        }
+
+        Assert.Equal(MemoryErasureKeyState.Present, (await Task.Run(() => keyring.Latch).WaitAsync(prompt)).State);
+
+        Assert.False(parked.IsCompleted);
+
+        store.Release();
+
+        using MemoryErasureKey? answered = (await parked.WaitAsync(TimeSpan.FromSeconds(30))).Key;
+
+        Assert.NotNull(answered);
+    }
+
+    /// <summary>
+    /// A presence probe that cannot answer reports the operator's open unavailable, and leaves the key the
+    /// latch holds, because a fault in asking says nothing about whether the item is gone.
+    /// </summary>
+    [Theory]
+    [InlineData(OsCredentialStoreStatus.Unavailable)]
+    [InlineData(OsCredentialStoreStatus.Failed)]
+    public void A_presence_probe_that_cannot_answer_reports_unavailable_without_losing_the_latched_key(OsCredentialStoreStatus answer)
+    {
+        FaultablePresenceCredentialStore store = new(new InMemoryOsCredentialStore());
+
+        using MemoryErasureKeyring keyring = new(store);
+
+        using (MemoryErasureKey? created = keyring.OpenOrCreate(evidenceRowsExist: false).Key)
+        {
+            Assert.NotNull(created);
+        }
+
+        int reads = store.TryGetCount;
+
+        store.Answer = answer;
+
+        MemoryErasureKeyOpenResult asked = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
+
+        Assert.Equal(MemoryErasureKeyState.Unavailable, asked.State);
+
+        Assert.Null(asked.Key);
+
+        Assert.Equal(MemoryErasureKeyState.Present, keyring.Latch.State);
+
+        using (MemoryErasureKey? kept = keyring.TryCopyLatched())
+        {
+            Assert.NotNull(kept);
+        }
+
+        Assert.Equal(reads, store.TryGetCount);
+
+        store.Answer = null;
+
+        store.Throw = true;
+
+        MemoryErasureKeyOpenResult thrown = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
+
+        Assert.Equal(MemoryErasureKeyState.Unavailable, thrown.State);
+
+        Assert.Equal(MemoryErasureKeyState.Present, keyring.Latch.State);
+
+        Assert.Equal(reads, store.TryGetCount);
+    }
+
+    /// <summary>
+    /// A prepare's open of a present latch whose item is gone mints nothing while evidence exists, which is
+    /// a lost key, and mints a fresh key when none does, as it would on a proven absence.
+    /// </summary>
+    [Fact]
+    public void OpenOrCreate_over_a_present_latch_whose_item_is_gone_refuses_with_evidence_and_mints_without_it()
+    {
+        InMemoryOsCredentialStore inner = new();
+
+        CountingCredentialStore store = new(inner);
+
+        using MemoryErasureKeyring withEvidence = new(store);
+
+        byte[] original;
+
+        using (MemoryErasureKey? created = withEvidence.OpenOrCreate(evidenceRowsExist: false).Key)
+        {
+            Assert.NotNull(created);
+
+            original = created.KeyId.ToArray();
+        }
+
+        _ = inner.Delete(Service, Account);
+
+        int writes = store.SetCount;
+
+        MemoryErasureKeyOpenResult refused = withEvidence.OpenOrCreate(evidenceRowsExist: true);
+
+        Assert.Equal(MemoryErasureKeyState.Absent, refused.State);
+
+        Assert.Null(refused.Key);
+
+        Assert.Equal(writes, store.SetCount);
+
+        Assert.Equal(MemoryErasureKeyState.Absent, withEvidence.Latch.State);
+
+        using MemoryErasureKeyring withoutEvidence = new(store);
+
+        using (MemoryErasureKey? first = withoutEvidence.OpenOrCreate(evidenceRowsExist: false).Key)
+        {
+            Assert.NotNull(first);
+        }
+
+        Assert.Equal(writes + 1, store.SetCount);
+
+        byte[] latched = withoutEvidence.Latch.KeyId!;
+
+        _ = inner.Delete(Service, Account);
+
+        MemoryErasureKeyOpenResult minted = withoutEvidence.OpenOrCreate(evidenceRowsExist: false);
+
+        using (MemoryErasureKey? replacement = minted.Key)
+        {
+            Assert.Equal(MemoryErasureKeyState.Present, minted.State);
+
+            Assert.NotNull(replacement);
+
+            Assert.False(replacement.HasKeyId(latched));
+
+            Assert.False(replacement.HasKeyId(original));
+        }
+
+        Assert.Equal(writes + 2, store.SetCount);
+    }
+
     /// <summary>The key id computed from the labelled HMAC directly, independent of the grammar.</summary>
     private static byte[] IndependentKeyId(byte[] key) =>
         HMACSHA256.HashData(key, "Arcanum.MemoryErasure.KeyId.v1\0"u8)[..16];
@@ -1513,6 +1763,80 @@ public sealed class MemoryErasureKeyringTests
 
             return OsCredentialStoreResult.NotFound();
         }
+    }
+
+    /// <summary>
+    /// An in-memory store whose presence probe is held until released, the way a keychain prompt holds one.
+    /// </summary>
+    private sealed class GatedPresenceCredentialStore(InMemoryOsCredentialStore inner)
+        : IOsCredentialStore, IOsCredentialPresenceProbe, IDisposable
+    {
+        private readonly SemaphoreSlim _held = new(0);
+
+        private readonly ManualResetEventSlim _released = new(true);
+
+        public bool IsAvailable => true;
+
+        public Task<bool> WaitUntilHeldAsync() => _held.WaitAsync(TimeSpan.FromSeconds(30));
+
+        public void Hold() => _released.Reset();
+
+        public void Release() => _released.Set();
+
+        public OsCredentialStoreStatus ProbePresence(string service, string account)
+        {
+            _ = _held.Release();
+
+            _ = _released.Wait(TimeSpan.FromSeconds(30));
+
+            return inner.ProbePresence(service, account);
+        }
+
+        public OsCredentialStoreResult TryGet(string service, string account) => inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) => inner.Delete(service, account);
+
+        // Releases rather than disposes: a probe still parked on a failing run must be able to finish.
+        public void Dispose() => _released.Set();
+    }
+
+    /// <summary>
+    /// An in-memory store whose presence probe can be told to answer a fault status or to throw, and which
+    /// counts the secret reads so a test can show a probe read none.
+    /// </summary>
+    private sealed class FaultablePresenceCredentialStore(InMemoryOsCredentialStore inner)
+        : IOsCredentialStore, IOsCredentialPresenceProbe
+    {
+        private int _tryGetCount;
+
+        internal OsCredentialStoreStatus? Answer { get; set; }
+
+        internal bool Throw { get; set; }
+
+        public int TryGetCount => Volatile.Read(ref _tryGetCount);
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreStatus ProbePresence(string service, string account) =>
+            Throw
+                ? throw new IOException("test probe failure")
+                : Answer ?? inner.ProbePresence(service, account);
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            _ = Interlocked.Increment(ref _tryGetCount);
+
+            return inner.TryGet(service, account);
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            inner.Delete(service, account);
     }
 
     /// <summary>Fails the test from every member, and counts the attempts in case a caller swallows that.</summary>

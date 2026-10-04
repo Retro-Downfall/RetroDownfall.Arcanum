@@ -228,6 +228,81 @@ public sealed class MemoryErasureAdministrationTests
     }
 
     /// <summary>
+    /// The host holds the key it created, but the key's OS item can be deleted while it runs. Status asks
+    /// the store whether the item still exists, so it reports the key lost instead of present, with every
+    /// row unverifiable, and reports it unavailable when the store cannot say.
+    /// </summary>
+    [SkippableFact]
+    public async Task Status_reports_a_held_key_lost_once_its_item_is_deleted_and_unavailable_when_that_cannot_be_asked()
+    {
+        InMemoryOsCredentialStore inner = new();
+
+        PresenceFaultStore credentials = new(inner);
+
+        await using ErasureHarness harness = await ErasureHarness.CreateAsync(credentials);
+
+        _ = await harness.EraseAsync(await harness.InsertAsync("The ferry leaves at the second bell."));
+
+        MemoryErasureAdministration admin = harness.Administration();
+
+        MemoryErasureStatusDto present = (await admin.GetStatusAsync(Token)).Value;
+
+        Assert.Equal(MemoryErasureKeyStatus.Present, present.KeyStatus);
+
+        Assert.Equal(new MemoryErasureStoreCountsDto(MemoryReviewStore.Saga, 1, 0, 1), present.Stores[1]);
+
+        credentials.ProbeFails = true;
+
+        MemoryErasureStatusDto unknown = (await admin.GetStatusAsync(Token)).Value;
+
+        Assert.Equal(MemoryErasureKeyStatus.Unavailable, unknown.KeyStatus);
+
+        Assert.All(unknown.Stores, static store => Assert.Equal(0, store.Unverifiable));
+
+        credentials.ProbeFails = false;
+
+        _ = inner.Delete(ArcanumCredentialIdentity.Service, Account);
+
+        MemoryErasureStatusDto lost = (await admin.GetStatusAsync(Token)).Value;
+
+        Assert.Equal(MemoryErasureKeyStatus.Lost, lost.KeyStatus);
+
+        Assert.Equal(new MemoryErasureStoreCountsDto(MemoryReviewStore.Saga, 1, 1, 1), lost.Stores[1]);
+    }
+
+    /// <summary>
+    /// An erase prepare over a held key whose OS item has been deleted is refused as a lost key, so no
+    /// fingerprint is recorded under a key the operating system no longer holds.
+    /// </summary>
+    [SkippableFact]
+    public async Task Prepare_refuses_a_held_key_whose_item_is_deleted_and_records_nothing()
+    {
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ErasureHarness harness = await ErasureHarness.CreateAsync(credentials);
+
+        string first = await harness.InsertAsync("The ferry leaves at the second bell.");
+
+        string second = await harness.InsertAsync("The lighthouse lamp is trimmed at dusk.");
+
+        _ = await harness.EraseAsync(first);
+
+        Assert.True((await harness.PrepareAsync(second)).IsSuccess);
+
+        _ = credentials.Delete(ArcanumCredentialIdentity.Service, Account);
+
+        Result<MemoryErasurePreflightDto> refused = await harness.PrepareAsync(second);
+
+        Assert.True(refused.IsFailure, "A prepare was issued under a key the operating system no longer holds.");
+
+        Assert.Equal(ErrorCodes.MemoryErasure.KeyLost, refused.Error.Code);
+
+        Assert.Equal(1, (await harness.Administration().GetStatusAsync(Token)).Value.Stores[1].Fingerprints);
+
+        Assert.Equal(OsCredentialStoreStatus.NotFound, credentials.ProbePresence(ArcanumCredentialIdentity.Service, Account));
+    }
+
+    /// <summary>
     /// A reset creates a key only when it writes one. Here another caller, such as a first erase on an
     /// installation with no evidence, writes the key between the reset's own read and its create path,
     /// so the reset finds that key, keeps it, and does not claim to have created it.
@@ -268,6 +343,24 @@ public sealed class MemoryErasureAdministrationTests
         Assert.Equal(concurrent, inner.TryGet(ArcanumCredentialIdentity.Service, Account).Value);
 
         Assert.Equal(0, store.Writes);
+    }
+
+    /// <summary>An in-memory store whose metadata-only presence probe can be made to report a fault.</summary>
+    private sealed class PresenceFaultStore(InMemoryOsCredentialStore inner) : IOsCredentialStore, IOsCredentialPresenceProbe
+    {
+        internal bool ProbeFails { get; set; }
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreStatus ProbePresence(string service, string account) =>
+            ProbeFails ? OsCredentialStoreStatus.Unavailable : inner.ProbePresence(service, account);
+
+        public OsCredentialStoreResult TryGet(string service, string account) => inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) => inner.Delete(service, account);
     }
 
     /// <summary>
@@ -357,9 +450,9 @@ public sealed class MemoryErasureAdministrationTests
 
         private SqliteConnection Connection => (SqliteConnection)Harness.Connection;
 
-        internal static async Task<ErasureHarness> CreateAsync()
+        internal static async Task<ErasureHarness> CreateAsync(IOsCredentialStore? credentials = null)
         {
-            MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(new InMemoryOsCredentialStore());
+            MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials ?? new InMemoryOsCredentialStore());
 
             return new ErasureHarness(await SagaStoreHarness.CreateAsync(annalsEnabled: true, keyring), keyring);
         }
@@ -383,18 +476,27 @@ public sealed class MemoryErasureAdministrationTests
             return id;
         }
 
-        /// <summary>Prepares and applies the erase of one memory through the production service.</summary>
-        internal async Task<MemoryErasureResultDto> EraseAsync(string memoryId)
+        /// <summary>Prepares the erase of one memory through the production service, whatever it answers.</summary>
+        internal async Task<Result<MemoryErasurePreflightDto>> PrepareAsync(string memoryId) =>
+            await Erase.PrepareAsync(await PrepareRequestAsync(memoryId), Token);
+
+        private async Task<SagaErasePrepareRequest> PrepareRequestAsync(string memoryId)
         {
             SagaMemoryCurationRow row = (await Harness.Store.ReadCurationRowAsync(memoryId, Token))!;
 
             AnnalClaimHead? claim = await Harness.Annals.GetClaimAsync(AnnalSubjectStore.Saga, memoryId, Token);
 
-            SagaErasePrepareRequest prepare = new(
+            return new SagaErasePrepareRequest(
                 memoryId,
                 Convert.ToHexString(AnnalContentDigest.ForSagaMemory(row.Memory.Content)),
                 claim?.CurrentVersionId,
                 Guid.NewGuid());
+        }
+
+        /// <summary>Prepares and applies the erase of one memory through the production service.</summary>
+        internal async Task<MemoryErasureResultDto> EraseAsync(string memoryId)
+        {
+            SagaErasePrepareRequest prepare = await PrepareRequestAsync(memoryId);
 
             Result<MemoryErasurePreflightDto> prepared = await Erase.PrepareAsync(prepare, Token);
 
