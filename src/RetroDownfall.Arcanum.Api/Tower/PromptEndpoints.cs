@@ -26,7 +26,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class PromptEndpoints
 {
-
     public static RouteGroupBuilder MapPromptEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapGet(
@@ -504,7 +503,7 @@ internal static class PromptEndpoints
                     // W3.5: use the effective codex cap (min of codex + workspace read caps), matching
                     // codex GET/PUT — the workspace read cap alone (up to 10 MiB) let /prompts/{id}/test
                     // pull a far larger codex file into prompt assembly than codex endpoints allow.
-                    long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value);
+                    long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
                     Result<CodexValidationResult> codexPathResult = CodexPathPolicy.ValidateContainedFile(
                         request.CodexPath,
@@ -950,5 +949,4 @@ internal static class PromptEndpoints
             ContextWindowLimit = 8192,
         };
     }
-
 }

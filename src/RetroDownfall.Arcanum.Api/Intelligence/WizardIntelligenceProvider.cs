@@ -2105,7 +2105,7 @@ public sealed partial class WizardIntelligenceProvider(
         string? streamCodexContent = await CodexReader
             .ReadCodexAsync(
                 request.WorkingDirectory,
-                ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value),
+                ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(),
                 inferenceToken)
             .ConfigureAwait(false);
 
@@ -4739,7 +4739,7 @@ public sealed partial class WizardIntelligenceProvider(
         CancellationToken cancellationToken,
         Action<string, int>? observeEmbedding = null)
     {
-        long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
+        long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
         if (!string.IsNullOrWhiteSpace(request.OverrideSpellPath))
         {

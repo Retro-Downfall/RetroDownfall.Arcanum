@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
 internal sealed partial class SpellRepository : ISpellRepository
 {
-
     /// <summary>
     /// Operator-facing text for every <c>Spell.WriteFailed</c> envelope. Raw exception messages
     /// name absolute server paths, so the exception detail stays in the structured log the same
@@ -58,7 +57,7 @@ internal sealed partial class SpellRepository : ISpellRepository
     }
 
     private long GetMaxSpellFileSizeBytes() =>
-        ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(_settingsMonitor.CurrentValue);
+        ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
     private int GetMaxSpellDeclaredTools() =>
         ArcanumSettingClamps.MaxDeclaredTools(ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
@@ -470,7 +469,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         ArcanumSettings settings = _settingsMonitor.CurrentValue;
 
-        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings);
+        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
         // Spell export has a code-owned aggregate script-byte envelope. Reuse the clamped workspace
         // read-size cap so a single export cannot stream unbounded content.
@@ -1043,7 +1042,6 @@ internal sealed partial class SpellRepository : ISpellRepository
     /// </summary>
     private static bool PathsReferToSameFile(string left, string right)
     {
-
         string fullLeft;
 
         string fullRight;
@@ -1064,7 +1062,6 @@ internal sealed partial class SpellRepository : ISpellRepository
             : StringComparison.Ordinal;
 
         return fullLeft.Equals(fullRight, cmp);
-
     }
 
     private static bool IsUnderGlobalSpellsDirectory(string candidateDir)
@@ -1591,5 +1588,4 @@ internal sealed partial class SpellRepository : ISpellRepository
 
     [GeneratedRegex("^[A-Za-z0-9_-]+$")]
     private static partial Regex ValidNamePattern();
-
 }

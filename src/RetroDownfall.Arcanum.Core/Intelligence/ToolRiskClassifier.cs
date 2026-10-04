@@ -1,11 +1,9 @@
-using System.Collections.Frozen;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
-/// Central classification for coding-tool capabilities and the retired Ward decision contract.
+/// Central classification for coding-tool capabilities.
 /// </summary>
 public static class ToolRiskClassifier
 {
@@ -20,15 +18,6 @@ public static class ToolRiskClassifier
 
     public const string ReadCommandOutputToolName =
         "read_command_output";
-
-    /// <summary>
-    /// The retired code-owned Ward candidate inventory. Tool calls are never Ward-gated.
-    /// </summary>
-    public static IReadOnlySet<string> IntrinsicWardToolNames { get; } =
-        Array.Empty<string>().ToFrozenSet(StringComparer.OrdinalIgnoreCase);
-
-    public static bool IsIntrinsicWardTool(string? toolName) =>
-        !string.IsNullOrWhiteSpace(toolName) && IntrinsicWardToolNames.Contains(toolName);
 
     public static bool IsReadOnlyCodingTool(string? toolName) =>
         string.Equals(
@@ -52,16 +41,6 @@ public static class ToolRiskClassifier
               + "Do not run this check for an untrusted repository merely because its command arguments are fixed."
             : string.Empty;
 
-    public static bool RequiresWard(
-        string toolName,
-        bool campaignRequiresWard,
-        WardSettings wardSettings)
-    {
-        ArgumentNullException.ThrowIfNull(wardSettings);
-
-        return false;
-    }
-
     /// <summary>
     /// Operator-configured names removed from advertisement by <see cref="ToolPolicy.NoForbiddenArts"/>.
     /// </summary>
@@ -71,7 +50,6 @@ public static class ToolRiskClassifier
             configuredNames ?? [],
             StringComparer.OrdinalIgnoreCase);
 
-        names.UnionWith(IntrinsicWardToolNames);
         return names;
     }
 }

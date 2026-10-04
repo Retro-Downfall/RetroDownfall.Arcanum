@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 [ExcludeFromCodeCoverage] // Reason: spell execution HTTP streaming endpoints; covered via spell execution integration tests.
 internal static partial class SpellExecutionEndpoints
 {
-
     public static RouteGroupBuilder MapSpellExecutionEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapPost(
@@ -325,7 +324,7 @@ internal static partial class SpellExecutionEndpoints
 
                 List<SpellVersionDto> versions = [];
 
-                long maxFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
+                long maxFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
                 string? activeVersionLabel = spell.ActiveVersion;
 
@@ -746,5 +745,4 @@ internal static partial class SpellExecutionEndpoints
 
         return new SpellVersionDto(version, isActive, createdAt, description);
     }
-
 }

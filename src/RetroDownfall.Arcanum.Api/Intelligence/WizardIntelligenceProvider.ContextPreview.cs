@@ -222,7 +222,7 @@ public sealed partial class WizardIntelligenceProvider
             .ReadCodexAsync(
                 turn.WorkingDirectory,
 
-                ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value),
+                ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(),
 
                 cancellationToken)
 

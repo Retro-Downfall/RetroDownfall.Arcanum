@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 [Collection("ProcessEnvironment")]
 public sealed class SpellRepositoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -34,14 +33,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
     public SpellRepositoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -51,39 +47,29 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Directory.CreateDirectory(_workspaceRoot);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_workspaceRoot))
         {
-
             Directory.Delete(_workspaceRoot, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_GetAsync_ListAsync_and_DeleteAsync_round_trip_workspace_spell()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -121,13 +107,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(deleteResult.IsSuccess);
 
         Assert.Null(await repository.GetAsync("round-trip", _workspaceRoot, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_with_structured_fields_writes_canonical_SPELL_json()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -161,13 +145,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Equal("1.2.3", detail!.Version);
 
         Assert.Contains("get_local_system_time", detail.DeclaredTools ?? []);
-
     }
 
     [SkippableFact]
     public async Task UpdateAsync_after_legacy_SKILL_json_writes_canonical_SPELL_json()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string spellDir = Path.Combine(_workspaceRoot, "spells", "legacy-update");
@@ -220,13 +202,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Contains("1.1.0", canonical, StringComparison.Ordinal);
 
         Assert.Contains("tool-b", canonical, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task ActivateVersionAsync_after_legacy_SKILL_json_writes_canonical_SPELL_json()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string spellDir = Path.Combine(_workspaceRoot, "spells", "legacy-activate");
@@ -287,13 +267,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Contains("dep-keep", canonical, StringComparison.Ordinal);
 
         Assert.Contains("keep-me", canonical, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task ActivateVersionAsync_reactivating_the_active_version_preserves_the_archived_snapshot()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string spellDir = Path.Combine(_workspaceRoot, "spells", "self-activate");
@@ -353,13 +331,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         string active = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
 
         Assert.Contains("pristine archived body", active, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_without_workspace_returns_NoWorkspace_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -381,13 +357,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.NoWorkspace", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_with_invalid_name_returns_InvalidName_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -409,13 +383,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.InvalidName", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_duplicate_workspace_spell_returns_DuplicateName_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -439,13 +411,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(second.IsFailure);
 
         Assert.Equal("Spell.DuplicateName", second.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task UpdateAsync_changes_workspace_spell_content()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -485,13 +455,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Equal("After", detail!.Description);
 
         Assert.Equal("new prompt", detail.SystemPrompt);
-
     }
 
     [SkippableFact]
     public async Task UpdateAsync_missing_spell_returns_NotFound_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -511,13 +479,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.NotFound", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task ValidateAsync_reports_missing_dependency_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -545,13 +511,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.False(validation.IsValid);
 
         Assert.Contains(validation.Errors, e => e.Contains("missing-dep", StringComparison.Ordinal));
-
     }
 
     [SkippableFact]
     public async Task ValidateAsync_warns_when_declared_tool_is_missing_from_mcp()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string spellDir = Path.Combine(_workspaceRoot, "spells", "tooly");
@@ -591,7 +555,6 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
 
         Assert.Contains(validation.Warnings, w => w.Contains("ghost_tool", StringComparison.Ordinal));
-
     }
 
     [SkippableFact]
@@ -647,7 +610,6 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     [SkippableFact]
     public async Task ExportAsync_and_ImportAsync_round_trip_spell_payload()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -697,13 +659,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.NotNull(imported);
 
         Assert.Equal(SpellSource.Workspace, imported!.Source);
-
     }
 
     [SkippableFact]
     public async Task SearchAsync_lists_spell_from_workspace_query()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string campaignDir = Path.Combine(_workspaceRoot, "search-campaign");
@@ -739,13 +699,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         SpellSummary[] results = await repository.SearchAsync(query, CancellationToken.None);
 
         Assert.Contains(results, s => string.Equals(s.Name, "searchable", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [SkippableFact]
     public async Task GetAsync_with_blank_name_returns_null()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -753,13 +711,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         SpellDetail? detail = await repository.GetAsync("   ", _workspaceRoot, CancellationToken.None);
 
         Assert.Null(detail);
-
     }
 
     [SkippableFact]
     public async Task DeleteAsync_without_workspace_returns_NoWorkspace_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -769,13 +725,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.NoWorkspace", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task UpdateAsync_without_workspace_returns_NoWorkspace_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -795,13 +749,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.NoWorkspace", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_invalid_frontmatter_returns_InvalidFrontmatter_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -823,13 +775,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.InvalidFrontmatter", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task ImportAsync_existing_workspace_spell_returns_NameCollision_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -866,13 +816,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.NameCollision", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task ImportAsync_invalid_script_path_returns_InvalidScriptPath_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -907,13 +855,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Spell.InvalidScriptPath", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task ImportAsync_description_with_a_newline_returns_InvalidFrontmatter_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -944,13 +890,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Equal("Spell.InvalidFrontmatter", result.Error.Code);
 
         Assert.False(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "smuggler")));
-
     }
 
     [SkippableFact]
     public async Task ImportAsync_without_a_payload_returns_InvalidBody_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -962,13 +906,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Validation.InvalidBody", result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task ImportAsync_without_scripts_does_not_leak_a_dereference_message()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -991,13 +933,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.Equal("scriptless", result.Value!.Name);
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_write_failure_does_not_leak_the_server_path()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await File.WriteAllTextAsync(Path.Combine(_workspaceRoot, "spells"), "not a directory");
@@ -1023,13 +963,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Equal("Spell.WriteFailed", result.Error.Code);
 
         Assert.DoesNotContain(_workspaceRoot, result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task ValidateAsync_invalid_input_schema_reports_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string spellDir = Path.Combine(_workspaceRoot, "spells", "bad-schema");
@@ -1070,13 +1008,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.False(validation.IsValid);
 
         Assert.Contains(validation.Errors, e => e.Contains("InputSchema", StringComparison.Ordinal));
-
     }
 
     [SkippableFact]
     public async Task ExportAsync_missing_spell_returns_null()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SpellRepository repository = CreateRepository();
@@ -1084,13 +1020,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         SpellExportDto? exported = await repository.ExportAsync("missing-export", _workspaceRoot, CancellationToken.None);
 
         Assert.Null(exported);
-
     }
 
     [SkippableFact]
     public async Task ExportAsync_skips_oversized_script_file()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string spellDir = Path.Combine(_workspaceRoot, "spells", "big-script");
@@ -1113,8 +1047,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             Path.Combine(spellDir, "scripts", "small.sh"),
             new byte[64]);
 
-        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(
-            new ArcanumSettings());
+        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
         await File.WriteAllBytesAsync(
             Path.Combine(spellDir, "scripts", "big.sh"),
             new byte[checked((int)perFileCap + 1)]);
@@ -1128,13 +1061,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         SpellExportScriptDto single = Assert.Single(exported!.Scripts);
 
         Assert.Equal("small.sh", single.FileName);
-
     }
 
     [SkippableFact]
     public async Task ExportAsync_stops_reading_scripts_when_aggregate_cap_exceeded()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string spellDir = Path.Combine(_workspaceRoot, "spells", "agg-cap");
@@ -1153,8 +1084,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             body
             """);
 
-        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(
-            new ArcanumSettings());
+        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
         long aggregateCap = ArcanumSettingClamps.MaxFileReadSizeBytes(
             ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
         int scriptsWithinAggregateCap = checked((int)(aggregateCap / perFileCap));
@@ -1173,13 +1103,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.NotNull(exported);
 
         Assert.Equal(scriptsWithinAggregateCap, exported!.Scripts.Count);
-
     }
 
     [Fact]
     public void TryResolveDeleteTarget_rejects_directory_outside_workspace()
     {
-
         // Use a dedicated workspace under temp — Path.GetTempPath() is often /tmp on Linux CI,
         // so a hardcoded "/tmp/outside-..." path would incorrectly count as inside the workspace.
         string workspace = Path.Combine(Path.GetTempPath(), "arcanum-spell-del-" + Guid.NewGuid().ToString("N"));
@@ -1208,13 +1136,11 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.False(resolved);
 
         Assert.Equal("Spell.UnsafeDelete", error.Code);
-
     }
 
     [SkippableFact]
     public async Task UpdateAsync_builtin_spell_returns_BuiltinReadOnly_error()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string? priorHome = System.Environment.GetEnvironmentVariable("HOME");
@@ -1239,7 +1165,6 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         try
         {
-
             string builtinDir = Path.Combine(tempHome, ".config", "arcanum", "spells", "builtin-test");
 
             Directory.CreateDirectory(builtinDir);
@@ -1271,11 +1196,9 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             Assert.True(result.IsFailure);
 
             Assert.Equal("Spell.BuiltinReadOnly", result.Error.Code);
-
         }
         finally
         {
-
             if (priorHome is null)
             {
                 System.Environment.SetEnvironmentVariable("HOME", null);
@@ -1295,9 +1218,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             {
                 Directory.Delete(tempHome, recursive: true);
             }
-
         }
-
     }
 
     private SpellRepository CreateRepository(
@@ -1305,20 +1226,17 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         IMcpConnectionManager? mcp = null,
         ArcanumSettings? settings = null)
     {
-
         IOptionsMonitor<ArcanumSettings> optionsMonitor = settings is not null
             ? new TestOptionsMonitor<ArcanumSettings>(settings)
             : _fixture.CreateOptionsMonitor();
 
         if (campaignRepository is not null)
         {
-
             return new SpellRepository(
                 NullLogger<SpellRepository>.Instance,
                 new FixedCampaignRepositoryScopeFactory(campaignRepository),
                 mcp ?? new FakeMcpConnectionManager(),
                 optionsMonitor);
-
         }
 
         ServiceCollection services = new();
@@ -1338,17 +1256,14 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             provider.GetRequiredService<IServiceScopeFactory>(),
             mcp ?? new FakeMcpConnectionManager(),
             optionsMonitor);
-
     }
 
     private sealed class FixedCampaignRepositoryScopeFactory(ICampaignRepository repository) : IServiceScopeFactory
     {
-
         public IServiceScope CreateScope() => new FixedScope(repository);
 
         private sealed class FixedScope(ICampaignRepository repository) : IServiceScope
         {
-
             public IServiceProvider ServiceProvider { get; } = new FixedProvider(repository);
 
             public void Dispose()
@@ -1357,14 +1272,10 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
             private sealed class FixedProvider(ICampaignRepository repository) : IServiceProvider
             {
-
                 public object? GetService(Type serviceType) =>
                     serviceType == typeof(ICampaignRepository) ? repository : null;
-
             }
-
         }
-
     }
 
     private CampaignRepository CreateCampaignRepository() =>
@@ -1375,7 +1286,6 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
     private sealed class FakeMcpConnectionManager : IMcpConnectionManager
     {
-
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -1412,7 +1322,5 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
-
     }
-
 }

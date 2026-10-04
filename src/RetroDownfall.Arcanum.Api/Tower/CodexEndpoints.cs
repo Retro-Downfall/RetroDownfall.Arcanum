@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class CodexEndpoints
 {
-
     /// <summary>
     /// A campaign root is frequently an untrusted repository the operator cloned, and a repository can
     /// ship <c>CODEX.md</c> as a symbolic link. Both the read and the write follow that link, so the
@@ -280,7 +279,7 @@ internal static class CodexEndpoints
             return Result<CodexContentDto>.Failure(CodexPathNotContained);
         }
 
-        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value);
+        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
         string? content = await CodexReader.ReadCodexFileAsync(fullPath, maxBytes, cancellationToken).ConfigureAwait(false);
 
@@ -300,7 +299,7 @@ internal static class CodexEndpoints
         // W3.5: use the EFFECTIVE codex cap (min of the codex cap and Workspaces:MaxFileReadSizeBytes)
         // so the write bound matches the read path — otherwise PUT could accept content the codex
         // GET / inference read path then refuses.
-        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value);
+        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
         int contentByteCount = Encoding.UTF8.GetByteCount(content);
 
@@ -336,5 +335,4 @@ internal static class CodexEndpoints
 
         return null;
     }
-
 }
