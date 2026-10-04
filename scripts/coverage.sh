@@ -64,7 +64,11 @@ dotnet tool restore >/dev/null
 # assertions are machine-load sensitive and would fail the gate for reasons unrelated
 # to any code change, especially under coverlet instrumentation on a loaded runner.
 # Runtime tests must see redirected EOF even when this runner inherits a terminal.
+# --blame-hang-timeout names and kills a test host that stops making progress instead of letting it
+# sit until the job ceiling; the dump type is none so the kill does not write a multi-gigabyte dump.
 dotnet test "$TEST_PROJECT" \
+  --blame-hang-timeout 15m \
+  --blame-hang-dump-type none \
   --collect:"XPlat Code Coverage" \
   --settings "$RUNSETTINGS" \
   --filter "Category!=Perf&Category!=HostedProducerAnalysis" \

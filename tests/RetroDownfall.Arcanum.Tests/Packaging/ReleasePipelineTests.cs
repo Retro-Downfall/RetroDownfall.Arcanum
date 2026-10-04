@@ -542,6 +542,78 @@ public sealed class ReleasePipelineTests
     }
 
     /// <summary>
+    /// <c>notarytool submit --wait</c> blocks for as long as Apple takes to answer. With no bound a
+    /// stalled submission holds the signing keychain and the macOS runner until the job ceiling, and
+    /// reads as a slow release rather than a failed one.
+    /// </summary>
+    [Fact]
+    public void Notarization_submit_bounds_its_wait()
+    {
+        string common = File.ReadAllText(
+            Path.Combine(RepositoryRoot(), "scripts", "packaging", "macos", "common.sh"));
+
+        int submit = common.IndexOf("xcrun notarytool submit", StringComparison.Ordinal);
+
+        Assert.True(submit >= 0, "common.sh no longer submits to notarytool.");
+
+        string call = common[submit..common.IndexOf('}', submit)];
+
+        Assert.Contains("--wait", call, StringComparison.Ordinal);
+
+        Assert.Contains("--timeout 30m", call, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A hung test host otherwise sits until the job-level ceiling. The hang detector kills it with a
+    /// named test, and <c>--blame-hang-dump-type none</c> keeps the kill from writing a multi-gigabyte
+    /// process dump on a hosted runner.
+    /// </summary>
+    [Fact]
+    public void Every_arcanum_suite_invocation_detects_a_hung_test()
+    {
+        string root = RepositoryRoot();
+
+        string coverage = File.ReadAllText(Path.Combine(root, "scripts", "coverage.sh"));
+
+        string[] invocations =
+        [
+            .. BlameHangCandidates(coverage, "dotnet test \"$TEST_PROJECT\""),
+            .. BlameHangCandidates(
+                File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("`\n", " ", StringComparison.Ordinal).Replace("\\\n", " ", StringComparison.Ordinal),
+                "dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj"),
+        ];
+
+        Assert.True(invocations.Length >= 4, $"Expected at least four Arcanum suite invocations (coverage.sh plus three CI lanes), found {invocations.Length}.");
+
+        foreach (string invocation in invocations)
+        {
+            Assert.Contains("--blame-hang-timeout 15m", invocation, StringComparison.Ordinal);
+
+            Assert.Contains("--blame-hang-dump-type none", invocation, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The text from each occurrence of <paramref name="command"/> to the end of its logical line.
+    /// Callers fold line continuations first when the document uses them.
+    /// </summary>
+    private static IEnumerable<string> BlameHangCandidates(string text, string command)
+    {
+        text = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\\\n", " ", StringComparison.Ordinal);
+
+        int index = 0;
+
+        while ((index = text.IndexOf(command, index, StringComparison.Ordinal)) >= 0)
+        {
+            int end = text.IndexOf('\n', index);
+
+            yield return text[index..(end < 0 ? text.Length : end)];
+
+            index += command.Length;
+        }
+    }
+
+    /// <summary>
     /// Bodies of every brace-delimited block that follows <paramref name="header"/>, brace-matched
     /// so a nested block does not terminate its parent.
     /// </summary>

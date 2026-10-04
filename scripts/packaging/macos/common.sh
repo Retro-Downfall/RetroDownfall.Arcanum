@@ -513,10 +513,13 @@ packaging_cleanup_exit() {
 notarize_submit() {
   local archive="$1"
   notarize_prepare_credentials
+  # --wait with no bound blocks for as long as Apple takes to answer, holding the signing keychain
+  # and the runner until the job ceiling. Thirty minutes is well past a normal notarization.
   xcrun notarytool submit "$archive" \
     --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" \
     --keychain "$NOTARY_KEYCHAIN" \
-    --wait
+    --wait \
+    --timeout 30m
 }
 
 # A CLI archive contains a standalone Mach-O, not an app bundle. `spctl --type execute` assesses

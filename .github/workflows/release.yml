@@ -63,6 +63,7 @@ jobs:
   prepare:
     name: Validate the version and require every shipping asset
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       # `write` for a job that writes nothing: the releases API lists draft releases only to callers
       # with push access, and every release this workflow makes starts as a draft. With `read` the
@@ -297,6 +298,7 @@ jobs:
       - macos-arm64
       - windows
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       # `contents: write` alone would replace the default permission set rather than add to it,
       # and the artifact download reads the Actions API.

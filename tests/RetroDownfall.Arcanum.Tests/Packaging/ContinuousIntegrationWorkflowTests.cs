@@ -550,6 +550,58 @@ public sealed class ContinuousIntegrationWorkflowTests
             + string.Join(global::System.Environment.NewLine, offenders));
     }
 
+    private static readonly Regex GatedOnRuntimeIdentifier = new(
+        @"outputs\.(?<rid>(?:linux|osx|win)-[a-z0-9]+)",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// A job gated on a runtime identifier the manifest does not ship can never run: the gate is
+    /// read from the manifest, so the job skips on every dispatch and reads as a dormant feature
+    /// instead of a deleted one. The private beta workflow kept a Linux packaging job in exactly that
+    /// state, beside a second and weaker Windows release path.
+    /// </summary>
+    [Fact]
+    public void No_workflow_job_is_gated_on_a_rid_absent_from_the_manifest()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlyList<string> shipped = ShippingRuntimeIdentifiers(repositoryRoot);
+
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles(repositoryRoot))
+        {
+            foreach (WorkflowJob job in JobsIn(workflow))
+            {
+                foreach (string line in job.Body.Split('\n'))
+                {
+                    if (WorkflowIndentOf(line) != 4 || !line.Trim().StartsWith("if:", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    foreach (Match match in GatedOnRuntimeIdentifier.Matches(line))
+                    {
+                        string rid = match.Groups["rid"].Value;
+
+                        if (!shipped.Contains(rid, StringComparer.Ordinal))
+                        {
+                            offenders.Add($"{Path.GetFileName(workflow)}: {job.Id} is gated on {rid}");
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A workflow job is gated on a runtime identifier native-source-manifest.json does not "
+            + "ship, so it can never run. Delete it, or add the RID and its verified asset:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
     /// <summary>
     /// A test project the solution carries but no lane executes is a suite whose failures nobody
     /// ever sees. Whole-project exclusions are invisible in a way per-test <c>Skip</c> is not: they
@@ -898,6 +950,54 @@ public sealed class ContinuousIntegrationWorkflowTests
             "The Windows release must clear its AOT diagnostic profile before creating archives.");
         Assert.Contains("RID: ${{ inputs.rid }}", package.Body, StringComparison.Ordinal);
         Assert.Contains("rg --version", package.Body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The longest a job may be allowed to run. A hung test, a notarization that never answers, or a
+    /// stuck runner otherwise holds the job for the platform default (six hours), which is a long
+    /// time to hold a signing keychain or a scarce macOS runner. The ceiling sits above the slowest
+    /// legitimate job (the macOS release: a Native AOT compile and three notarizations).
+    /// </summary>
+    private const int MaximumJobTimeoutMinutes = 90;
+
+    [Fact]
+    public void Every_job_declares_a_job_level_timeout()
+    {
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles(FindRepositoryRoot()))
+        {
+            foreach (WorkflowJob job in JobsIn(workflow))
+            {
+                string[] lines = job.Body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+                // A job that calls a reusable workflow cannot carry timeout-minutes; the called
+                // workflow's own jobs do.
+                if (lines.Any(static line => WorkflowIndentOf(line) == 4 && line.Trim().StartsWith("uses:", StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                string? declared = lines
+                    .Where(static line => WorkflowIndentOf(line) == 4 && line.Trim().StartsWith("timeout-minutes:", StringComparison.Ordinal))
+                    .Select(static line => line.Trim()["timeout-minutes:".Length..].Trim())
+                    .FirstOrDefault();
+
+                if (declared is null
+                    || !int.TryParse(declared, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int minutes)
+                    || minutes is < 1 or > MaximumJobTimeoutMinutes)
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}: {job.Id} (timeout-minutes: {declared ?? "absent"})");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"A workflow job declares no job-level timeout-minutes between 1 and {MaximumJobTimeoutMinutes}, "
+            + "so a hang holds it for the platform default of six hours:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
     }
 
     private const string PinnedSdkInput = "global-json-file: global.json";
