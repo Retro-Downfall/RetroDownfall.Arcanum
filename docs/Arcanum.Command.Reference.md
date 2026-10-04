@@ -968,7 +968,7 @@ The server performs another research pass while it discovers new unique sources.
 
 Upload, inspect, download, and delete OpenAI-compatible files.
 
-Uses the OpenAI-compatible `/v1/files` surface. Uploads and downloads stream bytes; downloads use a staged atomic replacement, choose a safe default filename when `--output` is omitted, and require confirmation before overwrite.
+Uses the OpenAI-compatible `/v1/files` surface. Uploads and downloads stream bytes; downloads use a staged atomic replacement, choose a safe default filename when `--output` is omitted, and require confirmation before overwrite. The staging file holds decrypted content, so on Unix it is created owner-only (`600`) before the first byte is written and the finished file keeps that mode; on Windows it inherits the destination folder's permissions. A destination whose parent cannot be created, or that cannot be written, fails as `Files.WriteFailed` (exit `1`), and a file that appears between the overwrite check and the move is reported as `Files.DestinationExists` instead of being replaced.
 
 | Command | Explanation | Additional command options |
 |---|---|---|

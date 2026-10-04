@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 namespace RetroDownfall.Arcanum.Cli.Services;
 
 /// <summary>
@@ -137,19 +139,35 @@ public sealed class FileBatchApiClient(
         bool overwrite,
         CancellationToken cancellationToken)
     {
-        string fullDestination = Path.GetFullPath(destinationPath);
-
-        string directory = Path.GetDirectoryName(fullDestination)
-            ?? throw new IOException("The download destination has no parent directory.");
-
-        Directory.CreateDirectory(directory);
-
-        string temporaryPath = Path.Combine(
-            directory,
-            $".{Path.GetFileName(fullDestination)}.{Guid.NewGuid():N}.download");
+        string temporaryPath = string.Empty;
 
         try
         {
+            // Preparing the destination is part of the download: a parent that cannot be created or a
+            // path that cannot be normalised is a write failure the operator can act on, and it must
+            // be reported as one rather than escape this method as an unhandled exception.
+            string fullDestination;
+
+            try
+            {
+                fullDestination = Path.GetFullPath(destinationPath);
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException or NotSupportedException)
+            {
+                return Result<long>.Failure(
+                    new Error("Files.WriteFailed", "The download destination is not a valid path."));
+            }
+
+            string directory = Path.GetDirectoryName(fullDestination)
+                ?? throw new IOException("The download destination has no parent directory.");
+
+            Directory.CreateDirectory(directory);
+
+            temporaryPath = Path.Combine(
+                directory,
+                $".{Path.GetFileName(fullDestination)}.{Guid.NewGuid():N}.download");
+
             HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.StreamingHttpClientName);
 
             using ArcanumAuthenticatedHttpResponse sent =
@@ -184,13 +202,9 @@ public sealed class FileBatchApiClient(
 
             long bytes = 0;
 
-            await using (FileStream destination = new(
-                             temporaryPath,
-                             FileMode.CreateNew,
-                             FileAccess.Write,
-                             FileShare.None,
-                             bufferSize: 81_920,
-                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The staging file holds decrypted content, so it is owner-only before the first byte is
+            // written, not narrowed after the move.
+            await using (FileStream destination = SecureFilePermissions.CreateOwnerOnlyTempFile(temporaryPath))
             {
                 byte[] buffer = new byte[81_920];
 
@@ -208,7 +222,19 @@ public sealed class FileBatchApiClient(
                 await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            File.Move(temporaryPath, fullDestination, overwrite);
+            try
+            {
+                File.Move(temporaryPath, fullDestination, overwrite);
+            }
+            catch (IOException) when (!overwrite && File.Exists(fullDestination))
+            {
+                // The command asks for no-overwrite only when the file was absent a moment ago, so a
+                // refusal here means it appeared in between. Say so instead of blaming the write.
+                return Result<long>.Failure(
+                    new Error(
+                        "Files.DestinationExists",
+                        "The destination file already exists and was not replaced."));
+            }
 
             temporaryPath = string.Empty;
 
