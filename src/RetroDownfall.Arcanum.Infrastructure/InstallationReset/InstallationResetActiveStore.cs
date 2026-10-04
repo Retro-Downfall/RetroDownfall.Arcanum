@@ -343,18 +343,123 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             return Result<InstallationResetActivePublication>.Failure(anchored.Error);
         }
 
-        using (key.Value)
+        Result<InstallationResetActivePublication> published;
+
+        try
         {
-            return await PublishAsync(
+            using (key.Value)
+            {
+                published = await PublishAsync(
+                        heldInstallationLock,
+                        profile,
+                        location,
+                        opening,
+                        key.Value,
+                        payload.Value,
+                        InstallationResetActiveRecordAuthenticator.ZeroDigest,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception)
+        {
+            RetireUnpublishedOpening(
+                heldInstallationLock,
+                profile,
+                location,
+                opening);
+
+            throw;
+        }
+
+        if (published.IsFailure)
+        {
+            RetireUnpublishedOpening(
+                heldInstallationLock,
+                profile,
+                location,
+                opening);
+        }
+
+        return published;
+    }
+
+    /// <summary>
+    /// Retires a revision-zero opening whose first envelope never reached disk.
+    /// </summary>
+    /// <remarks>
+    /// Begin writes the anchor before the envelope so a crash between them is detectable, and that
+    /// crash stays a fail-closed blocker for recovery. A failure or cancellation in a live process
+    /// is different: it still holds the lock and knows nothing was published, so leaving the
+    /// opening behind would let a transient disk-full, permission error or cancelled request wedge
+    /// the installation, because recovery and startup cleanup refuse an <c>Active</c> anchor naming
+    /// no file and a second Begin refuses any anchor.
+    ///
+    /// <para>Every precondition is re-proved first — the anchor is still exactly the opening just
+    /// written, at revision zero, and the active file and any publication residue are durably
+    /// absent — so this can never retire an anchor that governs real evidence. The anchor codec
+    /// admits no <c>Closed</c> revision-zero tombstone, so it mirrors the closed suffix instead:
+    /// compare-remove the anchor, then remove the key last. A crash between the two leaves the
+    /// key-only suffix that startup cleanup already finishes. Nothing here observes the caller's
+    /// token, and any failure is swallowed: the caller is already returning or rethrowing the
+    /// original failure, and a surviving opening is the fail-closed outcome.</para>
+    /// </remarks>
+    private void RetireUnpublishedOpening(
+        ArcanumMaintenanceLock heldInstallationLock,
+        BackupRestoreProfileNamespace profile,
+        InstallationResetActiveLocation location,
+        InstallationResetActiveAnchorV1 opening)
+    {
+        if (opening.State is not InstallationResetActiveAnchorState.Active
+            || opening.Revision != 0
+            || opening.EnvelopeDigest != InstallationResetActiveRecordAuthenticator.ZeroDigest
+            || opening.ActiveLocationDigest != location.Digest)
+        {
+            return;
+        }
+
+        try
+        {
+            Result<InstallationResetActiveAnchorV1?> current = _anchors!.Read(profile);
+
+            if (current.IsFailure || current.Value != opening)
+            {
+                return;
+            }
+
+            Result orphans = _files!.RemoveOrphanedPublicationTemporaries(
+                heldInstallationLock,
+                _guardedRoot,
+                location);
+
+            if (orphans.IsFailure
+                || _files.ProveAbsentDurably(
                     heldInstallationLock,
-                    profile,
-                    location,
-                    opening,
-                    key.Value,
-                    payload.Value,
-                    InstallationResetActiveRecordAuthenticator.ZeroDigest,
-                    cancellationToken)
-                .ConfigureAwait(false);
+                    _guardedRoot,
+                    location).IsFailure)
+            {
+                return;
+            }
+
+            Result anchorRemoved = _anchors.RemoveAndVerifyAbsent(
+                heldInstallationLock,
+                _guardedRoot,
+                profile,
+                opening);
+
+            if (anchorRemoved.IsFailure)
+            {
+                return;
+            }
+
+            _ = _keys!.RemoveAndVerifyAbsent(
+                heldInstallationLock,
+                _guardedRoot,
+                profile);
+        }
+        catch (Exception)
+        {
+            // Best effort by contract: the original failure is what the caller reports.
         }
     }
 
@@ -816,6 +921,16 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         (BackupRestoreProfileNamespace profile, InstallationResetActiveLocation location) =
             resolved.Value;
 
+        Result orphans = _files!.RemoveOrphanedPublicationTemporaries(
+            heldInstallationLock,
+            _guardedRoot,
+            location);
+
+        if (orphans.IsFailure)
+        {
+            return orphans;
+        }
+
         Result<InstallationResetActiveAnchorV1?> anchorRead = _anchors!.Read(profile);
 
         if (anchorRead.IsFailure)
@@ -1065,6 +1180,19 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         (BackupRestoreProfileNamespace profile, InstallationResetActiveLocation location) =
             resolved.Value;
+
+        if (mayAdvanceAnchor && heldInstallationLock is not null)
+        {
+            Result orphans = _files!.RemoveOrphanedPublicationTemporaries(
+                heldInstallationLock,
+                _guardedRoot,
+                location);
+
+            if (orphans.IsFailure)
+            {
+                return Result<InstallationResetActiveRecoveryState>.Failure(orphans.Error);
+            }
+        }
 
         Result<InstallationResetActiveAnchorV1?> anchorRead = _anchors!.Read(profile);
 

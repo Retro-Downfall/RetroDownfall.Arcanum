@@ -482,6 +482,97 @@ internal sealed class InstallationResetActiveFilePersistence(
         }
     }
 
+    /// <summary>
+    /// Removes the publication temporaries a killed writer left beside the active record.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ReplaceDurablyAsync"/> removes its temporary in <c>finally</c>, which a killed
+    /// process never reaches. The canonical file and the credential anchor are the authority, so a
+    /// regular, singly linked file named exactly <c>&lt;leaf&gt;.tmp.&lt;32 lowercase hex&gt;</c> can
+    /// only be an unpublished copy. Only that spelling is removed, only under the held installation
+    /// lock, and only through the identity-captured no-follow cleanup; any other <c>.tmp</c>
+    /// spelling, case variant, link, or a removal that cannot be proven stays a blocker. The caller
+    /// re-inspects the directory afterwards, which is where those remaining cases are refused.
+    /// Read-only probes never call this.
+    /// </remarks>
+    internal Result RemoveOrphanedPublicationTemporaries(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        InstallationResetActiveLocation location)
+    {
+        AssertLock(heldInstallationLock, guardedDirectory);
+
+        ArgumentNullException.ThrowIfNull(location);
+
+        string parent = Path.GetDirectoryName(location.ActivePath)!;
+
+        List<string> orphans = [];
+
+        try
+        {
+            foreach (string entry in Directory.EnumerateFileSystemEntries(parent))
+            {
+                string leaf = Path.GetFileName(entry);
+
+                if (IsPublicationTemporaryName(leaf, location.ActiveLeaf))
+                {
+                    orphans.Add(Path.Combine(parent, leaf));
+                }
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or ArgumentException
+                or NotSupportedException)
+        {
+            return EvidenceFailure();
+        }
+
+        foreach (string orphan in orphans)
+        {
+            if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    orphan,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact artifact)
+                || !IdentityOwnedFileSystemCleanup.TryDelete(artifact))
+            {
+                return UnremovableTemporary();
+            }
+
+            afterStep?.Invoke("file:orphaned-temporary-removed");
+        }
+
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// Whether <paramref name="leaf"/> is exactly <c>&lt;activeLeaf&gt;.tmp.[0-9a-f]{32}</c>,
+    /// compared ordinally — the one spelling <see cref="ReplaceDurablyAsync"/> creates.
+    /// </summary>
+    internal static bool IsPublicationTemporaryName(string leaf, string activeLeaf)
+    {
+        const int SuffixHexLength = 32;
+
+        string prefix = activeLeaf + ".tmp.";
+
+        if (leaf.Length != prefix.Length + SuffixHexLength
+            || !leaf.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        foreach (char character in leaf.AsSpan(prefix.Length))
+        {
+            if (character is not (>= '0' and <= '9') and not (>= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     internal Result DeleteDurably(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
@@ -600,12 +691,16 @@ internal sealed class InstallationResetActiveFilePersistence(
                 if (string.Equals(
                         leaf,
                         location.ActiveLeaf,
-                        StringComparison.OrdinalIgnoreCase)
-                    || leaf.StartsWith(
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return CaseVariantRecord();
+                }
+
+                if (leaf.StartsWith(
                         location.ActiveLeaf + ".tmp",
                         StringComparison.OrdinalIgnoreCase))
                 {
-                    return EvidenceFailure<bool>();
+                    return PublicationResidue();
                 }
             }
         }
@@ -691,6 +786,26 @@ internal sealed class InstallationResetActiveFilePersistence(
         new Error(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "The installation-reset active evidence could not be proven safe.");
+
+    private static Result<bool> CaseVariantRecord() =>
+        new Error(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            "A case-variant spelling of the installation-reset active record exists beside it; "
+            + "recovery never removes it, so it must be removed manually.");
+
+    private static Result<bool> PublicationResidue() =>
+        new Error(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            "An installation-reset publication temporary remains beside the active record. "
+            + "Locked recovery removes only an unlinked regular file named exactly "
+            + "'<record>.tmp.<32 lowercase hex>'; any other temporary spelling, case variant, "
+            + "or link must be removed manually.");
+
+    private static Result UnremovableTemporary() =>
+        new Error(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            "An exact-name installation-reset publication temporary is not an unlinked regular "
+            + "file or could not be removed, so it must be removed manually.");
 
     private static Result<T> EvidenceFailure<T>() =>
         new Error(

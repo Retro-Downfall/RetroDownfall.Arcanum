@@ -29,24 +29,20 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 [Collection("WorkspacePathPolicy")]
 public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 {
-
     private readonly TempWorkspace _workspace = new();
 
     public Task InitializeAsync() => _workspace.InitializeAsync();
 
     public async Task DisposeAsync()
     {
-
         SecureFileReader.AfterOpenForTests = null;
 
         await _workspace.DisposeAsync();
-
     }
 
     [Fact]
     public async Task New_v2_publication_writes_revision_zero_anchor_before_revision_one_envelope()
     {
-
         string guardedRoot = _workspace.CreateSubdir("arcanum-v2-begin");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -93,13 +89,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             "file:temporary-flushed",
             "file:atomic-replace",
             "file:parent-flushed");
-
     }
 
     [Fact]
     public async Task New_v2_publication_rereads_authenticates_and_then_verifies_the_anchor()
     {
-
         string guardedRoot = _workspace.CreateSubdir("arcanum-v2-reread");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -141,13 +135,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             inspected.Value.Outcome);
 
         Assert.Equal(result.Value.EnvelopeDigest, inspected.Value.Publication!.EnvelopeDigest);
-
     }
 
     [Fact]
     public async Task Begin_maps_oversized_checkpoint_copy_failure_to_content_free_integrity()
     {
-
         // Mutation caught: allowing the bounded-copy ArgumentException to escape reveals the
         // rejected projection shape instead of returning the store's content-free integrity error.
         string guardedRoot = _workspace.CreateSubdir("checkpoint-oversized-copy");
@@ -197,13 +189,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             result.Error.Message);
 
         Assert.False(File.Exists(store.ActivePath));
-
     }
 
     [Fact]
     public async Task Publication_cancellation_after_atomic_replace_finishes_the_bounded_checkpoint()
     {
-
         string guardedRoot = _workspace.CreateSubdir("arcanum-v2-commit-cancellation");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -218,14 +208,10 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             credentials,
             new InstallationResetActiveFilePersistence(step =>
             {
-
                 if (string.Equals(step, "file:atomic-replace", StringComparison.Ordinal))
                 {
-
                     cancellation.Cancel();
-
                 }
-
             }));
 
         InstallationResetActivePublication publication = Value(await store.BeginAsync(
@@ -241,44 +227,225 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal(
             InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
             Value(await store.InspectAsync(CancellationToken.None)).Outcome);
-
     }
 
-    [Fact]
-    public async Task Publication_cancellation_before_atomic_replace_preserves_the_opening_anchor()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Interrupted_opening_before_first_publication_is_rolled_back_and_the_next_begin_succeeds(
+        bool cancelled)
     {
-
-        string guardedRoot = _workspace.CreateSubdir("arcanum-v2-precommit-cancellation");
+        // R-002: a cancellation or a publication failure between the revision-zero anchor and the
+        // first envelope is not a crash. The live process re-proves its own opening and removes the
+        // anchor then the key, so neither recovery nor a second Begin finds an Active anchor naming
+        // a file that never existed.
+        string guardedRoot = _workspace.CreateSubdir(
+            cancelled
+                ? "arcanum-v2-precommit-cancellation"
+                : "arcanum-v2-precommit-failure");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
             ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
         using CancellationTokenSource cancellation = new();
 
+        List<string> events = [];
+
+        RecordingCredentialStore credentials = new(events);
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            credentials,
+            new InstallationResetActiveFilePersistence(
+                step =>
+                {
+                    events.Add(step);
+
+                    if (cancelled
+                        && string.Equals(step, "file:temporary-flushed", StringComparison.Ordinal))
+                    {
+                        cancellation.Cancel();
+                    }
+                },
+                failBeforeStep: step => !cancelled
+                    && string.Equals(step, "file:atomic-replace", StringComparison.Ordinal)));
+
+        Guid installationId = Guid.Parse("2b111111-2222-4333-8444-555555555555");
+
+        if (cancelled)
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.BeginAsync(
+                heldLock,
+                installationId,
+                CreateRecord(InstallationResetPhase.Prepared),
+                cancellation.Token));
+        }
+        else
+        {
+            Result<InstallationResetActivePublication> failed = await store.BeginAsync(
+                heldLock,
+                installationId,
+                CreateRecord(InstallationResetPhase.Prepared),
+                CancellationToken.None);
+
+            Assert.True(failed.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, failed.Error.Code);
+        }
+
+        Assert.False(File.Exists(store.ActivePath));
+
+        AssertOrdered(
+            events,
+            "anchor:set:Active:0",
+            "anchor:readback:Active:0",
+            "anchor:compare-read:Active:0",
+            "anchor:delete",
+            "anchor:absence-readback",
+            "key:delete",
+            "key:absence-readback");
+
+        Assert.DoesNotContain(
+            credentials.Values.Keys,
+            account => account.StartsWith(
+                    ArcanumCredentialIdentity.InstallationResetActiveAnchorAccountPrefix,
+                    StringComparison.Ordinal)
+                || account.StartsWith(
+                    ArcanumCredentialIdentity.InstallationResetActiveKeyAccountPrefix,
+                    StringComparison.Ordinal));
+
+        InstallationResetActiveStore resumed = new(guardedRoot, credentials);
+
+        Assert.Equal(
+            InstallationResetActiveRecoveryOutcome.NoActiveRecord,
+            Value(await resumed.RecoverAsync(heldLock, CancellationToken.None)).Outcome);
+
+        Assert.True((await resumed.CompleteStartupCleanupAsync(
+            heldLock,
+            CancellationToken.None)).IsSuccess);
+
+        InstallationResetActivePublication next = Value(await resumed.BeginAsync(
+            heldLock,
+            installationId,
+            CreateRecord(InstallationResetPhase.Prepared),
+            CancellationToken.None));
+
+        Assert.Equal(1UL, next.Anchor.Revision);
+    }
+
+    [Fact]
+    public async Task Crash_between_opening_anchor_and_first_publication_still_requires_recovery()
+    {
+        // R-002 guard: the in-process rollback is the only new path. A crash between the opening
+        // anchor and the first envelope leaves the same state with no live process to re-prove
+        // it, and DESIGN keeps that state a fail-closed blocker for recovery, startup cleanup and
+        // Begin alike.
+        string guardedRoot = _workspace.CreateSubdir("arcanum-v2-precommit-crash");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        RecordingCredentialStore credentials = new([]);
+
+        Dictionary<string, string>? atCrash = null;
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            credentials,
+            new InstallationResetActiveFilePersistence(
+                step =>
+                {
+                    if (string.Equals(step, "file:temporary-flushed", StringComparison.Ordinal))
+                    {
+                        atCrash = new Dictionary<string, string>(
+                            credentials.Values,
+                            StringComparer.Ordinal);
+                    }
+                },
+                failBeforeStep: step => string.Equals(
+                    step,
+                    "file:atomic-replace",
+                    StringComparison.Ordinal)));
+
+        Guid installationId = Guid.Parse("2c111111-2222-4333-8444-555555555555");
+
+        Assert.True((await store.BeginAsync(
+            heldLock,
+            installationId,
+            CreateRecord(InstallationResetPhase.Prepared),
+            CancellationToken.None)).IsFailure);
+
+        Assert.NotNull(atCrash);
+
+        RecordingCredentialStore restarted = new([]);
+
+        foreach (KeyValuePair<string, string> pair in atCrash)
+        {
+            restarted.Values[pair.Key] = pair.Value;
+        }
+
+        InstallationResetActiveStore afterCrash = new(guardedRoot, restarted);
+
+        Result<InstallationResetActiveRecoveryState> recovered = await afterCrash.RecoverAsync(
+            heldLock,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
+
+        Assert.True((await afterCrash.CompleteStartupCleanupAsync(
+            heldLock,
+            CancellationToken.None)).IsFailure);
+
+        Result<InstallationResetActivePublication> begun = await afterCrash.BeginAsync(
+            heldLock,
+            installationId,
+            CreateRecord(InstallationResetPhase.Prepared),
+            CancellationToken.None);
+
+        Assert.True(begun.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.RevisionConflict, begun.Error.Code);
+
+        InstallationResetActiveAnchorV1 opening = CredentialAnchor(restarted);
+
+        Assert.Equal(InstallationResetActiveAnchorState.Active, opening.State);
+
+        Assert.Equal(0UL, opening.Revision);
+    }
+
+    [Fact]
+    public async Task Publication_failure_after_atomic_replace_keeps_the_opening_for_locked_recovery()
+    {
+        // R-002 guard: once the first envelope is on disk the opening governs real evidence. The
+        // rollback must re-prove absence and refuse, leaving the one-ahead state that locked
+        // recovery advances.
+        string guardedRoot = _workspace.CreateSubdir("arcanum-v2-postreplace-failure");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
         RecordingCredentialStore credentials = new([]);
 
         InstallationResetActiveStore store = new(
             guardedRoot,
             credentials,
-            new InstallationResetActiveFilePersistence(step =>
-            {
+            new InstallationResetActiveFilePersistence(
+                failBeforeStep: step => string.Equals(
+                    step,
+                    "file:parent-flushed",
+                    StringComparison.Ordinal)));
 
-                if (string.Equals(step, "file:temporary-flushed", StringComparison.Ordinal))
-                {
-
-                    cancellation.Cancel();
-
-                }
-
-            }));
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.BeginAsync(
+        Result<InstallationResetActivePublication> begun = await store.BeginAsync(
             heldLock,
-            Guid.Parse("2b111111-2222-4333-8444-555555555555"),
+            Guid.Parse("2d111111-2222-4333-8444-555555555555"),
             CreateRecord(InstallationResetPhase.Prepared),
-            cancellation.Token));
+            CancellationToken.None);
 
-        Assert.False(File.Exists(store.ActivePath));
+        Assert.True(begun.IsFailure);
+
+        Assert.True(File.Exists(store.ActivePath));
 
         InstallationResetActiveAnchorV1 opening = CredentialAnchor(credentials);
 
@@ -286,20 +453,225 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
         Assert.Equal(0UL, opening.Revision);
 
-        Assert.Equal(
-            InstallationResetActiveRecordAuthenticator.ZeroDigest,
-            opening.EnvelopeDigest);
+        InstallationResetActiveRecoveryState recovered = Value(
+            await new InstallationResetActiveStore(guardedRoot, credentials).RecoverAsync(
+                heldLock,
+                CancellationToken.None));
 
-        Assert.True((await store.RecoverAsync(
-            heldLock,
+        Assert.Equal(InstallationResetActiveRecoveryOutcome.AuthenticatedV2, recovered.Outcome);
+
+        Assert.Equal(1UL, recovered.Publication!.Anchor.Revision);
+    }
+
+    [Fact]
+    public async Task Recover_removes_an_orphaned_publication_temporary_and_resumes()
+    {
+        // R-018: a kill during publication leaves the writer's exact-name temporary behind. The
+        // canonical file and the credential anchor are the authority, so locked recovery removes
+        // that one spelling and resumes; the lock-free inspection still refuses it.
+        using AuthenticatedFixture fixture = await BeginAuthenticatedAsync(
+            "orphaned-publication-temporary");
+
+        string temporary = fixture.Store.ActivePath + ".tmp." + Guid.NewGuid().ToString("N");
+
+        await File.WriteAllBytesAsync(temporary, [0x7b, 0x22, 0x76, 0x65]);
+
+        Assert.True((await fixture.Store.InspectAsync(CancellationToken.None)).IsFailure);
+
+        Assert.True(fixture.Store.ProbePresence().IsFailure);
+
+        Assert.True(File.Exists(temporary));
+
+        InstallationResetActiveRecoveryState recovered = Value(await fixture.Store.RecoverAsync(
+            fixture.Lock,
+            CancellationToken.None));
+
+        Assert.Equal(InstallationResetActiveRecoveryOutcome.AuthenticatedV2, recovered.Outcome);
+
+        Assert.Equal(
+            fixture.Publication.EnvelopeDigest,
+            recovered.Publication!.EnvelopeDigest);
+
+        Assert.False(File.Exists(temporary));
+
+        AssertNoTemporaryEvidence(fixture.Publication.Location);
+
+        Assert.Equal(
+            InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
+            Value(await fixture.Store.InspectAsync(CancellationToken.None)).Outcome);
+    }
+
+    [Theory]
+    [InlineData(".tmp")]
+    [InlineData(".tmp.")]
+    [InlineData(".tmp.interrupted")]
+    [InlineData(".tmp.0123456789abcdef0123456789abcde")]
+    [InlineData(".tmp.0123456789abcdef0123456789abcdef0")]
+    [InlineData(".tmp.0123456789ABCDEF0123456789ABCDEF")]
+    [InlineData(".TMP.0123456789abcdef0123456789abcdef")]
+    [InlineData(".Tmp.0123456789abcdef0123456789abcdef")]
+    [InlineData(".tmp.01234567-89ab-cdef-0123-456789abcdef")]
+    [InlineData(".tmp.0123456789abcdef0123456789abcdef.tmp")]
+    [InlineData(".tmp.0123456789abcdef0123456789abcdeg")]
+    public async Task Recover_refuses_a_non_conforming_publication_temporary_and_leaves_it_in_place(
+        string suffix)
+    {
+        // R-018: only the writer's exact lowercase 32-hex spelling is provably an unpublished
+        // copy; every other spelling and case variant stays a named, fail-closed blocker.
+        using AuthenticatedFixture fixture = await BeginAuthenticatedAsync(
+            "nonconforming-temporary-" + Convert.ToHexString(
+                System.Text.Encoding.UTF8.GetBytes(suffix)));
+
+        string residue = fixture.Store.ActivePath + suffix;
+
+        await File.WriteAllTextAsync(residue, "ambiguous");
+
+        Result<InstallationResetActiveRecoveryState> recovered = await fixture.Store.RecoverAsync(
+            fixture.Lock,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
+
+        Assert.Contains("temporary", recovered.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal("ambiguous", await File.ReadAllTextAsync(residue));
+
+        Assert.True((await fixture.Store.CompleteStartupCleanupAsync(
+            fixture.Lock,
             CancellationToken.None)).IsFailure);
 
+        Assert.Equal("ambiguous", await File.ReadAllTextAsync(residue));
+    }
+
+    [Fact]
+    public async Task Recover_refuses_a_symlinked_publication_temporary_without_following_it()
+    {
+        // R-018: an exact-name temporary that is a link is not the writer's private file; it is
+        // neither followed nor removed.
+        using AuthenticatedFixture fixture = await BeginAuthenticatedAsync(
+            "symlinked-publication-temporary");
+
+        string outside = _workspace.WriteFile("symlinked-temporary-target.json", "outside");
+
+        string temporary = fixture.Store.ActivePath + ".tmp." + Guid.NewGuid().ToString("N");
+
+        File.CreateSymbolicLink(temporary, outside);
+
+        Assert.True((await fixture.Store.RecoverAsync(
+            fixture.Lock,
+            CancellationToken.None)).IsFailure);
+
+        Assert.NotNull(new FileInfo(temporary).LinkTarget);
+
+        Assert.Equal("outside", await File.ReadAllTextAsync(outside));
+    }
+
+    [Fact]
+    public async Task A_credential_store_that_throws_DllNotFound_yields_Unavailable()
+    {
+        // R-157: every key-provider credential call maps a missing or unloadable native backend to
+        // a content-free Unavailable result, the same as the presence probe already did.
+        string readRoot = _workspace.CreateSubdir("key-provider-read-dll-not-found");
+
+        using (ArcanumMaintenanceLock readLock = Assert.IsType<ArcanumMaintenanceLock>(
+                   ArcanumMaintenanceLock.TryAcquire(readRoot)))
+        {
+            RecordingCredentialStore credentials = new([])
+            {
+                ThrowFor = (operation, account) => operation == "get" && IsKeyAccount(account)
+                    ? new DllNotFoundException("injected")
+                    : null,
+            };
+
+            Result<InstallationResetActivePublication> begun = await new InstallationResetActiveStore(
+                    readRoot,
+                    credentials)
+                .BeginAsync(
+                    readLock,
+                    Guid.Parse("3a111111-2222-4333-8444-555555555555"),
+                    CreateRecord(InstallationResetPhase.Prepared),
+                    CancellationToken.None);
+
+            Assert.True(begun.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.Unavailable, begun.Error.Code);
+        }
+
+        string writeRoot = _workspace.CreateSubdir("key-provider-write-dll-not-found");
+
+        using (ArcanumMaintenanceLock writeLock = Assert.IsType<ArcanumMaintenanceLock>(
+                   ArcanumMaintenanceLock.TryAcquire(writeRoot)))
+        {
+            RecordingCredentialStore credentials = new([])
+            {
+                ThrowFor = (operation, account) => operation == "set" && IsKeyAccount(account)
+                    ? new DllNotFoundException("injected")
+                    : null,
+            };
+
+            Result<InstallationResetActivePublication> begun = await new InstallationResetActiveStore(
+                    writeRoot,
+                    credentials)
+                .BeginAsync(
+                    writeLock,
+                    Guid.Parse("3b111111-2222-4333-8444-555555555555"),
+                    CreateRecord(InstallationResetPhase.Prepared),
+                    CancellationToken.None);
+
+            Assert.True(begun.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.Unavailable, begun.Error.Code);
+        }
+
+        using (AuthenticatedFixture deleting = await BeginAuthenticatedAsync(
+                   "key-provider-delete-dll-not-found"))
+        {
+            deleting.Credentials.ThrowFor = (operation, account) =>
+                operation == "delete" && IsKeyAccount(account)
+                    ? new DllNotFoundException("injected")
+                    : null;
+
+            Result retired = await deleting.Store.RetireAsync(
+                deleting.Lock,
+                deleting.Record.OperationId,
+                CancellationToken.None);
+
+            Assert.True(retired.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.Unavailable, retired.Error.Code);
+        }
+
+        using (AuthenticatedFixture verifying = await BeginAuthenticatedAsync(
+                   "key-provider-verify-dll-not-found"))
+        {
+            verifying.Credentials.ThrowFor = (operation, account) =>
+                operation == "get"
+                && IsKeyAccount(account)
+                && !verifying.Credentials.Values.ContainsKey(account)
+                    ? new DllNotFoundException("injected")
+                    : null;
+
+            Result retired = await verifying.Store.RetireAsync(
+                verifying.Lock,
+                verifying.Record.OperationId,
+                CancellationToken.None);
+
+            Assert.True(retired.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.Unavailable, retired.Error.Code);
+        }
+
+        static bool IsKeyAccount(string account) =>
+            account.StartsWith(
+                ArcanumCredentialIdentity.InstallationResetActiveKeyAccountPrefix,
+                StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task Advance_allows_only_null_to_pair_journaled_then_same_or_next_proven_pair_phase()
     {
-
         // Mutation caught: treating the typed checkpoint as an ordinary nullable payload member
         // permits introduction after a skipped destructive effect, removal, or phase jumps.
         string guardedRoot = _workspace.CreateSubdir("checkpoint-pair-phases");
@@ -377,13 +749,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             publication,
             skipped,
             CancellationToken.None)).IsFailure);
-
     }
 
     [Fact]
     public async Task Advance_cannot_remove_regress_skip_or_substitute_restart_or_inventory_evidence()
     {
-
         // Mutation caught: record/reference equality or phase-only comparison lets a caller replace
         // the restart proof or campaign inventory while retaining a valid checkpoint shape.
         string guardedRoot = _workspace.CreateSubdir("checkpoint-immutable-evidence");
@@ -510,13 +880,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             publication,
             journaled,
             CancellationToken.None)).IsFailure);
-
     }
 
     [Fact]
     public async Task Advance_allows_pair_absent_null_receipt_to_exact_prepared_receipt()
     {
-
         // Mutation caught: requiring checkpoint equality after pair absence prevents the one
         // durable publication that freezes the ordered cleanup intent vector before deletion.
         string guardedRoot = _workspace.CreateSubdir("checkpoint-prepare-receipt");
@@ -573,13 +941,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal(0UL, publication.Payload.HostToolsMarkerPairReset.DeletedCount);
 
         Assert.Equal(0UL, publication.Payload.HostToolsMarkerPairReset.OrphanCount);
-
     }
 
     [Fact]
     public async Task Advance_allows_only_fixed_vector_prepared_zero_counts_then_one_terminal_count_publication()
     {
-
         // Mutation caught: allowing record equality or any all-present receipt transition permits
         // vector substitution, repeated terminal publication, or a second zero-campaign receipt.
         string guardedRoot = _workspace.CreateSubdir("checkpoint-terminal-receipt");
@@ -726,13 +1092,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             zeroPublication,
             zeroTerminal,
             CancellationToken.None)).IsFailure);
-
     }
 
     [Fact]
     public async Task Recovery_round_trips_structurally_equal_immutable_checkpoint_vectors()
     {
-
         // Mutation caught: reference/record equality rejects recovered evidence, while retained
         // ImmutableArray backing stores let callers rewrite a later recovery projection.
         string guardedRoot = _workspace.CreateSubdir("checkpoint-structural-recovery");
@@ -806,13 +1170,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.NotSame(
             ImmutableCollectionsMarshal.AsArray(expected.OrderedMarkerIntentIds!.Value),
             ImmutableCollectionsMarshal.AsArray(actual.OrderedMarkerIntentIds!.Value));
-
     }
 
     [Fact]
     public async Task One_ahead_anchor_recovery_preserves_the_exact_typed_checkpoint()
     {
-
         // Mutation caught: one-ahead recovery that drops the checkpoint or compares nested
         // evidence by reference cannot advance the anchor to the authenticated landed envelope.
         string guardedRoot = _workspace.CreateSubdir("checkpoint-one-ahead");
@@ -898,13 +1260,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal(1UL, checkpoint.DeletedCount);
 
         Assert.Equal(0UL, checkpoint.OrphanCount);
-
     }
 
     [Fact]
     public async Task Advance_chains_exactly_one_revision_and_rejects_regression_skip_overflow_or_changed_binding()
     {
-
         string guardedRoot = _workspace.CreateSubdir("arcanum-v2-advance");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -1048,7 +1408,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal(2UL, recovered.Publication!.Envelope.Revision);
 
         Assert.Equal(5, recovered.Publication.Payload.RowsDeleted);
-
     }
 
     [Theory]
@@ -1063,7 +1422,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
     public async Task Advance_cannot_remove_or_substitute_an_authenticated_full_claim(
         string mutation)
     {
-
         string guardedRoot = _workspace.CreateSubdir(
             "arcanum-v2-claim-" + mutation);
 
@@ -1142,13 +1500,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal(
             claim,
             recovered.Publication.Payload.FullInstallationResetRemediationClaim);
-
     }
 
     [Fact]
     public async Task Recovery_accepts_only_an_exact_anchor_envelope_pair_or_one_authenticated_envelope_ahead()
     {
-
         using AuthenticatedFixture fixture = await BeginAuthenticatedAsync("recovery-exact-ahead");
 
         InstallationResetActiveRecoveryState exact = Value(await fixture.Store.RecoverAsync(
@@ -1197,16 +1553,13 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             CancellationToken.None));
 
         Assert.Equal(recovered.Publication.Anchor, readback.Publication!.Anchor);
-
     }
 
     [Fact]
     public async Task Recovery_rejects_rollback_skipped_revision_cross_profile_cross_operation_and_location_substitution()
     {
-
         using (AuthenticatedFixture rollback = await BeginAuthenticatedAsync("recovery-rollback"))
         {
-
             InstallationResetActivePublication second = Value(await rollback.Store.AdvanceAsync(
                 rollback.Lock,
                 rollback.Publication,
@@ -1225,12 +1578,10 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             Assert.True((await rollback.Store.RecoverAsync(
                 rollback.Lock,
                 CancellationToken.None)).IsFailure);
-
         }
 
         using (AuthenticatedFixture skipped = await BeginAuthenticatedAsync("recovery-skipped"))
         {
-
             InstallationResetActiveEnvelopeV2 jump = SealEnvelope(
                 skipped,
                 revision: 3,
@@ -1242,12 +1593,10 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             Assert.True((await skipped.Store.RecoverAsync(
                 skipped.Lock,
                 CancellationToken.None)).IsFailure);
-
         }
 
         using (AuthenticatedFixture operation = await BeginAuthenticatedAsync("recovery-operation"))
         {
-
             InstallationResetActivePayloadV3 substituted =
                 InstallationResetActivePayloadV3.FromRecord(operation.Record with
                 {
@@ -1265,12 +1614,10 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             Assert.True((await operation.Store.RecoverAsync(
                 operation.Lock,
                 CancellationToken.None)).IsFailure);
-
         }
 
         using (AuthenticatedFixture location = await BeginAuthenticatedAsync("recovery-location"))
         {
-
             BackupRestoreProfileNamespace profile = Value(
                 BackupRestoreJournalAuthenticator.ResolveProfileNamespace(location.GuardedRoot));
 
@@ -1288,7 +1635,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             Assert.True((await location.Store.RecoverAsync(
                 location.Lock,
                 CancellationToken.None)).IsFailure);
-
         }
 
         using AuthenticatedFixture source = await BeginAuthenticatedAsync("recovery-profile-source");
@@ -1324,13 +1670,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         File.Copy(source.Store.ActivePath, target.ActivePath);
 
         Assert.True((await target.RecoverAsync(targetLock, CancellationToken.None)).IsFailure);
-
     }
 
     [Fact]
     public async Task Recovery_treats_file_key_anchor_partial_combinations_and_lookalikes_as_blocking_evidence()
     {
-
         using AuthenticatedFixture source = await BeginAuthenticatedAsync("recovery-partial-source");
 
         string anchorOnlyRoot = _workspace.CreateSubdir("recovery-anchor-only");
@@ -1430,7 +1774,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.True((await symlink.RecoverAsync(
             symlinkLock,
             CancellationToken.None)).IsFailure);
-
     }
 
     [Theory]
@@ -1439,7 +1782,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
     public async Task Case_variant_evidence_blocks_read_only_inspection_and_locked_recovery(
         bool temporary)
     {
-
         string guardedRoot = _workspace.CreateSubdir(
             temporary
                 ? "case-variant-temporary-recovery"
@@ -1461,7 +1803,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.True((await store.RecoverAsync(
             heldLock,
             CancellationToken.None)).IsFailure);
-
     }
 
     [Theory]
@@ -1470,7 +1811,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
     public async Task Case_variant_evidence_refuses_begin_without_creating_credentials(
         bool temporary)
     {
-
         string guardedRoot = _workspace.CreateSubdir(
             temporary
                 ? "case-variant-temporary-begin"
@@ -1498,7 +1838,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal(0, credentials.SetCount);
 
         Assert.Equal("ambiguous", await File.ReadAllTextAsync(variant));
-
     }
 
     [Theory]
@@ -1507,7 +1846,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
     public async Task Case_variant_evidence_blocks_retirement_absence_proof(
         bool temporary)
     {
-
         string guardedRoot = _workspace.CreateSubdir(
             temporary
                 ? "case-variant-temporary-retirement"
@@ -1551,20 +1889,16 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             credentials,
             new InstallationResetActiveFilePersistence(step =>
             {
-
                 if (!injected
                     && string.Equals(
                         step,
                         "file:absence-parent-flushed",
                         StringComparison.Ordinal))
                 {
-
                     File.WriteAllText(variant, "ambiguous");
 
                     injected = true;
-
                 }
-
             }));
 
         Assert.True((await resumed.RetireAsync(
@@ -1579,13 +1913,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             CredentialAnchor(credentials).State);
 
         Assert.True(File.Exists(variant));
-
     }
 
     [Fact]
     public async Task File_mutation_primitives_reject_a_wrong_root_lock_before_any_side_effect()
     {
-
         string guardedRoot = _workspace.CreateSubdir("file-mutation-wrong-root-target");
 
         string otherRoot = _workspace.CreateSubdir("file-mutation-wrong-root-lock");
@@ -1634,13 +1966,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal("owned", await File.ReadAllTextAsync(location.ActivePath));
 
         AssertNoTemporaryEvidence(location);
-
     }
 
     [Fact]
     public async Task File_mutation_primitives_reject_a_disposed_lock_before_any_side_effect()
     {
-
         string guardedRoot = _workspace.CreateSubdir("file-mutation-disposed-lock");
 
         ArcanumMaintenanceLock disposedLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -1689,13 +2019,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal("owned", await File.ReadAllTextAsync(location.ActivePath));
 
         AssertNoTemporaryEvidence(location);
-
     }
 
     [Fact]
     public async Task Recovery_never_creates_or_repairs_missing_authentication_material()
     {
-
         using AuthenticatedFixture missingKey = await BeginAuthenticatedAsync("recovery-no-repair");
 
         BackupRestoreProfileNamespace profile = Value(
@@ -1733,13 +2061,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             CancellationToken.None)).IsFailure);
 
         Assert.Equal(writesBefore, missingKey.Credentials.SetCount);
-
     }
 
     [Fact]
     public async Task V1_ordinary_record_migrates_to_authenticated_v2_before_the_next_effect()
     {
-
         string guardedRoot = _workspace.CreateSubdir("legacy-migration");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -1809,20 +2135,17 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal(InstallationResetActiveRecoveryOutcome.AuthenticatedV2, recovered.Outcome);
 
         Assert.Equal(migrated.EnvelopeDigest, recovered.Publication!.EnvelopeDigest);
-
     }
 
     [Fact]
     public async Task V1_record_with_full_reset_authority_or_nonnull_reserved_slot_is_refused()
     {
-
         foreach (string forbiddenMember in (string[])
                  [
                      "\"fullResetAuthority\":true",
                      "\"hostToolsMarkerPairReset\":{\"revision\":1}",
                  ])
         {
-
             string guardedRoot = _workspace.CreateSubdir(
                 "legacy-forbidden-" + Guid.NewGuid().ToString("N"));
 
@@ -1853,15 +2176,12 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
                 CancellationToken.None)).IsFailure);
 
             Assert.Equal(0, credentials.SetCount);
-
         }
-
     }
 
     [Fact]
     public async Task V1_revision_zero_anchor_crash_resumes_only_the_same_ordinary_operation()
     {
-
         string guardedRoot = _workspace.CreateSubdir("legacy-revision-zero-resume");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -1930,13 +2250,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         Assert.Equal(operationId, migrated.Envelope.OperationId);
 
         Assert.Equal(1UL, migrated.Anchor.Revision);
-
     }
 
     [Fact]
     public async Task V1_semantically_invalid_binding_is_not_a_migration_candidate()
     {
-
         string guardedRoot = _workspace.CreateSubdir("legacy-invalid-binding");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -1970,13 +2288,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             CancellationToken.None)).IsFailure);
 
         Assert.Equal(0, credentials.SetCount);
-
     }
 
     [Fact]
     public async Task Closed_anchor_retirement_deletes_file_then_anchor_then_key_idempotently()
     {
-
         string guardedRoot = _workspace.CreateSubdir("closed-retirement");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -2045,13 +2361,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             heldLock,
             publication.Envelope.OperationId,
             CancellationToken.None)).IsSuccess);
-
     }
 
     [Fact]
     public async Task Exact_operation_retirement_cannot_claim_key_only_evidence_but_startup_cleanup_can()
     {
-
         string guardedRoot = _workspace.CreateSubdir("key-only-retirement-authority");
 
         using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -2088,13 +2402,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             CancellationToken.None)).IsSuccess);
 
         Assert.False(credentials.Values.ContainsKey(keyAccount));
-
     }
 
     [Fact]
     public async Task Startup_cleanup_removes_only_closed_or_orphaned_key_evidence_and_never_active_evidence()
     {
-
         string closedRoot = _workspace.CreateSubdir("closed-cleanup");
 
         using ArcanumMaintenanceLock closedLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -2219,13 +2531,24 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
         RecordingCredentialStore activeCredentials = new([]);
 
+        Dictionary<string, string>? atCrash = null;
+
         InstallationResetActiveStore activeStore = new(
             activeRoot,
             activeCredentials,
             new InstallationResetActiveFilePersistence(
+                step =>
+                {
+                    if (string.Equals(step, "file:temporary-flushed", StringComparison.Ordinal))
+                    {
+                        atCrash = new Dictionary<string, string>(
+                            activeCredentials.Values,
+                            StringComparer.Ordinal);
+                    }
+                },
                 failBeforeStep: step => string.Equals(
                     step,
-                    "file:temporary-flushed",
+                    "file:atomic-replace",
                     StringComparison.Ordinal)));
 
         Assert.True((await activeStore.BeginAsync(
@@ -2234,20 +2557,35 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             CreateRecord(InstallationResetPhase.Prepared),
             CancellationToken.None)).IsFailure);
 
-        int activeCredentialCount = activeCredentials.Values.Count;
+        // A live failure retires its own opening (R-002); only a crash leaves an Active anchor
+        // naming no file, so replay the credentials as they stood before that rollback.
+        Assert.NotNull(atCrash);
 
-        Assert.True((await activeStore.CompleteStartupCleanupAsync(
+        RecordingCredentialStore crashedCredentials = new([]);
+
+        foreach (KeyValuePair<string, string> pair in atCrash)
+        {
+            crashedCredentials.Values[pair.Key] = pair.Value;
+        }
+
+        InstallationResetActiveStore crashedStore = new(activeRoot, crashedCredentials);
+
+        int activeCredentialCount = crashedCredentials.Values.Count;
+
+        Assert.True((await crashedStore.CompleteStartupCleanupAsync(
             activeLock,
             CancellationToken.None)).IsFailure);
 
-        Assert.Equal(activeCredentialCount, activeCredentials.Values.Count);
+        Assert.Equal(activeCredentialCount, crashedCredentials.Values.Count);
 
+        Assert.Equal(
+            InstallationResetActiveAnchorState.Active,
+            CredentialAnchor(crashedCredentials).State);
     }
 
     [Fact]
     public async Task Advance_carries_a_nested_receipt_forward_and_refuses_to_undo_it()
     {
-
         // Mutation caught: letting a nested receipt be removed, regressed, or renamed lets a reset
         // forget that it started a database transition it can no longer prove anything about.
         string guardedRoot = _workspace.CreateSubdir("nested-receipt-monotonic");
@@ -2312,14 +2650,12 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
         foreach (InstallationResetActiveRecord candidate in refused)
         {
-
             Assert.True(
                 (await store.AdvanceAsync(
                     heldLock,
                     claimPublication,
                     candidate,
                     CancellationToken.None)).IsFailure);
-
         }
 
         InstallationResetActivePublication completion = Value(await store.AdvanceAsync(
@@ -2336,13 +2672,11 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
                 completion,
                 absent with { NestedTransitionReceipt = claimed },
                 CancellationToken.None)).IsFailure);
-
     }
 
     private static InstallationResetActiveRecord CreateRecord(
         InstallationResetPhase phase)
     {
-
         InstallationResetAcceptedBinding binding = new(
             "binding",
             ["/selected"],
@@ -2365,7 +2699,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             EstimatedBytesDeleted: 0,
             CredentialResults: [],
             LastErrorCode: null);
-
     }
 
     private static InstallationResetActiveRecord CreateCheckpointRecord(
@@ -2373,7 +2706,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         HostToolsMarkerPairResetPhase? checkpointPhase,
         Guid? operationId = null)
     {
-
         Guid operation = operationId ?? Guid.NewGuid();
 
         DateTimeOffset acceptedAtUtc = new(
@@ -2474,12 +2806,10 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             FullInstallationResetRemediationClaim = claim,
             HostToolsMarkerPairReset = checkpoint,
         };
-
     }
 
     private static HostProcessToolsMatchedPair CheckpointPair(Guid installationId)
     {
-
         Guid transition = Guid.Parse("ffeeddcc-bbaa-4988-b766-554433221100");
 
         CovenantDigest fingerprint = Digest(0x11);
@@ -2500,7 +2830,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             Digest(0x51));
 
         return new HostProcessToolsMatchedPair(database, marker);
-
     }
 
     private static HostToolsMarkerPairResetCheckpointV1 PreparedCheckpoint(
@@ -2529,7 +2858,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         HostToolsMarkerPairResetCheckpointV1 checkpoint,
         int count = 1)
     {
-
         ImmutableArray<CampaignMarkerInventoryEntryV1> inventory =
             ImmutableArray.CreateRange(
                 Enumerable.Range(1, count).Select(static value =>
@@ -2563,7 +2891,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
                     signed.RemediationActionDigest,
                     inventoryDigest)),
         };
-
     }
 
     private static CovenantDigest ClaimDigest(byte value) =>
@@ -2571,12 +2898,10 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
     private static void AssertOrdered(List<string> events, params string[] expected)
     {
-
         int prior = -1;
 
         foreach (string value in expected)
         {
-
             int current = events.FindIndex(
                 prior + 1,
                 candidate => string.Equals(candidate, value, StringComparison.Ordinal));
@@ -2586,23 +2911,18 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
                 $"Expected '{value}' after event index {prior}. Actual: {string.Join(", ", events)}");
 
             prior = current;
-
         }
-
     }
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, result.Error.Message);
 
         return result.Value;
-
     }
 
     private async Task<AuthenticatedFixture> BeginAuthenticatedAsync(string name)
     {
-
         string guardedRoot = _workspace.CreateSubdir(name);
 
         ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
@@ -2631,7 +2951,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             store,
             record,
             publication);
-
     }
 
     private static InstallationResetActiveEnvelopeV2 SealEnvelope(
@@ -2640,7 +2959,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         CovenantDigest previousDigest,
         InstallationResetActivePayloadV3 payload)
     {
-
         BackupRestoreProfileNamespace profile = Value(
             BackupRestoreJournalAuthenticator.ResolveProfileNamespace(fixture.GuardedRoot));
 
@@ -2655,7 +2973,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             revision,
             previousDigest,
             payload));
-
     }
 
     private static void WriteEnvelope(
@@ -2670,7 +2987,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
     private static string CaseVariantPath(string path)
     {
-
         string leaf = Path.GetFileName(path);
 
         int letterIndex = leaf.Index().First(pair => char.IsLetter(pair.Item)).Index;
@@ -2686,7 +3002,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         return Path.Combine(
             Path.GetDirectoryName(path)!,
             variantLeaf);
-
     }
 
     private static string CaseVariantEvidencePath(string activePath, bool temporary) =>
@@ -2711,7 +3026,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
     private static InstallationResetActiveAnchorV1 CredentialAnchor(
         RecordingCredentialStore credentials)
     {
-
         KeyValuePair<string, string> stored = Assert.Single(
             credentials.Values,
             pair => pair.Key.StartsWith(
@@ -2720,7 +3034,6 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
         return Value(InstallationResetActiveRecordAuthenticator.DecodeAnchor(
             stored.Value));
-
     }
 
     private sealed record AuthenticatedFixture(
@@ -2731,17 +3044,16 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         InstallationResetActiveRecord Record,
         InstallationResetActivePublication Publication) : IDisposable
     {
-
         public void Dispose() => Lock.Dispose();
-
     }
 
     private sealed class RecordingCredentialStore(List<string> events) : IOsCredentialStore
     {
-
         public bool IsAvailable { get; set; } = true;
 
         public Func<string, bool>? FailDelete { get; set; }
+
+        public Func<string, string, Exception?>? ThrowFor { get; set; }
 
         public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
 
@@ -2749,82 +3061,73 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
         public OsCredentialStoreResult TryGet(string service, string account)
         {
-
             Assert.Equal(ArcanumCredentialIdentity.Service, service);
+
+            if (ThrowFor?.Invoke("get", account) is { } injected)
+            {
+                throw injected;
+            }
 
             if (!IsAvailable)
             {
-
                 return OsCredentialStoreResult.Unavailable("unavailable");
-
             }
 
             if (account.StartsWith(
                     ArcanumCredentialIdentity.InstallationResetActiveKeyAccountPrefix,
                     StringComparison.Ordinal))
             {
-
                 if (Values.ContainsKey(account))
                 {
-
                     events.Add(_pendingReadbacks.Remove(account)
                         ? "key:readback"
                         : "key:open-existing");
-
                 }
                 else
                 {
-
                     events.Add(_pendingDeletions.Remove(account)
                         ? "key:absence-readback"
                         : "key:probe");
-
                 }
-
             }
             else if (account.StartsWith(
                          ArcanumCredentialIdentity.InstallationResetActiveAnchorAccountPrefix,
                          StringComparison.Ordinal))
             {
-
                 if (Values.TryGetValue(account, out string? encoded))
                 {
-
                     InstallationResetActiveAnchorV1 anchor = Value(
                         InstallationResetActiveRecordAuthenticator.DecodeAnchor(encoded));
 
                     events.Add(_pendingReadbacks.Remove(account)
                         ? $"anchor:readback:{anchor.State}:{anchor.Revision}"
                         : $"anchor:compare-read:{anchor.State}:{anchor.Revision}");
-
                 }
                 else
                 {
-
                     events.Add(_pendingDeletions.Remove(account)
                         ? "anchor:absence-readback"
                         : "anchor:probe");
-
                 }
-
             }
 
             return Values.TryGetValue(account, out string? value)
                 ? OsCredentialStoreResult.Ok(value)
                 : OsCredentialStoreResult.NotFound();
-
         }
 
         public OsCredentialStoreResult Set(string service, string account, string secret)
         {
-
             Assert.Equal(ArcanumCredentialIdentity.Service, service);
+
+            if (ThrowFor?.Invoke("set", account) is { } injected)
+            {
+                throw injected;
+            }
 
             if (!IsAvailable)
             {
-
                 return OsCredentialStoreResult.Unavailable("unavailable");
-
             }
 
             Values[account] = secret;
@@ -2837,52 +3140,45 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
                     ArcanumCredentialIdentity.InstallationResetActiveAnchorAccountPrefix,
                     StringComparison.Ordinal))
             {
-
                 InstallationResetActiveAnchorV1 anchor = Value(
                     InstallationResetActiveRecordAuthenticator.DecodeAnchor(secret));
 
                 events.Add($"anchor:set:{anchor.State}:{anchor.Revision}");
-
             }
 
             return OsCredentialStoreResult.Ok(secret);
-
         }
 
         public OsCredentialStoreResult Delete(string service, string account)
         {
-
             Assert.Equal(ArcanumCredentialIdentity.Service, service);
+
+            if (ThrowFor?.Invoke("delete", account) is { } injected)
+            {
+                throw injected;
+            }
 
             if (!IsAvailable)
             {
-
                 return OsCredentialStoreResult.Unavailable("unavailable");
-
             }
 
             if (FailDelete?.Invoke(account) is true)
             {
-
                 return OsCredentialStoreResult.Failed("injected");
-
             }
 
             if (account.StartsWith(
                     ArcanumCredentialIdentity.InstallationResetActiveAnchorAccountPrefix,
                     StringComparison.Ordinal))
             {
-
                 events.Add("anchor:delete");
-
             }
             else if (account.StartsWith(
                          ArcanumCredentialIdentity.InstallationResetActiveKeyAccountPrefix,
                          StringComparison.Ordinal))
             {
-
                 events.Add("key:delete");
-
             }
 
             _ = Values.Remove(account);
@@ -2890,13 +3186,10 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             _pendingDeletions.Add(account);
 
             return OsCredentialStoreResult.Ok(string.Empty);
-
         }
 
         public int SetCount { get; private set; }
 
         private readonly HashSet<string> _pendingDeletions = new(StringComparer.Ordinal);
-
     }
-
 }
