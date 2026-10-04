@@ -30,6 +30,20 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         DataProtectionSecretStore dataProtectionStore,
         IApiKeyDigestCache apiKeyDigestCache,
         ILogger<OsKeychainSecretStore>? logger = null)
+        : this(osStore, dataProtectionStore, apiKeyDigestCache, logger, osReadTimeout: null)
+    {
+    }
+
+    /// <param name="osReadTimeout">
+    /// Bounds every OS credential read, startup included (<see cref="MirroredOsCredential.DefaultOsReadTimeout"/>
+    /// when null). Tests shorten it.
+    /// </param>
+    internal OsKeychainSecretStore(
+        IOsCredentialStore osStore,
+        DataProtectionSecretStore dataProtectionStore,
+        IApiKeyDigestCache apiKeyDigestCache,
+        ILogger<OsKeychainSecretStore>? logger,
+        TimeSpan? osReadTimeout)
     {
         ArgumentNullException.ThrowIfNull(osStore);
 
@@ -51,7 +65,8 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
                 "Restore the credential before retrying.",
                 SynchronizeMirrorFromOs: true,
                 OsReadFailureWithoutMirrorIsCorrupt: true),
-            logger);
+            logger,
+            osReadTimeout);
 
         _fileEncryptionKey = new MirroredOsCredential(
             osStore,
@@ -66,7 +81,8 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
                 MirrorRestoreFailureIsCorrupt: true,
                 OsReadFailureWithoutMirrorIsCorrupt: true,
                 RequireOsWrite: true),
-            logger);
+            logger,
+            osReadTimeout);
     }
 
     public void Dispose()
@@ -100,11 +116,19 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
     /// An OS read failure remains ambiguous even when the fallback is readable, because that
     /// fallback may have been superseded by a credential the process cannot currently inspect.
     /// </summary>
-    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
+    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
+        PeekApiKeyReadResultAsync(CancellationToken.None);
+
+    /// <summary>
+    /// The request-path peek. The OS read inside is bounded by the store's own timeout and fails
+    /// closed when it expires; <paramref name="cancellationToken"/> lets a caller that no longer
+    /// needs the answer stop waiting for it.
+    /// </summary>
+    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        return _masterApiKey.PeekAsync(CancellationToken.None);
+        return _masterApiKey.PeekAsync(cancellationToken);
     }
 
     public async Task SaveApiKeyAsync(string apiKey)

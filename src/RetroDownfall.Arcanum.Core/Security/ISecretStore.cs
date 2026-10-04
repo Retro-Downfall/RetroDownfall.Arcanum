@@ -2,7 +2,6 @@ namespace RetroDownfall.Arcanum.Core.Security;
 
 public interface ISecretStore
 {
-
     Task<string?> GetApiKeyAsync();
 
     Task<SecretStoreReadResult> GetApiKeyReadResultAsync();
@@ -15,19 +14,25 @@ public interface ISecretStore
     Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
         GetApiKeyReadResultAsync();
 
+    /// <summary>
+    /// <see cref="PeekApiKeyReadResultAsync()"/> for a caller that can stop waiting. Stores whose
+    /// read can block on platform secure storage override it and honour the token; the default
+    /// ignores it.
+    /// </summary>
+    Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(CancellationToken cancellationToken) =>
+        PeekApiKeyReadResultAsync();
+
     Task SaveApiKeyAsync(string apiKey);
 
     Task<string?> GetGrimoireEncryptionSecretAsync();
 
     async Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync()
     {
-
         string? value = await GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
 
         return value is null
             ? SecretStoreReadResult.Missing()
             : SecretStoreReadResult.Ok(value);
-
     }
 
     Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret);
@@ -46,5 +51,4 @@ public interface ISecretStore
     Task SaveFileEncryptionSecretAsync(string encryptionSecret) =>
         throw new NotSupportedException(
             "This secret store does not support the dedicated file-encryption secret.");
-
 }

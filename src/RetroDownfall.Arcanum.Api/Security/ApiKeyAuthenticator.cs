@@ -18,12 +18,36 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// <see cref="IApiKeyDigestCache"/>, so authenticating twice costs one extra SHA-256 of the presented
 /// header and never a second secret-store read.
 /// </summary>
+/// <remarks>
+/// A digest-cache miss is filled by at most one secret-store read per cache generation: concurrent
+/// misses join the read in flight instead of each queueing their own (behind a parked Keychain call
+/// that would be one blocking secure-storage read per request). A read that fails is remembered for
+/// <see cref="FailedReadRetryDelay"/> within the same generation, so a request — including one with a
+/// bogus key — never re-enters secure storage during a fault; it fails closed against whatever digest
+/// is currently published. Rotation or invalidation starts a new generation and clears both.
+/// </remarks>
 public sealed class ApiKeyAuthenticator(
     ISecretStore secretStore,
     IApiKeyDigestCache digestCache,
-    ArcanumProcessCapabilityService? processCapabilities = null)
+    ArcanumProcessCapabilityService? processCapabilities = null,
+    TimeProvider? timeProvider = null)
 {
+    /// <summary>How long a failed secret-store read answers for further misses without a new read.</summary>
+    internal static readonly TimeSpan FailedReadRetryDelay = TimeSpan.FromSeconds(5);
+
     private const int Sha256Bytes = 32;
+
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+
+    private readonly Lock _refreshSync = new();
+
+    private PendingRefresh? _refresh;
+
+    private FailedRefresh? _failedRefresh;
+
+    private sealed record PendingRefresh(long Generation, Task Completion);
+
+    private sealed record FailedRefresh(long Generation, long FailedAtTimestamp);
 
     public async ValueTask<bool> IsAuthorizedAsync(HttpContext httpContext)
     {
@@ -58,7 +82,7 @@ public sealed class ApiKeyAuthenticator(
             return false;
         }
 
-        byte[]? expectedDigest = await GetExpectedDigestAsync().ConfigureAwait(false);
+        byte[]? expectedDigest = await GetExpectedDigestAsync(httpContext.RequestAborted).ConfigureAwait(false);
 
         if (expectedDigest is null)
         {
@@ -168,7 +192,13 @@ public sealed class ApiKeyAuthenticator(
         return !string.IsNullOrEmpty(headerValue);
     }
 
-    private async Task<byte[]?> GetExpectedDigestAsync()
+    /// <summary>
+    /// Returns a caller-owned copy of the digest to compare against, or null to fail closed. A miss
+    /// joins (or starts) the one refresh for the generation it observed and then answers from
+    /// whatever that refresh — or a concurrent rotation — left published. The request token only
+    /// stops this request waiting; the shared read is bounded by the secret store itself.
+    /// </summary>
+    private async Task<byte[]?> GetExpectedDigestAsync(CancellationToken cancellationToken)
     {
         if (digestCache.TryGetDigest(
                 out byte[]? cached,
@@ -177,22 +207,81 @@ public sealed class ApiKeyAuthenticator(
             return cached;
         }
 
-        SecretStoreReadResult expectedRead = await secretStore
-            .PeekApiKeyReadResultAsync()
-            .ConfigureAwait(false);
+        Task refresh;
 
-        string? expected = expectedRead.Status == SecretStoreReadStatus.Ok
-            ? expectedRead.Value
-            : null;
-
-        if (expected is null)
+        lock (_refreshSync)
         {
-            return digestCache.TryGetDigest(out byte[]? currentDigest)
-                ? currentDigest
-                : null;
+            if (_failedRefresh is { } failed
+                && failed.Generation == observedGeneration
+                && _time.GetElapsedTime(failed.FailedAtTimestamp) < FailedReadRetryDelay)
+            {
+                // A read just failed for this generation: fail closed without re-entering storage.
+                refresh = Task.CompletedTask;
+            }
+            else
+            {
+                if (_refresh is null
+                    || _refresh.Generation != observedGeneration
+                    || _refresh.Completion.IsCompleted)
+                {
+                    // Started off the lock: a store's peek may run synchronously before it yields.
+                    _refresh = new PendingRefresh(
+                        observedGeneration,
+                        Task.Run(() => RefreshAsync(observedGeneration), CancellationToken.None));
+                }
+
+                refresh = _refresh.Completion;
+            }
         }
 
-        byte[] expectedUtf8 = Encoding.UTF8.GetBytes(expected);
+        await refresh.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        return digestCache.TryGetDigest(out byte[]? currentDigest)
+            ? currentDigest
+            : null;
+    }
+
+    /// <summary>
+    /// The single secret-store read for one cache generation. Publishes only while that generation is
+    /// still current, so a read that started before a rotation can never republish the old key, and
+    /// remembers a failure so the next misses of the same generation do not repeat it.
+    /// </summary>
+    private async Task RefreshAsync(long generation)
+    {
+        // Something may have published since the miss (startup seed, a rotation's fill); then no
+        // secret-store read is needed at all.
+        if (digestCache.TryGetDigest(out byte[]? published, out _))
+        {
+            CryptographicOperations.ZeroMemory(published);
+
+            return;
+        }
+
+        SecretStoreReadResult expectedRead;
+
+        try
+        {
+            expectedRead = await secretStore
+                .PeekApiKeyReadResultAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Fail closed exactly like an unreadable store; the store logs its own fault.
+            RecordFailedRefresh(generation);
+
+            return;
+        }
+
+        if (expectedRead.Status != SecretStoreReadStatus.Ok
+            || string.IsNullOrEmpty(expectedRead.Value))
+        {
+            RecordFailedRefresh(generation);
+
+            return;
+        }
+
+        byte[] expectedUtf8 = Encoding.UTF8.GetBytes(expectedRead.Value);
         byte[] digest;
 
         try
@@ -209,26 +298,24 @@ public sealed class ApiKeyAuthenticator(
 
         try
         {
-            if (!digestCache.TryStoreDigest(
-                    digest,
-                    ttlSeconds,
-                    observedGeneration))
-            {
-                CryptographicOperations.ZeroMemory(digest);
-
-                return digestCache.TryGetDigest(out byte[]? currentDigest)
-                    ? currentDigest
-                    : null;
-            }
+            // The cache takes its own copy on success; a lost race leaves the winner published.
+            _ = digestCache.TryStoreDigest(
+                digest,
+                ttlSeconds,
+                generation);
         }
-        catch
+        finally
         {
             CryptographicOperations.ZeroMemory(digest);
-
-            throw;
         }
+    }
 
-        return digest;
+    private void RecordFailedRefresh(long generation)
+    {
+        lock (_refreshSync)
+        {
+            _failedRefresh = new FailedRefresh(generation, _time.GetTimestamp());
+        }
     }
 
     private static void ZeroHeaderUtf8(Span<byte> headerUtf8, byte[]? rentedHeaderUtf8)

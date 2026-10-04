@@ -143,9 +143,8 @@ public static class ArcanumMasterKeyBootstrapper
             // ours. The read that produced Corrupted may itself have been the OS failure, in which case
             // the live credential's existence is unknown — and SaveApiKeyAsync would overwrite it, or on
             // a failed write delete it outright. Probe once and fail closed unless the answer is clear.
-            OsCredentialStoreResult probe = osStore.TryGet(
-                ArcanumCredentialIdentity.Service,
-                ArcanumCredentialIdentity.MasterApiKeyAccount);
+            OsCredentialStoreResult probe = await ProbeOsKeyStorageAsync(osStore, cancellationToken)
+                .ConfigureAwait(false);
 
             ThrowIfOsKeyStorageMayHoldTheLiveKey(probe, osStore);
 
@@ -172,6 +171,34 @@ public static class ArcanumMasterKeyBootstrapper
         return new MasterApiKeyBootstrapResult(
             apiKey,
             wasGenerated: true);
+    }
+
+    /// <summary>
+    /// The same bound as every store read (<see cref="MirroredOsCredential.DefaultOsReadTimeout"/>): a
+    /// parked platform call cannot wedge startup. A probe that does not answer is a failure from a
+    /// reachable backend, so regeneration is refused.
+    /// </summary>
+    private static async Task<OsCredentialStoreResult> ProbeOsKeyStorageAsync(
+        IOsCredentialStore osStore,
+        CancellationToken cancellationToken)
+    {
+        Task<OsCredentialStoreResult> probe = Task.Run(
+            () => osStore.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.MasterApiKeyAccount),
+            CancellationToken.None);
+
+        try
+        {
+            return await probe
+                .WaitAsync(MirroredOsCredential.DefaultOsReadTimeout, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return OsCredentialStoreResult.Failed(
+                "OS key storage did not answer the master API key probe in time.");
+        }
     }
 
     private static void SeedDigestCache(

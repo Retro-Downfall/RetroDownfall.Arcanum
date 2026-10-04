@@ -229,6 +229,56 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal("mirrored-key", result.Value);
     }
 
+    /// <summary>
+    /// A Keychain dialog nobody dismisses parks the OS call. The read must be bounded, a second
+    /// caller must fail closed within the timeout instead of queueing behind the stuck call, and no
+    /// second OS read may be stacked on the first (each would raise another prompt).
+    /// </summary>
+    [Fact]
+    public async Task Peek_does_not_hold_the_gate_past_a_read_timeout()
+    {
+        using BlockingReadStore os = new();
+
+        TimeSpan readTimeout = TimeSpan.FromMilliseconds(250);
+
+        using OsKeychainSecretStore store = new(
+            os,
+            CreateDataProtectionStore(),
+            new ApiKeyDigestCache(new FakeTimeProvider()),
+            NullLogger<OsKeychainSecretStore>.Instance,
+            readTimeout);
+
+        Task<SecretStoreReadResult> first = Task.Run(() => store.PeekApiKeyReadResultAsync());
+
+        try
+        {
+            Assert.True(os.Entered.Wait(TimeSpan.FromSeconds(10)));
+
+            System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+
+            SecretStoreReadResult second = await store
+                .PeekApiKeyReadResultAsync()
+                .WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Bounded by one read timeout (plus scheduling slack), not by the parked call.
+            Assert.True(elapsed.Elapsed < readTimeout + TimeSpan.FromSeconds(5), elapsed.Elapsed.ToString());
+
+            Assert.Equal(SecretStoreReadStatus.Corrupted, second.Status);
+
+            Assert.Null(second.Value);
+
+            Assert.Equal(
+                SecretStoreReadStatus.Corrupted,
+                (await first.WaitAsync(TimeSpan.FromSeconds(30))).Status);
+
+            Assert.Equal(1, os.TryGetCallCount);
+        }
+        finally
+        {
+            os.Release();
+        }
+    }
+
     [Fact]
     public async Task PeekApiKey_NotFoundOsCredential_ReturnsMirrorWithoutMigratingOrChangingFiles()
     {
@@ -646,6 +696,72 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Ok(string.Empty);
+    }
+
+    /// <summary>
+    /// A reachable backend whose read blocks — the Keychain confidential-information dialog that
+    /// nobody answers — until the test releases it.
+    /// </summary>
+    private sealed class BlockingReadStore : IOsCredentialStore, IDisposable
+    {
+        private readonly ManualResetEventSlim _release = new(false);
+
+        private readonly CountdownEvent _readsInside = new(1);
+
+        private int _tryGetCallCount;
+
+        public ManualResetEventSlim Entered { get; } = new(false);
+
+        public int TryGetCallCount => Volatile.Read(ref _tryGetCallCount);
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            _readsInside.AddCount();
+
+            try
+            {
+                _ = Interlocked.Increment(ref _tryGetCallCount);
+
+                Entered.Set();
+
+                _ = _release.Wait(TimeSpan.FromSeconds(60));
+
+                return OsCredentialStoreResult.Ok("released-key");
+            }
+            finally
+            {
+                _ = _readsInside.Signal();
+            }
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Ok(secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.Ok(string.Empty);
+
+        public void Release() => _release.Set();
+
+        /// <summary>
+        /// Releases any parked read and waits for it to leave before disposing the events it uses: a
+        /// timed-out read is abandoned by the store, not cancelled, so it is still inside here.
+        /// </summary>
+        public void Dispose()
+        {
+            _release.Set();
+
+            _ = _readsInside.Signal();
+
+            _ = _readsInside.Wait(TimeSpan.FromSeconds(10));
+
+            _readsInside.Dispose();
+
+            _release.Dispose();
+
+            Entered.Dispose();
+        }
     }
 
     private sealed class UnavailableStore : IOsCredentialStore
