@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -220,6 +221,14 @@ public sealed class SagaCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/saga/mem-1", request.RequestUri!.AbsolutePath);
+
+        // Spectre wraps long lines on the console the harness captures, so the sentence is read with
+        // its whitespace collapsed rather than at the column the wrap happened to choose.
+        string output = Regex.Replace(result.Output, @"\s+", " ");
+
+        Assert.Contains("was deleted. No suppression fingerprint was recorded", output, StringComparison.Ordinal);
+
+        Assert.Contains("arcanum memory saga erase", output, StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -69,14 +69,15 @@ internal static class MemoryEndpoints
 
     private const string AttachmentIndexRetention = "Derived and rebuildable from bound attachment versions; removed with the attachment or index reset.";
 
-    private const string CovenantRetention =
-        "Durable immutable versions until an operator retires the entry or a Covenant reset, family "
-            + "reinitialize, or factory erasure removes it. Content already sent to a provider is "
-            + "outside every local erasure path.";
+    private const string LexiconRetention =
+        "Durable until explicitly deleted, erased, or reset, or pruned by an enabled `lexicon-entries` "
+            + "retention rule; pinned entries are exempt from pruning, and retirement keeps an entry "
+            + "inspectable but out of matching.";
 
-    private const string LexiconRetention = "Durable until that explicitly named Lexicon entity is deleted.";
-
-    private const string SagaRetention = "Durable associative memory until that Saga memory is explicitly deleted.";
+    private const string SagaRetention =
+        "Durable until explicitly deleted, erased, or reset, or pruned by an enabled `saga-memories` "
+            + "retention rule; pinned memories are exempt from pruning, and retirement keeps a memory "
+            + "inspectable but out of retrieval.";
 
     private const string WorkspaceRetention = "Derived and rebuildable from registered workspace files; not session memory.";
 

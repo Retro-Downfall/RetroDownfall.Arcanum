@@ -2561,7 +2561,7 @@
         {
           "path": "saga delete",
           "name": "delete",
-          "description": "Delete a single Saga memory.",
+          "description": "Delete a single Saga memory without erasing it.",
           "runnable": true,
           "aliases": [],
           "arguments": [
@@ -3554,7 +3554,7 @@
             {
               "path": "memory lexicon delete",
               "name": "delete",
-              "description": "Delete one explicitly named Lexicon entity.",
+              "description": "Delete one explicitly named Lexicon entity without erasing it.",
               "runnable": true,
               "aliases": [],
               "arguments": [

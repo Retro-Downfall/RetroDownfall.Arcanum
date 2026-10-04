@@ -126,7 +126,7 @@ internal static partial class CliCommandTree
                     pr.GetValue(lexiconQuery)!,
                     ct).ConfigureAwait(false));
 
-        Command lexiconDelete = new("delete", "Delete one explicitly named Lexicon entity.");
+        Command lexiconDelete = new("delete", "Delete one explicitly named Lexicon entity without erasing it.");
 
         Argument<string> deleteName = new("name") { Description = "Lexicon entity name." };
 
@@ -570,7 +570,7 @@ internal static partial class CliCommandTree
             ActiveSession(sp, pr.GetValue(divineSession)),
             ct).ConfigureAwait(false));
 
-        Command delete = new("delete", "Delete a single Saga memory.");
+        Command delete = new("delete", "Delete a single Saga memory without erasing it.");
         Argument<string> id = new("id") { Description = "Saga memory ID." };
         delete.Add(id);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Delete(

@@ -756,8 +756,9 @@ internal sealed class CovenantManagementService(
 
     /// <summary>The retention sentence every Covenant surface reports, in one place.</summary>
     private const string CovenantRetentionSummary =
-        "Durable immutable versions until an operator retires the entry or a Covenant reset, family "
-        + "reinitialize, or installation erasure removes it.";
+        "Durable immutable versions until an operator erases the entry, its Campaign is deleted, or a "
+        + "Covenant reset, family reinitialize, or installation erasure removes it; retirement keeps "
+        + "history inspectable. Content already sent to a provider is outside every local erasure path.";
 
     private static CovenantSourcesDto Sources(CovenantSourcePage page) =>
         new(

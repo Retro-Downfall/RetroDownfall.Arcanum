@@ -2,6 +2,8 @@ using System.Net;
 
 using System.Net.Http.Json;
 
+using System.Reflection;
+
 using System.Text.Json;
 
 using Microsoft.Data.Sqlite;
@@ -584,6 +586,61 @@ public sealed class MemoryEndpointTests
 
         Assert.All(envelope.Data.Stores, static store => Assert.False(string.IsNullOrWhiteSpace(store.Retention)));
 
+    }
+
+    /// <summary>
+    /// The retention sentence a store reports names every way its rows actually leave, not only the
+    /// one that existed when the sentence was first written.
+    /// </summary>
+    /// <remarks>
+    /// <para>Both stores used to say "explicitly deleted" and nothing else, which stopped being true
+    /// twice over: an operator can erase a memory or an entry, leaving a fingerprint instead of a
+    /// row, and an enabled retention rule prunes unpinned rows without anyone naming them. A reader
+    /// who trusts the sentence would not look for the pin that exempts a row from the second or for
+    /// the verb that performs the first.</para>
+    /// <para>The Covenant has no row in this listing, so its dead constant has no business remaining
+    /// in the endpoint class: a sentence nothing reads is one more place for the next change to
+    /// leave stale.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Memory_sources_state_each_store_retention_honestly()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage sourced = await client.GetAsync("/api/memory/sources");
+
+        Assert.Equal(HttpStatusCode.OK, sourced.StatusCode);
+
+        ApiResponse<MemorySourcesDto>? sources = await ReadAsync(
+            sourced,
+            ArcanumJsonContext.Default.ApiResponseMemorySourcesDto);
+
+        Assert.NotNull(sources?.Data);
+
+        string saga = Assert.Single(sources.Data.Sources, static source => source.Name == "Saga").Retention;
+
+        Assert.Contains("erased", saga, StringComparison.Ordinal);
+
+        Assert.Contains("saga-memories", saga, StringComparison.Ordinal);
+
+        Assert.Contains("pinned", saga, StringComparison.Ordinal);
+
+        Assert.Contains("explicitly", saga, StringComparison.Ordinal);
+
+        string lexicon = Assert.Single(sources.Data.Sources, static source => source.Name == "Lexicon").Retention;
+
+        Assert.Contains("erased", lexicon, StringComparison.Ordinal);
+
+        Assert.Contains("lexicon-entries", lexicon, StringComparison.Ordinal);
+
+        Assert.Contains("explicitly", lexicon, StringComparison.Ordinal);
+
+        Assert.Null(
+            typeof(MemoryEndpoints).GetField(
+                "CovenantRetention",
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic));
     }
 
     /// <summary>
@@ -1368,6 +1425,47 @@ public sealed class MemoryEndpointTests
 
         Assert.Null(await CovenantStatusAsync(factory));
 
+    }
+
+    /// <summary>
+    /// The Covenant status block says an operator can erase an entry, and says what no local erasure
+    /// can reach.
+    /// </summary>
+    /// <remarks>
+    /// The sentence used to end at "retires the entry", which is the tombstone that keeps history
+    /// readable, so an operator who read only status would conclude the Covenant has no way to forget
+    /// something. The second clause is the other half of the same honesty: erasure removes the local
+    /// rows, and a provider that already received the content is outside it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Covenant_status_states_that_an_operator_can_erase_an_entry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using CovenantCanonicalFixture covenant =
+            await CovenantCanonicalFixture.CreateAsync(CancellationToken.None);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = static settings => settings with
+            {
+                Features = settings.Features with { Covenant = true },
+            },
+            ServiceOverrides = services =>
+            {
+                services.RemoveAll<ICovenantManagementService>();
+
+                services.AddSingleton(Management(covenant));
+            },
+        };
+
+        CovenantStatusDto? status = await CovenantStatusAsync(factory);
+
+        Assert.NotNull(status);
+
+        Assert.Contains("until an operator erases the entry", status.Retention, StringComparison.Ordinal);
+
+        Assert.Contains("outside every local erasure path", status.Retention, StringComparison.Ordinal);
     }
 
     private static async Task<CovenantStatusDto?> CovenantStatusAsync(ArcanumWebApplicationFactory factory)

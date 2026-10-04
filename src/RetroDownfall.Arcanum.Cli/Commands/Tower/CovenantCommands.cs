@@ -28,7 +28,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 /// prepare-then-commit protocol, and the CLI's job is to show an operator what a mutation would do
 /// and let them decline it.
 ///
-/// <para>Both mutating verbs prepare first and print the server's own measurement — the compiled hash,
+/// <para>Both mutating verbs prepare first and print the server's own measurement — the rendered hash,
 /// the framed byte cost, the affected-Campaign count — before asking for confirmation. Printing what
 /// the client believes would defeat the point: the whole reason the token exists is that the server's
 /// measurement is the one being committed.</para>
@@ -200,7 +200,7 @@ public sealed class CovenantCommands(
     }
 
     /// <summary>
-    /// Corrects one preference, naming the exact version, revision and compiled hash it replaces.
+    /// Corrects one preference, naming the exact version, revision and rendered hash it replaces.
     /// </summary>
     /// <remarks>
     /// The three target values come off <c>show</c>, which is where an operator reads the preference
@@ -1034,7 +1034,7 @@ public sealed class CovenantCommands(
     /// Stdout under <c>--json</c> belongs to the one document a script parses, and the result is that
     /// document — so the plan travels beside the question it belongs to, exactly as the backup-restore
     /// statement does. Publishing it at all is what keeps the server's own measurement on the record
-    /// for an unattended run: <c>--yes</c> answers the question, it does not make the compiled hash,
+    /// for an unattended run: <c>--yes</c> answers the question, it does not make the rendered hash,
     /// the framed cost, and the affected-Campaign count stop mattering.
     ///
     /// <para>Every number is the preflight's. A client that recomputed one would be publishing a

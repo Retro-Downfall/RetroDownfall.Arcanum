@@ -251,7 +251,11 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         }
 
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Saga memory '{id}' was forgotten.")));
+        AnsiConsole.MarkupLine(
+            themePalette.MutedMarkup(
+                Markup.Escape(
+                    $"Saga memory '{id}' was deleted. No suppression fingerprint was recorded, so extraction "
+                    + "can add identical content again; use 'arcanum memory saga erase' to erase and suppress.")));
 
         return 0;
 

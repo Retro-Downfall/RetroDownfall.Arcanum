@@ -2,6 +2,8 @@ using System.Net;
 
 using System.Text.Json;
 
+using System.Text.RegularExpressions;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -479,6 +481,14 @@ public sealed class MemoryCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/memory/lexicon/Operator", request.RequestUri!.AbsolutePath);
+
+        // Spectre wraps long lines on the console the harness captures, so the sentence is read with
+        // its whitespace collapsed rather than at the column the wrap happened to choose.
+        string output = Regex.Replace(result.Output, @"\s+", " ");
+
+        Assert.Contains("was deleted, not erased", output, StringComparison.Ordinal);
+
+        Assert.Contains("arcanum memory lexicon erase", output, StringComparison.Ordinal);
     }
 
     [Theory]

@@ -782,24 +782,29 @@ It never holds a live handle. The Grimoire is read **first**, so a restore whose
 | absent or unreadable | — | `NotFound` | `None`; proceed: no key means no committed evidence |
 | absent or unreadable | — | `Present` or `Unavailable` | refuse `backup.restore_erasure_evidence_unavailable` |
 
-**Ways out.** Every refusal names them:
-- restore readability and retry;
-- run `arcanum memory erasure reset-key` on the destination (§5.7);
+**Ways out.** A refusal names the ways out that can work in the state it describes:
+- make the key or the credential store readable and retry (put the original key back, or unlock the credential store);
+- run `arcanum memory erasure reset-key` on the destination (§5.7), which discards the erasures it cannot prove;
 - run a full installation reset.
+
+Two refusals narrow that list (amended after the restore-refusal review):
+- An `evidence_unavailable` refusal caused by an unreadable Grimoire does **not** name `reset-key`. The host cannot open the database for `reset-key` to run, so the refusal names only the remedies that can work: make the Grimoire readable again and retry, or run a full installation reset.
+- The malformed-key refusal (`key_unavailable` over an item that is not a valid key) carries an unlock-first caution. Unlock the credential store and retry first, and only if the item is confirmed malformed remove it with the OS credential tool before running `reset-key`. Removing a key makes every erasure fingerprint unverifiable, and the reset then discards them.
 
 ### 14.2 Staged drain
 
-Conditions: the destination read is `Present` with at least one row, and any staged tier either has a pending transition-journal row or is recorded below head. This covers Core, the Covenant canonical tier, and the accelerator.
+Conditions: the destination read is `Present` with at least one row, and the staged copy has journal rows, or any tier recorded below head. This covers Core, the Covenant canonical tier, and the accelerator. A tier that is at head but unhealthy is not a drain failure: no pass can repair it, and the evidence step's absence verification (§14.3) decides it, by proving every purge or refusing with `backup.restore_erasure_verification_failed`.
 
 **When it runs,** `PrepareStagedGenerationAsync` alternates `InstallAsync` with bounded `GrimoireSchemaBackfillRunner` passes over the staged connection, until every tier is at head and every journal is empty.
 
 **Refusal.** Any of the following refuses with `backup.restore_erasure_evidence_unjoinable`:
 - a throw;
 - a refusal (including `TransitionUnresumable`, which now surfaces as this typed code instead of a generic failure);
-- a pass that makes no progress;
-- cancellation.
+- a pass that makes no progress.
 
 The refusal happens before any safety backup or rename.
+
+**Cancellation is not a refusal** (amended after the staged-drain review). A caller cancellation during the staged drain is reported as a cancellation, exit 130, with nothing displaced, exactly as a cancellation at any other point before commit is.
 
 **Destinations without evidence** keep today's behaviour exactly.
 

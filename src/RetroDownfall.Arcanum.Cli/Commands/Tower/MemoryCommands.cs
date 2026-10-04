@@ -526,7 +526,8 @@ public sealed partial class MemoryCommands(
 
         }
 
-        dispatcher.WritePayload($"Lexicon entity '{name}' was deleted.");
+        dispatcher.WritePayload(
+            $"Lexicon entity '{name}' was deleted, not erased; use 'arcanum memory lexicon erase' to erase and suppress.");
 
         return 0;
 
