@@ -1396,6 +1396,147 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.DoesNotContain("line two", updated, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ReplaceTextBlock_with_multiple_matches_is_rejected_without_writing()
+    {
+        const string relativePath = "notes/repeated.txt";
+
+        const string original = "TODO first\nkeep\nTODO second\n";
+
+        string path = _workspace.WriteFile(relativePath, original);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            JsonSerializer.SerializeToElement(
+                new ReplaceTextBlockParams
+                {
+                    RelativePath = relativePath,
+                    ExactSearchText = "TODO",
+                    ReplacementText = "DONE",
+                },
+                McpJsonSerializerContext.Default.ReplaceTextBlockParams));
+
+        // A model that meant one specific block must not silently rewrite every look-alike.
+        Assert.True(result.IsError);
+
+        string message = Assert.Single(result.Content!).Text!;
+
+        Assert.Contains("2 occurrences", message, StringComparison.Ordinal);
+
+        Assert.Contains("replaceAll", message, StringComparison.Ordinal);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task ReplaceTextBlock_with_replaceAll_replaces_every_occurrence()
+    {
+        const string relativePath = "notes/repeated-all.txt";
+
+        string path = _workspace.WriteFile(relativePath, "TODO first\nkeep\nTODO second\n");
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            JsonSerializer.SerializeToElement(
+                new ReplaceTextBlockParams
+                {
+                    RelativePath = relativePath,
+                    ExactSearchText = "TODO",
+                    ReplacementText = "DONE",
+                    ReplaceAll = true,
+                },
+                McpJsonSerializerContext.Default.ReplaceTextBlockParams));
+
+        Assert.False(result.IsError);
+
+        Assert.Contains("2 occurrences", Assert.Single(result.Content!).Text!, StringComparison.Ordinal);
+
+        Assert.Equal("DONE first\nkeep\nDONE second\n", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task ReplaceTextBlock_with_a_null_replacementText_is_rejected_without_writing()
+    {
+        const string relativePath = "notes/null-replacement.txt";
+
+        const string original = "delete me please\n";
+
+        string path = _workspace.WriteFile(relativePath, original);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        using JsonDocument arguments = JsonDocument.Parse(
+            """{"relativePath":"notes/null-replacement.txt","exactSearchText":"delete me please","replacementText":null}""");
+
+        McpToolsCallResultWire result = await session.CallToolAsync("replace_text_block", arguments.RootElement);
+
+        // An explicit null is not the same instruction as an empty string: deletion has to be asked for.
+        Assert.True(result.IsError);
+
+        Assert.Contains("replacementText", Assert.Single(result.Content!).Text!, StringComparison.Ordinal);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task ReplaceTextBlock_with_an_empty_replacementText_still_deletes_the_block()
+    {
+        const string relativePath = "notes/empty-replacement.txt";
+
+        string path = _workspace.WriteFile(relativePath, "keep\ndelete me please\n");
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            JsonSerializer.SerializeToElement(
+                new ReplaceTextBlockParams
+                {
+                    RelativePath = relativePath,
+                    ExactSearchText = "delete me please\n",
+                    ReplacementText = string.Empty,
+                },
+                McpJsonSerializerContext.Default.ReplaceTextBlockParams));
+
+        Assert.False(result.IsError);
+
+        Assert.Equal("keep\n", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task ToolsList_replace_text_block_description_and_schema_state_the_multi_match_rule()
+    {
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        McpToolDefinitionWire tool = Assert.Single(tools.Tools, static t => t.Name == "replace_text_block");
+
+        Assert.Contains("replaceAll", tool.Description, StringComparison.Ordinal);
+
+        Assert.Contains("every occurrence", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(tool.InputSchema.GetProperty("properties").TryGetProperty("replaceAll", out JsonElement replaceAll));
+
+        Assert.Equal("boolean", replaceAll.GetProperty("type").GetString());
+    }
+
     [SkippableFact]
     public async Task ToolsCall_replace_text_block_rejects_growth_past_read_cap_after_open()
     {

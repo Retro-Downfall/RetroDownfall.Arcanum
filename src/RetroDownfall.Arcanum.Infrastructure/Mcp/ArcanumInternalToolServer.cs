@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 [ExcludeFromCodeCoverage] // Reason: in-process MCP JSON-RPC tool server; handler behavior covered via ArcanumInternalToolServerTests.
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private const string WorkspaceNotConfiguredMessage =
         "Workspace not configured. This tool requires a valid workspace.";
 
@@ -239,9 +238,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (maxJsonRpcLineBytes < 1)
         {
-
             throw new ArgumentOutOfRangeException(nameof(maxJsonRpcLineBytes));
-
         }
 
         _fromClient = fromClient;
@@ -321,11 +318,9 @@ internal sealed partial class ArcanumInternalToolServer
         // no Covenant tier resolves nothing and the two handlers stay inert.
         using (IServiceScope composition = scopeFactory.CreateScope())
         {
-
             _covenantAvailability = composition.ServiceProvider.GetService<ICovenantAvailability>();
 
             _covenantCapabilities = composition.ServiceProvider.GetService<CovenantToolCapabilityRegistry>();
-
         }
 
         _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
@@ -498,17 +493,14 @@ internal sealed partial class ArcanumInternalToolServer
 
     private async Task HandleLineAsync(string line, CancellationToken cancellationToken)
     {
-
         if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line, _maxJsonRpcLineBytes))
         {
-
             _logger?.LogWarning(
                 "Arcanum internal MCP server rejected an inbound JSON-RPC line exceeding {MaxBytes} UTF-8 bytes.",
                 _maxJsonRpcLineBytes);
 
             if (TryExtractJsonRpcRequestId(line, out JsonElement oversizedId))
             {
-
                 JsonRpcResponse error = new()
                 {
                     Id = oversizedId,
@@ -526,11 +518,9 @@ internal sealed partial class ArcanumInternalToolServer
                 };
 
                 await WriteResponseAsync(error, cancellationToken).ConfigureAwait(false);
-
             }
 
             return;
-
         }
 
         if (LineHandlerFaultForTesting is not null)
@@ -599,7 +589,6 @@ internal sealed partial class ArcanumInternalToolServer
 
     private async Task WriteSanitizedInternalErrorAsync(JsonElement requestId, CancellationToken cancellationToken)
     {
-
         JsonRpcResponse err = new()
         {
             Id = requestId,
@@ -613,7 +602,6 @@ internal sealed partial class ArcanumInternalToolServer
         };
 
         await WriteResponseAsync(err, cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -626,7 +614,6 @@ internal sealed partial class ArcanumInternalToolServer
 
     private async Task WriteResponseAsync(JsonRpcResponse response, CancellationToken cancellationToken)
     {
-
         string wire = JsonSerializer.Serialize(response, _json.JsonRpcResponse);
 
         wire = BoundOutboundResponseLine(response, wire);
@@ -635,17 +622,12 @@ internal sealed partial class ArcanumInternalToolServer
 
         try
         {
-
             await _toClient.WriteAsync(wire + ResponseLineDelimiter, cancellationToken).ConfigureAwait(false);
-
         }
         finally
         {
-
             _responseWriteLock.Release();
-
         }
-
     }
 
     /// <summary>
@@ -662,12 +644,9 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     private string BoundOutboundResponseLine(JsonRpcResponse response, string wire)
     {
-
         if (!ExceedsOutboundFrameBudget(wire))
         {
-
             return wire;
-
         }
 
         _logger?.LogWarning(
@@ -695,9 +674,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (!ExceedsOutboundFrameBudget(replacement))
         {
-
             return replacement;
-
         }
 
         // Only reachable when the request id itself consumed nearly the whole inbound budget. Drop
@@ -708,7 +685,6 @@ internal sealed partial class ArcanumInternalToolServer
         };
 
         return JsonSerializer.Serialize(idless, _json.JsonRpcResponse);
-
     }
 
     private bool ExceedsOutboundFrameBudget(string wire) =>
@@ -716,40 +692,30 @@ internal sealed partial class ArcanumInternalToolServer
 
     private static bool TryExtractJsonRpcRequestId(string line, out JsonElement requestId)
     {
-
         requestId = default;
 
         try
         {
-
             using JsonDocument doc = JsonDocument.Parse(line, McpSecurityLimits.JsonDocumentOptions);
 
             if (!doc.RootElement.TryGetProperty("id", out JsonElement idProp))
             {
-
                 return false;
-
             }
 
             if (idProp.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
             {
-
                 return false;
-
             }
 
             requestId = idProp.Clone();
 
             return true;
-
         }
         catch (JsonException)
         {
-
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -856,7 +822,7 @@ internal sealed partial class ArcanumInternalToolServer
                 new McpToolDefinitionWire
                 {
                     Name = "replace_text_block",
-                    Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely.",
+                    Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely. If the block occurs more than once the call fails without changing the file, unless replaceAll is true, which replaces every occurrence. replacementText must be a string; an empty string deletes the block.",
                     InputSchema = _replaceTextBlockSchema,
                 },
                 new McpToolDefinitionWire
@@ -892,7 +858,6 @@ internal sealed partial class ArcanumInternalToolServer
         if (_workspaceRoot is not null
             && _workspaceCheckRuntime.GetStatus(_workspaceRoot).IsEligible)
         {
-
             tools.Add(
                 new McpToolDefinitionWire
                 {
@@ -1258,9 +1223,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (!_toolHandlers.TryGetValue(call.Name, out InternalToolHandler? handler))
             {
-
                 return BuildToolsCallResponse(rpcId, ToolError($"Unknown tool: {call.Name}"));
-
             }
 
             McpToolsCallResultWire result = await handler(toolArguments, toolScope.Token).ConfigureAwait(false);
@@ -1324,7 +1287,6 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     private Guid? ResolveAmbientSessionForToolsCall(string requestKey, ref JsonElement arguments)
     {
-
         Guid? session = null;
 
         if (SessionAttachmentToolAmbient.TryResolveRequest(_ambientConnectionKey, requestKey, out Guid byRequest))
@@ -1349,12 +1311,10 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         return session;
-
     }
 
     private static JsonElement StripOpaqueInvocationToken(JsonElement arguments, out string? opaqueToken)
     {
-
         opaqueToken = null;
 
         if (arguments.ValueKind != JsonValueKind.Object)
@@ -1398,7 +1358,6 @@ internal sealed partial class ArcanumInternalToolServer
         using JsonDocument document = JsonDocument.Parse(stream.ToArray());
 
         return document.RootElement.Clone();
-
     }
 
     private JsonRpcResponse BuildToolsCallResponse(JsonElement rpcId, McpToolsCallResultWire result)
@@ -1412,12 +1371,9 @@ internal sealed partial class ArcanumInternalToolServer
 
     private McpToolsCallResultWire EnforceInProcessToolOutputCap(McpToolsCallResultWire result)
     {
-
         if (result.IsError || result.Content is not { Length: > 0 })
         {
-
             return result;
-
         }
 
         long effectiveCap = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
@@ -1426,28 +1382,21 @@ internal sealed partial class ArcanumInternalToolServer
 
         foreach (McpToolContentTextWire textItem in result.Content)
         {
-
             if (string.IsNullOrEmpty(textItem.Text))
             {
-
                 continue;
-
             }
 
             long byteCount = Encoding.UTF8.GetByteCount(textItem.Text);
 
             if (byteCount > effectiveCap)
             {
-
                 return ToolError(
                     "Tool output too large. Narrow the request range or parameters and retry.");
-
             }
-
         }
 
         return result;
-
     }
 
     private static JsonRpcResponse BuildMethodNotFoundResponse(JsonElement rpcId, string method)
