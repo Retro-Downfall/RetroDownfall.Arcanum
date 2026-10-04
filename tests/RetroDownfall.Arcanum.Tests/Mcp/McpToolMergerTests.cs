@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 public sealed class McpToolMergerTests
@@ -468,45 +470,8 @@ public sealed class McpToolMergerTests
         Assert.Same(internalRow.Tool, merged[0]);
     }
 
-    private static IReadOnlyCollection<string> RegisteredInternalToolNames()
-    {
-        IServiceScopeFactory scopeFactory = new ServiceCollection()
-            .BuildServiceProvider()
-            .GetRequiredService<IServiceScopeFactory>();
-
-        (_, _, ArcanumInternalToolServer server) = InProcessMcpTransport.CreateServerChannelPair(
-            new HumanPromptRegistry(),
-            scopeFactory,
-            new InertPacer(),
-            workspaceRootNormalizedOrNull: null,
-            listDirectoryMaxPaths: 16,
-            new IntelligenceSettings(),
-            maxFileReadSizeBytes: 1024,
-            conclaveEnabled: true,
-            sagaEnabled: true,
-            a2aClientEnabled: true,
-            attachmentsToolEnabled: true,
-            maxJsonRpcLineBytes: 1_048_576,
-            logger: NullLogger<ArcanumInternalToolServer>.Instance);
-
-        return [.. server.RegisteredToolHandlerNamesForTests];
-    }
-
-    private sealed class InertPacer : IUnseenServantPacer
-    {
-        public Task<bool> SetDynamicIntervalAsync(
-            string jobName,
-            int intervalMinutes,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(false);
-
-        public int GetEffectiveInterval(UnseenServantJob job) => 0;
-
-        public Task HydrateAsync(
-            IReadOnlyList<UnseenServantWatermark> watermarks,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-    }
+    private static IReadOnlyCollection<string> RegisteredInternalToolNames() =>
+        InternalToolHandlerNames.Registered();
 
     private static LoadedMcpToolRow Row(string name, McpServerConfig config)
     {

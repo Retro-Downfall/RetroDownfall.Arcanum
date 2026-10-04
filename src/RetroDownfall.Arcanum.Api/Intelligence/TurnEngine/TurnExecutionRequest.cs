@@ -8,15 +8,15 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 /// <see cref="InvocationContext"/> is the caller's authority classification, carried by reference from
 /// the facade to the runner and on to commit. It is not nullable and has no default: a turn whose
 /// authority was optional would eventually be a turn whose authority was forgotten (§10.12).
+///
+/// Every member is read by the engine or a projection; <c>TurnExecutionRequestMemberTests</c> fails when
+/// one is added that nothing reads. A purpose, a human-interaction flag, an idempotency flag and an
+/// accounting handle used to ride here and were written by the coordinator and never read by anything.
 /// </remarks>
 internal sealed record TurnExecutionRequest(
     PingRequest Request,
     ArcanumInvocationContext InvocationContext,
-    TurnResponseMode ResponseMode,
-    TurnPurpose Purpose,
-    bool HumanInteractionAvailable,
-    bool HasIdempotencyKey,
-    TurnAccountingHandle? AccountingHandle);
+    TurnResponseMode ResponseMode);
 
 /// <summary>Correlation metadata carried on every semantic turn event.</summary>
 /// <remarks>

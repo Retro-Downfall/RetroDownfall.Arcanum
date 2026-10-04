@@ -30,8 +30,41 @@ public sealed class SessionContextPinMaterializer(
     ISessionAttachmentStore attachments,
     ISessionRepository sessions)
 {
-    private const string PerTurnTruncationSuffix =
-        "\n[TRUNCATED BY PER-TURN CONTEXT BUDGET]";
+    private const string StartMarker = "[UNTRUSTED SESSION CONTEXT DATA]";
+
+    private const string EndMarker = "[END UNTRUSTED SESSION CONTEXT DATA]";
+
+    private const string PerTurnTruncationNotice = "[TRUNCATED BY PER-TURN CONTEXT BUDGET]";
+
+    /// <summary>Longest source label, id or diagnostic echoed into a block header.</summary>
+    private const int MaxHeaderValueChars = 256;
+
+    /// <summary>
+    /// Largest file whose whole content is hashed to decide freshness. A larger file is previewed without
+    /// reading past the preview, and its size and last-write time stand in for the hash.
+    /// </summary>
+    internal const long FileHashCapBytes = 8L * 1024 * 1024;
+
+    /// <summary>
+    /// Directories one directory-snapshot pin visits before it stops and reports truncation. The byte
+    /// budget bounds what a snapshot emits; this bounds the walk itself when most directories contribute
+    /// no rows.
+    /// </summary>
+    internal const int MaxDirectoriesPerSnapshot = 2_048;
+
+    /// <summary>
+    /// Directory names a snapshot does not descend into: version-control metadata, installed
+    /// dependencies and build output. They are matched by name at any depth below the pinned directory.
+    /// </summary>
+    private static readonly HashSet<string> IgnoredDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".git",
+        "node_modules",
+        "bin",
+        "obj",
+    };
+
+    private const string FreshnessTokenPrefix = "size=";
 
     private const string DirectoryTruncationSuffix =
         "[TRUNCATED BY CONTEXT MATERIALIZATION BUDGET]";
@@ -70,19 +103,29 @@ public sealed class SessionContextPinMaterializer(
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
             {
-                materialized = new(SessionContextPinStatus.Error, null, ex.Message);
+                materialized = new(SessionContextPinStatus.Error, null, DescribeFailure(ex));
             }
 
-            string block = FormatAsUntrustedData(pin, materialized);
-            int blockBytes = Encoding.UTF8.GetByteCount(block);
-            if (blockBytes > remaining)
+            // A diagnostic pin's target is its whole body, so its stable id is the pin id.
+            string sourceId = materialized.SourceId
+                ?? (pin.Kind == SessionContextPinKind.Diagnostic
+                    ? pin.Id.ToString("N")
+                    : pin.TargetIdentifier);
+
+            string? framed = FormatAsUntrustedData(pin, materialized, sourceId, remaining);
+
+            if (framed is null)
             {
-                block = AppendSuffixWithinUtf8Budget(
-                    block,
-                    PerTurnTruncationSuffix,
-                    remaining);
-                blockBytes = Encoding.UTF8.GetByteCount(block);
+                // Not even an empty frame fits in what is left, so defer the pin rather than emit an
+                // unclosed envelope.
+                omitted++;
+
+                continue;
             }
+
+            string block = framed;
+
+            int blockBytes = Encoding.UTF8.GetByteCount(block);
 
             TextContent content = new(block);
 
@@ -92,7 +135,7 @@ public sealed class SessionContextPinMaterializer(
                 new ContextPinMaterializedItem(
                     pin.Id,
                     pin.Kind,
-                    materialized.SourceId ?? pin.TargetIdentifier,
+                    sourceId,
                     pin.DisplayLabel,
                     materialized.SourceHash
                         ?? Convert.ToHexString(
@@ -182,15 +225,30 @@ public sealed class SessionContextPinMaterializer(
 
         await using (stream)
         {
+            long length = stream.Length;
+
             BoundedFileRead source = await ReadBoundedFileAsync(
                 stream,
                 byteLimit,
+                FileHashCapBytes,
                 cancellationToken).ConfigureAwait(false);
 
-            string hash = source.Sha256;
+            // Above the hash cap the file is previewed without reading the rest, so the freshness
+            // token is its size and last-write time rather than a content hash.
+            string? hash = source.Sha256;
+
+            string freshnessToken = hash
+                ?? $"{FreshnessTokenPrefix}{length};mtime={File.GetLastWriteTimeUtc(path).Ticks}";
+
+            // A pinned content hash cannot be checked against a size/mtime token, so it is not
+            // reported as a change.
+            bool versionComparable = hash is not null
+                || pin.ContentVersion?.StartsWith(FreshnessTokenPrefix, StringComparison.OrdinalIgnoreCase) == true;
 
             SessionContextPinStatus freshness =
-                pin.ContentVersion is not null && !string.Equals(pin.ContentVersion, hash, StringComparison.OrdinalIgnoreCase)
+                pin.ContentVersion is not null
+                && versionComparable
+                && !string.Equals(pin.ContentVersion, freshnessToken, StringComparison.OrdinalIgnoreCase)
                     ? SessionContextPinStatus.Modified
                     : SessionContextPinStatus.Current;
 
@@ -198,12 +256,15 @@ public sealed class SessionContextPinMaterializer(
                 ? SessionContextPinStatus.Truncated
                 : freshness;
 
-            return new(
-                status,
-                source.Content,
-                freshness == SessionContextPinStatus.Modified
+            string diagnostic = hash is not null
+                ? freshness == SessionContextPinStatus.Modified
                     ? $"Content changed; current sha256={hash}."
-                    : $"sha256={hash}.");
+                    : $"sha256={hash}."
+                : freshness == SessionContextPinStatus.Modified
+                    ? $"Content changed; current freshness token {freshnessToken}."
+                    : $"Content hash skipped above the {FileHashCapBytes}-byte cap; freshness token {freshnessToken}.";
+
+            return new(status, source.Content, diagnostic);
         }
     }
 
@@ -259,6 +320,10 @@ public sealed class SessionContextPinMaterializer(
 
         bool truncated = false;
 
+        bool stoppedByDirectoryCap = false;
+
+        int directoriesVisited = 0;
+
         while (directories.Count > 0
             && !truncated)
         {
@@ -287,6 +352,17 @@ public sealed class SessionContextPinMaterializer(
                 continue;
             }
 
+            if (directoriesVisited >= MaxDirectoriesPerSnapshot)
+            {
+                truncated = true;
+
+                stoppedByDirectoryCap = true;
+
+                break;
+            }
+
+            directoriesVisited++;
+
             string[] entries = Directory
                 .EnumerateFileSystemEntries(
                     directory,
@@ -309,6 +385,13 @@ public sealed class SessionContextPinMaterializer(
 
                 if (Directory.Exists(entry))
                 {
+                    // Version-control and dependency trees would otherwise spend the byte budget before
+                    // the source does. Only descendants are skipped; a pin rooted at one still lists it.
+                    if (IgnoredDirectoryNames.Contains(Path.GetFileName(entry)))
+                    {
+                        continue;
+                    }
+
                     string canonicalDirectory = Path.GetFullPath(
                         resolvedEntry ?? entry);
 
@@ -359,7 +442,9 @@ public sealed class SessionContextPinMaterializer(
             return new(
                 SessionContextPinStatus.Truncated,
                 content,
-                $"Limited to {byteLimit} bytes.");
+                stoppedByDirectoryCap
+                    ? $"Stopped after visiting {MaxDirectoriesPerSnapshot} directories."
+                    : $"Limited to {byteLimit} bytes.");
         }
 
         return FromText(snapshot.ToString(), byteLimit);
@@ -494,53 +579,123 @@ public sealed class SessionContextPinMaterializer(
             truncated ? $"Limited to {byteLimit} bytes." : null);
     }
 
+    internal static Task<BoundedFileRead> ReadBoundedFileAsync(
+        Stream stream,
+        int byteLimit,
+        CancellationToken cancellationToken) =>
+        ReadBoundedFileAsync(
+            stream,
+            byteLimit,
+            hashCapBytes: long.MaxValue,
+            cancellationToken);
+
+    /// <summary>
+    /// Reads at most <paramref name="byteLimit"/> bytes of preview and hashes the whole stream only while
+    /// it stays within <paramref name="hashCapBytes"/>. A seekable stream that declares more than the cap
+    /// is never read past the preview; an unsized stream is read until the cap is crossed. Beyond the cap
+    /// <see cref="BoundedFileRead.Sha256"/> is <see langword="null"/>.
+    /// </summary>
     internal static async Task<BoundedFileRead> ReadBoundedFileAsync(
         Stream stream,
         int byteLimit,
+        long hashCapBytes,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(stream);
 
         ArgumentOutOfRangeException.ThrowIfNegative(byteLimit);
 
-        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        ArgumentOutOfRangeException.ThrowIfNegative(hashCapBytes);
 
-        using MemoryStream content = new(Math.Min(byteLimit, 16 * 1024));
+        long declaredLength = stream.CanSeek ? stream.Length : -1;
 
-        byte[] buffer = new byte[64 * 1024];
+        IncrementalHash? hash = declaredLength > hashCapBytes
+            ? null
+            : IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-        long totalRead = 0;
-
-        int read;
-
-        while ((read = await stream
-            .ReadAsync(buffer, cancellationToken)
-            .ConfigureAwait(false)) > 0)
+        try
         {
-            hash.AppendData(buffer, 0, read);
+            using MemoryStream content = new(Math.Min(byteLimit, 16 * 1024));
 
-            totalRead += read;
+            byte[] buffer = new byte[64 * 1024];
 
-            int remaining = byteLimit - (int)content.Length;
+            long totalRead = 0;
 
-            if (remaining > 0)
+            while (true)
             {
-                content.Write(buffer, 0, Math.Min(remaining, read));
+                int wanted = buffer.Length;
+
+                if (hash is null)
+                {
+                    // Only the preview is still needed, plus one byte to learn that the stream is
+                    // longer when its length is not already known to exceed the limit.
+                    bool longerKnown = totalRead > byteLimit || declaredLength > byteLimit;
+
+                    int needed = byteLimit - (int)content.Length;
+
+                    if (needed <= 0 && longerKnown)
+                    {
+                        break;
+                    }
+
+                    wanted = Math.Min(buffer.Length, Math.Max(needed, 0) + (longerKnown ? 0 : 1));
+                }
+
+                int read = await stream
+                    .ReadAsync(buffer.AsMemory(0, wanted), cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read == 0)
+                {
+                    break;
+                }
+
+                totalRead += read;
+
+                if (hash is not null)
+                {
+                    if (totalRead > hashCapBytes)
+                    {
+                        hash.Dispose();
+
+                        hash = null;
+                    }
+                    else
+                    {
+                        hash.AppendData(buffer, 0, read);
+                    }
+                }
+
+                int remaining = byteLimit - (int)content.Length;
+
+                if (remaining > 0)
+                {
+                    content.Write(buffer, 0, Math.Min(remaining, read));
+                }
             }
+
+            string text = Encoding.UTF8.GetString(content.GetBuffer(), 0, (int)content.Length);
+
+            text = TruncateUtf8(text, byteLimit);
+
+            string? sha256 = hash is null
+                ? null
+                : Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+
+            return new BoundedFileRead(
+                text,
+                sha256,
+                totalRead > byteLimit || declaredLength > byteLimit);
         }
-
-        string text = Encoding.UTF8.GetString(content.GetBuffer(), 0, (int)content.Length);
-
-        text = TruncateUtf8(text, byteLimit);
-
-        string sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
-
-        return new BoundedFileRead(text, sha256, totalRead > byteLimit);
+        finally
+        {
+            hash?.Dispose();
+        }
     }
 
     internal sealed record BoundedFileRead(
         string Content,
-        string Sha256,
+        string? Sha256,
         bool Truncated);
 
     private async Task<MaterializedPin> MaterializeEntryAsync(
@@ -622,67 +777,145 @@ public sealed class SessionContextPinMaterializer(
         {
             string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workingDirectory));
             string candidate = Path.GetFullPath(target, root);
-            string prefix = root + Path.DirectorySeparatorChar;
-            if (!candidate.Equals(root, StringComparison.Ordinal)
-                && !candidate.StartsWith(prefix, StringComparison.Ordinal))
+
+            if (!WorkspacePathPolicy.IsPathUnderWorkspace(root, candidate))
             {
                 error = "Path escapes the workspace.";
+
                 return false;
             }
 
-            string relative = Path.GetRelativePath(root, candidate);
-            string current = root;
-            foreach (string component in relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+            // Canonical containment: the root and the candidate are each resolved through every link
+            // they traverse and then compared. Comparing a link's target text with the root as the
+            // caller spelled it rejected every internal link whenever the root itself was reached
+            // through a link, and an intermediate directory link that leaves the workspace must still
+            // fail here because the no-follow open only guards the final path component.
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                    root,
+                    candidate,
+                    out string? resolvedFinalPath))
             {
-                current = Path.GetFullPath(Path.Combine(current, component));
-                if (!File.Exists(current) && !Directory.Exists(current))
-                {
-                    continue;
-                }
-                FileSystemInfo info = File.Exists(current)
-                    ? new FileInfo(current)
-                    : new DirectoryInfo(current);
-                FileSystemInfo? link = info.ResolveLinkTarget(returnFinalTarget: true);
-                if (link is not null)
-                {
-                    current = Path.GetFullPath(link.FullName);
-                    if (!current.Equals(root, StringComparison.Ordinal)
-                        && !current.StartsWith(prefix, StringComparison.Ordinal))
-                    {
-                        error = "Symlink target escapes the workspace.";
-                        path = string.Empty;
-                        return false;
-                    }
-                }
+                error = "Symlink target escapes the workspace.";
+
+                return false;
             }
-            path = current;
+
+            path = resolvedFinalPath ?? candidate;
+
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            error = ex.Message;
+            error = DescribeFailure(ex);
             return false;
         }
     }
 
-    private static string FormatAsUntrustedData(SessionContextPinRecord pin, MaterializedPin value)
+    /// <summary>
+    /// Frames one pin as untrusted data: a single-line header, the content inside an adaptive backtick
+    /// fence, and a fixed footer. Returns <see langword="null"/> when <paramref name="budgetBytes"/> cannot
+    /// hold even the frame around empty content. When the whole block does not fit, the footer (fence,
+    /// truncation notice and end marker) is reserved first and only the content is cut, so the block is
+    /// always balanced and ends with the end marker inside the exact budget.
+    /// </summary>
+    private static string? FormatAsUntrustedData(
+        SessionContextPinRecord pin,
+        MaterializedPin value,
+        string sourceId,
+        int budgetBytes)
     {
         string content = value.Content ?? string.Empty;
+
         int fenceLength = Math.Max(3, LongestBacktickRun(content) + 1);
+
         string fence = new('`', fenceLength);
-        return $"""
-            [UNTRUSTED SESSION CONTEXT DATA]
-            source-kind: {pin.Kind}
-            source-label: {pin.DisplayLabel}
-            source-id: {pin.TargetIdentifier}
-            status: {value.Status}
-            diagnostic: {value.Diagnostic ?? "none"}
-            {fence}data
-            {content}
-            {fence}
-            [END UNTRUSTED SESSION CONTEXT DATA]
-            """;
+
+        string header =
+            StartMarker + "\n"
+            + "source-kind: " + pin.Kind + "\n"
+            + "source-label: " + SingleLine(pin.DisplayLabel) + "\n"
+            + "source-id: " + SingleLine(sourceId) + "\n"
+            + "status: " + value.Status + "\n"
+            + "diagnostic: " + (value.Diagnostic is null ? "none" : SingleLine(value.Diagnostic)) + "\n"
+            + fence + "data\n";
+
+        string footer = "\n" + fence + "\n" + EndMarker;
+
+        int headerBytes = Encoding.UTF8.GetByteCount(header);
+
+        int contentBytes = Encoding.UTF8.GetByteCount(content);
+
+        int footerBytes = Encoding.UTF8.GetByteCount(footer);
+
+        if (headerBytes + contentBytes + footerBytes <= budgetBytes)
+        {
+            return header + content + footer;
+        }
+
+        string truncatedFooter = "\n" + fence + "\n" + PerTurnTruncationNotice + "\n" + EndMarker;
+
+        int contentBudget = budgetBytes - headerBytes - Encoding.UTF8.GetByteCount(truncatedFooter);
+
+        return contentBudget < 0
+            ? null
+            : header + TruncateUtf8(content, contentBudget) + truncatedFooter;
     }
+
+    /// <summary>
+    /// Renders a header value on one bounded line. Line breaks, other control characters, backslashes and
+    /// backticks are escaped, so a label, id or diagnostic can neither open a line that looks like the end
+    /// marker or a fence nor repeat an arbitrarily large body outside the fenced data.
+    /// </summary>
+    private static string SingleLine(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        StringBuilder line = new(Math.Min(value.Length, MaxHeaderValueChars) + 3);
+
+        int taken = 0;
+
+        foreach (char c in value)
+        {
+            if (taken >= MaxHeaderValueChars)
+            {
+                if (line.Length > 0 && char.IsHighSurrogate(line[^1]))
+                {
+                    line.Length--;
+                }
+
+                _ = line.Append("...");
+
+                break;
+            }
+
+            taken++;
+
+            _ = c switch
+            {
+                '\\' => line.Append("\\\\"),
+                '\r' => line.Append("\\r"),
+                '\n' => line.Append("\\n"),
+                '\t' => line.Append("\\t"),
+                '`' => line.Append("\\u0060"),
+                _ when char.IsControl(c) || c is '\u2028' or '\u2029' =>
+                    line.Append("\\u").Append(((int)c).ToString("x4", System.Globalization.CultureInfo.InvariantCulture)),
+                _ => line.Append(c),
+            };
+        }
+
+        return line.ToString();
+    }
+
+    private static string DescribeFailure(Exception failure) =>
+        failure switch
+        {
+            UnauthorizedAccessException => "Access to the pin source was denied.",
+            IOException => "An I/O error prevented reading the pin source.",
+            _ => "The pin source could not be materialized.",
+        };
 
     private static int LongestBacktickRun(string value)
     {

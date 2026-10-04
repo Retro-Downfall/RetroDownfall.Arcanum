@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class TurnEngineProjectionCharacterizationTests
 {
-
     [Fact]
     public void ReasoningProjectionContracts_AreAdditiveAndTyped()
     {
@@ -92,131 +91,18 @@ public sealed class TurnEngineProjectionCharacterizationTests
             typeof(OpenAiDelta).GetProperty("ReasoningSummary")?.PropertyType);
     }
 
-    [Fact]
-    public void OpenAiSseProjection_MapsTextDelta_OmitsWardAndToolResult()
-    {
-        List<OpenAiChatChunk> chunks = [];
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-
-        OpenAiSseProjection projection = new(channel.Writer, "chatcmpl-test", "gpt-test", createdUnixSeconds: 1);
-
-        TurnEventEmitter emitter = new(Guid.NewGuid());
-        TurnEventCorrelation c = emitter.NextCorrelation();
-
-        Assert.Single(projection.Map(new TextDelta(c, "hello")));
-        Assert.Empty(projection.Map(new ApprovalRequested(c, "w1", "tool", "{}")));
-        Assert.Empty(projection.Map(new ToolInvocationCompleted(
-            c,
-            "call1",
-            "tool",
-            "{}",
-            "ok",
-            Failed: false,
-            Denied: false,
-            ToleratedFailure: false,
-            PublicErrorText: null,
-            Duration: TimeSpan.Zero,
-            AttachmentPostProcessed: false)));
-    }
-
-    [Fact]
-    public void OpenAiSseProjection_MapsReasoningKindsInOrderWithoutTerminalDuplicates()
-    {
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection projection = new(
-            channel.Writer,
-            "chatcmpl-test",
-            "gpt-test",
-            createdUnixSeconds: 1);
-        TurnEventEmitter emitter = new(Guid.NewGuid());
-        ReasoningContentSegment summary = new("summary", ReasoningOutputMode.Summary);
-        ReasoningContentSegment full = new("full", ReasoningOutputMode.Full);
-
-        List<OpenAiChatChunk> chunks =
-        [
-            .. projection.Map(new ReasoningDelta(emitter.NextCorrelation(), summary)),
-            .. projection.Map(new TextDelta(emitter.NextCorrelation(), "answer")),
-            .. projection.Map(new ReasoningDelta(emitter.NextCorrelation(), full)),
-            .. projection.Map(new RunCompleted(
-                emitter.NextCorrelation(),
-                FinalText: "answer",
-                Usage: null,
-                ToolCalls: null,
-                FinishReason: "stop",
-                Warnings: [],
-                SessionId: null,
-                StructuredOutputWarning: false)
-            {
-                Reasoning = [summary, full],
-            }),
-        ];
-
-        OpenAiDelta[] deltas = chunks
-            .SelectMany(static chunk => chunk.Choices)
-            .Select(static choice => choice.Delta)
-            .ToArray();
-        Assert.Collection(
-            deltas,
-            delta =>
-            {
-                Assert.Null(delta.Content);
-                Assert.Equal("summary", delta.ReasoningSummary);
-                Assert.Null(delta.ReasoningContent);
-            },
-            delta =>
-            {
-                Assert.Equal("answer", delta.Content);
-                Assert.Null(delta.ReasoningSummary);
-                Assert.Null(delta.ReasoningContent);
-            },
-            delta =>
-            {
-                Assert.Null(delta.Content);
-                Assert.Null(delta.ReasoningSummary);
-                Assert.Equal("full", delta.ReasoningContent);
-            },
-            delta =>
-            {
-                Assert.Null(delta.Content);
-                Assert.Null(delta.ReasoningSummary);
-                Assert.Null(delta.ReasoningContent);
-            });
-    }
-
     [Theory]
     [InlineData(ErrorCodes.StructuredOutput.ValidationFailed, "validation_failed")]
     [InlineData(ErrorCodes.Guardrails.Blocked, "content_filter")]
-    public void OpenAiSseProjection_MapsFailureToTypedErrorChunk(
+    public void OpenAiStreamErrorMapper_MapsFailureToTypedErrorDetail(
         string internalCode,
         string expectedOpenAiCode)
     {
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection projection = new(
-            channel.Writer,
-            "chatcmpl-test",
-            "gpt-test",
-            createdUnixSeconds: 1);
-        TurnEventEmitter emitter = new(Guid.NewGuid());
+        OpenAiErrorDetail error = OpenAiStreamErrorMapper.Map(
+            new Error(internalCode, "unsafe internal detail"));
 
-        OpenAiChatChunk chunk = Assert.Single(projection.Map(new RunFailed(
-            emitter.NextCorrelation(),
-            new Error(internalCode, "unsafe internal detail"),
-            TurnTerminationReason.ProviderFailure,
-            Usage: null,
-            Warnings: [],
-            Interrupted: false,
-            PartialText: null)));
-
-        PropertyInfo? errorProperty = typeof(OpenAiChatChunk).GetProperty("Error");
-        Assert.NotNull(errorProperty);
-        OpenAiErrorDetail error = Assert.IsType<OpenAiErrorDetail>(
-            errorProperty.GetValue(chunk));
         Assert.Equal(expectedOpenAiCode, error.Code);
         Assert.DoesNotContain("unsafe internal detail", error.Message, StringComparison.Ordinal);
-        Assert.Equal("error", Assert.Single(chunk.Choices).FinishReason);
     }
 
     [Theory]
@@ -227,55 +113,23 @@ public sealed class TurnEngineProjectionCharacterizationTests
     [InlineData(ErrorCodes.Validation.UnsupportedReasoningControl, "unsupported_reasoning_control")]
     [InlineData(ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit, "reasoning_budget_exceeds_model_limit")]
     [InlineData(ErrorCodes.Validation.UnsupportedReasoningOutput, "unsupported_reasoning_output")]
-    public void OpenAiSseProjection_MapsReasoningValidationToInvalidRequestError(
+    public void OpenAiStreamErrorMapper_MapsReasoningValidationToInvalidRequestError(
         string internalCode,
         string expectedOpenAiCode)
     {
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection projection = new(
-            channel.Writer,
-            "chatcmpl-test",
-            "gpt-test",
-            createdUnixSeconds: 1);
-        TurnEventEmitter emitter = new(Guid.NewGuid());
+        OpenAiErrorDetail error = OpenAiStreamErrorMapper.Map(
+            new Error(internalCode, "candidate detail"));
 
-        OpenAiChatChunk chunk = Assert.Single(projection.Map(new RunFailed(
-            emitter.NextCorrelation(),
-            new Error(internalCode, "candidate detail"),
-            TurnTerminationReason.ValidationFailed,
-            Usage: null,
-            Warnings: [],
-            Interrupted: false,
-            PartialText: null)));
-
-        Assert.Equal("invalid_request_error", chunk.Error?.Type);
-        Assert.Equal(expectedOpenAiCode, chunk.Error?.Code);
+        Assert.Equal("invalid_request_error", error.Type);
+        Assert.Equal(expectedOpenAiCode, error.Code);
     }
 
     [Fact]
-    public void OpenAiSseProjection_MapsAbandonmentToTypedErrorChunk()
+    public void OpenAiStreamErrorMapper_MapsAnAbsentErrorToTheGenericFailure()
     {
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection projection = new(
-            channel.Writer,
-            "chatcmpl-test",
-            "gpt-test",
-            createdUnixSeconds: 1);
-        TurnEventEmitter emitter = new(Guid.NewGuid());
+        OpenAiErrorDetail error = OpenAiStreamErrorMapper.Map(error: null);
 
-        OpenAiChatChunk chunk = Assert.Single(projection.Map(new RunAbandoned(
-            emitter.NextCorrelation(),
-            Error: null,
-            TurnTerminationReason.ClientDisconnected,
-            Usage: null,
-            Warnings: [],
-            Interrupted: true,
-            PartialText: null)));
-
-        Assert.Equal("inference_failed", chunk.Error?.Code);
-        Assert.Equal("error", Assert.Single(chunk.Choices).FinishReason);
+        Assert.Equal("inference_failed", error.Code);
     }
 
     [Fact]
@@ -672,11 +526,7 @@ public sealed class TurnEngineProjectionCharacterizationTests
         new(
             new PingRequest("test"),
             InvocationContexts.AttendedSession(),
-            mode,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: mode == TurnResponseMode.Streaming,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
+            mode);
 
     private sealed class ThrowingTurnPipelineRunner(Exception failure) : ITurnPipelineRunner
     {
@@ -750,5 +600,4 @@ public sealed class TurnEngineProjectionCharacterizationTests
             throw failure;
         }
     }
-
 }

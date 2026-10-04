@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -304,6 +305,151 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         Assert.All(
             processed.WardEvents,
             static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+    }
+
+    /// <summary>
+    /// In-process tools whose arguments carry a workspace path, with the argument that carries it. The
+    /// Sanctum preflight is a name switch that fails open for any tool it does not list, so this table is
+    /// the contract the invariant below holds the registry to.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> PathArgumentByTool =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["read_file_chunk"] = "relativePath",
+            ["replace_text_block"] = "relativePath",
+            ["write_file"] = "relativePath",
+            ["list_directory"] = "relativePath",
+            [ToolRiskClassifier.SearchWorkspaceToolName] = "root",
+            [ToolRiskClassifier.ExecuteCommandToolName] = "workingDirectory",
+        };
+
+    /// <summary>Tools whose paths arrive inside a unified diff, preflighted from its parsed manifest.</summary>
+    private static readonly string[] ManifestPathTools = [ToolRiskClassifier.ApplyPatchToolName];
+
+    /// <summary>
+    /// Registered tools with no workspace path argument at all. Adding a tool here is the explicit
+    /// decision that nothing it accepts names a file or directory.
+    /// </summary>
+    private static readonly string[] NoWorkspacePathTools =
+    [
+        ToolRiskClassifier.WorkspaceCheckToolName,
+        "read_command_output",
+        "adjust_initiative",
+        "send_commlink_alert",
+        "petition_dungeon_master",
+        "cast_sending",
+        "dispatch_sending",
+        "continue_sending",
+        "ask_human",
+        "scribe_lexicon",
+        "delete_lexicon",
+        "search_archives",
+        "propose_covenant",
+        "retire_covenant",
+        "read_saga",
+        "attach_session_file",
+        "refresh_session_file",
+    ];
+
+    public static IEnumerable<object[]> PathArgumentTools() =>
+        PathArgumentByTool.Select(static pair => new object[] { pair.Key, pair.Value });
+
+    [Fact]
+    public async Task ListDirectory_EscapingPath_IsDeniedAndRecordsBreach()
+    {
+        string workspace = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-preflight-list-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            SanctumPipelineHarness harness = SanctumPipelineHarness.Create(workspace);
+
+            (ToolExecutionPipeline.ProcessedToolCall processed, bool invoked) =
+                await harness.ProcessStandInAsync(
+                    "list_directory",
+                    new Dictionary<string, object?> { ["relativePath"] = "../outside" },
+                    harness.StrictTurnContext());
+
+            Assert.True(processed.Denied);
+
+            Assert.False(invoked);
+
+            SanctumBreachRecord breach = Assert.Single(harness.Breaches.Records);
+
+            Assert.Equal("PathEscape", breach.BreachType);
+
+            Assert.Equal("list_directory", breach.ToolName);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(PathArgumentTools))]
+    public async Task Path_argument_tool_with_an_escaping_path_is_denied_and_records_a_breach(
+        string toolName,
+        string argumentName)
+    {
+        string workspace = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-preflight-escape-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            SanctumPipelineHarness harness = SanctumPipelineHarness.Create(workspace);
+
+            (ToolExecutionPipeline.ProcessedToolCall processed, bool invoked) =
+                await harness.ProcessStandInAsync(
+                    toolName,
+                    new Dictionary<string, object?> { [argumentName] = "../outside" },
+                    harness.StrictTurnContext());
+
+            Assert.True(
+                processed.Denied,
+                $"{toolName} accepted an escaping '{argumentName}' without a Sanctum denial.");
+
+            Assert.False(invoked);
+
+            SanctumBreachRecord breach = Assert.Single(harness.Breaches.Records);
+
+            Assert.Equal("PathEscape", breach.BreachType);
+
+            Assert.Equal(toolName, breach.ToolName);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Every_registered_internal_tool_is_classified_for_Sanctum_path_preflight()
+    {
+        HashSet<string> registered = [.. InternalToolHandlerNames.Registered()];
+
+        HashSet<string> classified =
+        [
+            .. PathArgumentByTool.Keys,
+            .. ManifestPathTools,
+            .. NoWorkspacePathTools,
+        ];
+
+        string[] unclassified = [.. registered.Except(classified).Order(StringComparer.Ordinal)];
+
+        Assert.True(
+            unclassified.Length == 0,
+            "Registered tools with no Sanctum path-preflight classification (add each to PathArgumentByTool "
+            + "with a preflight case, or to NoWorkspacePathTools if it takes no path): "
+            + string.Join(", ", unclassified));
+
+        string[] stale = [.. classified.Except(registered).Order(StringComparer.Ordinal)];
+
+        Assert.True(
+            stale.Length == 0,
+            "Classified tools that are no longer registered: " + string.Join(", ", stale));
     }
 
     private sealed class DenyingWard : IWard

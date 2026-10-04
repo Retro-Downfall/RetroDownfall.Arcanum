@@ -6,26 +6,14 @@ internal enum TurnResponseMode
     Streaming = 1,
 }
 
-internal enum TurnPurpose
-{
-    Interactive = 0,
-    Batch = 1,
-    Background = 2,
-    CampaignLogger = 3,
-    Apprentice = 4,
-}
-
+/// <summary>
+/// Why a logical run ended. Only the reasons the engine can select are declared; the numeric values
+/// of the survivors are kept so a reason that is added back later cannot reuse one.
+/// </summary>
 internal enum TurnTerminationReason
 {
     Completed = 0,
-    ValidationFailed = 1,
-    GuardrailsBlocked = 2,
     ProviderFailure = 3,
-    Timeout = 4,
-    ContextBudgetExceeded = 6,
-    HostShutdown = 7,
-    ClientDisconnected = 8,
-    IdempotencyAbandoned = 9,
     Cancelled = 10,
 }
 

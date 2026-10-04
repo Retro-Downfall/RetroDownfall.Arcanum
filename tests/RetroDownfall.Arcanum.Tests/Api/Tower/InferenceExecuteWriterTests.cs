@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ProcessGlobalSeam")]
 public sealed class InferenceExecuteWriterTests
 {
-
     [Fact]
     public async Task WriteStreamAsync_StreamExceptionDuringErrorFrameWrite_DoesNotPropagate()
     {
@@ -146,7 +145,7 @@ public sealed class InferenceExecuteWriterTests
 
         try
         {
-            TurnIdempotencyAmbient.Publish(true, ownershipLost.Token);
+            TurnIdempotencyAmbient.Publish(ownershipLost.Token);
 
             Task write = InferenceExecuteWriter.WriteStreamAsync(
                 httpContext,
@@ -402,7 +401,6 @@ public sealed class InferenceExecuteWriterTests
     [Fact]
     public async Task WriteStreamAsync_ClientDisconnectMidStream_CancelsInferenceAndDoesNotWriteErrorFrame()
     {
-
         ServiceCollection services = new();
 
         services.AddLogging();
@@ -434,7 +432,6 @@ public sealed class InferenceExecuteWriterTests
         Assert.True(body.WritesAttempted > 0);
 
         Assert.Empty(body.CapturedWrittenText);
-
     }
 
     // Mid-stream exceptions must still emit a terminal Error frame when the client is writable
@@ -442,7 +439,6 @@ public sealed class InferenceExecuteWriterTests
     [Fact]
     public async Task WriteStreamAsync_LateStreamExceptionAfterStart_WritesTerminalErrorFrame()
     {
-
         ServiceCollection services = new();
 
         services.AddLogging();
@@ -474,7 +470,6 @@ public sealed class InferenceExecuteWriterTests
         Assert.Contains("error", output, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("late boom", output, StringComparison.Ordinal);
         Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
-
     }
 
     private sealed class BlockingStreamIntelligenceProvider : IArcanumIntelligenceProvider
@@ -515,7 +510,6 @@ public sealed class InferenceExecuteWriterTests
 
     private sealed class ThrowingStream : Stream
     {
-
         // One-shot: the next write throws IOException, then the flag auto-resets so any
         // subsequent write (e.g. an error frame written by the general catch) is captured
         // into CapturedWrittenText. This lets a disconnect test distinguish "the disconnect
@@ -551,42 +545,33 @@ public sealed class InferenceExecuteWriterTests
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-
             WritesAttempted++;
 
             if (ThrowOnNextWrite)
             {
-
                 ThrowOnNextWrite = false;
 
                 throw new IOException("write failed");
-
             }
 
             CapturedWrittenText.Add(System.Text.Encoding.UTF8.GetString(buffer, offset, count));
-
         }
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
-
             WritesAttempted++;
 
             if (ThrowOnNextWrite)
             {
-
                 ThrowOnNextWrite = false;
 
                 return new ValueTask(Task.FromException(new IOException("write failed")));
-
             }
 
             CapturedWrittenText.Add(System.Text.Encoding.UTF8.GetString(buffer.Span));
 
             return default;
-
         }
-
     }
 
     private sealed class RecordingLoggerProvider : ILoggerProvider
@@ -624,7 +609,6 @@ public sealed class InferenceExecuteWriterTests
 
         public void Emit(LogEvent logEvent) => Events.Add(logEvent);
     }
-
 }
 
 /// <summary>
@@ -635,20 +619,16 @@ public sealed class InferenceExecuteWriterTests
 [Collection("ApiHost")]
 public sealed class InferenceExecuteWriterBufferedRouteTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public InferenceExecuteWriterBufferedRouteTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task PostPing_ProviderFails_ReturnsMappedFailureStatusAndEnvelope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -674,13 +654,11 @@ public sealed class InferenceExecuteWriterBufferedRouteTests
         Assert.False(doc.RootElement.GetProperty("isSuccess").GetBoolean());
 
         _factory.FakeIntelligence.NextFailure = null;
-
     }
 
     [SkippableFact]
     public async Task PostPing_ProviderSucceeds_ReturnsOkWithHandlerOutput()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -702,7 +680,5 @@ public sealed class InferenceExecuteWriterBufferedRouteTests
         string body = await response.Content.ReadAsStringAsync();
 
         Assert.Contains("buffered-success-probe-output", body, StringComparison.Ordinal);
-
     }
-
 }

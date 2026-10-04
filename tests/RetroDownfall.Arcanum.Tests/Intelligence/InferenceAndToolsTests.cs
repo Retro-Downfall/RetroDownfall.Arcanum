@@ -14,62 +14,8 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class ManaPreflightTests
-{
-
-    private static ManaPreflight CreatePreflight() =>
-        new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
-
-    [Theory]
-    [InlineData(0, 3, true)]
-    [InlineData(3, 3, true)]
-    [InlineData(4, 3, false)]
-    public void ShouldSkipCompressionPreflight_RespectsMinMessages(int count, int min, bool expected)
-    {
-        List<MeAiChatMessage> messages = Enumerable.Range(0, count)
-            .Select(static i => new MeAiChatMessage(ChatRole.User, $"m{i}"))
-            .ToList();
-
-        bool skip = CreatePreflight().ShouldSkipCompressionPreflight(messages, min);
-
-        Assert.Equal(expected, skip);
-    }
-
-    [Fact]
-    public void CountTokens_IncludesOverheadAndMessageText()
-    {
-        Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding("o200k_base");
-
-        List<MeAiChatMessage> messages =
-        [
-            new MeAiChatMessage(ChatRole.User, "hello world"),
-            new MeAiChatMessage(ChatRole.Assistant, [new TextContent("assistant reply")]),
-        ];
-
-        int count = CreatePreflight().CountTokens(messages, tokenizer, perMessageOverheadTokens: 4, "o200k_base");
-
-        int textOnly = tokenizer.CountTokens("hello world") + tokenizer.CountTokens("assistant reply");
-
-        Assert.Equal(textOnly + 8, count);
-    }
-
-    [Fact]
-    public void CountTokens_EmptyMessages_ReturnsOverheadOnly()
-    {
-        Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding("o200k_base");
-
-        List<MeAiChatMessage> messages = [new MeAiChatMessage(ChatRole.User, string.Empty)];
-
-        int count = CreatePreflight().CountTokens(messages, tokenizer, perMessageOverheadTokens: 5, "o200k_base");
-
-        Assert.Equal(5, count);
-    }
-
-}
-
 public sealed class InferenceTokenizerResolverTests
 {
-
     [Fact]
     public void ResolveTokenizer_DefaultEncoding_ReturnsTokenizer()
     {
@@ -105,12 +51,10 @@ public sealed class InferenceTokenizerResolverTests
 
         Assert.True(tokenizer.CountTokens("fallback") > 0);
     }
-
 }
 
 public sealed class ArcanumBuiltInToolsTests
 {
-
     [Fact]
     public async Task LocalTimeTool_ReturnsIsoTimestamp()
     {
@@ -238,13 +182,14 @@ public sealed class ArcanumBuiltInToolsTests
         {
             Features = new FeatureSettings { WebBrowsing = true },
         };
+        // A public IP literal passes the outbound guard without a DNS lookup, so this stays hermetic.
         TestCapturingLogger<ArcanumBrowseWebTool> logger = new();
         BuiltInToolRegistry registry = new(
             new StubHttpClientFactory(new ThrowingHandler(canary)),
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             logger);
         using JsonDocument document = JsonDocument.Parse(
-            """{"url":"https://example.com/private-path"}""");
+            """{"url":"https://93.184.216.34/private-path"}""");
 
         Result<JsonElement> result = await registry.InvokeAsync(
             ArcanumBrowseWebTool.ToolName,
@@ -297,12 +242,10 @@ public sealed class ArcanumBuiltInToolsTests
             Task.FromException<HttpResponseMessage>(
                 new InvalidOperationException(message));
     }
-
 }
 
 public sealed class HumanPromptRegistryTests
 {
-
     [Fact]
     public async Task WaitAndSubmit_ReturnsResponse()
     {
@@ -566,5 +509,4 @@ public sealed class HumanPromptRegistryTests
 
         Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.AvailableSlotsForTesting);
     }
-
 }

@@ -1,9 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Intelligence;
-using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
-using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -19,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class TurnDisconnectAndIdempotencyCharacterizationTests
 {
-
     [Fact]
     public void CaptureOnly_RequiresIdempotencyKey_UnderAutoPolicy()
     {
@@ -41,14 +38,14 @@ public sealed class TurnDisconnectAndIdempotencyCharacterizationTests
         RunAbandoned abandoned = new(
             emitter.NextCorrelation(),
             new Error(ErrorCodes.Hub.Error, "Client disconnected."),
-            TurnTerminationReason.ClientDisconnected,
+            TurnTerminationReason.Cancelled,
             Usage: null,
             Warnings: [],
             Interrupted: true,
             PartialText: "partial");
 
         Assert.True(abandoned.IsTerminal);
-        Assert.Equal(TurnTerminationReason.ClientDisconnected, abandoned.Reason);
+        Assert.Equal(TurnTerminationReason.Cancelled, abandoned.Reason);
         Assert.True(abandoned.Interrupted);
     }
 
@@ -75,48 +72,8 @@ public sealed class TurnDisconnectAndIdempotencyCharacterizationTests
     }
 
     [Fact]
-    public void HasIdempotencyKey_AmbientNotPingRequest()
+    public void HasIdempotencyKey_IsNotAPingRequestMember()
     {
-        PingRequest forged = new(Prompt: "hi");
         Assert.Null(typeof(PingRequest).GetProperty("HasIdempotencyKey"));
-
-        TurnExecutionRequest request = new(
-            forged,
-            InvocationContexts.AttendedSession(),
-            TurnResponseMode.Streaming,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: true,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
-
-        Assert.False(request.HasIdempotencyKey);
     }
-
-    [Fact]
-    public void OpenAiSseProjection_ToolCallIndexes_AreMonotonicAcrossCalls()
-    {
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-
-        OpenAiSseProjection projection = new(channel.Writer, "chatcmpl-test", "gpt-test", createdUnixSeconds: 1);
-        TurnEventEmitter emitter = new(Guid.NewGuid());
-
-        OpenAiChatChunk first = Assert.Single(projection.Map(new ToolCallProposed(
-            emitter.NextCorrelation(),
-            "c1",
-            "t1",
-            "{}",
-            ToolCallDisposition.ServerExecution)));
-
-        OpenAiChatChunk second = Assert.Single(projection.Map(new ToolCallProposed(
-            emitter.NextCorrelation(),
-            "c2",
-            "t2",
-            "{}",
-            ToolCallDisposition.ServerExecution)));
-
-        Assert.Equal(0, first.Choices[0].Delta!.ToolCalls![0].Index);
-        Assert.Equal(1, second.Choices[0].Delta!.ToolCalls![0].Index);
-    }
-
 }

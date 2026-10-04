@@ -3369,11 +3369,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
             },
             InvocationContexts.AttendedSession(),
-            TurnResponseMode.Buffered,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: false,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
+            TurnResponseMode.Buffered);
 
         TurnEngine engine = new(wizard);
 

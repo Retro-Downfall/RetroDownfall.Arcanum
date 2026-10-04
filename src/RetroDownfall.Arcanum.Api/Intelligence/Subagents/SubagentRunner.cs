@@ -93,7 +93,6 @@ internal sealed class SubagentRunner(
                     .ExecuteBufferedAsync(
                         childRequest,
                         ArcanumInvocationContext.None,
-                        hasIdempotencyKey: false,
                         cancellationToken)
                     .ConfigureAwait(false);
             }

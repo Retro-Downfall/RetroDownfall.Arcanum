@@ -844,6 +844,8 @@ public static class ErrorCodes
         public const string Timeout = "WebBrowsing.Timeout";
 
         public const string InvalidUrl = "WebBrowsing.InvalidUrl";
+
+        public const string RedirectLimitExceeded = "WebBrowsing.RedirectLimitExceeded";
     }
 
     /// <summary>WebResearch — native synthesized search and direct URL-reading failures.</summary>
