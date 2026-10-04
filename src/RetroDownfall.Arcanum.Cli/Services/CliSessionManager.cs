@@ -77,22 +77,18 @@ public sealed class CliSessionManager(
             bool quiet = false,
             CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(revalidateAsync);
 
         return await MutateContextAsync(
                 async (context, token) =>
                 {
-
                     Result<bool> revalidated = await revalidateAsync(id, token)
                         .ConfigureAwait(false);
 
                     if (revalidated.IsFailure)
                     {
-
                         return Result<CliContextDocument>.Failure(
                             revalidated.Error);
-
                     }
 
                     return revalidated.Value
@@ -102,12 +98,10 @@ public sealed class CliSessionManager(
                             new Error(
                                 ErrorCodes.Session.NotFound,
                                 $"Session {id:D} is no longer available on the current host."));
-
                 },
                 quiet,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public async Task<ArcanumClientMutationResult<CliContextDocument>>
@@ -115,7 +109,6 @@ public sealed class CliSessionManager(
             bool quiet = false,
             CancellationToken cancellationToken = default)
     {
-
         return await MutateContextAsync(
                 (context, _) => Task.FromResult(
                     Result<CliContextDocument>.Success(
@@ -123,7 +116,6 @@ public sealed class CliSessionManager(
                 quiet,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async Task<ArcanumClientMutationResult<CliContextDocument>>
@@ -135,14 +127,12 @@ public sealed class CliSessionManager(
             bool quiet,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(prepareAsync);
 
         if (contextStore is null
             || contextStore is not ICliContextExclusiveWriter contextWriter
             || mutationBoundary is null)
         {
-
             ArcanumClientMutationResult<CliContextDocument> unavailable =
                 ArcanumClientMutationResult<CliContextDocument>.Unsafe(
                     new Error(
@@ -152,32 +142,26 @@ public sealed class CliSessionManager(
             WarnSessionMutation(unavailable.Error, quiet);
 
             return unavailable;
-
         }
 
         try
         {
-
             ArcanumClientMutationResult<Result<CliContextDocument>> admitted =
                 await mutationBoundary
                     .RunAsync(
                         async token =>
                         {
-
                             Result<CliContextDocument> prepared =
                                 await prepareAsync(contextStore.Load(), token)
                                     .ConfigureAwait(false);
 
                             if (prepared.IsSuccess)
                             {
-
                                 contextWriter.SaveUnderExclusive(
                                     prepared.Value);
-
                             }
 
                             return prepared;
-
                         },
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -187,47 +171,48 @@ public sealed class CliSessionManager(
 
             if (!result.IsCompleted)
             {
-
                 WarnSessionMutation(result.Error, quiet);
-
             }
 
             return result;
+        }
+        catch (CliContextFileUnusableException ex)
+        {
+            // A saved context this build must not replace: say what is wrong with it and how to fix
+            // it instead of the generic "could not save/load session state".
+            ArcanumClientMutationResult<CliContextDocument> refused =
+                ArcanumClientMutationResult<CliContextDocument>.Unsafe(
+                    new Error(ErrorCodes.Data.ControlPathUnavailable, ex.Message));
 
+            WarnSessionMutation(refused.Error, quiet);
+
+            return refused;
         }
         catch (IOException ex)
         {
-
             WarnSessionIo(ex, quiet);
 
             return UnsafeIoResult();
-
         }
         catch (UnauthorizedAccessException ex)
         {
-
             WarnSessionIo(ex, quiet);
 
             return UnsafeIoResult();
-
         }
-
     }
 
     private static ArcanumClientMutationResult<CliContextDocument> Flatten(
         ArcanumClientMutationResult<Result<CliContextDocument>> admitted)
     {
-
         if (!admitted.IsCompleted)
         {
-
             return admitted.Disposition
                 is ArcanumClientMutationDisposition.Blocked
                     ? ArcanumClientMutationResult<CliContextDocument>.Blocked(
                         admitted.Error)
                     : ArcanumClientMutationResult<CliContextDocument>.Unsafe(
                         admitted.Error);
-
         }
 
         return admitted.Value.IsSuccess
@@ -235,7 +220,6 @@ public sealed class CliSessionManager(
                 admitted.Value.Value)
             : ArcanumClientMutationResult<CliContextDocument>.Unsafe(
                 admitted.Value.Error);
-
     }
 
     private static ArcanumClientMutationResult<CliContextDocument>
@@ -260,20 +244,16 @@ public sealed class CliSessionManager(
 
     private void WarnSessionMutation(Error error, bool quiet)
     {
-
         if (quiet)
         {
-
             logger?.LogDebug(
                 "CLI session mutation was refused with code {ErrorCode}.",
                 error.Code);
 
             return;
-
         }
 
         console.WriteDiagnostic("Warning: " + error.Message);
-
     }
 
     private void WarnOnceSessionCorruption(bool quiet)
@@ -297,14 +277,12 @@ public sealed class CliSessionManager(
 
 internal static class SessionMutationRevalidator
 {
-
     internal static async Task<Result<bool>> RevalidateAsync(
         ArcanumApiClient apiClient,
         Guid sessionId,
         SessionDetailDto? expected,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(apiClient);
 
         Result<SessionDetailDto> result = await apiClient
@@ -313,9 +291,7 @@ internal static class SessionMutationRevalidator
 
         if (result.IsFailure)
         {
-
             return Result<bool>.Failure(result.Error);
-
         }
 
         SessionDetailDto current = result.Value;
@@ -329,12 +305,10 @@ internal static class SessionMutationRevalidator
 
         if (!sameStableIdentity)
         {
-
             return Result<bool>.Failure(
                 new Error(
                     ErrorCodes.Session.NotFound,
                     $"Session {sessionId:D} changed identity before it could be persisted. Retry the operation."));
-
         }
 
         if (string.Equals(
@@ -342,16 +316,12 @@ internal static class SessionMutationRevalidator
             "Archived",
             StringComparison.OrdinalIgnoreCase))
         {
-
             return Result<bool>.Failure(
                 new Error(
                     ErrorCodes.Session.Archived,
                     $"Session {sessionId:D} is archived and cannot become the active CLI session."));
-
         }
 
         return Result<bool>.Success(true);
-
     }
-
 }

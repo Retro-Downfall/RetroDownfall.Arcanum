@@ -55,7 +55,7 @@ A short flag means exactly one thing everywhere in the tree. Claude Code parity 
 
 Resource-taking commands resolve an explicit exact ID first, then an exact case-insensitive name, then a unique case-insensitive name prefix. Omitted selectors may open a searchable picker only when stdin and stdout are interactive and output is not JSON. Cursor catalogs are followed until exhaustion, cancellation, a fetch error, or a repeated-token no-progress failure; there is no 100-page product ceiling. Redirected, ambiguous, or cancelled selection never guesses.
 
-Effective inference context precedence is: explicit command option, saved active CLI context, current-directory detection, then server default. `--no-context` skips only the saved-context layer. Workspace paths are always paths on the server host, even when the bundled client and host run on the same machine.
+Effective inference context precedence is: explicit command option, saved active CLI context, current-directory detection, then server default. `--no-context` skips only the saved-context layer. The saved context is `cli-context.json`; a file this build cannot use (written by a newer format version, or damaged) is read as empty, and any command that would change it — `use`, `use clear`, a session save, or `setup` recording a model — refuses instead, names the file and the format version, and leaves it unchanged. Move the file aside to start a new context. Workspace paths are always paths on the server host, even when the bundled client and host run on the same machine.
 
 ## Output and exit behavior
 

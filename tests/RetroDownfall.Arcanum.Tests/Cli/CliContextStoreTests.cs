@@ -93,6 +93,79 @@ public sealed class CliContextStoreTests : IDisposable
             StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// <c>Load</c> answers "empty" for a file it cannot use, which is right for a read but wrong as
+    /// the base of a write: the next mutation would replace a newer Arcanum's context with an older
+    /// one's, silently. A mutation over such a file refuses and leaves it byte for byte as it was.
+    /// </summary>
+    [Fact]
+    public void Mutation_refuses_to_overwrite_a_newer_version_file()
+    {
+        Directory.CreateDirectory(_directory);
+
+        const string Newer = """
+            {
+              "version": 2,
+              "model": "written-by-a-newer-arcanum",
+              "tags": ["a field this build does not know"]
+            }
+            """;
+
+        File.WriteAllText(ContextPath, Newer);
+
+        CliContextStore store = new(ContextPath);
+
+        IOException refusal = Assert.ThrowsAny<IOException>(
+            () => ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+                CliContextDocument.Empty with { Model = "older-build" }));
+
+        Assert.Contains("version 2", refusal.Message, StringComparison.Ordinal);
+
+        Assert.Contains(ContextPath, refusal.Message, StringComparison.Ordinal);
+
+        Assert.Equal(Newer, File.ReadAllText(ContextPath));
+
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp.*"));
+    }
+
+    [Fact]
+    public void Mutation_refuses_to_overwrite_an_unreadable_file()
+    {
+        Directory.CreateDirectory(_directory);
+
+        const string Damaged = "{ \"version\": 1, \"model\": ";
+
+        File.WriteAllText(ContextPath, Damaged);
+
+        CliContextStore store = new(ContextPath);
+
+        IOException refusal = Assert.ThrowsAny<IOException>(
+            () => ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+                CliContextDocument.Empty with { Model = "replacement" }));
+
+        Assert.Contains("could not be read", refusal.Message, StringComparison.Ordinal);
+
+        Assert.Equal(Damaged, File.ReadAllText(ContextPath));
+
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp.*"));
+    }
+
+    [Fact]
+    public void Mutation_still_creates_the_file_when_none_exists_and_replaces_a_current_one()
+    {
+        CliContextStore store = new(ContextPath);
+
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+            CliContextDocument.Empty with { Model = "created" });
+
+        Assert.Equal("created", store.Load().Model);
+
+        ((ICliContextExclusiveWriter)store).SaveUnderExclusive(
+            CliContextDocument.Empty with { Model = "replaced" });
+
+        Assert.Equal("replaced", store.Load().Model);
+    }
+
     [Fact]
     public void Load_fails_closed_for_unknown_versions()
     {

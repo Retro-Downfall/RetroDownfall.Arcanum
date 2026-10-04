@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -52,13 +53,21 @@ public sealed class CliContextStore :
 
     public string FilePath => _filePath;
 
-    public CliContextDocument Load()
+    public CliContextDocument Load() => Inspect().Document;
+
+    /// <summary>
+    /// Reads the file and says why it could not be used, which <see cref="Load"/> deliberately does
+    /// not: a read of an unusable file answers "empty", but a write must never be based on that
+    /// answer (the next mutation would replace a newer Arcanum's context, or a file an operator
+    /// damaged, with an empty one).
+    /// </summary>
+    internal CliContextInspection Inspect()
     {
         try
         {
             if (!File.Exists(_filePath))
             {
-                return CliContextDocument.Empty;
+                return new CliContextInspection(CliContextFileState.Missing, CliContextDocument.Empty);
             }
 
             using FileStream stream = new(
@@ -67,21 +76,46 @@ public sealed class CliContextStore :
                 FileAccess.Read,
                 FileShare.Read);
 
-            CliContextDocument? document =
-                JsonSerializer.Deserialize(
-                    stream,
-                    CliContextJsonContext.Default.CliContextDocument);
+            if (stream.Length == 0)
+            {
+                // An empty file carries nothing a write could lose.
+                return new CliContextInspection(CliContextFileState.Missing, CliContextDocument.Empty);
+            }
 
-            return document is { Version: CliContextDocument.CurrentVersion }
-                ? Normalize(document)
-                : CliContextDocument.Empty;
+            using JsonDocument json = JsonDocument.Parse(stream);
+
+            if (json.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return new CliContextInspection(CliContextFileState.Unreadable, CliContextDocument.Empty);
+            }
+
+            int? version = json.RootElement.TryGetProperty("version", out JsonElement versionElement)
+                && versionElement.ValueKind == JsonValueKind.Number
+                && versionElement.TryGetInt32(out int parsedVersion)
+                    ? parsedVersion
+                    : null;
+
+            if (version != CliContextDocument.CurrentVersion)
+            {
+                return new CliContextInspection(
+                    CliContextFileState.UnsupportedVersion,
+                    CliContextDocument.Empty,
+                    version);
+            }
+
+            CliContextDocument? document = json.RootElement.Deserialize(
+                CliContextJsonContext.Default.CliContextDocument);
+
+            return document is null
+                ? new CliContextInspection(CliContextFileState.Unreadable, CliContextDocument.Empty)
+                : new CliContextInspection(CliContextFileState.Current, Normalize(document));
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or JsonException)
         {
-            return CliContextDocument.Empty;
+            return new CliContextInspection(CliContextFileState.Unreadable, CliContextDocument.Empty);
         }
     }
 
@@ -104,6 +138,8 @@ public sealed class CliContextStore :
         {
             throw new IOException("The CLI context path has no parent directory.");
         }
+
+        RefuseToReplaceAnUnusableFile();
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
 
@@ -141,6 +177,35 @@ public sealed class CliContextStore :
         }
     }
 
+    /// <summary>
+    /// A write replaces the whole file, so it is only safe over a file this build understands (or no
+    /// file at all). A newer format version or an unreadable file is left exactly as it is and the
+    /// operator is told what to do about it.
+    /// </summary>
+    private void RefuseToReplaceAnUnusableFile()
+    {
+        CliContextInspection existing = Inspect();
+
+        switch (existing.State)
+        {
+            case CliContextFileState.UnsupportedVersion:
+                throw new CliContextFileUnusableException(
+                    existing.FileVersion is { } version
+                        ? $"The saved CLI context at {_filePath} was written in format version "
+                            + $"{version.ToString(CultureInfo.InvariantCulture)}, which this build "
+                            + $"(version {CliContextDocument.CurrentVersion.ToString(CultureInfo.InvariantCulture)}) "
+                            + "does not understand. It was left unchanged. Update Arcanum, or move the "
+                            + "file aside to start a new context."
+                        : $"The saved CLI context at {_filePath} has no recognizable format version. "
+                            + "It was left unchanged. Move the file aside to start a new context.");
+
+            case CliContextFileState.Unreadable:
+                throw new CliContextFileUnusableException(
+                    $"The saved CLI context at {_filePath} could not be read, so it was left unchanged. "
+                    + "Repair it, or move the file aside to start a new context.");
+        }
+    }
+
     private static CliContextDocument Normalize(CliContextDocument document) =>
         document with
         {
@@ -158,6 +223,29 @@ public sealed class CliContextStore :
     private static string? NormalizeText(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
+
+internal enum CliContextFileState
+{
+    Missing,
+
+    Current,
+
+    UnsupportedVersion,
+
+    Unreadable,
+}
+
+internal readonly record struct CliContextInspection(
+    CliContextFileState State,
+    CliContextDocument Document,
+    int? FileVersion = null);
+
+/// <summary>
+/// A refusal to replace a saved CLI context this build cannot use. It is an <see cref="IOException"/>
+/// so every writer that already treats a failed context write as a reportable fault handles it, and
+/// its message is the operator-facing explanation.
+/// </summary>
+internal sealed class CliContextFileUnusableException(string message) : IOException(message);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,

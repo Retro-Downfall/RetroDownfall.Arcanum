@@ -141,6 +141,53 @@ public sealed class CliContextMutationBoundaryTests
     }
 
     /// <summary>
+    /// A saved context written by a newer Arcanum reads as empty, so a clear (or any other mutation)
+    /// would have replaced it with an older build's document without a word. The mutation refuses,
+    /// says why, names the file, and leaves it byte for byte as it was.
+    /// </summary>
+    [Fact]
+    public async Task Context_clear_refuses_to_overwrite_a_newer_version_file_and_says_why()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-context-newer-tests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            string path = Path.Combine(directory, "cli-context.json");
+
+            const string Newer = "{\"version\":2,\"model\":\"written-by-a-newer-arcanum\"}";
+
+            await File.WriteAllTextAsync(path, Newer);
+
+            CliContextStore store = new(path);
+
+            RecordingArcanumClientMutationBoundary boundary = new();
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                Services(store, boundary),
+                ["use", "clear"]);
+
+            Assert.NotEqual((int)CliExitCode.Success, result.ExitCode);
+
+            Assert.Contains("version 2", result.Error, StringComparison.Ordinal);
+
+            Assert.Contains(path, result.Error, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("could not be changed safely", result.Error, StringComparison.Ordinal);
+
+            Assert.Equal(Newer, await File.ReadAllTextAsync(path));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// The selection itself succeeded, then the host went away before the write could revalidate it.
     /// That is still "the host could not be reached", so it exits 3 like every other host call, and the
     /// saved context stays as it was.
@@ -166,10 +213,11 @@ public sealed class CliContextMutationBoundaryTests
         Assert.Equal(0, store.ExclusiveSaves);
     }
 
-    private static ServiceCollection Services(
-        FakeContextStore store,
+    private static ServiceCollection Services<TStore>(
+        TStore store,
         RecordingArcanumClientMutationBoundary boundary,
         HttpMessageHandler? handler = null)
+        where TStore : class, ICliContextStore, ICliContextExclusiveWriter
     {
         ServiceCollection services = new();
 
