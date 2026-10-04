@@ -102,19 +102,6 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
 
     private const long SessionOwnerKindCode = 2;
 
-    /// <summary>
-    /// Every canonical table the erasure empties, children before parents.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="CovenantCanonicalContentTables.InDeletionOrder"/> itself, not a copy of it. The
-    /// erasure, the storage-health proof that re-reads the family once the erasure claims it is empty,
-    /// the restore inspector and purger, and the reset inventory all read that one list, so a table
-    /// this transaction stopped naming cannot also be a table the proof stopped counting. The three
-    /// curation tables are on it: a pin or a mask is recorded against a key's epoch row, and this
-    /// erasure deletes that row, so the curation leaves in the same transaction.
-    /// </remarks>
-    internal static IReadOnlyList<string> FamilyTables => CovenantCanonicalContentTables.InDeletionOrder;
-
     private readonly ICovenantSqliteConnectionInitializer _initializer;
 
     private readonly TimeProvider _timeProvider;
@@ -283,6 +270,11 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
                 cancellationToken).ConfigureAwait(false);
         }
 
+        // The one list, children before parents. The storage-health proof that re-reads the family once the
+        // erasure claims it is empty, the restore inspector and purger, and the reset inventory read it too,
+        // so a table this loop stopped naming cannot also be a table the proof stopped counting. The curation
+        // tables are on it: a pin or a mask is recorded against a key's epoch row, and this erasure deletes
+        // that row, so the curation leaves in the same transaction.
         foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
         {
             _ = await ExecuteAsync(

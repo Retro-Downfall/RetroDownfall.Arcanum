@@ -94,11 +94,17 @@ public sealed class CovenantCanonicalContentTablesTests
 
     }
 
+    /// <summary>
+    /// The one consumer that republishes the list as a member is the restore inspector, and it republishes
+    /// the very instance. The other readers use <see cref="CovenantCanonicalContentTables.InDeletionOrder"/>
+    /// directly, and are pinned by what they do with it rather than by an alias: the erasure transaction by
+    /// <c>A_reset_deletes_every_canonical_family_table</c>, the storage-health proof by
+    /// <c>The_verified_reopen_refuses_a_family_that_still_holds_curation</c>, and the reset inventory by
+    /// the retention suites.
+    /// </summary>
     [Fact]
     public void Every_consumer_reads_the_one_list()
     {
-
-        Assert.Same(Tables, CovenantCanonicalErasureTransaction.FamilyTables);
 
         Assert.Same(Tables, BackupRestoreProtectedStateInspector.CanonicalContentTables);
 

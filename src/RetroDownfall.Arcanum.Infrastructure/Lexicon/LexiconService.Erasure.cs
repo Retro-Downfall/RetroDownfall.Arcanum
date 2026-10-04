@@ -71,8 +71,8 @@ internal static class LexiconDaemonStateNames
 /// transaction the receipt is probed again and the subject checked, the full-text index is made to
 /// scrub what it deletes, the target is compared, labels are proved, the effect is re-measured, and only
 /// then are the rows and label deleted, the fingerprint and receipt recorded, and absence proved,
-/// the entry's full-text row included, before the commit. The result is built from the receipt only after a commit that succeeded, or one whose
-/// receipt a fresh connection can read back.</para>
+/// the entry's full-text row included, before the commit. The result is built from the receipt only
+/// after a commit that succeeded, or one whose receipt a fresh connection can read back.</para>
 ///
 /// <para>Like every Lexicon write it runs under a raw <c>BEGIN</c> on the scoped connection, so the
 /// curation reads it shares with correction and lifecycle changes run unchanged, and the evidence, plan
