@@ -10644,6 +10644,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public bool ThrowOnFinalize { get; init; }
 
+        /// <summary>
+        /// When set, the tool-interaction append and the Session token increment refuse a cancelled
+        /// token before writing anything, as a real Grimoire write would.
+        /// </summary>
+        public bool ThrowWhenCancelled { get; init; }
+
         public Guid? FixedSessionId { get; init; }
 
         public long PreRequestHistoryRevision { get; init; }
@@ -10789,6 +10795,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             string modelUsed,
             CancellationToken cancellationToken = default)
         {
+            if (ThrowWhenCancelled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             ToolInteractions.Add(new RecordedToolInteraction(
                 sessionId,
                 toolName,
@@ -10883,6 +10894,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default)
         {
+            if (ThrowWhenCancelled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             LastIncrementedSessionId = sessionId;
 
             LastIncrementedTokens = totalTokens;

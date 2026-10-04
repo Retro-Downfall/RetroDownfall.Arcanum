@@ -3546,13 +3546,15 @@ public sealed partial class WizardIntelligenceProvider(
                                             denied.ResultText,
                                             toolCallIndex == 0 ? rawRoundReasoning : null);
 
+                                        // The model has been told it was denied; recording that
+                                        // is bookkeeping and outlives the caller's token.
                                         await grimoireTurnWriter.TryAppendToolInteractionAsync(
                                             grimoireTurn.SessionId,
                                             denied.ToolName,
                                             denied.ArgsSnapshot,
                                             denied.ResultText,
                                             targetModel,
-                                            inferenceToken)
+                                            CancellationToken.None)
                                             .ConfigureAwait(false);
                                     }
                                     else
@@ -3724,13 +3726,16 @@ public sealed partial class WizardIntelligenceProvider(
 
                             if (!processed.ReceiptHandled)
                             {
+                                // The tool has returned, so its effect has happened: recording it
+                                // runs on CancellationToken.None, or a client that disconnects now
+                                // leaves an effect with no durable record of the call behind it.
                                 await grimoireTurnWriter.TryAppendToolInteractionAsync(
                                     grimoireTurn.SessionId,
                                     processed.ToolName,
                                     processed.ArgsSnapshot,
                                     processed.ResultText,
                                     targetModel,
-                                    inferenceToken)
+                                    CancellationToken.None)
                                     .ConfigureAwait(false);
                             }
 
@@ -4232,6 +4237,11 @@ public sealed partial class WizardIntelligenceProvider(
             yield break;
         }
 
+        // The answer is durable from here, so the run completed whatever happens to the caller
+        // next. Finalize itself stays cancellable: it is one atomic write, and a cancellation that
+        // lands before it commits leaves the row in flight for the stream-exit cleanup to resolve.
+        streamAccountingStatus = InferenceRunStatus.Completed;
+
         IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance = [];
 
         try
@@ -4257,6 +4267,7 @@ public sealed partial class WizardIntelligenceProvider(
             grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
         }
 
+        // Post-finalize bookkeeping for an answer that already exists: not the caller's to cancel.
         await TryIncrementSessionTokensAsync(
                 grimoireTurn.SessionId,
                 streamAccumulatedUsage,
@@ -4264,13 +4275,13 @@ public sealed partial class WizardIntelligenceProvider(
                 streamAccountingLocal.RunId.HasValue
                     ? streamAccountingLocal.AccumulatedCostUsd
                     : null,
-                inferenceToken)
+                CancellationToken.None)
             .ConfigureAwait(false);
 
         await TryRecordAttachmentConsultationsAsync(
             grimoireTurn.AssistantEntryId,
             attachmentProvenance,
-            inferenceToken).ConfigureAwait(false);
+            CancellationToken.None).ConfigureAwait(false);
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
 
@@ -4291,8 +4302,6 @@ public sealed partial class WizardIntelligenceProvider(
                 [.. contextBreakdownsByCall.Values],
                 CancellationToken.None).ConfigureAwait(false);
         }
-
-        streamAccountingStatus = InferenceRunStatus.Completed;
 
         if (!streaming)
         {
@@ -4562,11 +4571,17 @@ public sealed partial class WizardIntelligenceProvider(
 
         while (true)
         {
-            // Checked first on every iteration: once the caller's token is cancelled, a
-            // WaitToReadAsync built from it below resolves instantly (already-cancelled), so
-            // without this the loop would busy-spin allocating a List and 2-3 Tasks per pass for
-            // the rest of the tool call instead of unwinding through the per-call finally.
-            cancellationToken.ThrowIfCancellationRequested();
+            // Checked first on every iteration while the tool runs: once the caller's token is
+            // cancelled, a WaitToReadAsync built from it below resolves instantly
+            // (already-cancelled), so without this the loop would busy-spin allocating a List and
+            // 2-3 Tasks per pass for the rest of the tool call instead of unwinding through the
+            // per-call finally. A tool that has already returned is past that point: its effect
+            // happened, the drain below cannot spin (the ward writer completes before the tool
+            // task does), and throwing here would skip recording the call.
+            if (!processTask.IsCompleted)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
 
             while (wards.TryRead(out IntelligenceEvent? ward) && ward is not null)
             {
@@ -4715,13 +4730,14 @@ public sealed partial class WizardIntelligenceProvider(
             denied.ResultText,
             reasoningContents);
 
+        // Bookkeeping for a denial the model has already been handed: not the caller's to cancel.
         await grimoireTurnWriter.TryAppendToolInteractionAsync(
             grimoireTurn.SessionId,
             denied.ToolName,
             denied.ArgsSnapshot,
             denied.ResultText,
             targetModel,
-            cancellationToken)
+            CancellationToken.None)
             .ConfigureAwait(false);
 
         // Do not emit ToolCall — no waiter was registered, so clients must not try to answer.

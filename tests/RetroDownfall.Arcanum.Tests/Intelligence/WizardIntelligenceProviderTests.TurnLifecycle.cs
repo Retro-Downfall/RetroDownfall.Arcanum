@@ -278,4 +278,115 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.Equal(InferenceRunStatus.Completed, status);
     }
+
+    /// <summary>
+    /// R-271: once a tool has returned, its effect has happened, so recording the interaction is
+    /// bookkeeping that must survive the client disconnecting right after. It ran on the cancellable
+    /// inference token and was lost with the turn.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_ClientCancelsAfterToolReturns_StillRecordsToolInteraction()
+    {
+        const string toolName = "finish_then_disconnect";
+
+        Guid sessionId = Guid.Parse("27100000-0000-0000-0000-000000000001");
+
+        using CancellationTokenSource caller = new();
+
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            ThrowWhenCancelled = true,
+        };
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamToolCall(toolName, "call-271");
+
+        chat.EnqueueStreamTokens("never reached");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(AIFunctionFactory.Create(
+            () =>
+            {
+                caller.Cancel();
+
+                return "tool effect done";
+            },
+            toolName,
+            "completes its effect, then the client disconnects"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire, mcp: mcp);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (IntelligenceEvent _ in wizard.StreamPromptAsync(
+                BaseRequest() with { Prompt = "run the tool", SkipSpellRouting = true },
+                InvocationContexts.AttendedSession(),
+                caller.Token))
+            {
+            }
+        });
+
+        FakeGrimoireRepository.RecordedToolInteraction recorded = Assert.Single(grimoire.ToolInteractions);
+
+        Assert.Equal(sessionId, recorded.SessionId);
+
+        Assert.Equal(toolName, recorded.ToolName);
+
+        Assert.Contains("tool effect done", recorded.Result, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-271: a cancellation that lands after the answer is finalized does not undo the answer, so
+    /// the Session projection still counts the turn and the run is still recorded as completed.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_CancelAfterFinalize_StillMarksRunCompleted()
+    {
+        Guid sessionId = Guid.Parse("27100000-0000-0000-0000-000000000002");
+
+        using CancellationTokenSource caller = new();
+
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            ThrowWhenCancelled = true,
+        };
+        grimoire.OnFinalize = caller.Cancel;
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("finalized ", "answer");
+
+        RecordingTurnRunWriter runs = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            grimoire: grimoire,
+            turnRunWriter: runs,
+            budgetReservationService: new RecordingBudgetReservationService());
+
+        try
+        {
+            await foreach (IntelligenceEvent _ in wizard.StreamPromptAsync(
+                BaseRequest() with { Prompt = "answer", SkipSpellRouting = true, DisableMcpTools = true },
+                InvocationContexts.AttendedSession(),
+                caller.Token))
+            {
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The caller is gone; what matters is what the turn left behind.
+        }
+
+        Assert.Equal("finalized answer", grimoire.LastFinalizedContent);
+
+        Assert.Equal(sessionId, grimoire.LastIncrementedSessionId);
+
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Completed, status);
+    }
 }
