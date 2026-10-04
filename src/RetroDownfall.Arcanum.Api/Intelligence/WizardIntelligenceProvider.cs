@@ -6260,8 +6260,8 @@ public sealed partial class WizardIntelligenceProvider(
         catch (Exception ex)
         {
             logger.LogDebug(
-                ex,
-                "Session attachment semantic retrieval failed; continuing without attachment context.");
+                "Session attachment semantic retrieval failed; continuing without attachment context (exception type {ExceptionType}).",
+                ex.GetType().FullName);
 
             return null;
         }
