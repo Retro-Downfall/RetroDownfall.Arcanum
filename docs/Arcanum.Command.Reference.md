@@ -888,7 +888,7 @@ Administers MCP server lifecycle, trust, tool discovery, and external diagnostic
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum mcp list` | List safe MCP scope, transport, trust, lifecycle, tool-count, and last-error status. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
+| `arcanum mcp list` | List safe MCP scope, transport, lifecycle, tool-count, and last-error status. It prints no trust verdict: the host does not report one per server, and a workspace-scoped server's working directory says only where it was configured. `mcp trust` records trust; whether a configuration is trusted is not something the listing can state. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. A name or ID is resolved through the workspace registry like every other workspace-taking verb; a value containing a path separator is used as the server path as given. The listing (and the selection `show`, `start`, `stop`, `restart` and `tools` make) then holds the servers configured in that workspace plus every global server, because a global server applies to every workspace. |
 | `arcanum mcp show [<server>]` | Show one MCP server's safe status summary. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp start [<server>]` | Start one trusted MCP server. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp stop [<server>]` | Stop one MCP server. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
@@ -896,7 +896,7 @@ Administers MCP server lifecycle, trust, tool discovery, and external diagnostic
 | `arcanum mcp reload` | Clear MCP partitions and reload global or explicitly scoped workspace configuration. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp trust [<workspace>]` | Trust the current workspace mcp.json bytes; defaults to the current directory. | None beyond global or inherited family options. |
 | `arcanum mcp tools [<server>]` | List tools exposed by one selected MCP server. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
-| `arcanum mcp invoke <tool> [<arguments>]` | Invoke one external MCP tool diagnostically; internal tool names are reserved for the Master execution pipeline. | `--server <server>` — External MCP server name or unique prefix; omit for tool-based selection.<br>`--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
+| `arcanum mcp invoke <tool> [<arguments>]` | Invoke one external MCP tool diagnostically; internal tool names are reserved for the Master execution pipeline. Stdout is the raw result document and nothing else, so `> result.json` parses; the `Diagnostic MCP: <tool> on <server>; <n>ms; truncated: yes|no.` summary, the only signal that the result was cut, goes to stderr. | `--server <server>` — External MCP server name or unique prefix; omit for tool-based selection.<br>`--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 
 ### `arcanum tool`
 

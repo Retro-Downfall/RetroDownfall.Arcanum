@@ -24,6 +24,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Core.Workspaces;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("GlobalConsole")]
@@ -69,7 +71,7 @@ public sealed class McpToolCommandTests
 
     [Fact]
 
-    public void Mcp_list_shows_safe_scope_transport_trust_lifecycle_tool_count_and_error()
+    public void Mcp_list_shows_safe_scope_transport_lifecycle_tool_count_and_error()
     {
         McpServerInfo server = WorkspaceServer() with
         {
@@ -92,8 +94,6 @@ public sealed class McpToolCommandTests
 
         Assert.Contains("Transport", result.Output, StringComparison.Ordinal);
 
-        Assert.Contains("Trust", result.Output, StringComparison.Ordinal);
-
         Assert.Contains("Lifecycle", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("Tools", result.Output, StringComparison.Ordinal);
@@ -103,8 +103,6 @@ public sealed class McpToolCommandTests
         Assert.Contains("error", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("workspace", result.Output, StringComparison.OrdinalIgnoreCase);
-
-        Assert.Contains("trusted", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("connection", result.Output, StringComparison.Ordinal);
 
@@ -173,8 +171,6 @@ public sealed class McpToolCommandTests
         Assert.Equal(3, handler.Requests.Count);
 
         Assert.Equal("/api/mcp/workspace-server", handler.Requests[^1].RequestUri!.AbsolutePath);
-
-        Assert.Contains("trusted", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("workspace", result.Output, StringComparison.OrdinalIgnoreCase);
     }
@@ -315,9 +311,17 @@ public sealed class McpToolCommandTests
 
         Assert.Contains("\"workingDirectory\":\"/srv/workspace\"", body, StringComparison.Ordinal);
 
-        Assert.Contains("42", result.Output, StringComparison.Ordinal);
+        // stdout is the raw result and nothing else: a redirect to a file must parse as JSON.
+        using JsonDocument document = JsonDocument.Parse(result.Output);
 
-        Assert.Contains("12", result.Output, StringComparison.Ordinal);
+        Assert.Equal(42, document.RootElement.GetProperty("answer").GetInt32());
+
+        Assert.DoesNotContain("12ms", result.Output, StringComparison.Ordinal);
+
+        // The summary, and the only signal that the result was cut, goes to the diagnostic stream.
+        Assert.Contains("12ms", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("truncated: no", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -519,6 +523,91 @@ public sealed class McpToolCommandTests
         Assert.False(success);
 
         Assert.Contains("input limit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// <c>--workspace</c> takes a workspace ID, name, or server path. A name used to be compared to the
+    /// servers' working directories as raw text and matched nothing, and a saved context workspace hid
+    /// every global server, which belongs to every workspace.
+    /// </summary>
+    [Fact]
+    public void Mcp_list_workspace_accepts_a_workspace_name_and_keeps_global_servers()
+    {
+        McpServerInfo global = WorkspaceServer() with { Name = "global-server", WorkingDirectory = null };
+
+        McpServerInfo project = WorkspaceServer() with { Name = "project-server", WorkingDirectory = "/srv/proj" };
+
+        McpServerInfo other = WorkspaceServer() with { Name = "other-server", WorkingDirectory = "/srv/other" };
+
+        WorkspaceInfo registered = new("ws-1", "proj", "/srv/proj", WorkspaceType.Custom, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request =>
+            request.RequestUri!.AbsolutePath == "/api/workspaces"
+                ? CreateResponse(
+                    new ApiResponse<WorkspaceInfo[]>([registered], true, null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray)
+                : McpListResponse([global, project, other]));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "list", "--workspace", "proj"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("global-server", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("project-server", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("other-server", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Mcp_list_workspace_by_path_keeps_global_servers_and_drops_other_workspaces()
+    {
+        McpServerInfo global = WorkspaceServer() with { Name = "global-server", WorkingDirectory = null };
+
+        McpServerInfo project = WorkspaceServer() with { Name = "project-server", WorkingDirectory = "/srv/proj" };
+
+        McpServerInfo other = WorkspaceServer() with { Name = "other-server", WorkingDirectory = "/srv/other" };
+
+        RecordingHandler handler = new(_ => McpListResponse([global, project, other]));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "list", "--workspace", "/srv/proj/"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("global-server", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("project-server", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("other-server", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The listing knows only a server's working directory, which says where it was configured and
+    /// nothing about whether the host trusts that configuration, so it does not print a trust verdict.
+    /// </summary>
+    [Fact]
+    public void Mcp_list_does_not_claim_trust_the_host_did_not_report()
+    {
+        RecordingHandler handler = new(_ => McpListResponse([WorkspaceServer()]));
+
+        CliTestResult list = RunCommand(handler, ["mcp", "list"]);
+
+        Assert.Equal(0, list.ExitCode);
+
+        Assert.DoesNotContain("trust", list.Output, StringComparison.OrdinalIgnoreCase);
+
+        CliTestResult show = RunCommand(
+            new RecordingHandler(request =>
+                request.RequestUri!.AbsolutePath == "/api/mcp"
+                    ? McpListResponse([WorkspaceServer()])
+                    : CreateResponse(
+                        new ApiResponse<McpServerInfo>(WorkspaceServer(), true, null),
+                        ArcanumJsonContext.Default.ApiResponseMcpServerInfo)),
+            ["mcp", "show", "workspace-server"]);
+
+        Assert.Equal(0, show.ExitCode);
+
+        Assert.DoesNotContain("trust", show.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     private static McpServerInfo WorkspaceServer() =>

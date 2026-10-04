@@ -18,6 +18,8 @@ using RetroDownfall.Arcanum.Core.Mcp;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Workspaces;
+
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Configuration;
@@ -27,12 +29,20 @@ public sealed class McpCommands(
     ICliEnvironment environment,
     IResourcePicker picker,
     IRecentResourceStore recentStore,
-    IThemePalette themePalette)
+    IThemePalette themePalette,
+    ICliResourceCatalog? resourceCatalog = null)
 {
     public async Task<int> List(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
         Result<IReadOnlyList<McpServerInfo>> result = await apiClient
             .GetMcpServersAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -44,15 +54,9 @@ public sealed class McpCommands(
 
         IEnumerable<McpServerInfo> servers = result.Value;
 
-        if (!string.IsNullOrWhiteSpace(workingDirectory))
+        if (scope.Path is { } workspacePath)
         {
-            string normalized = NormalizeWorkspace(workingDirectory);
-
-            servers = servers.Where(
-                server => string.Equals(
-                    NormalizeWorkspace(server.WorkingDirectory),
-                    normalized,
-                    StringComparison.Ordinal));
+            servers = servers.Where(server => InWorkspaceScope(server, workspacePath));
         }
 
         Table table = new();
@@ -74,11 +78,6 @@ public sealed class McpCommands(
                 new Markup(string.Empty),
                 new Markup(themePalette.HighlightMarkup("Transport")),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(server.Transport.ToString()))));
-
-            table.AddRow(
-                new Markup(string.Empty),
-                new Markup(themePalette.HighlightMarkup("Trust")),
-                new Markup(themePalette.MutedMarkup(Trust(server))));
 
             table.AddRow(
                 new Markup(string.Empty),
@@ -106,9 +105,16 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
         ResourceSelectionResult<McpServerInfo> selection = await SelectServerAsync(
             identifier,
-            workingDirectory,
+            scope.Path,
             cancellationToken).ConfigureAwait(false);
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
@@ -177,9 +183,16 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
         Result<string> result = await apiClient
             .ReloadMcpAsync(
-                new OptionalWorkspaceRequest(workingDirectory),
+                new OptionalWorkspaceRequest(scope.Path),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -200,9 +213,14 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
-        string workspace = string.IsNullOrWhiteSpace(workingDirectory)
-            ? Environment.CurrentDirectory
-            : workingDirectory.Trim();
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
+        string workspace = scope.Path ?? Environment.CurrentDirectory;
 
         Result<bool> result = await apiClient
             .TrustMcpWorkspaceAsync(
@@ -232,9 +250,16 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
         ResourceSelectionResult<McpServerInfo> selection = await SelectServerAsync(
             identifier,
-            workingDirectory,
+            scope.Path,
             cancellationToken).ConfigureAwait(false);
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
@@ -293,6 +318,15 @@ public sealed class McpCommands(
         {
             return WriteError(argumentError!);
         }
+
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
+        workingDirectory = scope.Path;
 
         if (DiagnosticMcpInvocationService.BlockedToolNames.Contains(
                 toolIdentifier.Trim()))
@@ -413,7 +447,9 @@ public sealed class McpCommands(
         // profile width, putting literal newlines inside JSON string literals.
         Console.Out.WriteLine(response.Result.GetRawText());
 
-        AnsiConsole.MarkupLine(
+        // The summary is a diagnostic, so it goes to stderr: stdout is the raw result and must stay one
+        // parseable document when redirected, and "truncated" is the only signal the result was cut.
+        CliErrorOutput.WriteMarkupLine(
             themePalette.MutedMarkup(
                 $"Diagnostic MCP: {Markup.Escape(response.ToolName)} on {Markup.Escape(response.ServerName)}; {response.DurationMs.ToString(CultureInfo.InvariantCulture)}ms; truncated: {(response.Truncated ? "yes" : "no")}."));
 
@@ -427,9 +463,16 @@ public sealed class McpCommands(
         Func<string, string?, CancellationToken, Task<Result<bool>>> action,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
         ResourceSelectionResult<McpServerInfo> selection = await SelectServerAsync(
             identifier,
-            workingDirectory,
+            scope.Path,
             cancellationToken).ConfigureAwait(false);
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
@@ -508,13 +551,7 @@ public sealed class McpCommands(
 
                         if (!string.IsNullOrWhiteSpace(workingDirectory))
                         {
-                            string normalized = NormalizeWorkspace(workingDirectory);
-
-                            servers = servers.Where(
-                                server => string.Equals(
-                                    NormalizeWorkspace(server.WorkingDirectory),
-                                    normalized,
-                                    StringComparison.Ordinal));
+                            servers = servers.Where(server => InWorkspaceScope(server, workingDirectory));
                         }
 
                         return Result<ResourcePage<McpServerInfo>>.Success(
@@ -596,8 +633,6 @@ public sealed class McpCommands(
 
         table.AddRow("Transport:", Markup.Escape(server.Transport.ToString()));
 
-        table.AddRow("Trust:", Trust(server));
-
         table.AddRow("Lifecycle:", Markup.Escape(server.State.ToString()));
 
         table.AddRow("Always on:", server.AlwaysOn ? "yes" : "no");
@@ -626,15 +661,83 @@ public sealed class McpCommands(
             ? "global"
             : NormalizeWorkspace(server.WorkingDirectory);
 
-    private static string Trust(McpServerInfo server) =>
-        string.IsNullOrWhiteSpace(server.WorkingDirectory)
-            ? "not required"
-            : "trusted";
-
     private static string NormalizeWorkspace(string? path)
         => string.IsNullOrWhiteSpace(path)
             ? string.Empty
             : path.Trim();
+
+    /// <summary>
+    /// Whether a server belongs to a workspace's view: a global server (no working directory) applies to
+    /// every workspace, and a workspace server applies to the one it was configured in.
+    /// </summary>
+    private static bool InWorkspaceScope(McpServerInfo server, string workspacePath) =>
+        string.IsNullOrWhiteSpace(server.WorkingDirectory)
+        || string.Equals(
+            TrimTrailingSeparators(server.WorkingDirectory),
+            TrimTrailingSeparators(workspacePath),
+            StringComparison.Ordinal);
+
+    private static string TrimTrailingSeparators(string path)
+    {
+        string trimmed = NormalizeWorkspace(path);
+
+        while (trimmed.Length > 1 && (trimmed[^1] is '/' or '\\'))
+        {
+            trimmed = trimmed[..^1];
+        }
+
+        return trimmed;
+    }
+
+    /// <summary>
+    /// Whether a workspace selector is already a server path. Paths are used as given, so a server-owned
+    /// path of either platform's spelling reaches the host untouched; anything else is a registered
+    /// workspace's ID or name.
+    /// </summary>
+    private static bool LooksLikePath(string selector) =>
+        selector.Contains('/', StringComparison.Ordinal)
+        || selector.Contains('\\', StringComparison.Ordinal);
+
+    /// <summary>
+    /// Turns a <c>--workspace</c> value into the server path the host scopes by: a path is used as given,
+    /// and a workspace ID or name is resolved through the registry, as every other workspace-taking verb does.
+    /// </summary>
+    private async Task<WorkspaceScope> ResolveWorkspaceAsync(
+        string? selector,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(selector))
+        {
+            return new WorkspaceScope(null, null);
+        }
+
+        string trimmed = selector.Trim();
+
+        if (resourceCatalog is null || LooksLikePath(trimmed))
+        {
+            return new WorkspaceScope(trimmed, null);
+        }
+
+        ResourceSelectionResult<WorkspaceInfo> selection = await resourceCatalog
+            .SelectWorkspaceAsync(trimmed, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (selection.Status == ResourceSelectionStatus.Cancelled)
+        {
+            return new WorkspaceScope(null, 0);
+        }
+
+        if (selection.Status == ResourceSelectionStatus.Error)
+        {
+            return new WorkspaceScope(
+                null,
+                WriteError(string.IsNullOrWhiteSpace(selection.Error) ? "Workspace selection failed." : selection.Error));
+        }
+
+        return new WorkspaceScope(selection.Value!.Path, null);
+    }
+
+    private sealed record WorkspaceScope(string? Path, int? ExitCode);
 
     private int WriteError(Error error)
     {
