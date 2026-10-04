@@ -17,10 +17,21 @@ internal sealed class BudgetReservationService(
     ArcanumDbContext db,
     IOptionsMonitor<ArcanumSettings> settings) : IBudgetReservationService
 {
+    /// <summary>
+    /// Runs inside <see cref="ReserveAsync"/>'s write transaction after both spend sums were read and before the
+    /// reservation row is inserted, so a test can hold one reservation open at its decision point and prove a
+    /// second connection cannot decide on the same ledger concurrently.
+    /// </summary>
+    internal Func<CancellationToken, Task>? AfterSumsBeforeReserveInsertForTesting { get; set; }
+
     public async Task<Result<BudgetReservation>> ReserveAsync(
         BudgetReservationRequest request,
         CancellationToken cancellationToken = default)
     {
+        // A negative reservation would lower the outstanding sum every later check reads, so it is refused
+        // before anything is read or written (AdjustAsync clamps its target at zero for the same reason).
+        ArgumentOutOfRangeException.ThrowIfNegative(request.ReservedUsd);
+
         BudgetSettings budget = settings.CurrentValue.ResolveBudget();
 
         if (!budget.Enabled || budget.DailyLimitUsd <= 0)
@@ -65,6 +76,11 @@ internal sealed class BudgetReservationService(
                     if (projected > dailyLimit)
                     {
                         throw new BudgetExceededException(dailyLimit, committedAndOutstanding);
+                    }
+
+                    if (AfterSumsBeforeReserveInsertForTesting is not null)
+                    {
+                        await AfterSumsBeforeReserveInsertForTesting(cancellationToken).ConfigureAwait(false);
                     }
 
                     await using DbCommand cmd = connection.CreateCommand();

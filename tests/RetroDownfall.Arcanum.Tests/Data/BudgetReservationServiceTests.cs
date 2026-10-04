@@ -254,7 +254,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task AdjustAsync_AtomicallyRaisesWithoutLoweringOrExceedingDailyLimit()
+    public async Task AdjustAsync_RaisesWithoutLoweringAndRejectsARaiseThatWouldExceedTheDailyLimit()
     {
         RequireSqlCipher();
         BudgetReservationService service = CreateService(new BudgetPolicySettings
@@ -276,6 +276,102 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.True(rejected.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, rejected.Error.Code);
         Assert.Equal(9m, await service.GetTodayOutstandingReservationsAsync());
+    }
+
+    [SkippableFact]
+    public async Task ReserveAsync_WhenTwoConnectionsReserveConcurrently_NeverExceedsTheDailyLimit()
+    {
+        RequireSqlCipher();
+
+        BudgetPolicySettings budget = new()
+        {
+            Enabled = true,
+            DailyLimitUsd = 1m,
+        };
+        BudgetReservationService first = CreateService(budget);
+        await using ArcanumDbContext secondDb = _fixture.CreateContext(_dbPath);
+        BudgetReservationService second = CreateService(budget, secondDb);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        string period = BudgetReservationService.UtcBudgetPeriod(now);
+
+        TaskCompletionSource firstAtDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releaseFirst = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource secondAtDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        first.AfterSumsBeforeReserveInsertForTesting = async cancellationToken =>
+        {
+            firstAtDecision.TrySetResult();
+            await releaseFirst.Task.WaitAsync(cancellationToken);
+        };
+        second.AfterSumsBeforeReserveInsertForTesting = _ =>
+        {
+            secondAtDecision.TrySetResult();
+
+            return Task.CompletedTask;
+        };
+
+        Task<Result<BudgetReservation>> firstReserve = Task.Run(
+            () => first.ReserveAsync(new BudgetReservationRequest(Guid.NewGuid(), 0.60m, now.AddHours(1), period)));
+
+        try
+        {
+            // Generous orchestration budget: coverage-instrumented CI runners can delay a thread-pool start well
+            // past 5s under parallel load.
+            await firstAtDecision.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch
+        {
+            releaseFirst.TrySetResult();
+
+            throw;
+        }
+
+        Task<Result<BudgetReservation>> secondReserve = Task.Run(
+            () => second.ReserveAsync(new BudgetReservationRequest(Guid.NewGuid(), 0.60m, now.AddHours(1), period)));
+
+        // While the first reservation is parked after its sums and before its insert, the immediate write
+        // transaction keeps the second from reading the ledger at all. A second connection that reaches its own
+        // decision point inside this window decided on the same ledger the first one did.
+        Task windowOutcome = await Task.WhenAny(secondAtDecision.Task, Task.Delay(TimeSpan.FromMilliseconds(500)));
+        bool secondDecidedWhileFirstWasParked = windowOutcome == secondAtDecision.Task;
+
+        releaseFirst.TrySetResult();
+
+        // Checked before the results are awaited: a deferred transaction that overlapped the first would otherwise
+        // spend Microsoft.Data.Sqlite's whole 30 second busy-snapshot retry before this could report the overlap.
+        Assert.False(
+            secondDecidedWhileFirstWasParked,
+            "The second connection read the spend ledger while the first reservation was between its sums and its insert.");
+
+        Result<BudgetReservation> firstResult = await firstReserve.WaitAsync(TimeSpan.FromSeconds(30));
+        Result<BudgetReservation> secondResult = await secondReserve.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(firstResult.IsSuccess, firstResult.IsFailure ? firstResult.Error.Message : string.Empty);
+        Assert.True(secondResult.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, secondResult.Error.Code);
+        Assert.Equal(0.60m, await first.GetTodayOutstandingReservationsAsync());
+        Assert.Equal(1L, await CountReservationsAsync());
+    }
+
+    [SkippableFact]
+    public async Task ReserveAsync_WhenReservedUsdIsNegative_IsRejectedAndDoesNotLowerOutstanding()
+    {
+        RequireSqlCipher();
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
+        {
+            Enabled = true,
+            DailyLimitUsd = 10m,
+        });
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        string period = BudgetReservationService.UtcBudgetPeriod(now);
+        _ = await ReserveAsync(service, 4m, now.AddHours(1), period);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReserveAsync(
+            new BudgetReservationRequest(Guid.NewGuid(), ReservedUsd: -3m, now.AddHours(1), period)));
+
+        Assert.Equal(4m, await service.GetTodayOutstandingReservationsAsync());
+        Assert.Equal(1L, await CountReservationsAsync());
     }
 
     [SkippableTheory]
@@ -413,7 +509,10 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-    private BudgetReservationService CreateService(BudgetPolicySettings? budget)
+    private BudgetReservationService CreateService(BudgetPolicySettings? budget) =>
+        CreateService(budget, _db!);
+
+    private static BudgetReservationService CreateService(BudgetPolicySettings? budget, ArcanumDbContext db)
     {
         ArcanumSettings settings = new()
         {
@@ -426,7 +525,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         };
 
         return new BudgetReservationService(
-            _db!,
+            db,
             new TestOptionsMonitor<ArcanumSettings>(settings));
     }
 
