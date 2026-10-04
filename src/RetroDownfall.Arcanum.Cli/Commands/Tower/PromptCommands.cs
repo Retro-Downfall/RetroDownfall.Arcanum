@@ -28,7 +28,7 @@ public sealed class PromptCommands(
     /// <summary>
     /// List prompts (GET /api/prompts).
     /// </summary>
-    /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
+    /// <param name="campaignId">--campaign-id, Filter by campaign GUID.</param>
     /// <param name="query">-q, Free-text query.</param>
     /// <param name="tag">Filter by tag.</param>
     public async Task<int> List(
@@ -43,7 +43,7 @@ public sealed class PromptCommands(
         {
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
@@ -197,7 +197,7 @@ public sealed class PromptCommands(
     /// List versions of a prompt by name (GET /api/prompts/by-name/{name}/versions).
     /// </summary>
     /// <param name="name">Prompt name.</param>
-    /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
+    /// <param name="campaignId">--campaign-id, Filter by campaign GUID.</param>
     public async Task<int> Versions(string name, string? campaignId = null, CancellationToken cancellationToken = default)
     {
         Guid? parsedCampaignId = null;
@@ -206,7 +206,7 @@ public sealed class PromptCommands(
         {
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
@@ -249,7 +249,7 @@ public sealed class PromptCommands(
     /// <param name="name">Prompt name.</param>
     /// <param name="version">Prompt version label.</param>
     /// <param name="template">Prompt template: inline text, or @filename to read from a file.</param>
-    /// <param name="campaignId">--campaignId, Campaign GUID to associate with.</param>
+    /// <param name="campaignId">--campaign-id, Campaign GUID to associate with.</param>
     /// <param name="description">Prompt description.</param>
     /// <param name="tag">Tag; pass multiple times for several tags.</param>
     public async Task<int> Create(
@@ -295,7 +295,7 @@ public sealed class PromptCommands(
         {
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
@@ -494,7 +494,7 @@ public sealed class PromptCommands(
     /// <param name="id">Prompt GUID.</param>
     /// <param name="input">User message for the prompt turn: inline text, or @filename to read from a file.</param>
     /// <param name="param">Template parameter as key=value; pass multiple times for several parameters.</param>
-    /// <param name="sessionId">--sessionId, Session GUID to bind context from.</param>
+    /// <param name="sessionId">--session-id, Session GUID to bind context from.</param>
     public async Task<int> Execute(
         string? id,
         string? input = null,
@@ -532,7 +532,7 @@ public sealed class PromptCommands(
         {
             if (!CliArgReader.TryParseGuid(sessionId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--sessionId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
@@ -706,7 +706,7 @@ public sealed class PromptCommands(
     /// Import a prompt from portable JSON (POST /api/prompts/import).
     /// </summary>
     /// <param name="file">Path to a prompt export JSON file.</param>
-    /// <param name="campaignId">--campaignId, Campaign GUID to associate the import with.</param>
+    /// <param name="campaignId">--campaign-id, Campaign GUID to associate the import with.</param>
     private async Task<(bool Resolved, bool Cancelled, Guid Id)> ResolvePromptIdAsync(
         string? identifier,
         CancellationToken cancellationToken)
@@ -787,7 +787,7 @@ public sealed class PromptCommands(
         {
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }

@@ -113,7 +113,7 @@ public sealed class ApprenticeCommands(
     /// <summary>
     /// List Apprentices (GET /api/apprentices).
     /// </summary>
-    /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
+    /// <param name="campaignId">--campaign-id, Filter by campaign GUID.</param>
     /// <param name="status">Filter by status.</param>
     /// <param name="limit">Maximum number of Apprentices to return.</param>
     public async Task<int> List(
@@ -128,7 +128,7 @@ public sealed class ApprenticeCommands(
         {
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
@@ -251,7 +251,7 @@ public sealed class ApprenticeCommands(
     /// </summary>
     /// <param name="goal">Apprentice goal: inline text, or @filename to read from a file.</param>
     /// <param name="name">Display name; defaults to a truncated form of the goal.</param>
-    /// <param name="campaignId">--campaignId, Campaign GUID to associate with.</param>
+    /// <param name="campaignId">--campaign-id, Campaign GUID to associate with.</param>
     /// <param name="workspace">Workspace root to scope the Apprentice.</param>
     public async Task<int> Create(
         string? goal = null,
@@ -287,7 +287,7 @@ public sealed class ApprenticeCommands(
         {
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }

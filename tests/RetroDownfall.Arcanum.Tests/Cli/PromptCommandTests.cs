@@ -281,6 +281,30 @@ public sealed class PromptCommandTests
         Assert.Contains("second-page-prompt", result.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The diagnostic names the option the operator typed. It used to name <c>--campaignId</c> and
+    /// <c>--sessionId</c>, spellings the parser has not accepted since the kebab-case rename.
+    /// </summary>
+    [Theory]
+    [InlineData("prompt list --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt versions greeting --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt create --name n --version 1 --template t --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt execute 22222222-2222-2222-2222-222222222222 --input hi --session-id not-a-guid", "--session-id")]
+    public void Invalid_guid_diagnostics_name_the_option_the_operator_typed(string commandLine, string option)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, commandLine.Split(' '));
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains(option, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--campaignId", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--sessionId", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

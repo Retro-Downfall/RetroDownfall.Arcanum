@@ -215,6 +215,22 @@ public sealed class ApprenticeCommandTests
         Assert.Contains("omit --limit", result.Error, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("apprentice list --campaign-id not-a-guid")]
+    [InlineData("apprentice create --goal Do-the-thing --campaign-id not-a-guid")]
+    public void Invalid_campaign_id_diagnostics_name_the_option_the_operator_typed(string commandLine)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, commandLine.Split(' '));
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("--campaign-id", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--campaignId", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,
