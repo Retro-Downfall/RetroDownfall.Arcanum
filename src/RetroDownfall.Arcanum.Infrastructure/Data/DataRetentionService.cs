@@ -1394,6 +1394,47 @@ internal sealed partial class DataRetentionService(
 
         LongRunningOperation operation = started;
 
+        // A single-transaction mutation takes no heartbeat, so once its five-minute lease passes its row
+        // looks abandoned to generic reconciliation, which would adopt it and start a recovery beside the
+        // call still running it. The process-local claim is what the reconciler asks before it looks at
+        // the lease; it is preferred over a heartbeat here because a renewal is a write and would contend
+        // with the open write transaction. Released on every exit, by the token that took it.
+        Guid ownershipToken = Guid.Empty;
+
+        bool claimed = _operationOwnership is { } ownership
+            && ownership.TryClaim(operation.Id, out ownershipToken);
+
+        try
+        {
+            return await ApplyStartedOrdinaryAsync(
+                request,
+                current,
+                operation,
+                ownerId,
+                operationKind,
+                expectedSessionSnapshot,
+                expectedAttachmentSnapshot,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (claimed)
+            {
+                _ = _operationOwnership!.Release(operation.Id, ownershipToken);
+            }
+        }
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> ApplyStartedOrdinaryAsync(
+        DataRetentionApplyRequest request,
+        DataRetentionPlan current,
+        LongRunningOperation operation,
+        string ownerId,
+        string operationKind,
+        SessionPlanSnapshot? expectedSessionSnapshot,
+        AttachmentPlanSnapshot? expectedAttachmentSnapshot,
+        CancellationToken cancellationToken)
+    {
         LongRunningOperationLeaseResult lease = new(true, operation);
 
         if (request.Request.Operation == DataRetentionOperation.FactoryReset)

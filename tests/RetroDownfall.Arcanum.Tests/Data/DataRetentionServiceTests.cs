@@ -60,7 +60,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -75,14 +74,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     public DataRetentionServiceTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         string root = Path.Combine(
@@ -104,47 +100,37 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection =
                 (SqliteConnection)_db.Database.GetDbConnection();
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         string? root = Directory.GetParent(_attachmentsRoot)?.FullName;
 
         if (root is not null && Directory.Exists(root))
         {
-
             Directory.Delete(root, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_DeleteSession_ReportsImpactAndPinnedEntryBlocker()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: true);
@@ -186,14 +172,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             blocker => blocker.DataClass == RetentionDataClass.Entries
                 && blocker.ResourceId == entryId.ToString("D")
                 && blocker.ReasonCode.Contains("pin", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteSession_RemovesDerivedIndexesAndBytesButPreservesMemoryProvenance()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -275,14 +259,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.Equal(0, await ReadAttachmentAvailabilityAsync(
             "lexicon_fact_attachment_provenance"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteSession_TouchesTheDerivedVectorTableABoundedNumberOfTimes()
     {
-
         RequireSqlCipher();
 
         const int entryCount = 40;
@@ -300,11 +282,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "count_vector_statement",
             () =>
             {
-
                 _ = Interlocked.Increment(ref vectorStatements);
 
                 return "no-such-entry";
-
             });
 
         // Stands in for the sqlite-vec shadow table. It yields exactly one row per statement that
@@ -350,14 +330,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             vectorStatements < entryCount,
             "Deleting a session must not issue derived-index work per entry, but it touched "
                 + $"entry_embeddings_vec {vectorStatements} times for {entryCount} entries.");
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteSession_WhenReconciliationFails_DoesNotCompleteDurableOperation()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
@@ -405,14 +383,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, operation.TerminalErrorCode);
 
         Assert.Equal(1, await CountAllAsync("Sessions"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteAttachment_WhenFileIdentityChanges_PreservesMetadataAndBytes()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -431,23 +407,19 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         try
         {
-
             FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = path =>
             {
-
                 if (!string.Equals(
                         Path.GetFullPath(path),
                         Path.GetFullPath(attachment.AbsolutePath),
                         StringComparison.Ordinal))
                 {
-
                     // Pass foreign paths through rather than returning null. The seam is
                     // process-global, so null here means "this file cannot be stat'ed" for every
                     // concurrently running test as well, for as long as a real PlanAsync/ApplyAsync
                     // takes — which fails whichever unrelated test happens to touch the filesystem
                     // in that window.
                     return ReadActualNoFollowMetadata(path);
-
                 }
 
                 identityReads++;
@@ -456,13 +428,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                     ? originalMetadata
                     : originalMetadata with
                     {
-
                         Identity = new FileHandleIdentity(
                             originalMetadata.Identity.VolumeId,
                             originalMetadata.Identity.FileId + 1),
-
                     };
-
             };
 
             IDataRetentionService service = CreateService();
@@ -490,22 +459,17 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 "SessionAttachments",
                 "Id",
                 Canonical(attachment.AttachmentId)));
-
         }
         finally
         {
-
             FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = previousSeam;
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_Prune_BlocksUploadedFileReferencedByInProgressBatch()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -545,32 +509,24 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-
             Retention = new RetentionSettings
             {
-
                 AutomaticSweepsEnabled = false,
 
                 UploadedFiles = new RetentionRuleSettings
                 {
-
                     Enabled = true,
 
                     Days = 1,
-
                 },
 
                 CompletedBatches = new RetentionRuleSettings
                 {
-
                     Enabled = true,
 
                     Days = 1,
-
                 },
-
             },
-
         };
 
         IDataRetentionService service = CreateService(settings);
@@ -601,7 +557,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             fileId.ToString()));
 
         Assert.True(File.Exists(absolutePath));
-
     }
 
     [SkippableTheory]
@@ -619,7 +574,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     public async Task PlanAsync_Prune_DoesNotLetOldestBlockedRowStarveEligibleRow(
         string scenario)
     {
-
         RequireSqlCipher();
 
         (ArcanumSettings settings, string expectedCandidate) =
@@ -634,14 +588,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Single(plan.CandidateIds);
 
         Assert.Contains(expectedCandidate, plan.CandidateIds);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenEntryPinAppearsAtBoundary_PreservesEmbedding()
     {
-
         RequireSqlCipher();
 
         (_, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -699,14 +651,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Canonical(entryId)));
 
         Assert.Equal(1, await CountAllAsync("SessionContextPins"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenEarlyCandidateIsPreserved_KeepsRenewingTheDurableLease()
     {
-
         RequireSqlCipher();
 
         const int candidateCount = PruneCheckpointIntervalInTest + 1;
@@ -778,14 +728,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             operations.Heartbeats > 0,
             "A sweep that preserved one candidate must keep renewing its durable lease for the "
                 + $"remaining {candidateCount - 1} candidates, but it renewed nothing.");
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenCandidatesOutlastTheLeaseBeforeACheckpointBoundary_KeepsRenewingTheDurableLease()
     {
-
         RequireSqlCipher();
 
         // Fewer candidates than PruneCheckpointInterval, each slower than the heartbeat interval:
@@ -806,11 +754,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "advance_retention_clock",
             () =>
             {
-
                 time.Advance(TimeSpan.FromMinutes(2));
 
                 return 1L;
-
             });
 
         HeartbeatCountingOperationStore operations = new(
@@ -852,14 +798,85 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             operations.Heartbeats > 0,
             "A sweep whose candidates outlast the heartbeat interval must renew its durable lease "
                 + "before the next candidate, but it renewed nothing.");
+    }
 
+    /// <summary>
+    /// A request-driven retention mutation that outlives its five-minute lease is not adopted by generic
+    /// reconciliation while this process is still running it.
+    /// </summary>
+    /// <remarks>
+    /// A single-transaction mutation takes no heartbeat, so its row looks abandoned to anything deciding
+    /// by the lease alone once five minutes pass. The reconciler runs inside the call, after the delete
+    /// and before the operation is finalized, with the clock moved past the lease: without the
+    /// process-local ownership claim it claims the row and the apply can no longer finalize it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ApplyAsync_ResetMemory_WhenItOutlivesItsLease_IsNotAdoptedByTheReconciler()
+    {
+        RequireSqlCipher();
+
+        _ = await SeedAgedSagaMemoryAsync("outlives its lease");
+
+        FakeTimeProvider clock = new();
+
+        LongRunningOperationOwnership ownership = new();
+
+        LongRunningOperationStore inner = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperationReconciliationSummary? summary = null;
+
+        HeartbeatCountingOperationStore operations = new(inner)
+        {
+            BeforeGetAsync = async (_, _) =>
+            {
+                if (summary is not null)
+                {
+                    return;
+                }
+
+                clock.Advance(DataRetentionLeaseMaintainer.DefaultLeaseDuration + TimeSpan.FromMinutes(1));
+
+                LongRunningOperationReconciler reconciler = new(
+                    new LongRunningOperationStore(_db!, TestOrdinaryConnectionFactory.For(_db!)),
+                    [],
+                    clock,
+                    NullLogger<LongRunningOperationReconciler>.Instance,
+                    ownership);
+
+                summary = await reconciler.ReconcileNowAsync(
+                    "competing-reconciler",
+                    maxOperations: 10,
+                    maxConcurrency: 1,
+                    CancellationToken.None);
+            },
+        };
+
+        IDataRetentionService service = CreateService(
+            timeProvider: clock,
+            operationStore: operations,
+            operationOwnership: ownership);
+
+        DataRetentionRequest request = new(DataRetentionOperation.ResetMemory, MemoryScope: MemoryResetScope.Saga);
+
+        DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.NotNull(summary);
+
+        Assert.Equal(0, summary!.Claimed);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : string.Empty);
+
+        Assert.False(ownership.IsClaimed(result.Value.OperationId), "The claim outlived the call.");
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenCancelled_ReleasesTheDurableLeaseAndNamesItselfInTheNextConflict()
     {
-
         RequireSqlCipher();
 
         _ = await SeedEntryEmbeddingBatchAsync(4);
@@ -877,11 +894,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "cancel_retention_apply",
             () =>
             {
-
                 cancellation.Cancel();
 
                 return 1L;
-
             });
 
         await ExecuteAsync(
@@ -938,14 +953,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             stranded.Id.ToString("D"),
             blocked.Error.Message,
             StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenSessionBecomesHeldAtBoundary_PreservesEntryEmbedding()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -997,14 +1010,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "entry_embeddings",
             "EntryId",
             Canonical(entryId)));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenSessionOperationAppearsAtBoundary_PreservesEntryEmbedding()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -1063,14 +1074,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "LongRunningOperations",
             "Id",
             activeOperationId.ToString("N")));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenWorkspaceIndexStartsAtBoundary_PreservesWorkspaceCandidate()
     {
-
         RequireSqlCipher();
 
         string chunkId = "boundary-workspace-" + Guid.NewGuid().ToString("N");
@@ -1145,14 +1154,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "workspace_file_embeddings",
             "ChunkId",
             chunkId));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_RepeatedDeleteSession_ReturnsNotFoundAfterFirstDelete()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
@@ -1185,14 +1192,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.True(second.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.NotFound, second.Error.Code);
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_DeleteSession_ReportsActiveOperationAndReservationConflicts()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
@@ -1271,7 +1276,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             plan.Conflicts,
             conflict => conflict.ResourceId == reservationId.ToString("D")
                 && conflict.Code.Contains("reservation", StringComparison.OrdinalIgnoreCase));
-
     }
 
     /// <summary>
@@ -1290,7 +1294,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     public async Task GetStatusAsync_ReportsEveryTypedRetentionClassExactlyOnce()
     {
-
         RequireSqlCipher();
 
         IDataRetentionService service = CreateService();
@@ -1311,14 +1314,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             status.Items.Select(static item => item.DataClass).Distinct().Count());
 
         Assert.Null(status.Covenant);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_RemovesTerminalBatchAndItsUnreferencedUploadedFile()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -1386,14 +1387,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAsync("UploadedFiles", "Id", fileId.ToString()));
 
         Assert.False(File.Exists(absolutePath));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenAnotherPruneIsActive_ReturnsConflict()
     {
-
         RequireSqlCipher();
 
         IDataRetentionService service = CreateService(CreatePruneSettings());
@@ -1435,14 +1434,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 Kind: LongRunningOperationKinds.DataRetentionPrune));
 
         Assert.Single(pruneOperations);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_DeleteSession_WhenPruneIsActive_ReturnsConflictWithoutPendingMutation()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
@@ -1495,14 +1492,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 Kind: LongRunningOperationKinds.DataRetentionMutation));
 
         Assert.Empty(mutations);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_EnforcesWorkspaceIdempotencyAndAuditPoliciesWithCheckpoint()
     {
-
         RequireSqlCipher();
 
         string chunkId = "workspace-" + Guid.NewGuid().ToString("N");
@@ -1621,14 +1616,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.NotNull(operation.CheckpointPayload);
 
         Assert.Equal(LongRunningOperationState.Completed, operation.State);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenCandidateReconciliationFails_DoesNotAdvanceCheckpointOrComplete()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -1694,14 +1687,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "UploadedFiles",
             "Id",
             fileId.ToString()));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenTerminalBatchReappears_DoesNotCheckpointPastCandidate()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -1783,14 +1774,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "Batches",
             "Id",
             batchId.ToString()));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_RepeatedPrune_ConvergesWithoutRemovingAdditionalData()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -1857,14 +1846,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAllAsync("UploadedFiles"));
 
         Assert.False(File.Exists(absolutePath));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WithDisabledRules_PreservesEligibleLookingData()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -1899,14 +1886,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             fileId.ToString()));
 
         Assert.True(File.Exists(absolutePath));
-
     }
 
     [SkippableFact]
 
     public async Task RecoverPruneAsync_ResumesCheckpointedCandidateAfterInterruption()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -1994,14 +1979,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             fileId.ToString()));
 
         Assert.False(File.Exists(absolutePath));
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_FactoryReset_ReportsActiveIdempotencyAndBatchConflicts()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -2055,14 +2038,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             plan.Conflicts,
             conflict => conflict.ResourceId == claimId.ToString("D")
                 && conflict.Code.Contains("idempotency", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_FactoryReset_CountsPhysicalAndDerivedRecordsOnce()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -2196,14 +2177,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(
             attachment.Bytes.LongLength + fileBytes.LongLength,
             plan.EstimatedBytes);
-
     }
 
     [SkippableFact]
 
     public async Task FactoryReset_RecoversDatedLogFromInterruptedQuarantine()
     {
-
         RequireSqlCipher();
 
         string quarantineDirectory = Directory.CreateDirectory(
@@ -2247,14 +2226,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.False(File.Exists(auditPath));
 
         Assert.False(Directory.Exists(quarantineDirectory));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_FactoryReset_WithoutCovenantLifecycle_FailsClosedBeforeOperationOrDeletion()
     {
-
         RequireSqlCipher();
 
         _ = await SeedSessionAsync(pinned: false);
@@ -2284,26 +2261,22 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 new LongRunningOperationQuery(
                     Kind: LongRunningOperationKinds.DataRetentionFactoryReset,
                     Limit: 10)));
-
     }
 
     [Fact]
 
     public void FactoryReset_UsesDedicatedRestartableOperationPolicy()
     {
-
         Assert.True(
             LongRunningOperationPolicyCatalog.IsRegistered(
                 LongRunningOperationKinds.DataRetentionFactoryReset,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently));
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_Prune_AccountingFloorPreservesRetainedSessionCosts()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
@@ -2335,14 +2308,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.DoesNotContain(
             "accounting:" + retainedRunId.ToString("D"),
             plan.CandidateIds);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_RemovesOldStandaloneAdjustmentsAndBudgetAlerts()
     {
-
         RequireSqlCipher();
 
         Guid adjustmentId = Guid.NewGuid();
@@ -2405,14 +2376,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAllAsync("CostAdjustments"));
 
         Assert.Equal(0, await CountAllAsync("BudgetAlerts"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenStandaloneAccountingEligibilityChangesAtBoundary_PreservesRows()
     {
-
         RequireSqlCipher();
 
         Guid adjustmentId = Guid.NewGuid();
@@ -2485,14 +2454,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAllAsync("CostAdjustments"));
 
         Assert.Equal(1, await CountAllAsync("BudgetAlerts"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenStandaloneAdjustmentReappears_DoesNotAdvanceCheckpoint()
     {
-
         RequireSqlCipher();
 
         Guid adjustmentId = Guid.NewGuid();
@@ -2568,14 +2535,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal("0", checkpointLines[2]);
 
         Assert.Equal(1, await CountAllAsync("CostAdjustments"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_RollsBackEntryIndexesWhenEntryDeletionFails()
     {
-
         RequireSqlCipher();
 
         (_, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -2625,14 +2590,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAllAsync("Entries"));
 
         Assert.Equal(1, await CountAllAsync("entry_embeddings"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_ResetMemory_RollsBackScopeWhenDependentDeletionFails()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -2668,14 +2631,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAllAsync("session_attachment_chunks"));
 
         Assert.Equal(1, await CountAllAsync("session_attachment_embeddings"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_FactoryReset_RemovesOwnedDataAndDerivedIndexesButPreservesExternalAndOperationalFiles()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -2820,16 +2781,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         if (await TableExistsInTestAsync("entry_embeddings_vec"))
         {
-
             Assert.Equal(0, await CountAllAsync("entry_embeddings_vec"));
-
         }
 
         if (await TableExistsInTestAsync("workspace_file_embeddings_vec"))
         {
-
             Assert.Equal(0, await CountAllAsync("workspace_file_embeddings_vec"));
-
         }
 
         Assert.False(File.Exists(auditPath));
@@ -2847,7 +2804,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.NotEqual(priorOperation.Id, remainingOperation.Id);
 
         Assert.Equal(LongRunningOperationState.Completed, remainingOperation.State);
-
     }
 
     /// <summary>
@@ -2867,7 +2823,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     public async Task ApplyAsync_ResetMemory_Saga_ClearsItsSuppressionsAndTheKeyThatMadeThem()
     {
-
         RequireSqlCipher();
 
         const string retired = "the operator prefers tabs";
@@ -2889,7 +2844,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             await CreateSagaMemoryStore().InsertAsync(
                 Guid.NewGuid().ToString(), retired, DateTimeOffset.UtcNow, sessionId: null,
                 tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
-
     }
 
     /// <summary>
@@ -2904,7 +2858,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     public async Task ApplyAsync_FactoryReset_LeavesNeitherCurationTableBehind()
     {
-
         RequireSqlCipher();
 
         _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
@@ -2925,14 +2878,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAllAsync("saga_retirement_suppressions"));
 
         Assert.Equal(0, await CountAllAsync("saga_suppression_key"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_FactoryReset_ErasesTapestrySummariesOfDeletedCorpora()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
@@ -2976,18 +2927,14 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         if (await TableExistsInTestAsync("tapestry_node_embeddings_vec"))
         {
-
             Assert.Equal(0, await CountAllAsync("tapestry_node_embeddings_vec"));
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_FactoryReset_RollsBackEveryDatabaseDeletionWhenDependencyFails()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -3030,14 +2977,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountAllAsync("session_attachment_chunks"));
 
         Assert.True(File.Exists(attachment.AbsolutePath));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_FactoryReset_WhenManagedFileIdentityChanges_PreservesDatabaseAndBytes()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -3064,18 +3009,14 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         try
         {
-
             FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = path =>
             {
-
                 if (!string.Equals(
                         Path.GetFullPath(path),
                         Path.GetFullPath(attachment.AbsolutePath),
                         StringComparison.Ordinal))
                 {
-
                     return ReadActualNoFollowMetadata(path);
-
                 }
 
                 attachmentReads++;
@@ -3084,13 +3025,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                     ? originalMetadata
                     : originalMetadata with
                     {
-
                         Identity = new FileHandleIdentity(
                             originalMetadata.Identity.VolumeId,
                             originalMetadata.Identity.FileId + 1),
-
                     };
-
             };
 
             Result<DataRetentionApplyResult> result = await service.ApplyAsync(
@@ -3104,22 +3042,17 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.Equal(1, await CountAllAsync("SessionAttachments"));
 
             Assert.True(File.Exists(attachment.AbsolutePath));
-
         }
         finally
         {
-
             FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = previousSeam;
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_FactoryReset_WhenManagedTreeContainsSymlink_FailsClosedWithoutFollowingTarget()
     {
-
         RequireSqlCipher();
 
         Skip.If(OperatingSystem.IsWindows(), "Symbolic-link creation requires platform privileges on Windows.");
@@ -3138,7 +3071,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         try
         {
-
             IDataRetentionService service = CreateService();
 
             await Assert.ThrowsAnyAsync<IOException>(
@@ -3147,15 +3079,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                     CancellationToken.None));
 
             Assert.Equal("preserve me", await File.ReadAllTextAsync(externalPath));
-
         }
         finally
         {
-
             File.Delete(linkPath);
-
         }
-
     }
 
     [SkippableTheory]
@@ -3167,16 +3095,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     public async Task PlanAsync_FactoryReset_WhenManagedRootIsNotOrdinaryDirectory_FailsClosed(
         bool symbolicLink)
     {
-
         RequireSqlCipher();
 
         if (symbolicLink && OperatingSystem.IsWindows())
         {
-
             Skip.If(true, "Symbolic-link creation requires platform privileges on Windows.");
 
             return;
-
         }
 
         Directory.Delete(_attachmentsRoot);
@@ -3187,66 +3112,50 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         if (symbolicLink)
         {
-
             Directory.CreateDirectory(externalDirectory);
 
             Directory.CreateSymbolicLink(_attachmentsRoot, externalDirectory);
-
         }
         else
         {
-
             await File.WriteAllTextAsync(_attachmentsRoot, "wrong kind");
-
         }
 
         try
         {
-
             IDataRetentionService service = CreateService();
 
             await Assert.ThrowsAnyAsync<IOException>(
                 () => service.PlanAsync(
                     new DataRetentionRequest(DataRetentionOperation.FactoryReset),
                     CancellationToken.None));
-
         }
         finally
         {
-
             if (symbolicLink)
             {
-
                 Directory.Delete(_attachmentsRoot);
-
             }
             else
             {
-
                 File.Delete(_attachmentsRoot);
-
             }
 
             Directory.CreateDirectory(_attachmentsRoot);
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_FactoryReset_WhenManagedDirectoryIsInaccessible_FailsClosedAndPreservesData()
     {
-
         RequireSqlCipher();
 
         if (OperatingSystem.IsWindows())
         {
-
             Skip.If(true, "Unix permission behavior is required by this test.");
 
             return;
-
         }
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -3261,7 +3170,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         try
         {
-
             IDataRetentionService service = CreateService();
 
             await Assert.ThrowsAnyAsync<IOException>(
@@ -3272,24 +3180,19 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.Equal(1, await CountAllAsync("Sessions"));
 
             Assert.Equal(1, await CountAllAsync("SessionAttachments"));
-
         }
         finally
         {
-
             File.SetUnixFileMode(attachmentDirectory, originalMode);
-
         }
 
         Assert.True(File.Exists(attachment.AbsolutePath));
-
     }
 
     [SkippableFact]
 
     public async Task PersistAttachment_WhenFactoryResetWinsBeforeRowInsert_DoesNotPublishMissingBytes()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -3308,7 +3211,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         attachments.AfterBytesCommittedBeforeDbForTesting = async cancellationToken =>
         {
-
             (reset, _) = await ReconcileFactoryResetV0Async(
                 retention,
                 "attachment-race-factory-recovery-test");
@@ -3316,7 +3218,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.Equal(1, reset.Completed);
 
             Assert.Equal(0, reset.RequiresAttention);
-
         };
 
         await Assert.ThrowsAnyAsync<IOException>(
@@ -3343,14 +3244,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 _attachmentsRoot,
                 "*",
                 SearchOption.AllDirectories));
-
     }
 
     [SkippableFact]
 
     public async Task PersistAttachment_WhenOwnedBlobIsReplacedBeforeRowInsert_PreservesReplacement()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -3369,7 +3268,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         attachments.AfterBytesCommittedBeforeDbForTesting = async _ =>
         {
-
             attachmentPath = Assert.Single(
                 Directory.EnumerateFiles(
                     _attachmentsRoot,
@@ -3379,7 +3277,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             File.Delete(attachmentPath);
 
             await File.WriteAllBytesAsync(attachmentPath, replacement);
-
         };
 
         await Assert.ThrowsAnyAsync<IOException>(
@@ -3398,14 +3295,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(replacement, await File.ReadAllBytesAsync(attachmentPath));
 
         Assert.Equal(0, await CountAllAsync("SessionAttachments"));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_FactoryReset_WhenPostCommitFinalizationFails_RemainsRecoverableAndRetries()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -3423,10 +3318,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         try
         {
-
             FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = path =>
             {
-
                 string? parentName = Path.GetFileName(Path.GetDirectoryName(path));
 
                 if (string.Equals(
@@ -3438,13 +3331,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                         StringComparison.Ordinal) == true
                     && ++quarantinedFileReads >= 2)
                 {
-
                     return null;
-
                 }
 
                 return ReadActualNoFollowMetadata(path);
-
             };
 
             (firstRecovery, _) = await ReconcileFactoryResetV0Async(
@@ -3454,13 +3344,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.Equal(0, firstRecovery.Completed);
 
             Assert.Equal(1, firstRecovery.RequiresAttention);
-
         }
         finally
         {
-
             FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = previousSeam;
-
         }
 
         Assert.Equal(0, await CountAllAsync("Sessions"));
@@ -3510,7 +3397,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 "*",
                 SearchOption.AllDirectories),
             path => path.Contains(".arcanum-cleanup-", StringComparison.Ordinal));
-
     }
 
     [SkippableTheory]
@@ -3520,7 +3406,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     public async Task Authenticated_factory_guard_refuses_instead_of_claiming_a_failed_settlement(
         string mismatch)
     {
-
         RequireSqlCipher();
 
         DataRetentionFactoryResetRecoveryHandler handler = new(CreateService());
@@ -3556,7 +3441,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
-
     }
 
     [SkippableTheory]
@@ -3565,7 +3449,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     public async Task Authenticated_mutation_guard_refuses_before_coordinator_effects(
         string mismatch)
     {
-
         RequireSqlCipher();
 
         DataRetentionMutationRecoveryHandler handler = new(CreateService());
@@ -3600,14 +3483,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
-
     }
 
     [SkippableFact]
 
     public async Task RecoverFactoryResetAsync_RerunsInterruptedCleanupAndReconcilesOwnMarker()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -3666,7 +3547,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             await operations.GetAsync(operation.Id));
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
-
     }
 
     [SkippableTheory]
@@ -3674,7 +3554,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     [InlineData(true)]
     public async Task FactoryReset_lost_owner_cannot_delete_for_the_new_owner(bool expired)
     {
-
         RequireSqlCipher();
 
         _ = await SeedSessionAsync(pinned: false);
@@ -3710,15 +3589,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         if (expired)
         {
-
             clock.Advance(TimeSpan.FromMinutes(6));
 
             before = (await operations.GetAsync(operation.Id))!;
-
         }
         else
         {
-
             Assert.True(await operations.TryTransitionAsync(
                 stale.Id,
                 stale.Revision,
@@ -3736,7 +3612,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.True(adopted.Acquired);
 
             before = adopted.Operation;
-
         }
 
         LongRunningOperationRecoveryResult result = await CreateService(
@@ -3751,13 +3626,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         // means is that somebody else's name is on the row, which is the arm below.
         if (expired)
         {
-
             Assert.Equal(LongRunningOperationState.Completed, result.State);
-
         }
         else
         {
-
             Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
 
             Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.ErrorCode);
@@ -3772,9 +3644,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             Assert.Equal(before.Revision, after.Revision);
 
             Assert.Equal(before.LeaseExpiresAt, after.LeaseExpiresAt);
-
         }
-
     }
 
     /// <summary>
@@ -3786,7 +3656,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     public async Task PlanAndApplyAsync_Prune_WhenAMemoryIsPinned_LeavesItAndReportsWhatThePinExempted()
     {
-
         RequireSqlCipher();
 
         string pinnedId = await SeedAgedSagaMemoryAsync("pinned, and old");
@@ -3840,7 +3709,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAsync("saga_memories", "Id", prunableId));
 
         Assert.Equal(0, await CountAsync("saga_memory_embeddings", "MemoryId", prunableId));
-
     }
 
     /// <summary>
@@ -3853,7 +3721,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     public async Task ApplyAsync_Prune_WhenAPinLandsAfterTheApplyPlanIsBuilt_PreservesTheMemory()
     {
-
         RequireSqlCipher();
 
         string memoryId = await SeedAgedSagaMemoryAsync("old, pinned between plan and apply");
@@ -3902,7 +3769,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             applied.Value.Conflicts,
             conflict => conflict.Code == ErrorCodes.Data.PlanChanged
                 && conflict.ResourceId == "saga:" + memoryId);
-
     }
 
     /// <summary>
@@ -3910,7 +3776,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     /// </summary>
     private async Task<string> SeedAgedSagaMemoryAsync(string content)
     {
-
         string memoryId = "curation-" + Guid.NewGuid().ToString("N");
 
         await ExecuteAsync(
@@ -3931,7 +3796,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
 
         return memoryId;
-
     }
 
     private DataRetentionService CreateService(
@@ -3941,9 +3805,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         ILongRunningOperationStore? operationStore = null,
         ILogger<DataRetentionService>? logger = null,
         CovenantErasureCoordinator? erasureCoordinator = null,
-        DataRetentionLeaseMaintainer? leaseMaintainer = null)
+        DataRetentionLeaseMaintainer? leaseMaintainer = null,
+        LongRunningOperationOwnership? operationOwnership = null)
     {
-
         ILongRunningOperationStore operations = operationStore
             ?? new LongRunningOperationStore(
                 _db!,
@@ -3961,8 +3825,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             _logsRoot,
             policyStore,
             covenantErasureCoordinator: erasureCoordinator,
-            leaseMaintainer: leaseMaintainer);
-
+            leaseMaintainer: leaseMaintainer,
+            operationOwnership: operationOwnership);
     }
 
     private LexiconService CreateLexiconService(ArcanumDbContext? context = null) =>
@@ -4003,7 +3867,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             DataRetentionService service,
             string workerId)
     {
-
         LongRunningOperationStore operations = new(
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
@@ -4041,7 +3904,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         return (
             summary,
             Assert.IsType<LongRunningOperation>(await operations.GetAsync(operation.Id)));
-
     }
 
     private const string OldTimestamp =
@@ -4056,30 +3918,24 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     private static RetentionRuleSettings EnabledRule(int days = 1) =>
         new()
         {
-
             Enabled = true,
 
             Days = days,
-
         };
 
     private static RetentionRuleSettings DisabledRule() =>
         new()
         {
-
             Enabled = false,
 
             Days = 30,
-
         };
 
     private static ArcanumSettings CreatePruneSettings() =>
         new()
         {
-
             Retention = new RetentionSettings
             {
-
                 AutomaticSweepsEnabled = false,
 
                 ActiveSessions = DisabledRule(),
@@ -4115,15 +3971,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 SanctumBreaches = DisabledRule(),
 
                 DaemonHistory = DisabledRule(),
-
             },
-
         };
 
     private async Task<(ArcanumSettings Settings, string ExpectedCandidate)>
         SeedStarvationScenarioAsync(string scenario)
     {
-
         const string blockedAt = "1999-01-01T00:00:00.0000000+00:00";
 
         const string eligibleAt = "2000-01-01T00:00:00.0000000+00:00";
@@ -4132,10 +3985,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         switch (scenario)
         {
-
             case "session":
             {
-
                 (Guid blockedSessionId, _) = await SeedSessionAsync(pinned: true);
 
                 (Guid eligibleSessionId, _) = await SeedSessionAsync(pinned: false);
@@ -4155,12 +4006,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 return (
                     settings,
                     "session:" + eligibleSessionId.ToString("D"));
-
             }
 
             case "batch":
             {
-
                 Guid blockedFileId = Guid.NewGuid();
 
                 Guid eligibleFileId = Guid.NewGuid();
@@ -4202,12 +4051,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 return (
                     settings,
                     "batch:" + eligibleBatchId.ToString("D"));
-
             }
 
             case "entry":
             {
-
                 (_, Guid blockedEntryId) = await SeedSessionAsync(pinned: true);
 
                 (_, Guid eligibleEntryId) = await SeedSessionAsync(pinned: false);
@@ -4227,12 +4074,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 return (
                     settings,
                     "entry:" + eligibleEntryId.ToString("D"));
-
             }
 
             case "idempotency":
             {
-
                 Guid blockedClaimId = Guid.NewGuid();
 
                 Guid eligibleClaimId = Guid.NewGuid();
@@ -4270,12 +4115,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 return (
                     settings,
                     "idempotency-claim:" + eligibleClaimId.ToString("D"));
-
             }
 
             case "accounting":
             {
-
                 (Guid retainedSessionId, _) = await SeedSessionAsync(pinned: false);
 
                 Guid blockedRunId = Guid.NewGuid();
@@ -4307,7 +4150,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 return (
                     settings,
                     "accounting:" + eligibleRunId.ToString("D"));
-
             }
 
             default:
@@ -4315,15 +4157,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                     nameof(scenario),
                     scenario,
                     "Unknown starvation scenario.");
-
         }
-
     }
 
     private async Task<(Guid SessionId, Guid EntryId)> SeedSessionAsync(
         bool pinned)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Guid entryId = Guid.NewGuid();
@@ -4335,7 +4174,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         _db!.Sessions.Add(
             new Session
             {
-
                 Id = sessionId,
 
                 Status = "archived",
@@ -4343,13 +4181,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 CreatedAt = createdAt,
 
                 UpdatedAt = createdAt,
-
             });
 
         _db.Entries.Add(
             new Entry
             {
-
                 Id = entryId,
 
                 SessionId = sessionId,
@@ -4365,13 +4201,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 Sequence = 1,
 
                 IsPinned = pinned,
-
             });
 
         await _db.SaveChangesAsync();
 
         return (sessionId, entryId);
-
     }
 
     private Task SeedUploadedFileAsync(Guid fileId, long bytes) =>
@@ -4420,7 +4254,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     /// </summary>
     private async Task<Guid[]> SeedEntryEmbeddingBatchAsync(int count)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         DateTimeOffset createdAt = DateTimeOffset.Parse(
@@ -4430,7 +4263,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         _db!.Sessions.Add(
             new Session
             {
-
                 Id = sessionId,
 
                 Status = "archived",
@@ -4438,20 +4270,17 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 CreatedAt = createdAt,
 
                 UpdatedAt = createdAt,
-
             });
 
         Guid[] entryIds = new Guid[count];
 
         for (int index = 0; index < count; index++)
         {
-
             entryIds[index] = Guid.NewGuid();
 
             _db.Entries.Add(
                 new Entry
                 {
-
                     Id = entryIds[index],
 
                     SessionId = sessionId,
@@ -4467,22 +4296,17 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                     Sequence = index + 1,
 
                     IsPinned = false,
-
                 });
-
         }
 
         await _db.SaveChangesAsync();
 
         foreach (Guid entryId in entryIds)
         {
-
             await SeedEntryEmbeddingAsync(entryId);
-
         }
 
         return entryIds;
-
     }
 
     /// <summary>
@@ -4492,7 +4316,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     /// </summary>
     private async Task SeedTapestryGenerationAsync(Guid sessionId)
     {
-
         string generationId = "generation-" + Guid.NewGuid().ToString("N");
 
         string leafNodeId = "leaf-" + Guid.NewGuid().ToString("N");
@@ -4541,7 +4364,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             """,
             ("@nodeId", summaryNodeId),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
-
     }
 
     /// <summary>
@@ -4560,7 +4382,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Guid sessionId,
         Guid entryId)
     {
-
         Guid attachmentId = Guid.NewGuid();
 
         string chunkId = "chunk-" + Guid.NewGuid().ToString("N");
@@ -4639,14 +4460,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             chunkId,
             bytes,
             absolutePath);
-
     }
 
     private async Task SeedSagaAndLexiconProvenanceAsync(
         Guid sessionId,
         Guid attachmentId)
     {
-
         await ExecuteAsync(
             """
             INSERT INTO saga_memories (Id, Content, CreatedAt, SessionId, Tags, Source)
@@ -4697,13 +4516,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             ("@sessionId", sessionId.ToString()),
             ("@attachmentId", Canonical(attachmentId)),
             ("@at", "2000-01-01T00:00:00.0000000+00:00"));
-
     }
 
     private async Task<int> ReadAttachmentAvailabilityAsync(
         string provenanceTable)
     {
-
         SqliteConnection connection =
             (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -4722,12 +4539,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         object? value = await command.ExecuteScalarAsync();
 
         return Convert.ToInt32(value, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<int> CountAllAsync(string table)
     {
-
         SqliteConnection connection =
             (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -4738,12 +4553,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         object? value = await command.ExecuteScalarAsync();
 
         return Convert.ToInt32(value, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<Guid> ReadEntrySessionIdAsync(Guid entryId)
     {
-
         SqliteConnection connection =
             (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -4764,12 +4577,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         return Guid.Parse(
             Convert.ToString(value, CultureInfo.InvariantCulture)!,
             CultureInfo.InvariantCulture);
-
     }
 
     private async Task<bool> TableExistsInTestAsync(string table)
     {
-
         SqliteConnection connection =
             (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -4783,7 +4594,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         object? value = await command.ExecuteScalarAsync();
 
         return Convert.ToInt32(value, CultureInfo.InvariantCulture) != 0;
-
     }
 
     private async Task<int> CountAsync(
@@ -4791,7 +4601,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         string column,
         string value)
     {
-
         SqliteConnection connection =
             (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -4808,14 +4617,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         object? count = await command.ExecuteScalarAsync();
 
         return Convert.ToInt32(count, CultureInfo.InvariantCulture);
-
     }
 
     private async Task ExecuteAsync(
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         SqliteConnection connection =
             (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -4825,13 +4632,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         foreach ((string name, object value) in parameters)
         {
-
             command.Parameters.AddWithValue(name, value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync();
-
     }
 
     /// <summary>
@@ -4848,14 +4652,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         using CovenantSqliteAuthorizationScope retention =
             CovenantSqliteConnectionInitializer.Instance.Authorize(
                 (SqliteConnection)_db!.Database.GetDbConnection(),
                 CovenantSqliteAuthorizationKind.SessionRetention);
 
         await ExecuteAsync(sql, parameters);
-
     }
 
     private static void RequireSqlCipher() =>
@@ -4880,7 +4682,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         RetentionSettings subsequent,
         int initialReads) : IDataRetentionPolicyStore
     {
-
         private int _reads;
 
         public RetentionSettings Current =>
@@ -4892,7 +4693,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             RetentionRuleUpdateRequest request,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("This test policy store is read-only.");
-
     }
 
     /// <summary>
@@ -4904,7 +4704,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     private sealed class HeartbeatCountingOperationStore(ILongRunningOperationStore inner)
         : ILongRunningOperationStore
     {
-
         internal Func<CancellationToken, Task>? AfterStartAsync { get; init; }
 
         private int _heartbeats;
@@ -4918,7 +4717,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             DateTimeOffset leaseExpiresAt,
             CancellationToken cancellationToken = default)
         {
-
             _ = Interlocked.Increment(ref _heartbeats);
 
             return inner.HeartbeatAsync(
@@ -4927,7 +4725,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 utcNow,
                 leaseExpiresAt,
                 cancellationToken);
-
         }
 
         public Task<bool> RenewLeaseAsync(
@@ -4976,10 +4773,20 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             return started;
         }
 
-        public Task<LongRunningOperation?> GetAsync(
+        /// <summary>Runs before every operation read, with the operation being read.</summary>
+        internal Func<Guid, CancellationToken, Task>? BeforeGetAsync { get; init; }
+
+        public async Task<LongRunningOperation?> GetAsync(
             Guid operationId,
-            CancellationToken cancellationToken = default) =>
-            inner.GetAsync(operationId, cancellationToken);
+            CancellationToken cancellationToken = default)
+        {
+            if (BeforeGetAsync is { } observe)
+            {
+                await observe(operationId, cancellationToken);
+            }
+
+            return await inner.GetAsync(operationId, cancellationToken);
+        }
 
         public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
             Guid operationId,
@@ -5078,12 +4885,10 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
             CancellationToken cancellationToken = default) =>
             inner.GetCountsAsync(cancellationToken);
-
     }
 
     private sealed class RetentionTestFileEncryptionKeyProvider : IFileEncryptionKeyProvider
     {
-
         private readonly FileEncryptionKeyMaterial _material =
             FileEncryptionKeyMaterial.Create(
                 Enumerable.Range(0, 32)
@@ -5098,18 +4903,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             string keyId,
             CancellationToken cancellationToken = default)
         {
-
             if (!string.Equals(keyId, _material.KeyId, StringComparison.Ordinal))
             {
-
                 throw new EncryptedBlobKeyException("The test encryption key is unavailable.");
-
             }
 
             return ValueTask.FromResult(_material);
-
         }
-
     }
 
     private sealed record SeededAttachment(
@@ -5117,5 +4917,4 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         string ChunkId,
         byte[] Bytes,
         string AbsolutePath);
-
 }
