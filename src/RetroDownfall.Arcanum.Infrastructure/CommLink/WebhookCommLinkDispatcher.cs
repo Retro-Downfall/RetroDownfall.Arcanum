@@ -45,7 +45,9 @@ internal sealed class WebhookCommLinkDispatcher(
                 new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
         }
 
-        string[] allowedSchemes = commLinkSettings.AllowedSchemes ?? ["https"];
+        // ResolveCommLink always supplies a list and the configuration validator rejects an empty one,
+        // so there is no second default to fall back to here.
+        string[] allowedSchemes = commLinkSettings.AllowedSchemes;
 
         if (commLinkSettings.AllowedHosts.Length > 0 && !IsHostAllowed(endpoint.Host, commLinkSettings.AllowedHosts))
         {
@@ -124,14 +126,32 @@ internal sealed class WebhookCommLinkDispatcher(
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            await HttpResponseBodyDrainer.DrainAsync(response.Content, cancellationToken).ConfigureAwait(false);
+            // The status line is the delivery verdict; capture it before the body is touched so a body
+            // that dies mid-read cannot rewrite it.
+            bool delivered = response.IsSuccessStatusCode;
 
-            if (!response.IsSuccessStatusCode)
+            int statusCode = (int)response.StatusCode;
+
+            try
+            {
+                await HttpResponseBodyDrainer.DrainAsync(response.Content, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                // Draining only lets the connection be reused. Log the type, never the message: a
+                // transport message can name the secret-bearing URL.
+                logger.LogWarning(
+                    "Comm Link webhook response body could not be drained for host {Host} ({FailureType}).",
+                    endpoint.Host,
+                    ex.GetType().Name);
+            }
+
+            if (!delivered)
             {
                 return Result<CommLinkDeliveryResult>.Failure(
                     new Error(
                         "CommLink.WebhookHttpError",
-                        $"Webhook returned HTTP {(int)response.StatusCode}."));
+                        $"Webhook returned HTTP {statusCode}."));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

@@ -266,6 +266,66 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
         Assert.Equal(CommLinkDeliveryStatus.Delivered, result.Value.Status);
     }
 
+    /// <summary>
+    /// The receiver answered 2xx, so the alert was delivered. Draining the response body only exists to
+    /// let the connection be reused; a body that dies mid-read must not turn a delivered alert into a
+    /// failure that a caller may then retry.
+    /// </summary>
+    [Fact]
+    public async Task DispatchAsync_success_status_with_a_body_that_fails_mid_read_is_still_delivered()
+    {
+        RecordingHttpHandler handler = new(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new FailingBodyStream()),
+            }));
+
+        RecordingLogger logger = new();
+
+        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(
+            handler,
+            SettingsWithWebhook(PublicWebhookUrl),
+            logger);
+
+        Result<CommLinkDeliveryResult> result = await dispatcher.DispatchAsync(
+            new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"));
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(CommLinkDeliveryStatus.Delivered, result.Value.Status);
+
+        // The failure type is logged so the oddity is visible; the exception message is not, because
+        // it can carry the secret-bearing URL.
+        Assert.Contains(
+            logger.Messages,
+            static message => message.Contains(nameof(IOException), StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            logger.Messages,
+            static message => message.Contains(PublicWebhookUrl, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DispatchAsync_error_status_with_a_body_that_fails_mid_read_still_reports_the_http_error()
+    {
+        RecordingHttpHandler handler = new(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.BadGateway)
+            {
+                Content = new StreamContent(new FailingBodyStream()),
+            }));
+
+        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(
+            handler,
+            SettingsWithWebhook(PublicWebhookUrl));
+
+        Result<CommLinkDeliveryResult> result = await dispatcher.DispatchAsync(
+            new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("CommLink.WebhookHttpError", result.Error.Code);
+    }
+
     [Fact]
     public async Task DispatchAsync_handler_exception_returns_failure()
     {
@@ -365,6 +425,43 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
             Exception? exception,
             Func<TState, Exception?, string> formatter) =>
             Messages.Add(formatter(state, exception));
+    }
+
+    private sealed class FailingBodyStream : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException($"connection reset while reading {PublicWebhookUrl}");
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(
+                new IOException($"connection reset while reading {PublicWebhookUrl}"));
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class ThrowOnReadStream : Stream
