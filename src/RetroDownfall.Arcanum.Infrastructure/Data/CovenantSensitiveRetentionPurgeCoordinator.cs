@@ -33,7 +33,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// authorization on its own live transaction.</para>
 ///
 /// <para>Labelled targets are dispatched one at a time, database-owned ones first and managed files
-/// after, and each is classified from its own erasure progress rather than from a page total.
+/// after, and each is classified from its own erasure progress rather than from a page total. A target
+/// whose executor neither arm dispatches is walked last and blocked as an integrity failure, never left
+/// unlabelled for the caller's ordinary delete.
 /// <see cref="CovenantSensitivePurgeDisposition.Purged"/> means the kernel erased that item and nothing
 /// else does. Once an item is blocked, every later item is recorded blocked with the same blocker and
 /// is never dispatched. An item the kernel examined but did not erase has its label read again while
@@ -55,6 +57,13 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     ICovenantManagedFileErasureKernel managedFiles,
     CovenantSensitivePurgeAuthorityScope authorityScope) : ICovenantSensitiveArtifactPurger
 {
+
+    /// <summary>
+    /// Replaces the policy's executor for a kind, if set, so a test can reach an executor the policy does
+    /// not define: the one way to show that a labelled target nothing can delete is blocked rather than
+    /// left for the caller's ordinary delete.
+    /// </summary>
+    internal Func<SensitiveArtifactKind, CovenantArtifactPurgeExecutor>? ExecutorForTesting { get; init; }
 
     public async ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
         IReadOnlyList<CovenantSensitivePurgeTarget> targets,
@@ -302,15 +311,22 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
         CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
 
-        List<LabeledTarget> databaseOwned = [.. labeled.Where(static candidate =>
-            ExecutorOf(candidate) == CovenantArtifactPurgeExecutor.DatabaseTransaction)];
-
-        List<LabeledTarget> managed = [.. labeled.Where(static candidate =>
-            ExecutorOf(candidate) == CovenantArtifactPurgeExecutor.ManagedFileKernel)];
+        // Database-owned items first, then managed files, then anything whose executor is neither. Every
+        // labelled target is in the one walk, so none can fall between two filtered lists and keep the
+        // disposition it was given up front, which would send it to the caller's ordinary delete.
+        List<LabeledTarget> ordered =
+        [
+            .. labeled.OrderBy(candidate => ExecutorOf(candidate) switch
+            {
+                CovenantArtifactPurgeExecutor.DatabaseTransaction => 0,
+                CovenantArtifactPurgeExecutor.ManagedFileKernel => 1,
+                _ => 2,
+            }),
+        ];
 
         CovenantErasureBlocker? stoppedBy = null;
 
-        foreach (LabeledTarget candidate in databaseOwned.Concat(managed))
+        foreach (LabeledTarget candidate in ordered)
         {
 
             if (stoppedBy is { } blocker)
@@ -322,10 +338,17 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
 
             }
 
-            Result<CovenantArtifactErasureProgress> step =
-                ExecutorOf(candidate) == CovenantArtifactPurgeExecutor.DatabaseTransaction
-                    ? await ErasePageAsync([candidate], authority, cancellationToken).ConfigureAwait(false)
-                    : await EraseManagedFileAsync(candidate, authority, cancellationToken).ConfigureAwait(false);
+            // An executor this coordinator does not dispatch is blocked as an integrity failure: nothing here
+            // can delete the artifact, and answering "unlabelled" would hand it to a raw delete.
+            Result<CovenantArtifactErasureProgress> step = ExecutorOf(candidate) switch
+            {
+                CovenantArtifactPurgeExecutor.DatabaseTransaction =>
+                    await ErasePageAsync([candidate], authority, cancellationToken).ConfigureAwait(false),
+                CovenantArtifactPurgeExecutor.ManagedFileKernel =>
+                    await EraseManagedFileAsync(candidate, authority, cancellationToken).ConfigureAwait(false),
+                _ => Result<CovenantArtifactErasureProgress>.Success(
+                    new CovenantArtifactErasureProgress(1, 0, 1, CovenantErasureBlocker.IntegrityFailure)),
+            };
 
             if (step.IsFailure)
             {
@@ -531,8 +554,10 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
             disposition,
             blocker);
 
-    private static CovenantArtifactPurgeExecutor ExecutorOf(LabeledTarget candidate) =>
-        CovenantSensitiveArtifactPurgePolicy.Resolve(candidate.Target.Kind).Value.Executor;
+    private CovenantArtifactPurgeExecutor ExecutorOf(LabeledTarget candidate) =>
+        ExecutorForTesting is { } resolve
+            ? resolve(candidate.Target.Kind)
+            : CovenantSensitiveArtifactPurgePolicy.Resolve(candidate.Target.Kind).Value.Executor;
 
     private static CovenantSensitivePurgeOutcome Unlabeled(
         IReadOnlyList<CovenantSensitivePurgeTarget> targets) =>

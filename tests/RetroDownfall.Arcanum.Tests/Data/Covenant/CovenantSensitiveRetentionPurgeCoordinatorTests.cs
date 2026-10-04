@@ -217,6 +217,175 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
         Assert.Equal(2, ledger.ReadsOf(A));
     }
 
+    /// <summary>
+    /// The write lease is still held when an item the kernel examined but did not erase has its label
+    /// read again, so no other writer can move the label between that read and the answer.
+    /// </summary>
+    /// <remarks>
+    /// The re-read checks the authority the coordinator built over its lease: a lease that had already
+    /// been released answers stale, so a classification moved after the lease is disposed fails here.
+    /// </remarks>
+    [Fact]
+    public async Task The_write_lease_is_still_held_while_a_moved_label_is_read_again()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ScriptedErasureKernel kernel = new();
+
+        Result? leaseAtReread = null;
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())), LabelRead.None);
+
+        ledger.AtRead = async (artifactId, read) =>
+        {
+            if (read == 2)
+            {
+                leaseAtReread = await kernel.LastAuthority!.RevalidateAsync(CancellationToken.None);
+            }
+        };
+
+        kernel.Script(A, ExaminedNotErased);
+
+        _ = Succeeded(await PurgeAsync(ledger, kernel, A));
+
+        Assert.NotNull(leaseAtReread);
+
+        Assert.True(leaseAtReread!.IsSuccess, "The lease was already released when the label was read again.");
+
+        Assert.Equal(2, ledger.ReadsOf(A));
+    }
+
+    /// <summary>
+    /// An item that was examined and found unlabelled on the re-read is the caller's to delete, and it does
+    /// not stop the walk: the item after it is still dispatched and purged.
+    /// </summary>
+    /// <remarks>
+    /// Only a blocked item stops the walk. A walk that stopped on anything short of purged would record B
+    /// blocked with no blocker, which a route turns into a manual-erasure refusal for an item nothing
+    /// blocked.
+    /// </remarks>
+    [Fact]
+    public async Task An_item_reread_as_unlabeled_does_not_stop_the_walk()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())), LabelRead.None);
+
+        ledger.Script(B, LabelRead.Of(Label(B, Guid.NewGuid())));
+
+        ScriptedErasureKernel kernel = new();
+
+        kernel.Script(A, ExaminedNotErased);
+
+        kernel.Script(B, Erased);
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeAsync(ledger, kernel, A, B));
+
+        Assert.Equal(
+            [CovenantSensitivePurgeDisposition.Unlabeled, CovenantSensitivePurgeDisposition.Purged],
+            [.. new[] { A, B }.Select(id => outcome.Results.Single(result => result.ArtifactId == id).Disposition)]);
+
+        Assert.True(outcome.RequiresOrdinaryDelete(A));
+
+        Assert.True(outcome.WasPurged(B));
+
+        Assert.False(outcome.IsBlocked);
+
+        Assert.Equal([[A], [B]], kernel.Pages);
+    }
+
+    /// <summary>
+    /// A managed file after a blocked database item is recorded blocked with that blocker and never
+    /// dispatched: nothing reads the managed-file inventory and the managed-file kernel is never called.
+    /// </summary>
+    /// <remarks>
+    /// Database-owned items are walked first whatever order the caller named them in, so the file is
+    /// named first here. The connection source and the managed-file kernel both throw if they are
+    /// reached, so a dispatch fails the test rather than being recorded.
+    /// </remarks>
+    [Fact]
+    public async Task A_managed_file_after_a_database_block_is_blocked_without_being_dispatched()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())));
+
+        ledger.Script(
+            B,
+            LabelRead.Of(CovenantErasureAuthorityFixture.Label(B, Guid.NewGuid(), SensitiveArtifactKind.ManagedWorkspaceFile)));
+
+        ScriptedErasureKernel kernel = new();
+
+        kernel.Script(A, new CovenantArtifactErasureProgress(1, 0, 0, CovenantErasureBlocker.ManualOwnershipMismatch));
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeTargetsAsync(
+            ledger,
+            kernel,
+            new CovenantSensitivePurgeTarget(SensitiveArtifactKind.ManagedWorkspaceFile, B),
+            new CovenantSensitivePurgeTarget(SensitiveArtifactKind.Saga, A)));
+
+        Assert.All(
+            outcome.Results,
+            static result =>
+            {
+                Assert.Equal(CovenantSensitivePurgeDisposition.Blocked, result.Disposition);
+
+                Assert.Equal(CovenantErasureBlocker.ManualOwnershipMismatch, result.Blocker);
+            });
+
+        Assert.Equal(2, outcome.Results.Count);
+
+        Assert.Equal([[A]], kernel.Pages);
+
+        // The file was resolved once and never read again.
+        Assert.Equal(1, ledger.ReadsOf(B));
+    }
+
+    /// <summary>
+    /// A labelled target whose executor is neither of the two the coordinator dispatches is blocked as an
+    /// integrity failure, never left unlabelled for the caller's ordinary delete.
+    /// </summary>
+    /// <remarks>
+    /// The policy defines two executors, so the third is reached through the coordinator's test seam. The
+    /// target that can be deleted is still dispatched first, and nothing reaches the managed-file kernel.
+    /// </remarks>
+    [Fact]
+    public async Task A_labelled_target_no_executor_can_delete_is_blocked_not_left_for_the_ordinary_delete()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())));
+
+        ledger.Script(B, LabelRead.Of(CovenantErasureAuthorityFixture.Label(B, Guid.NewGuid(), SensitiveArtifactKind.Embedding)));
+
+        ScriptedErasureKernel kernel = new();
+
+        kernel.Script(A, Erased);
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeTargetsAsync(
+            ledger,
+            kernel,
+            kind => kind is SensitiveArtifactKind.Embedding
+                ? (CovenantArtifactPurgeExecutor)byte.MaxValue
+                : CovenantSensitiveArtifactPurgePolicy.Resolve(kind).Value.Executor,
+            new CovenantSensitivePurgeTarget(SensitiveArtifactKind.Embedding, B),
+            new CovenantSensitivePurgeTarget(SensitiveArtifactKind.Saga, A)));
+
+        Assert.True(outcome.WasPurged(A));
+
+        CovenantSensitivePurgeResult unrecognized = outcome.Results.Single(result => result.ArtifactId == B);
+
+        Assert.Equal(CovenantSensitivePurgeDisposition.Blocked, unrecognized.Disposition);
+
+        Assert.Equal(CovenantErasureBlocker.IntegrityFailure, unrecognized.Blocker);
+
+        Assert.False(outcome.RequiresOrdinaryDelete(B));
+
+        Assert.True(outcome.IsBlocked);
+
+        Assert.Equal([[A]], kernel.Pages);
+    }
+
     private static ArtifactSensitivityLabel Label(Guid artifactId, Guid labelId) =>
         CovenantErasureAuthorityFixture.Label(artifactId, labelId, SensitiveArtifactKind.Saga);
 
@@ -231,10 +400,30 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
     /// One purge of Saga targets through a coordinator built from the real gate, a Global write lease,
     /// and operator authority published for a retention purge.
     /// </summary>
-    private static async Task<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
+    private static Task<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
         ScriptedLabelLedger ledger,
         ScriptedErasureKernel kernel,
-        params Guid[] targets)
+        params Guid[] targets) =>
+        PurgeTargetsAsync(
+            ledger,
+            kernel,
+            [.. targets.Select(static id => new CovenantSensitivePurgeTarget(SensitiveArtifactKind.Saga, id))]);
+
+    /// <summary>
+    /// One purge of exactly these targets, through a coordinator built from the real gate, a Global write
+    /// lease, and operator authority published for a retention purge.
+    /// </summary>
+    private static Task<Result<CovenantSensitivePurgeOutcome>> PurgeTargetsAsync(
+        ScriptedLabelLedger ledger,
+        ScriptedErasureKernel kernel,
+        params CovenantSensitivePurgeTarget[] targets) =>
+        PurgeTargetsAsync(ledger, kernel, executorOf: null, targets);
+
+    private static async Task<Result<CovenantSensitivePurgeOutcome>> PurgeTargetsAsync(
+        ScriptedLabelLedger ledger,
+        ScriptedErasureKernel kernel,
+        Func<SensitiveArtifactKind, CovenantArtifactPurgeExecutor>? executorOf,
+        params CovenantSensitivePurgeTarget[] targets)
     {
         FakeCovenantAvailability availability = new();
 
@@ -255,11 +444,12 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
             availability,
             kernel,
             new UnreachableManagedFileKernel(),
-            scope);
+            scope)
+        {
+            ExecutorForTesting = executorOf,
+        };
 
-        return await coordinator.PurgeAsync(
-            [.. targets.Select(static id => new CovenantSensitivePurgeTarget(SensitiveArtifactKind.Saga, id))],
-            CancellationToken.None);
+        return await coordinator.PurgeAsync(targets, CancellationToken.None);
     }
 
     /// <summary>One scripted answer to a label read.</summary>
@@ -285,16 +475,24 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
 
         private readonly Dictionary<Guid, int> _reads = [];
 
+        /// <summary>Runs on every read, before it is answered, with the artifact and which read this is.</summary>
+        internal Func<Guid, int, Task>? AtRead { get; set; }
+
         internal void Script(Guid artifactId, params LabelRead[] answers) => _answers[artifactId] = new(answers);
 
         internal int ReadsOf(Guid artifactId) => _reads.GetValueOrDefault(artifactId);
 
-        public Task<Result<ArtifactSensitivityLabel?>> TryReadLabelAsync(
+        public async Task<Result<ArtifactSensitivityLabel?>> TryReadLabelAsync(
             SensitiveArtifactKind artifactKind,
             Guid artifactId,
             CancellationToken cancellationToken)
         {
             _reads[artifactId] = ReadsOf(artifactId) + 1;
+
+            if (AtRead is { } observe)
+            {
+                await observe(artifactId, ReadsOf(artifactId));
+            }
 
             if (!_answers.TryGetValue(artifactId, out Queue<LabelRead>? answers) || answers.Count == 0)
             {
@@ -304,8 +502,8 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
             LabelRead answer = answers.Dequeue();
 
             return answer.Fails
-                ? Task.FromException<Result<ArtifactSensitivityLabel?>>(new SqliteException("disk I/O error", 10))
-                : Task.FromResult(Result<ArtifactSensitivityLabel?>.Success(answer.Label));
+                ? throw new SqliteException("disk I/O error", 10)
+                : Result<ArtifactSensitivityLabel?>.Success(answer.Label);
         }
 
         public Task<Result<LabeledArtifactWriteReceipt>> LabelAsync(
@@ -335,6 +533,9 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
 
         internal IReadOnlyList<Guid[]> Pages => _pages;
 
+        /// <summary>The authority the coordinator handed the most recent page.</summary>
+        internal CovenantArtifactErasureAuthority? LastAuthority { get; private set; }
+
         internal void Script(Guid artifactId, CovenantArtifactErasureProgress progress) => _answers[artifactId] = progress;
 
         public ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageAsync(
@@ -343,6 +544,8 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
             CancellationToken cancellationToken = default)
         {
             _pages.Add([.. page.Items.Select(static item => item.ArtifactId)]);
+
+            LastAuthority = authority;
 
             CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
 
