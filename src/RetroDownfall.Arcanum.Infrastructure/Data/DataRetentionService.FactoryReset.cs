@@ -428,7 +428,7 @@ internal sealed partial class DataRetentionService
                 {
                     if (await daemonExecutions.TryDeleteTerminalAsync(
                             execution.Id,
-                            cancellationToken).ConfigureAwait(false))
+                            CancellationToken.None).ConfigureAwait(false))
                     {
                         physicalDeleted++;
                     }
@@ -445,7 +445,7 @@ internal sealed partial class DataRetentionService
 
             bool reconciled = await ReconcileFactoryResetAsync(
                 operationId,
-                cancellationToken).ConfigureAwait(false);
+                CancellationToken.None).ConfigureAwait(false);
 
             if (!reconciled)
             {

@@ -1551,9 +1551,13 @@ internal sealed partial class DataRetentionService(
                     "Post-delete reconciliation found retained owned data for the retention mutation.");
             }
 
+            // Past the point of no return: the mutation has committed, so the bookkeeping that records it
+            // runs on CancellationToken.None, as the arms' own post-commit reconciliation reads do. A cancel
+            // landing here would otherwise report a committed deletion as cancelled and leave its row for
+            // recovery to rediscover.
             LongRunningOperation latest = await operations.GetAsync(
                 operation.Id,
-                cancellationToken).ConfigureAwait(false)
+                CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
             bool completed = await operations.TryTransitionAsync(
@@ -1562,7 +1566,7 @@ internal sealed partial class DataRetentionService(
                 ownerId,
                 LongRunningOperationState.Completed,
                 timeProvider.GetUtcNow(),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
             if (!completed)
             {
@@ -3154,47 +3158,47 @@ internal sealed partial class DataRetentionService(
         reconciled &= await CountTableAsync(
             "Sessions",
             "lower(replace(Id, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "Entries",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "SessionAttachments",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "session_attachment_chunks",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "SessionContextPins",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountEntryFtsRowsAsync(
             snapshot.EntryRowIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "attachment_memory_consultations",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "saga_extraction_watermarks",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         string[] normalizedEntryIds =
@@ -3204,20 +3208,20 @@ internal sealed partial class DataRetentionService(
             "entry_embeddings",
             "lower(replace(EntryId, '-', ''))",
             normalizedEntryIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         reconciled &= await CountIdSetAsync(
             "entry_embeddings_vec",
             "lower(replace(EntryId, '-', ''))",
             normalizedEntryIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         foreach (AttachmentPlanSnapshot attachment in snapshot.Attachments)
         {
             reconciled &= await CountTableAsync(
                 "session_attachment_index_state",
                 "lower(replace(AttachmentId, '-', '')) = @id",
-                cancellationToken,
+                CancellationToken.None,
                 ("@id", attachment.Id.ToString("N"))).ConfigureAwait(false) == 0;
         }
 
@@ -3228,13 +3232,13 @@ internal sealed partial class DataRetentionService(
             "session_attachment_embeddings",
             "ChunkId",
             snapshotChunkIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         reconciled &= await CountIdSetAsync(
             "session_attachment_embeddings_vec",
             "ChunkId",
             snapshotChunkIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         return new DataRetentionApplyResult(
             operationId,
@@ -3427,32 +3431,32 @@ internal sealed partial class DataRetentionService(
         reconciled &= await CountTableAsync(
             "SessionAttachments",
             "lower(replace(Id, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "session_attachment_chunks",
             "lower(replace(AttachmentId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "session_attachment_index_state",
             "lower(replace(AttachmentId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountIdSetAsync(
             "session_attachment_embeddings",
             "ChunkId",
             snapshot.ChunkIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         reconciled &= await CountIdSetAsync(
             "session_attachment_embeddings_vec",
             "ChunkId",
             snapshot.ChunkIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         return new DataRetentionApplyResult(
             operationId,
@@ -3593,7 +3597,7 @@ internal sealed partial class DataRetentionService(
             reconciled &= await CountTableAsync(
                 selection.Table,
                 selection.Predicate,
-                cancellationToken,
+                CancellationToken.None,
                 selection.Parameters).ConfigureAwait(false) == 0;
         }
 

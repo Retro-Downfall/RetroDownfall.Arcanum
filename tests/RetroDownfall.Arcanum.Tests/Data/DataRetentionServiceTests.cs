@@ -801,6 +801,96 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A cancellation that lands the instant the delete commits does not strand the operation: the
+    /// post-commit reconciliation and the Completed transition still run, and the caller is handed the
+    /// committed result.
+    /// </summary>
+    /// <remarks>
+    /// The token is cancelled from SQLite's commit hook, armed by a trigger on the deleted table, so it
+    /// is cancelled after the commit check and before any post-commit statement. On the caller's token
+    /// the first reconciliation read threw and a reset that had already removed the memories reported
+    /// itself cancelled.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Cancelling_after_commit_still_completes_the_operation_and_returns_the_result()
+    {
+        RequireSqlCipher();
+
+        string memoryId = await SeedAgedSagaMemoryAsync("committed before the cancel");
+
+        using CancellationTokenSource cancellation = new();
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        bool armed = false;
+
+        connection.CreateFunction(
+            "arm_cancel_at_commit",
+            () =>
+            {
+                armed = true;
+
+                return 1L;
+            });
+
+        await ExecuteAsync(
+            """
+            CREATE TEMP TRIGGER arm_cancel_after_saga_delete
+            AFTER DELETE ON saga_memories
+            BEGIN
+                SELECT arm_cancel_at_commit();
+            END;
+            """);
+
+        SQLitePCL.raw.sqlite3_commit_hook(
+            connection.Handle,
+            _ =>
+            {
+                if (armed)
+                {
+                    cancellation.Cancel();
+                }
+
+                return 0;
+            },
+            null);
+
+        LongRunningOperationStore operations = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        IDataRetentionService service = CreateService(operationStore: operations);
+
+        DataRetentionRequest request = new(DataRetentionOperation.ResetMemory, MemoryScope: MemoryResetScope.Saga);
+
+        DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result;
+
+        try
+        {
+            result = await service.ApplyAsync(new DataRetentionApplyRequest(request, plan.PlanId), cancellation.Token);
+        }
+        finally
+        {
+            SQLitePCL.raw.sqlite3_commit_hook(connection.Handle, null, null);
+
+            await ExecuteAsync("DROP TRIGGER arm_cancel_after_saga_delete;");
+        }
+
+        Assert.True(cancellation.IsCancellationRequested, "The commit hook never fired.");
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : string.Empty);
+
+        Assert.True(result.Value.Reconciled);
+
+        Assert.Equal(0, await CountAsync("saga_memories", "Id", memoryId));
+
+        LongRunningOperation operation = Assert.IsType<LongRunningOperation>(
+            await operations.GetAsync(result.Value.OperationId));
+
+        Assert.Equal(LongRunningOperationState.Completed, operation.State);
+    }
+
+    /// <summary>
     /// A request-driven retention mutation that outlives its five-minute lease is not adopted by generic
     /// reconciliation while this process is still running it.
     /// </summary>
