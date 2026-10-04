@@ -410,24 +410,15 @@ public sealed class MemoryErasureAdministrationCommandTests
     [InlineData("release-covenant")]
     [InlineData("release-saga")]
     [InlineData("reset-key")]
-    public async Task Decline_writes_one_cancellation_document_and_exits_zero(string verb)
+    public async Task Decline_exits_zero_and_applies_nothing(string verb)
     {
         using ContentFile file = new(SagaContent);
 
         AdministrationHandler handler = new();
 
-        CliTestResult result = await RunAsync(handler, [.. VerbArgs(verb, file.Path), "--json"], new RecordingPrompt(handler, answer: false));
+        CliTestResult result = await RunAsync(handler, VerbArgs(verb, file.Path), new RecordingPrompt(handler, answer: false));
 
         Assert.Equal(0, result.ExitCode);
-
-        MemoryErasureCancellationPayload payload =
-            JsonSerializer.Deserialize(result.Output, CliJsonContext.Default.MemoryErasureCancellationPayload)!;
-
-        bool release = verb.StartsWith("release", StringComparison.Ordinal);
-
-        Assert.Equal(
-            (release ? "release" : "reset-key", release ? StoreOf(verb["release-".Length..]) : (MemoryReviewStore?)null, (Guid?)null, true),
-            (payload.Operation, payload.Store, payload.MutationId, payload.Cancelled));
 
         Assert.Contains("prompt", handler.Events);
 

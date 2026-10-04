@@ -1148,13 +1148,6 @@ public sealed class CovenantCommands(
         {
             dispatcher.WriteDiagnostic($"{MemoryReviewStore.Covenant} erasure cancelled.");
 
-            if (invocationContext.Options.Json)
-            {
-                dispatcher.WriteJson(
-                    new MemoryErasureCancellationPayload("erase", MemoryReviewStore.Covenant, mutationId, Cancelled: true),
-                    CliJsonContext.Default.MemoryErasureCancellationPayload);
-            }
-
             return (int)CliExitCode.Success;
         }
 
@@ -1256,13 +1249,6 @@ public sealed class CovenantCommands(
                 .ConfigureAwait(false))
         {
             dispatcher.WriteDiagnostic($"{MemoryReviewStore.Covenant} release cancelled; nothing was released.");
-
-            if (invocationContext.Options.Json)
-            {
-                dispatcher.WriteJson(
-                    new MemoryErasureCancellationPayload("release", MemoryReviewStore.Covenant, MutationId: null, Cancelled: true),
-                    CliJsonContext.Default.MemoryErasureCancellationPayload);
-            }
 
             return (int)CliExitCode.Success;
         }

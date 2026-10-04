@@ -259,17 +259,6 @@ public sealed partial class MemoryCommands
         {
             dispatcher.WriteDiagnostic($"{prepared.Value.Store} bulk review cancelled; nothing was applied.");
 
-            if (CliInvocationContext.Current.Json)
-            {
-                dispatcher.WriteJson(
-                    new MemoryReviewCancellationPayload(
-                        prepared.Value.Store,
-                        prepared.Value.RequestId,
-                        prepared.Value.Action,
-                        Cancelled: true),
-                    CliJsonContext.Default.MemoryReviewCancellationPayload);
-            }
-
             return (int)CliExitCode.Success;
         }
 
