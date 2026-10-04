@@ -23,7 +23,6 @@ internal sealed class ChannelClientTransport(
     int maxJsonRpcLineBytes,
     string? ambientConnectionKey = null) : IClientTransport
 {
-
     private readonly string _ambientConnectionKey = string.IsNullOrWhiteSpace(ambientConnectionKey)
         ? Guid.NewGuid().ToString("N")
         : ambientConnectionKey;
@@ -105,19 +104,21 @@ internal sealed class ChannelClientTransport(
 
             try
             {
+                // The server measures the whole line it reads, delimiter included, so the cap applies to
+                // the line as written: a payload of exactly the cap would arrive one byte over it and be
+                // dropped server-side, stranding the call until its own timeout.
+                string line = JsonSerializer.Serialize(message, JsonRpcMessageTypeInfo) + "\n";
 
-                string json = JsonSerializer.Serialize(message, JsonRpcMessageTypeInfo);
-
-                if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(json, _maxJsonRpcLineBytes))
+                if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line, _maxJsonRpcLineBytes))
                 {
-                    throw new McpLineSizeExceededException(_maxJsonRpcLineBytes, Encoding.UTF8.GetByteCount(json));
+                    throw new McpLineSizeExceededException(_maxJsonRpcLineBytes, Encoding.UTF8.GetByteCount(line));
                 }
 
                 await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
                 try
                 {
-                    await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+                    await _toServer.WriteAsync(line, cancellationToken).ConfigureAwait(false);
                     SessionAttachmentAmbientSend
                         .MarkSdkToolsCallDispatched(
                             _ambientConnectionKey,
@@ -130,7 +131,6 @@ internal sealed class ChannelClientTransport(
             }
             catch
             {
-
                 SessionAttachmentAmbientSend.UnbindFailedSdkToolsCall(
                     _ambientConnectionKey,
                     message);

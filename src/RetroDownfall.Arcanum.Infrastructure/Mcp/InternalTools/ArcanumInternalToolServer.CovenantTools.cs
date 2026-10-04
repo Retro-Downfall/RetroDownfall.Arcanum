@@ -32,14 +32,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </remarks>
 internal sealed partial class ArcanumInternalToolServer
 {
-
     internal const string CovenantMutationStagedStatus = "staged";
 
     internal const string CovenantMutationFailedStatus = "failed";
 
     private bool CovenantToolsAvailable()
     {
-
         if (_covenantCapabilities is null || _covenantAvailability is null)
         {
             return false;
@@ -48,14 +46,12 @@ internal sealed partial class ArcanumInternalToolServer
         CovenantAvailabilitySnapshot snapshot = _covenantAvailability.Current;
 
         return snapshot.FeatureEnabled && snapshot.Canonical == CovenantCapabilityState.Healthy;
-
     }
 
     private async Task<McpToolsCallResultWire> ExecuteProposeCovenantAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         if (!TryBeginCovenantCall(
                 CovenantToolNames.ProposeCovenant,
                 arguments,
@@ -163,14 +159,12 @@ internal sealed partial class ArcanumInternalToolServer
 
             return CovenantFailure(ErrorCodes.Covenant.MaintenanceFailed, "An internal error occurred during tool execution.");
         }
-
     }
 
     private Task<McpToolsCallResultWire> ExecuteRetireCovenantAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!TryBeginCovenantCall(
@@ -256,7 +250,6 @@ internal sealed partial class ArcanumInternalToolServer
         return Task.FromResult(intent.IsFailure
             ? CovenantFailure(intent.Error)
             : StageCovenantMutation(capability, grant.Nonce, intent.Value, toolInputDigest));
-
     }
 
     /// <summary>
@@ -270,7 +263,6 @@ internal sealed partial class ArcanumInternalToolServer
         out CovenantDigest toolInputDigest,
         out McpToolsCallResultWire? refusal)
     {
-
         grant = null;
 
         toolInputDigest = default;
@@ -320,7 +312,6 @@ internal sealed partial class ArcanumInternalToolServer
         refusal = null;
 
         return true;
-
     }
 
     /// <summary>The lane revision and key epoch a staged proposal will compare and swap against.</summary>
@@ -346,7 +337,6 @@ internal sealed partial class ArcanumInternalToolServer
         string normalizedKey,
         CancellationToken cancellationToken)
     {
-
         // The revision this turn rendered, when the key is one the turn's own plan carried. The agent
         // is revising what it was shown, so a head that moved since must fail the compare rather than
         // be overwritten from under whoever moved it.
@@ -354,18 +344,14 @@ internal sealed partial class ArcanumInternalToolServer
 
         foreach (CovenantPlanCandidateDecision decision in capability.ProducingAdmission.Plan.Decisions)
         {
-
             if (decision.Candidate.Scope == CovenantScope.Campaign
                 && decision.Candidate.Lane == CovenantLane.Proposed
                 && string.Equals(decision.Candidate.NormalizedKey.Value, normalizedKey, StringComparison.Ordinal))
             {
-
                 renderedRevision = checked((long)decision.Candidate.Revision);
 
                 break;
-
             }
-
         }
 
         // Probed even when the plan already named the key, because the plan does not carry a key
@@ -409,7 +395,6 @@ internal sealed partial class ArcanumInternalToolServer
                 ErrorCodes.Covenant.LifecycleConflict,
                 "That key was retired. Ask the operator to reinstate it rather than proposing it again.")),
         };
-
     }
 
     /// <summary>
@@ -454,7 +439,6 @@ internal sealed partial class ArcanumInternalToolServer
         CovenantMutationIntent intent,
         CancellationToken cancellationToken)
     {
-
         Result<ICovenantMutationCollector> collector = capability.ResolveCollector(nonce);
 
         if (collector.IsFailure)
@@ -486,19 +470,14 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (scopeRefusal is { } scopeExceeded)
         {
-
             return Refused(scopeExceeded);
-
         }
 
         foreach (CovenantSectionDemand section in CovenantSectionCapacity.Demands(batch))
         {
-
             if (section.Lane != intent.Target.Lane)
             {
-
                 continue;
-
             }
 
             Result<CovenantSectionOccupancy> retained = await capability
@@ -517,15 +496,11 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (refusal is { } exceeded)
             {
-
                 return Refused(exceeded);
-
             }
-
         }
 
         return null;
-
     }
 
     /// <summary>
@@ -551,7 +526,6 @@ internal sealed partial class ArcanumInternalToolServer
         CovenantMutationIntent intent,
         CovenantDigest toolInputDigest)
     {
-
         // Last recheck. Everything above this line is pure, and everything below it is visible to the
         // turn that publishes.
         Result live = capability.RecheckBeforeIrreversibleEffect(nonce);
@@ -579,14 +553,12 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         return CovenantStaged(staged.Value, intent);
-
     }
 
     private McpToolsCallResultWire CovenantStaged(
         CovenantStagedMutationReceipt receipt,
         CovenantMutationIntent intent)
     {
-
         CovenantMutationStagedResultWire wire = new(
             CovenantMutationStagedStatus,
             receipt.MutationId.ToString("D"),
@@ -598,15 +570,15 @@ internal sealed partial class ArcanumInternalToolServer
             receipt.RenderedHash?.ToString(),
             intent.Artifact?.CompiledByteCost);
 
-        // The receipt says what actually happens, and what has not happened yet. A proposal becomes
-        // durable with this turn's answer and not a moment sooner, so a model told plainly that the
-        // write is still pending cannot report a stored preference for a turn that never finished.
+        // The receipt says what actually happens, and what has not happened yet. A proposal and a
+        // retirement both become durable with this turn's answer and not a moment sooner, so a model
+        // told plainly that the write is still pending cannot report a stored preference, or a retired
+        // one, for a turn that never finished.
         string text = intent.Operation == CovenantOperation.Set
             ? "Proposal staged. It is stored for the operator's review when this turn's reply is saved, and dropped with the turn if the reply never is. It waits in the Proposed lane and does not take effect until they confirm it, so describe it to them as suggested rather than as applied."
-            : "Retirement staged for this turn only. This build has no path that applies it, so the standing preference is unchanged when the turn ends.";
+            : "Retirement staged. It is applied when this turn's reply is saved, and dropped with the turn if the reply never is, so the standing preference is unchanged until then.";
 
         return CovenantResult(text, wire, _json.CovenantMutationStagedResultWire, isError: false);
-
     }
 
     private McpToolsCallResultWire CovenantFailure(Error error) =>
@@ -614,11 +586,9 @@ internal sealed partial class ArcanumInternalToolServer
 
     private McpToolsCallResultWire CovenantFailure(string code, string message)
     {
-
         CovenantMutationFailureResultWire wire = new(CovenantMutationFailedStatus, code, message);
 
         return CovenantResult(message, wire, _json.CovenantMutationFailureResultWire, isError: true);
-
     }
 
     private McpToolsCallResultWire CovenantResult<T>(
@@ -640,5 +610,4 @@ internal sealed partial class ArcanumInternalToolServer
         arguments.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
             ? []
             : Encoding.UTF8.GetBytes(arguments.GetRawText());
-
 }

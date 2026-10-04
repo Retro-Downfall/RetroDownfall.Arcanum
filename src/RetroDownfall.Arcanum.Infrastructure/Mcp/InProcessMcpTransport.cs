@@ -69,9 +69,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         if (maxJsonRpcLineBytes < 1)
         {
-
             throw new ArgumentOutOfRangeException(nameof(maxJsonRpcLineBytes));
-
         }
 
         _toServer = toServer;
@@ -110,7 +108,6 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         return _toServer.WriteAsync(line + "\n", cancellationToken).AsTask();
-
     }
 
     /// <summary>
@@ -185,12 +182,14 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         bool a2aClientEnabled,
         bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
-        ILogger<ArcanumInternalToolServer>? logger = null,
+        ILogger<ArcanumInternalToolServer> logger,
         McpJsonSerializerContext? jsonContext = null,
         bool allowHostProcessTools = false,
         CodingToolsSettings? codingToolsSettings = null,
         IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
+        ArgumentNullException.ThrowIfNull(logger);
+
         (Channel<string> clientToServer, Channel<string> serverToClient, ArcanumInternalToolServer server) = BuildChannelsAndServer(
             humanPromptRegistry,
             scopeFactory,
@@ -333,7 +332,6 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         }
         catch
         {
-
             SessionAttachmentAmbientSend.UnbindFailedToolsCall(
                 _ambientConnectionKey,
                 request);
@@ -341,10 +339,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         }
         finally
         {
-
             if (lockTaken)
             {
-
                 _writeLock.Release();
             }
         }

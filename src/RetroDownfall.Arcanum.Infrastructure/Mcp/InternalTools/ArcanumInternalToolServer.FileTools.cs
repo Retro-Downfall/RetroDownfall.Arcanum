@@ -387,6 +387,14 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("replace_text_block: 'exactSearchText' must be non-empty.");
         }
 
+        // An explicit JSON null deserializes to null here despite the non-nullable declaration, and
+        // string.Replace treats a null replacement as "delete". Deleting has to be asked for with an
+        // empty string, not arrive by accident.
+        if (args.ReplacementText is null)
+        {
+            return ToolError("replace_text_block: 'replacementText' must be a string; use an empty string to delete the block.");
+        }
+
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
             return resolveErr!;
@@ -421,6 +429,12 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         int occurrences = CountOccurrences(content, args.ExactSearchText);
+
+        if (occurrences > 1 && args.ReplaceAll != true)
+        {
+            return ToolError(
+                $"replace_text_block: the exact search text matches {occurrences} occurrences in '{args.RelativePath}', and nothing was changed. Include enough surrounding text to match exactly one block, or set replaceAll to true to replace every occurrence.");
+        }
 
         string updated = content.Replace(args.ExactSearchText, args.ReplacementText, StringComparison.Ordinal);
 

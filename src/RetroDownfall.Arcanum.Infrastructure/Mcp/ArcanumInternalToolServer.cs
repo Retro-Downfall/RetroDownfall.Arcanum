@@ -820,7 +820,7 @@ internal sealed partial class ArcanumInternalToolServer
                 new McpToolDefinitionWire
                 {
                     Name = "replace_text_block",
-                    Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely.",
+                    Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely. If the block occurs more than once the call fails without changing the file, unless replaceAll is true, which replaces every occurrence. replacementText must be a string; an empty string deletes the block.",
                     InputSchema = _replaceTextBlockSchema,
                 },
                 new McpToolDefinitionWire

@@ -61,7 +61,8 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
             new FakeEventBus(),
             new UntrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(settings));
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLoggerFactory.Instance);
 
         _manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));

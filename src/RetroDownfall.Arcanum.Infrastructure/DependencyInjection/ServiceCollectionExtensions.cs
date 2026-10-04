@@ -1619,6 +1619,12 @@ public static class ServiceCollectionExtensions
             // .NET's URI redaction does not strip. Default IHttpClientFactory logging would copy
             // that token into the rolling log and the ring buffer behind GET /api/logs.
             .RemoveAllLoggers()
+            // The SDK transport parses a response body or SSE event whole, so a hostile remote server
+            // could otherwise stream an unbounded message into memory; bound each one at the same
+            // frame cap the in-process transport enforces.
+            .AddHttpMessageHandler(static () => new McpHttpResponseBoundHandler(
+                ArcanumSettingClamps.McpMaxJsonRpcLineBytes(
+                    ArcanumRuntimeDefaults.Mcp.MaxJsonRpcLineBytes)))
             .ConfigurePrimaryHttpMessageHandler(sp =>
             {
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
@@ -1644,7 +1650,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IEventBus>(),
                 sp.GetRequiredService<ITrustedMcpWorkspaceStore>(),
                 sp.GetRequiredService<IHttpClientFactory>(),
-                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>());
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                sp.GetRequiredService<ILoggerFactory>());
 
             manager.ConfigureGlobalAdmission(
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>());

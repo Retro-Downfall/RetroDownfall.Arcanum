@@ -114,7 +114,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             _events,
             new AlwaysTrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
-            _settings);
+            _settings,
+            NullLoggerFactory.Instance);
 
         _innerAdmission = new GrimoireConnectionAdmissionGate(TimeProvider.System);
 
@@ -2510,7 +2511,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             eventBus ?? new FakeEventBus(),
             new AlwaysTrustedWorkspaceStore(),
             new FakeHttpClientFactory(httpHandler),
-            settings);
+            settings,
+            NullLoggerFactory.Instance);
     }
 
     private static async Task WaitUntilAsync(

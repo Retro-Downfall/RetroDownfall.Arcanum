@@ -276,7 +276,8 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             new SilentEventBus(),
             new UntrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLoggerFactory.Instance);
 
         manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));

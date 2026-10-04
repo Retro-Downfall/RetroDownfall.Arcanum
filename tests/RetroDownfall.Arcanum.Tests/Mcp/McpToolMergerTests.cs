@@ -2,21 +2,31 @@ using System.Text.Json;
 
 using Microsoft.Extensions.AI;
 
+using Microsoft.Extensions.DependencyInjection;
+
+using Microsoft.Extensions.Logging.Abstractions;
+
+using RetroDownfall.Arcanum.Api.Intelligence;
+
+using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
-
 namespace RetroDownfall.Arcanum.Tests.Mcp;
-
 
 public sealed class McpToolMergerTests
 {
-
     [Fact]
     public void DedupeGlobalTaggedTools_first_seen_wins_and_preserves_order()
     {
-
         LoadedMcpToolRow first = Row("alpha", "cmd-a");
 
         LoadedMcpToolRow duplicate = Row("alpha", "cmd-b");
@@ -30,27 +40,21 @@ public sealed class McpToolMergerTests
         Assert.Same(first.Tool, result.FirstByToolName["alpha"].Tool);
 
         Assert.Equal(["alpha", "beta"], result.SurfaceTools.Select(static t => t.Name).ToArray());
-
     }
-
 
     [Fact]
     public void DedupeGlobalTaggedTools_empty_input_returns_empty()
     {
-
         McpToolMerger.GlobalDedupResult result = McpToolMerger.DedupeGlobalTaggedTools([]);
 
         Assert.Empty(result.FirstByToolName);
 
         Assert.Empty(result.SurfaceTools);
-
     }
-
 
     [Fact]
     public void MergeWorkspaceSurface_internal_then_global_precedence()
     {
-
         LoadedMcpToolRow internalRow = Row("shared", "internal");
 
         LoadedMcpToolRow globalShared = Row("shared", "global-dup");
@@ -60,15 +64,12 @@ public sealed class McpToolMergerTests
         Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
 
         {
-
             ["shared"] = globalShared,
 
             ["global_only"] = globalOnly,
-
         };
 
         IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
-
             [internalRow],
 
             globalMap,
@@ -78,23 +79,24 @@ public sealed class McpToolMergerTests
         Assert.Equal(["shared", "global_only"], merged.Select(static t => t.Name).ToArray());
 
         Assert.Same(internalRow.Tool, merged[0]);
-
     }
-
 
     [Theory]
     [InlineData("search_workspace")]
     [InlineData("execute_command")]
     [InlineData("workspace_check")]
     [InlineData("apply_patch")]
+    [InlineData("propose_covenant")]
+    [InlineData("retire_covenant")]
     [InlineData("SEARCH_WORKSPACE")]
     [InlineData("Execute_Command")]
     [InlineData("Workspace_Check")]
     [InlineData("Apply_Patch")]
+    [InlineData("Propose_Covenant")]
+    [InlineData("Retire_Covenant")]
     public void MergeWorkspaceSurface_external_servers_cannot_override_intrinsic_internal_names(
         string reservedName)
     {
-
         LoadedMcpToolRow internalRow = Row(reservedName, "internal");
 
         LoadedMcpToolRow globalCollision = Row(reservedName, "global");
@@ -104,13 +106,10 @@ public sealed class McpToolMergerTests
         Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
 
         {
-
             [reservedName] = globalCollision,
-
         };
 
         IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
-
             [internalRow],
 
             globalMap,
@@ -120,23 +119,24 @@ public sealed class McpToolMergerTests
         AITool tool = Assert.Single(merged);
 
         Assert.Same(internalRow.Tool, tool);
-
     }
-
 
     [Theory]
     [InlineData("search_workspace")]
     [InlineData("execute_command")]
     [InlineData("workspace_check")]
     [InlineData("apply_patch")]
+    [InlineData("propose_covenant")]
+    [InlineData("retire_covenant")]
     [InlineData("SEARCH_WORKSPACE")]
     [InlineData("Execute_Command")]
     [InlineData("Workspace_Check")]
     [InlineData("Apply_Patch")]
+    [InlineData("Propose_Covenant")]
+    [InlineData("Retire_Covenant")]
     public void MergeWorkspaceSurface_omits_reserved_external_name_when_internal_tool_is_unavailable(
         string reservedName)
     {
-
         LoadedMcpToolRow globalCollision = Row(reservedName, "global");
 
         LoadedMcpToolRow localCollision = Row(reservedName, "local");
@@ -144,13 +144,10 @@ public sealed class McpToolMergerTests
         Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
 
         {
-
             [reservedName] = globalCollision,
-
         };
 
         IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
-
             [],
 
             globalMap,
@@ -158,14 +155,234 @@ public sealed class McpToolMergerTests
             [localCollision]);
 
         Assert.Empty(merged);
-
     }
 
+    [Theory]
+    [InlineData("write_file")]
+    [InlineData("read_file_chunk")]
+    [InlineData("ask_human")]
+    [InlineData("scribe_lexicon")]
+    [InlineData("replace_text_block")]
+    public void MergeWorkspaceSurface_workspace_local_server_cannot_replace_unreserved_internal_tool(
+        string internalName)
+    {
+        LoadedMcpToolRow internalRow = Row(internalName, "internal");
+
+        LoadedMcpToolRow localCollision = Row(internalName, "workspace-local");
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+            [internalRow],
+
+            new Dictionary<string, LoadedMcpToolRow>(),
+
+            [localCollision]);
+
+        Assert.Same(internalRow.Tool, Assert.Single(merged));
+    }
+
+    [Fact]
+    public void MergeWorkspaceSurface_workspace_local_case_variant_of_an_internal_tool_is_omitted_too()
+    {
+        LoadedMcpToolRow internalRow = Row("write_file", "internal");
+
+        LoadedMcpToolRow localVariant = Row("Write_File", "workspace-local");
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+            [internalRow],
+
+            new Dictionary<string, LoadedMcpToolRow>(),
+
+            [localVariant]);
+
+        Assert.Same(internalRow.Tool, Assert.Single(merged));
+    }
+
+    [Fact]
+    public void MergeWorkspaceSurface_workspace_local_server_still_overrides_a_global_external_tool()
+    {
+        LoadedMcpToolRow internalRow = Row("write_file", "internal");
+
+        LoadedMcpToolRow globalRow = Row("tool_a", new McpServerConfig { Command = "global-cmd" });
+
+        LoadedMcpToolRow localRow = Row("tool_a", new McpServerConfig { Command = "local-cmd" });
+
+        Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal) { ["tool_a"] = globalRow };
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+            [internalRow],
+
+            globalMap,
+
+            [localRow]);
+
+        Assert.Equal(["write_file", "tool_a"], merged.Select(static t => t.Name).ToArray());
+
+        Assert.Same(internalRow.Tool, merged[0]);
+
+        Assert.IsType<McpBridgeTool>(merged[1]);
+
+        Assert.NotSame(globalRow.Tool, merged[1]);
+    }
+
+    [Theory]
+    [InlineData("propose_covenant")]
+    [InlineData("retire_covenant")]
+    public void MergeWorkspaceSurface_external_servers_cannot_claim_covenant_tool_names(
+        string covenantToolName)
+    {
+        LoadedMcpToolRow globalClaim = Row(covenantToolName, "global");
+
+        LoadedMcpToolRow localClaim = Row(covenantToolName, "workspace-local");
+
+        Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
+        {
+            [covenantToolName] = globalClaim,
+        };
+
+        // With the built-in advertised, and with it gated off: the names are reserved either way.
+        LoadedMcpToolRow internalRow = Row(covenantToolName, "internal");
+
+        IReadOnlyList<AITool> withBuiltIn = McpToolMerger.MergeWorkspaceSurface(
+            [internalRow],
+            globalMap,
+            [localClaim]);
+
+        Assert.Same(internalRow.Tool, Assert.Single(withBuiltIn));
+
+        IReadOnlyList<AITool> withoutBuiltIn = McpToolMerger.MergeWorkspaceSurface(
+            [],
+            globalMap,
+            [localClaim]);
+
+        Assert.Empty(withoutBuiltIn);
+    }
+
+    [Fact]
+    public void MergeWorkspaceSurface_every_registered_internal_tool_name_is_unshadowable()
+    {
+        IReadOnlyCollection<string> registeredNames = RegisteredInternalToolNames();
+
+        // Guards the generator itself: an empty registry would make the loop below vacuous.
+        Assert.Contains("write_file", registeredNames);
+
+        Assert.Contains("propose_covenant", registeredNames);
+
+        foreach (string name in registeredNames)
+        {
+            LoadedMcpToolRow internalRow = Row(name, "internal");
+
+            LoadedMcpToolRow localCollision = Row(name, "workspace-local");
+
+            IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+                [internalRow],
+                new Dictionary<string, LoadedMcpToolRow>(),
+                [localCollision]);
+
+            Assert.True(
+                ReferenceEquals(internalRow.Tool, Assert.Single(merged)),
+                $"A workspace-local server replaced the internal tool '{name}'.");
+        }
+    }
+
+    [Theory]
+    [InlineData("ask_human")]
+    [InlineData("scribe_lexicon")]
+    [InlineData("delete_lexicon")]
+    [InlineData("search_archives")]
+    [InlineData("cast_sending")]
+    [InlineData("dispatch_sending")]
+    [InlineData("continue_sending")]
+    [InlineData("read_saga")]
+    [InlineData("attach_session_file")]
+    [InlineData("refresh_session_file")]
+    [InlineData("write_file")]
+    [InlineData("Scribe_Lexicon")]
+    public void MergeWorkspaceSurface_workspace_local_server_cannot_claim_an_internal_tool_the_session_does_not_advertise(
+        string internalName)
+    {
+        // The built-in is gated off for this session (ask_human on a non-streaming turn, scribe_lexicon
+        // with the Lexicon feature off, no workspace root for the file tools), so no internal row exists
+        // to collide with. The name is still the built-in's: handing it to an approved workspace
+        // mcp.json would let that file answer to a name the model and the name-keyed policy attribute to
+        // the sandboxed built-in.
+        LoadedMcpToolRow localClaim = Row(internalName, "workspace-local");
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+            [],
+
+            new Dictionary<string, LoadedMcpToolRow>(),
+
+            [localClaim]);
+
+        Assert.Empty(merged);
+    }
+
+    [Fact]
+    public void MergeWorkspaceSurface_every_registered_internal_tool_name_is_reserved_when_the_built_in_is_not_advertised()
+    {
+        IReadOnlyCollection<string> registeredNames = RegisteredInternalToolNames();
+
+        // Guards the generator itself: an empty registry would make the loop below vacuous.
+        Assert.Contains("ask_human", registeredNames);
+
+        Assert.Contains("scribe_lexicon", registeredNames);
+
+        foreach (string name in registeredNames)
+        {
+            IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+                [],
+
+                new Dictionary<string, LoadedMcpToolRow>(),
+
+                [Row(name, "workspace-local")]);
+
+            Assert.True(
+                merged.Count == 0,
+                $"A workspace-local server claimed the internal tool name '{name}' while its built-in was not advertised.");
+        }
+    }
+
+    [Fact]
+    public void The_static_internal_tool_name_set_is_exactly_the_registered_handler_names()
+    {
+        // The static set is what keeps a gated-off built-in's name reserved. A handler registered
+        // without being added to it (or a name left in it after its handler is removed) would silently
+        // reopen, or pointlessly widen, that reservation, so the two are compared one-for-one.
+        string[] registered = [.. RegisteredInternalToolNames().Order(StringComparer.Ordinal)];
+
+        string[] reserved = [.. ArcanumInternalToolServer.RegisteredToolNames.Order(StringComparer.Ordinal)];
+
+        Assert.Equal(registered, reserved);
+    }
+
+    [Fact]
+    public void MergeWorkspaceSurface_global_server_keeps_a_tool_named_like_an_internal_tool_the_session_does_not_advertise()
+    {
+        // The reservation against a gated-off built-in is for approved workspace mcp.json files. A global
+        // server is the operator's own configuration (a filesystem server's write_file or list_directory
+        // in a session with no workspace root is ordinary), so it is not swept up in it.
+        LoadedMcpToolRow globalRow = Row("list_directory", "global");
+
+        Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
+        {
+            ["list_directory"] = globalRow,
+        };
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+            [],
+
+            globalMap,
+
+            [Row("local_only", "workspace-local")]);
+
+        Assert.Equal(["list_directory", "local_only"], merged.Select(static t => t.Name).ToArray());
+
+        Assert.Same(globalRow.Tool, merged[0]);
+    }
 
     [Fact]
     public void MergeWorkspaceSurface_local_wins_same_registration()
     {
-
         McpServerConfig config = new() { Command = "echo", Args = ["local"] };
 
         LoadedMcpToolRow globalRow = Row("tool_a", config);
@@ -175,7 +392,6 @@ public sealed class McpToolMergerTests
         Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal) { ["tool_a"] = globalRow };
 
         IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
-
             [],
 
             globalMap,
@@ -185,14 +401,11 @@ public sealed class McpToolMergerTests
         Assert.Single(merged);
 
         Assert.Same(localRow.Tool, merged[0]);
-
     }
-
 
     [Fact]
     public void MergeWorkspaceSurface_local_wins_different_registration_creates_bridge_tool()
     {
-
         LoadedMcpToolRow globalRow = Row("tool_a", new McpServerConfig { Command = "global-cmd" });
 
         LoadedMcpToolRow localRow = Row("tool_a", new McpServerConfig { Command = "local-cmd" });
@@ -200,7 +413,6 @@ public sealed class McpToolMergerTests
         Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal) { ["tool_a"] = globalRow };
 
         IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
-
             [],
 
             globalMap,
@@ -210,14 +422,11 @@ public sealed class McpToolMergerTests
         Assert.Single(merged);
 
         Assert.IsType<McpBridgeTool>(merged[0]);
-
     }
-
 
     [Fact]
     public void MergeWorkspaceSurface_appends_new_local_only_tools()
     {
-
         LoadedMcpToolRow globalRow = Row("global_tool", new McpServerConfig { Command = "global" });
 
         LoadedMcpToolRow localOnly = Row("local_only", new McpServerConfig { Command = "local" });
@@ -225,7 +434,6 @@ public sealed class McpToolMergerTests
         Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal) { ["global_tool"] = globalRow };
 
         IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
-
             [],
 
             globalMap,
@@ -233,29 +441,22 @@ public sealed class McpToolMergerTests
             [localOnly]);
 
         Assert.Equal(["global_tool", "local_only"], merged.Select(static t => t.Name).ToArray());
-
     }
-
 
     [Fact]
     public void MergeWorkspaceSurface_empty_inputs_returns_empty()
     {
-
         IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface([], new Dictionary<string, LoadedMcpToolRow>(), []);
 
         Assert.Empty(merged);
-
     }
-
 
     [Fact]
     public void MergeWorkspaceSurface_internal_only_skips_global_and_local()
     {
-
         LoadedMcpToolRow internalRow = Row("internal_tool", new McpServerConfig { Command = "internal" });
 
         IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
-
             [internalRow],
 
             new Dictionary<string, LoadedMcpToolRow>(),
@@ -265,17 +466,53 @@ public sealed class McpToolMergerTests
         Assert.Single(merged);
 
         Assert.Same(internalRow.Tool, merged[0]);
-
     }
 
+    private static IReadOnlyCollection<string> RegisteredInternalToolNames()
+    {
+        IServiceScopeFactory scopeFactory = new ServiceCollection()
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
+
+        (_, _, ArcanumInternalToolServer server) = InProcessMcpTransport.CreateServerChannelPair(
+            new HumanPromptRegistry(),
+            scopeFactory,
+            new InertPacer(),
+            workspaceRootNormalizedOrNull: null,
+            listDirectoryMaxPaths: 16,
+            new IntelligenceSettings(),
+            maxFileReadSizeBytes: 1024,
+            conclaveEnabled: true,
+            sagaEnabled: true,
+            a2aClientEnabled: true,
+            attachmentsToolEnabled: true,
+            maxJsonRpcLineBytes: 1_048_576,
+            logger: NullLogger<ArcanumInternalToolServer>.Instance);
+
+        return [.. server.RegisteredToolHandlerNamesForTests];
+    }
+
+    private sealed class InertPacer : IUnseenServantPacer
+    {
+        public Task<bool> SetDynamicIntervalAsync(
+            string jobName,
+            int intervalMinutes,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public int GetEffectiveInterval(UnseenServantJob job) => 0;
+
+        public Task HydrateAsync(
+            IReadOnlyList<UnseenServantWatermark> watermarks,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
 
     private static LoadedMcpToolRow Row(string name, McpServerConfig config)
     {
-
         StubMcpClient client = new();
 
         McpBridgeTool tool = new(
-
             name,
 
             $"{name} description",
@@ -287,21 +524,16 @@ public sealed class McpToolMergerTests
             toolOutputCapBytes: 4096);
 
         return new LoadedMcpToolRow(tool, config, client);
-
     }
-
 
     private static LoadedMcpToolRow Row(string name, string command) =>
         Row(name, new McpServerConfig { Command = command });
 
-
     private sealed class StubMcpClient : IMcpClient
     {
-
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public Task<ModelContextProtocol.Protocol.CallToolResult> CallToolAsync(
-
             string toolName,
 
             IReadOnlyDictionary<string, object?> arguments,
@@ -315,7 +547,5 @@ public sealed class McpToolMergerTests
             throw new NotSupportedException();
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
-
 }

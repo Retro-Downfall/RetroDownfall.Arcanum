@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 /// </summary>
 public sealed class CovenantMutationToolTests
 {
-
     /// <summary>The refusal a pinned lane and an erased key share.</summary>
     private const string OperatorManaged = "This Covenant key is managed by the operator in this scope.";
 
@@ -364,6 +363,26 @@ public sealed class CovenantMutationToolTests
     }
 
     [Fact]
+    public async Task A_retirement_tells_the_model_it_is_applied_when_the_reply_is_saved()
+    {
+        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
+
+        session.RegisterRetirementCapability();
+
+        McpToolsCallResultWire result = await session.CallRetireAsync("campaign.a", nameof(CovenantLane.Proposed));
+
+        string text = Assert.Single(result.Content).Text;
+
+        // A staged retirement commits with the turn's reply, like a proposal. The receipt used to say no
+        // path applied it at all, which would have the model tell the operator the retirement never
+        // happens when it does.
+        Assert.Contains("staged", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("when this turn's reply is saved", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("dropped with the turn", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("no path that applies it", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task A_retirement_that_names_another_target_is_refused()
     {
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
@@ -469,7 +488,6 @@ public sealed class CovenantMutationToolTests
     [Fact]
     public async Task Retirement_is_advertised_when_the_Covenant_feature_is_healthy()
     {
-
         await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
 
         McpToolsListResultWire tools = await session.ListToolsAsync();
@@ -483,19 +501,15 @@ public sealed class CovenantMutationToolTests
         Assert.Contains(
             CovenantToolNames.RetireCovenant,
             session.RegisteredToolHandlerNames);
-
     }
 
     private sealed class StubAvailability(CovenantAvailabilitySnapshot snapshot) : ICovenantAvailability
     {
-
         public CovenantAvailabilitySnapshot Current { get; } = snapshot;
-
     }
 
     private sealed class FakeEventBus : IEventBus
     {
-
         public void Publish<T>(T @event) where T : notnull
         {
         }
@@ -508,12 +522,10 @@ public sealed class CovenantMutationToolTests
 
             yield break;
         }
-
     }
 
     private sealed class CovenantToolSession : IAsyncDisposable
     {
-
         private readonly InProcessMcpTransport _transport;
 
         private readonly Task _serverTask;
@@ -774,7 +786,5 @@ public sealed class CovenantMutationToolTests
                 CovenantHealthTransition.Bootstrap,
                 CanonicalDiagnosticCode: null,
                 AcceleratorDiagnosticCode: null);
-
     }
-
 }

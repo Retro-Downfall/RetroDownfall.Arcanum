@@ -133,13 +133,33 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
             initialization.CancelAfter(_initializationTimeout);
 
-            _sdkClient = await SdkMcpClient
-                .CreateAsync(
-                    _clientTransport,
-                    _clientOptions,
-                    _loggerFactory,
-                    initialization.Token)
-                .ConfigureAwait(false);
+            try
+            {
+                _sdkClient = await SdkMcpClient
+                    .CreateAsync(
+                        _clientTransport,
+                        _clientOptions,
+                        _loggerFactory,
+                        initialization.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+                when (!cancellationToken.IsCancellationRequested
+                    && (exception is TimeoutException
+                        || (exception is OperationCanceledException && initialization.IsCancellationRequested)))
+            {
+                // Only a handshake deadline fired, this wrapper's own or the SDK client's (both are armed
+                // from the same interval, so either can win); the caller did not cancel. Report it as the
+                // start failure it is, so the connection manager records a failed start and schedules its
+                // restart backoff instead of treating a hung server as an aborted start that would also
+                // abort the rest of global initialization. _initialized stays false and the transport may
+                // be half-started; the caller disposes this wrapper after the failure. The original
+                // exception is deliberately not attached as the inner exception: the manager reports the
+                // base exception's message, and a bare "A task was canceled." would hide why the start
+                // failed.
+                throw new TimeoutException(
+                    $"The MCP server did not complete the initialize handshake within {_initializationTimeout.TotalSeconds:0.###} seconds.");
+            }
 
             _initialized = true;
 
@@ -227,11 +247,11 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
                     continue;
                 }
 
-                string description = McpSecurityLimits.BoundToolDescription(tool.Description ?? string.Empty);
+                string description = McpSecurityLimits.BoundToolDescription(tool.Name, tool.Description ?? string.Empty);
 
                 System.Text.Json.JsonElement inputSchema = McpSecurityLimits.BoundToolInputSchema(
-                    tool.InputSchema,
-                    McpJsonSerializerContext.Default);
+                    tool.Name,
+                    tool.InputSchema);
 
                 long toolBytes = Encoding.UTF8.GetByteCount(description) + Encoding.UTF8.GetByteCount(inputSchema.GetRawText());
 
