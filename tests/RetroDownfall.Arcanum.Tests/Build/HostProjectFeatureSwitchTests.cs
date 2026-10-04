@@ -1176,6 +1176,81 @@ public sealed class HostProjectFeatureSwitchTests
             + string.Join("\n  ", ungated));
     }
 
+    /// <summary>
+    /// "No managed fallback" has to hold for every publish, not only the RID-qualified ones. With no
+    /// runtime identifier none of the shipping settings apply, so a bare <c>dotnet publish</c> used to
+    /// succeed and write a framework-dependent, non-AOT build that looks like the product.
+    /// </summary>
+    [Fact]
+    public async Task Cli_publish_without_a_runtime_identifier_is_rejected()
+    {
+        (int exitCode, string output) = await EvaluatePrepareForPublishAsync();
+
+        Assert.NotEqual(0, exitCode);
+
+        Assert.Contains("ARC0001", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_dev_publish_switch_lets_a_runtime_identifier_less_publish_through()
+    {
+        (int exitCode, string output) = await EvaluatePrepareForPublishAsync("-p:ArcanumDevPublish=true");
+
+        Assert.True(exitCode == 0, output);
+
+        Assert.DoesNotContain("ARC0001", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Evaluates the Cli project's <c>PrepareForPublish</c> target, which is where the shipping
+    /// guard hooks in. It compiles nothing: the guard fails first, and the target itself only
+    /// resolves publish items from the already-restored project.
+    /// </summary>
+    private static async Task<(int ExitCode, string Output)> EvaluatePrepareForPublishAsync(params string[] extraArguments)
+    {
+        string project = Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Cli",
+            "RetroDownfall.Arcanum.Cli.csproj");
+
+        System.Diagnostics.ProcessStartInfo startInfo = new(
+            global::System.Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        startInfo.ArgumentList.Add("msbuild");
+        startInfo.ArgumentList.Add(project);
+        startInfo.ArgumentList.Add("-nologo");
+        startInfo.ArgumentList.Add("-verbosity:minimal");
+        startInfo.ArgumentList.Add("-t:PrepareForPublish");
+
+        foreach (string argument in extraArguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+        startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+        startInfo.Environment["DOTNET_NOLOGO"] = "1";
+
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo)
+            ?? throw new InvalidOperationException("dotnet msbuild did not start.");
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(3));
+
+        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(timeout.Token);
+
+        Task<string> standardError = process.StandardError.ReadToEndAsync(timeout.Token);
+
+        await process.WaitForExitAsync(timeout.Token);
+
+        return (process.ExitCode, await standardOutput + await standardError);
+    }
+
     private static bool IsRuntimeIdentifierGated(XElement property)
     {
         string propertyCondition = (string?)property.Attribute("Condition") ?? string.Empty;

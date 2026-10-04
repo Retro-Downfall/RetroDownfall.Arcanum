@@ -115,13 +115,22 @@
 
   </ItemGroup>
 
+  <!-- No managed fallback, for every publish. A RID-qualified publish must stay Native AOT, and a publish
+       with no RID at all would otherwise write a framework-dependent, non-AOT build that looks like the
+       product, because every shipping setting above is gated on a runtime identifier. A local
+       framework-dependent publish is still possible on purpose: pass -p:ArcanumDevPublish=true. -->
   <Target
     Name="RequireArcanumShippingNativeAot"
     BeforeTargets="PrepareForPublish"
-    Condition="'$(RuntimeIdentifier)' != '' and '$(PublishAot)' != 'true'">
+    Condition="'$(ArcanumDevPublish)' != 'true' and ('$(RuntimeIdentifier)' == '' or '$(PublishAot)' != 'true')">
     <Error
+      Condition="'$(RuntimeIdentifier)' != ''"
       Code="ARC0001"
       Text="Every RID-qualified Arcanum publish must use Native AOT. PublishAot cannot be disabled for a shipping build." />
+    <Error
+      Condition="'$(RuntimeIdentifier)' == ''"
+      Code="ARC0001"
+      Text="Arcanum publishes only as a RID-qualified Native AOT product; pass -r osx-arm64, win-x64 or win-arm64. For a local framework-dependent publish, pass -p:ArcanumDevPublish=true." />
   </Target>
 
 </Project>
