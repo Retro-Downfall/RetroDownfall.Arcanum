@@ -1202,6 +1202,44 @@ public sealed class HostProjectFeatureSwitchTests
     }
 
     /// <summary>
+    /// The RID-qualified rule predates the RID-less one and has to survive it: a RID-qualified publish
+    /// is the shipping product, so turning Native AOT off for it is always an error.
+    /// </summary>
+    [Fact]
+    public async Task A_runtime_identifier_qualified_publish_cannot_turn_off_native_aot()
+    {
+        (int exitCode, string output) = await EvaluatePrepareForPublishAsync(
+            "-p:RuntimeIdentifier=win-x64",
+            "-p:PublishAot=false");
+
+        Assert.NotEqual(0, exitCode);
+
+        Assert.Contains("ARC0001", output, StringComparison.Ordinal);
+
+        Assert.Contains("RID-qualified", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>ArcanumDevPublish</c> exists only so a developer can write a local, framework-dependent
+    /// publish with no runtime identifier. It must not become a way to publish a RID-qualified build
+    /// without Native AOT, which would be the managed fallback the product refuses to have.
+    /// </summary>
+    [Fact]
+    public async Task The_dev_publish_switch_does_not_relax_the_runtime_identifier_qualified_rule()
+    {
+        (int exitCode, string output) = await EvaluatePrepareForPublishAsync(
+            "-p:RuntimeIdentifier=win-x64",
+            "-p:PublishAot=false",
+            "-p:ArcanumDevPublish=true");
+
+        Assert.NotEqual(0, exitCode);
+
+        Assert.Contains("ARC0001", output, StringComparison.Ordinal);
+
+        Assert.Contains("RID-qualified", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Evaluates the Cli project's <c>PrepareForPublish</c> target, which is where the shipping
     /// guard hooks in. It compiles nothing: the guard fails first, and the target itself only
     /// resolves publish items from the already-restored project.
