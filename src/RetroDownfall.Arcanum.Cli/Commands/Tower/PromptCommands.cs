@@ -685,28 +685,15 @@ public sealed class PromptCommands(
             result.Value,
             RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.PromptExportDto);
 
-        if (string.IsNullOrWhiteSpace(output))
-        {
-            await Console.Out.WriteLineAsync(json).ConfigureAwait(false);
-        }
-        else
-        {
-            try
-            {
-                await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
-
-                return 1;
-            }
-
-            AnsiConsole.MarkupLine(
-                themePalette.HighlightLabelMarkup(Markup.Escape("Prompt exported to:"), Markup.Escape(output)));
-        }
-
-        return 0;
+        return await CliOutputFile
+            .WriteExportAsync(
+                json,
+                output,
+                "Prompt exported to:",
+                confirmationPrompt,
+                themePalette,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

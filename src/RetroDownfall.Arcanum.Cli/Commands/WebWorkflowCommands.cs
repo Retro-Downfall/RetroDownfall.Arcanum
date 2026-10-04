@@ -21,6 +21,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 public sealed class WebWorkflowCommands(
     ArcanumApiClient apiClient,
     IConsoleDispatcher dispatcher,
+    IConfirmationPrompt confirmationPrompt,
     ICliResourceCatalog resources)
 {
     public async Task<int> Search(
@@ -33,6 +34,14 @@ public sealed class WebWorkflowCommands(
         string? attachToSession,
         CancellationToken cancellationToken)
     {
+        SavePlan savePlan = await PlanSaveAsync(save, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!savePlan.Proceed)
+        {
+            return savePlan.ExitCode;
+        }
+
         SessionSelection attachment = await ResolveSessionAsync(
             attachToSession,
             cancellationToken).ConfigureAwait(false);
@@ -70,11 +79,8 @@ public sealed class WebWorkflowCommands(
             response.Value.Answer,
             response.Value.Citations);
 
-        if (!await SaveAsync(save, markdown, cancellationToken)
-            .ConfigureAwait(false))
-        {
-            return 1;
-        }
+        int saveExitCode = await SaveAsync(savePlan, markdown, cancellationToken)
+            .ConfigureAwait(false);
 
         if (CliInvocationContext.Current.Json)
         {
@@ -91,7 +97,7 @@ public sealed class WebWorkflowCommands(
             response.Value.AttachmentId,
             response.Value.AttachmentError);
 
-        return 0;
+        return saveExitCode;
     }
 
     public async Task<int> Browse(
@@ -101,6 +107,14 @@ public sealed class WebWorkflowCommands(
         string? attachToSession,
         CancellationToken cancellationToken)
     {
+        SavePlan savePlan = await PlanSaveAsync(save, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!savePlan.Proceed)
+        {
+            return savePlan.ExitCode;
+        }
+
         SessionSelection attachment = await ResolveSessionAsync(
             attachToSession,
             cancellationToken).ConfigureAwait(false);
@@ -128,14 +142,11 @@ public sealed class WebWorkflowCommands(
             return WriteError(response.Error);
         }
 
-        if (!await SaveAsync(
-                save,
+        int saveExitCode = await SaveAsync(
+                savePlan,
                 response.Value.Markdown,
                 cancellationToken)
-            .ConfigureAwait(false))
-        {
-            return 1;
-        }
+            .ConfigureAwait(false);
 
         if (CliInvocationContext.Current.Json)
         {
@@ -152,7 +163,7 @@ public sealed class WebWorkflowCommands(
             response.Value.AttachmentId,
             response.Value.AttachmentError);
 
-        return 0;
+        return saveExitCode;
     }
 
     public async Task<int> Research(
@@ -173,6 +184,14 @@ public sealed class WebWorkflowCommands(
         bool unattendedMode,
         CancellationToken cancellationToken)
     {
+        SavePlan savePlan = await PlanSaveAsync(save, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!savePlan.Proceed)
+        {
+            return savePlan.ExitCode;
+        }
+
         SessionSelection continuation = await ResolveSessionAsync(
             continueSession,
             cancellationToken).ConfigureAwait(false);
@@ -306,11 +325,8 @@ public sealed class WebWorkflowCommands(
 
         string markdown = FormatAnswer(result.Answer, result.Citations);
 
-        if (!await SaveAsync(save, markdown, cancellationToken)
-            .ConfigureAwait(false))
-        {
-            return 1;
-        }
+        int saveExitCode = await SaveAsync(savePlan, markdown, cancellationToken)
+            .ConfigureAwait(false);
 
         if (format == "json")
         {
@@ -333,7 +349,7 @@ public sealed class WebWorkflowCommands(
         // diagnostic.
         WriteAttachmentDiagnostic(result.AttachmentId, attachmentError: null);
 
-        return 0;
+        return saveExitCode;
     }
 
     private async Task<SessionSelection> ResolveSessionAsync(
@@ -374,56 +390,66 @@ public sealed class WebWorkflowCommands(
             selection.Value!.Id);
     }
 
-    private async Task<bool> SaveAsync(
+    /// <summary>
+    /// Vets the <c>--save</c> destination and settles the overwrite question before any request is sent,
+    /// because the request is billed and a destination that cannot be used would otherwise be found
+    /// only after the answer exists.
+    /// </summary>
+    private async Task<SavePlan> PlanSaveAsync(
         string? path,
-        string content,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
-            return true;
+            return SavePlan.NoSave;
+        }
+
+        string? problem = CliOutputFile.TryResolve(path, out string fullPath);
+
+        if (problem is not null)
+        {
+            dispatcher.WriteDiagnostic(
+                $"The --save destination cannot be used: {problem}.");
+
+            return new SavePlan(false, (int)CliExitCode.ConfigurationError, null);
+        }
+
+        if (!await CliOutputFile
+                .ConfirmOverwriteAsync(confirmationPrompt, fullPath, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            dispatcher.WriteDiagnostic(
+                "Save cancelled; the existing file was not changed and nothing was requested.");
+
+            return new SavePlan(false, 0, null);
+        }
+
+        return new SavePlan(true, 0, fullPath);
+    }
+
+    /// <summary>
+    /// Writes the planned save. A failure here arrives after the answer was paid for, so it is reported
+    /// and returned as the exit code while the caller still prints the result.
+    /// </summary>
+    private async Task<int> SaveAsync(
+        SavePlan plan,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        if (plan.FullPath is not string fullPath)
+        {
+            return 0;
         }
 
         try
         {
-            string fullPath = Path.GetFullPath(path);
-
-            string? directory = Path.GetDirectoryName(fullPath);
-
-            if (string.IsNullOrWhiteSpace(directory)
-                || !Directory.Exists(directory))
-            {
-                dispatcher.WriteDiagnostic(
-                    "The --save destination directory does not exist.");
-
-                return false;
-            }
-
-            string temporaryPath = Path.Combine(
-                directory,
-                $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
-
-            try
-            {
-                await File.WriteAllTextAsync(
-                    temporaryPath,
-                    content,
-                    Encoding.UTF8,
-                    cancellationToken).ConfigureAwait(false);
-
-                File.Move(temporaryPath, fullPath, overwrite: true);
-            }
-            finally
-            {
-                if (File.Exists(temporaryPath))
-                {
-                    File.Delete(temporaryPath);
-                }
-            }
+            await CliOutputFile
+                .WriteAllTextAsync(fullPath, content, Encoding.UTF8, cancellationToken)
+                .ConfigureAwait(false);
 
             dispatcher.WriteDiagnostic($"Saved {fullPath}");
 
-            return true;
+            return 0;
         }
         catch (OperationCanceledException)
         {
@@ -438,7 +464,7 @@ public sealed class WebWorkflowCommands(
             dispatcher.WriteDiagnostic(
                 $"Could not save the result: {exception.Message}");
 
-            return false;
+            return 1;
         }
     }
 
@@ -516,6 +542,14 @@ public sealed class WebWorkflowCommands(
             dispatcher.WriteDiagnostic(
                 $"The result could not be attached to the session: {attachmentError}");
         }
+    }
+
+    private readonly record struct SavePlan(
+        bool Proceed,
+        int ExitCode,
+        string? FullPath)
+    {
+        public static SavePlan NoSave { get; } = new(true, 0, null);
     }
 
     private readonly record struct SessionSelection(

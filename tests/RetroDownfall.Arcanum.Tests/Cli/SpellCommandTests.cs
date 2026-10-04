@@ -502,6 +502,84 @@ public sealed class SpellCommandTests
         Assert.Contains("--tag", result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// R-327: <c>spell export --output</c> over an existing file asks first and a refusal leaves the
+    /// file untouched; a confirmed overwrite goes through a temporary sibling that is not left behind.
+    /// </summary>
+    [Fact]
+    public void Export_prompts_before_overwriting_an_existing_output_file()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-spell-export-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        string output = Path.Combine(directory, "spell.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            RecordingPrompt declined = new(answer: false);
+
+            CliTestResult refused = RunCommand(
+                new RecordingHandler(_ => SpellExportResponse()),
+                ["spell", "export", "greet", "--output", output],
+                configureServices: services => UsePrompt(services, declined));
+
+            Assert.Equal(0, refused.ExitCode);
+
+            Assert.Equal("original", File.ReadAllText(output));
+
+            Assert.Contains(
+                Path.GetFullPath(output),
+                Assert.Single(declined.Questions),
+                StringComparison.Ordinal);
+
+            CliTestResult approved = RunCommand(
+                new RecordingHandler(_ => SpellExportResponse()),
+                ["spell", "export", "greet", "--output", output],
+                configureServices: services => UsePrompt(services, new RecordingPrompt(answer: true)));
+
+            Assert.Equal(0, approved.ExitCode);
+
+            Assert.Contains("exported content", File.ReadAllText(output), StringComparison.Ordinal);
+
+            Assert.Equal(
+                ["spell.json"],
+                Directory.GetFileSystemEntries(directory).Select(Path.GetFileName));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void UsePrompt(ServiceCollection services, IConfirmationPrompt prompt)
+    {
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton(prompt);
+    }
+
+    private static HttpResponseMessage SpellExportResponse() =>
+        CreateResponse(
+            new ApiResponse<SpellExportDto>(new SpellExportDto(null, "exported content", []), true, null),
+            ArcanumJsonContext.Default.ApiResponseSpellExportDto);
+
+    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    {
+        public List<string> Questions { get; } = [];
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            Questions.Add(question);
+
+            return Task.FromResult(answer);
+        }
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

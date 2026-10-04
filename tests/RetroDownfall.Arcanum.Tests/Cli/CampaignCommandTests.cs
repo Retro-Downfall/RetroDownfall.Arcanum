@@ -350,6 +350,130 @@ public sealed class CampaignCommandTests
     }
 
     /// <summary>
+    /// R-327: <c>export --output</c> over an existing file asks first, like <c>file download</c>, and a
+    /// refusal leaves the file untouched.
+    /// </summary>
+    [Fact]
+    public void Export_prompts_before_overwriting_an_existing_output_file()
+    {
+        string output = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-campaign-export-{Guid.NewGuid():N}.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            RecordingPrompt prompt = new(answer: false);
+
+            CliTestResult result = RunCommand(
+                new RecordingHandler(_ => CampaignExportResponse()),
+                ["campaign", "export", SampleId.ToString(), "--output", output],
+                configureServices: services => UsePrompt(services, prompt));
+
+            Assert.Equal(0, result.ExitCode);
+
+            Assert.Equal("original", File.ReadAllText(output));
+
+            string question = Assert.Single(prompt.Questions);
+
+            Assert.Contains(Path.GetFullPath(output), question, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    [Fact]
+    public void Export_replaces_an_existing_output_file_once_confirmed_and_leaves_no_temporary_sibling()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-campaign-export-dir-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        string output = Path.Combine(directory, "campaign.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            CliTestResult result = RunCommand(
+                new RecordingHandler(_ => CampaignExportResponse()),
+                ["--yes", "campaign", "export", SampleId.ToString(), "--output", output]);
+
+            Assert.Equal(0, result.ExitCode);
+
+            Assert.Contains("\"campaign\"", File.ReadAllText(output), StringComparison.OrdinalIgnoreCase);
+
+            Assert.Equal(
+                ["campaign.json"],
+                Directory.GetFileSystemEntries(directory).Select(Path.GetFileName));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Export_over_an_existing_file_refuses_a_non_interactive_run_without_yes()
+    {
+        string output = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-campaign-export-json-{Guid.NewGuid():N}.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            CliTestResult result = RunCommand(
+                new RecordingHandler(_ => CampaignExportResponse()),
+                ["--json", "campaign", "export", SampleId.ToString(), "--output", output]);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Equal("original", File.ReadAllText(output));
+
+            Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    private static HttpResponseMessage CampaignExportResponse()
+    {
+        CampaignDto campaign = new(SampleId, "Demo", "/tmp/demo", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        return CreateResponse(
+            new ApiResponse<CampaignExportDto>(new CampaignExportDto(campaign, [], []), true, null),
+            ArcanumJsonContext.Default.ApiResponseCampaignExportDto);
+    }
+
+    private static void UsePrompt(ServiceCollection services, IConfirmationPrompt prompt)
+    {
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton(prompt);
+    }
+
+    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    {
+        public List<string> Questions { get; } = [];
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            Questions.Add(question);
+
+            return Task.FromResult(answer);
+        }
+    }
+
+    /// <summary>
     /// Every direct command answers <c>--json</c> with exactly one JSON document on stdout. These two
     /// listings rendered a Spectre table in every mode, so an automation caller received a box-drawn
     /// grid where its parser expected a document — and, with the table laid out at the redirected
