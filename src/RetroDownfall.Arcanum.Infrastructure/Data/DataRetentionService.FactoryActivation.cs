@@ -430,30 +430,47 @@ internal sealed partial class DataRetentionService
             // caller's token exactly as the direct reset arm's does. What the lease was protecting
             // against is held instead by the installation maintenance lock, the journal's own slot,
             // and the process-local ownership the coordinator claims for the length of the run.
-            Result<CovenantErasureCompletion> erased = await _covenantErasureCoordinator
-                .RunAsync(
-                    launched,
-                    launchedCheckpoint,
-                    ownerId,
-                    async continuationToken =>
-                    {
-                        Result<DataRetentionApplyResult> continued =
-                            await ContinueFactoryResetAsync(
-                                operation.Id,
-                                ownerId,
-                                continuationToken).ConfigureAwait(false);
+            Result<CovenantErasureCompletion> erased;
 
-                        if (continued.IsSuccess)
+            try
+            {
+                erased = await _covenantErasureCoordinator
+                    .RunAsync(
+                        launched,
+                        launchedCheckpoint,
+                        ownerId,
+                        async continuationToken =>
                         {
-                            ordinaryResult = continued.Value;
+                            Result<DataRetentionApplyResult> continued =
+                                await ContinueFactoryResetAsync(
+                                    operation.Id,
+                                    ownerId,
+                                    continuationToken).ConfigureAwait(false);
 
-                            return Result.Success();
-                        }
+                            if (continued.IsSuccess)
+                            {
+                                ordinaryResult = continued.Value;
 
-                        return Result.Failure(continued.Error);
-                    },
-                    cancellationToken)
-                .ConfigureAwait(false);
+                                return Result.Success();
+                            }
+
+                            return Result.Failure(continued.Error);
+                        },
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (DataRetentionLeaseLostException ex)
+            {
+                // The ordinary continuation proves its exact owner by reading the launch row back,
+                // and the coordinator rethrows that refusal. It is a lost owner, not an unexpected
+                // failure: there is no owner left to record a typed failure under, so recovery
+                // reconciles the row, exactly as the recovery arms report the same loss.
+                logger.LogWarning(
+                    ex,
+                    "Healthy-catalog factory erasure lost its exact durable owner; recovery must reconcile it.");
+
+                return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
+            }
 
             if (erased.IsFailure)
             {

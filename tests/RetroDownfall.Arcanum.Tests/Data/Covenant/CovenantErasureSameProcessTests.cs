@@ -1940,6 +1940,79 @@ public sealed class CovenantErasureSameProcessTests
     }
 
     /// <summary>
+    /// A factory continuation that loses its exact owner is reported as a lost lease, not as an
+    /// unexpected failure.
+    /// </summary>
+    /// <remarks>
+    /// The ordinary continuation proves it still owns the launch by reading the row back and throws
+    /// <see cref="DataRetentionLeaseLostException"/> when it does not; the coordinator rethrows it. The
+    /// route must keep the dedicated lease-lost handling around the coordinator now that the
+    /// coordinator runs outside the maintainer: a warning and a maintenance failure, never an error log
+    /// and never an owner-guarded durable write for an owner it has just been told it no longer is.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_route_reports_a_continuation_lease_loss_as_a_maintenance_failure()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CoordinatorPause pause = new();
+
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
+        TestCapturingLogger<DataRetentionService> retentionLog = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            coordinatorPause: pause,
+            fastLeaseHeartbeat: true,
+            storeFaults: faults,
+            serviceOverrides: services =>
+            {
+                services.RemoveAll<IManagedLogMutationGate>();
+
+                services.AddSingleton<IManagedLogMutationGate>(new LeaseLosingManagedLogMutationGate());
+
+                services.RemoveAll<ILogger<DataRetentionService>>();
+
+                services.AddSingleton<ILogger<DataRetentionService>>(retentionLog);
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        _ = await harness.SeedOrdinarySessionAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        Task<Result<DataRetentionApplyResult>> applying = harness.ApplyFactoryAsync(confirmed.PlanId);
+
+        await pause.WaitUntilPausedAsync();
+
+        int planning = faults.RenewalAttempts;
+
+        pause.Release();
+
+        Result<DataRetentionApplyResult> applied = await applying.WaitAsync(TimeSpan.FromSeconds(45));
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, applied.Error.Code);
+
+        Assert.DoesNotContain(
+            retentionLog.Entries,
+            static entry => entry.Level >= LogLevel.Error);
+
+        Assert.Contains(
+            retentionLog.Entries,
+            static entry => entry.Level == LogLevel.Warning
+                && entry.Exception is DataRetentionLeaseLostException);
+
+        Assert.Equal(0, faults.MaintenanceFailureTransitionAttempts);
+
+        Assert.Equal(planning, faults.RenewalAttempts);
+    }
+
+    /// <summary>
     /// Every point inside every phase a crash can fall between, resumed to the same one ending.
     /// </summary>
     /// <remarks>
@@ -4248,6 +4321,15 @@ public sealed class CovenantErasureSameProcessTests
         }
     }
 
+    private sealed class LeaseLosingManagedLogMutationGate : IManagedLogMutationGate
+    {
+        public ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<IAsyncDisposable>(
+                new DataRetentionLeaseLostException(
+                    "Factory reset no longer owns the durable operation it was launched under."));
+    }
+
     private sealed class RecordingManagedLogMutationGate : IManagedLogMutationGate
     {
         private int _acquisitions;
@@ -4899,7 +4981,21 @@ public sealed class CovenantErasureSameProcessTests
 
         private int _completedTransitionsDisarmed;
 
+        private int _maintenanceFailureTransitionAttempts;
+
         internal int CompletedTransitionAttempts => Volatile.Read(ref _completedTransitionAttempts);
+
+        /// <summary>Every durable transition this store was asked to record as a maintenance failure.</summary>
+        internal int MaintenanceFailureTransitionAttempts =>
+            Volatile.Read(ref _maintenanceFailureTransitionAttempts);
+
+        internal void RecordTransitionAttempt(string? terminalErrorCode)
+        {
+            if (string.Equals(terminalErrorCode, ErrorCodes.Covenant.MaintenanceFailed, StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref _maintenanceFailureTransitionAttempts);
+            }
+        }
 
         /// <summary>Every durable lease renewal this store was asked for, whether or not it took.</summary>
         internal int RenewalAttempts => Volatile.Read(ref _renewalAttempts);
@@ -5260,6 +5356,8 @@ public sealed class CovenantErasureSameProcessTests
             string? terminalErrorCode = null,
             CancellationToken cancellationToken = default)
         {
+            faults.RecordTransitionAttempt(terminalErrorCode);
+
             if (state is LongRunningOperationState.Completed
                 && !faults.CompletedTransitionsDisarmed
                 && (faults.Fault is RouteStoreFault.FailAllCompletedTransitions
