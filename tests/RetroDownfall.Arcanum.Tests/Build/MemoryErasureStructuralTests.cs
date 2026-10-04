@@ -21,10 +21,13 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// extraction. So exactly one statement in <c>src</c> inserts a Saga row, and exactly one production
 /// file calls the store's insert.</para>
 ///
-/// <para><b>New erasure log lines are content-free.</b> A log template that names an erased item's
-/// content, name or key would copy it into application logs, which an erase never reaches.
-/// <see cref="ContentFreeLogFiles"/> is closed: every later erasure task appends its new source files
-/// to it.</para>
+/// <para><b>New erasure log lines are content-free.</b> A log line that names an erased item's content,
+/// name or key would copy it into application logs, which an erase never reaches. The scan reads both
+/// halves of a line: every template placeholder must be on a short allow-list of known-safe names, and
+/// no argument may carry an identifier that could hold content unless a reviewer has read that exact
+/// argument. <see cref="ContentFreeLogFiles"/> is closed, and so is the set of files that may log on an
+/// erasure path: a file found on one of those paths that logs must be on that list, so a new logging file
+/// joins the scan rather than escaping it.</para>
 ///
 /// <para><b>No memory item owns a managed file, and erase is its own verb.</b> A Saga or Lexicon erase
 /// is one database transaction, so neither kind may acquire a managed-file executor or reach the
@@ -37,8 +40,9 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 public sealed class MemoryErasureStructuralTests
 {
     /// <summary>
-    /// Every erasure source file whose log templates this scan holds, relative to
-    /// <c>src/RetroDownfall.Arcanum.Infrastructure/</c>. Closed: a new erasure source file joins it.
+    /// Every erasure source file whose log lines this scan holds, relative to
+    /// <c>src/RetroDownfall.Arcanum.Infrastructure/</c>. Closed: a new erasure source file joins it, and a
+    /// file the discovery finds on an erasure path that logs must already be here.
     /// </summary>
     /// <remarks>
     /// Existing chokepoint owners such as the Lexicon service are not listed. They already log names
@@ -107,15 +111,70 @@ public sealed class MemoryErasureStructuralTests
         "Write",
     };
 
-    private static readonly HashSet<string> ForbiddenPlaceholders = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>
+    /// The placeholder names a log template on an erasure path may use. Each names an enum, a count, a flag
+    /// or an exception type, never an item, a name, a key or a digest. Closed: a template that needs another
+    /// name adds it here in review, beside the argument that fills it.
+    /// </summary>
+    private static readonly HashSet<string> AllowedPlaceholders = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Name",
-        "Key",
-        "NormalizedKey",
-        "Content",
-        "Fact",
-        "Facts",
+        "Store",
+        "Count",
+        "Kind",
+        "KeyState",
+        "KeyCreated",
+        "WalCheckpointAttempt",
+        "Verified",
+        "StillPending",
+        "FailureType",
+        "SqliteErrorCode",
+        "SqliteExtendedErrorCode",
+        "FingerprintsDiscarded",
+        "ReceiptsDiscarded",
     };
+
+    /// <summary>
+    /// An identifier that could hold an erased item's content, name, key or digest. A log argument that
+    /// mentions one is refused whatever its template says, because an innocuous placeholder name can carry
+    /// any argument.
+    /// </summary>
+    private static readonly Regex ContentBearingIdentifier = new(
+        "name|key|content|fact|fingerprint|keyId|digest|token|identity|value|text",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The log arguments a reviewer has read and found content-free although an identifier in them matches
+    /// <see cref="ContentBearingIdentifier"/>, each by the exact file and expression. Kept small on purpose.
+    /// </summary>
+    private static readonly (string File, string Expression, string Reason)[] ReviewedArguments =
+    [
+        (
+            "Memory/MemoryErasureAdministration.cs",
+            "counts.Fingerprints",
+            "The number of fingerprints a key reset discarded: a count, never a fingerprint."),
+        (
+            "Memory/MemoryErasureScrubber.cs",
+            "failure.GetType().Name",
+            "The failing exception's type name, never its message."),
+    ];
+
+    /// <summary>
+    /// The erasure family's source paths, relative to <c>src/RetroDownfall.Arcanum.Infrastructure/</c>: the
+    /// folder, the file pattern, and whether the folder is read recursively. A file found here that logs
+    /// must be one <see cref="ContentFreeLogFiles"/> scans.
+    /// </summary>
+    private static readonly (string Directory, string Pattern, bool Recursive)[] ErasurePaths =
+    [
+        ("Memory", "*.cs", true),
+        ("Security", "MemoryErasure*.cs", false),
+        ("Data", "MemoryErasure*.cs", false),
+        ("Covenant", "CovenantEntryErasure*.cs", false),
+        ("Data/Covenant", "CovenantEntryErasure*.cs", false),
+        ("Data/Covenant", "CovenantAgentErasure*.cs", false),
+        ("Backup", "BackupRestoreErasure*.cs", false),
+        ("Data", "CovenantLabeledArtifactGuard.cs", false),
+        ("Weave", "EmbeddingsResetService.cs", false),
+    ];
 
     /// <summary>
     /// The erase, release and administration services, ports and helpers. The ordinary store ports an
@@ -421,10 +480,99 @@ public sealed class MemoryErasureStructuralTests
             Assert.True(File.Exists(path), $"{InfrastructureRoot}/{file} is listed but does not exist.");
 
             violations.AddRange(
-                LogTemplateViolations(File.ReadAllText(path)).Select(violation => $"{file}: {violation}"));
+                LogTemplateViolations(File.ReadAllText(path), file).Select(violation => $"{file}: {violation}"));
         }
 
         Assert.Empty(violations);
+    }
+
+    /// <summary>
+    /// A reviewed argument exception names a file and an expression that still exist, so a stale one is
+    /// removed rather than left to excuse a later change.
+    /// </summary>
+    [Fact]
+    public void Every_reviewed_log_argument_is_still_logged_by_its_file()
+    {
+        string root = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), InfrastructureRoot);
+
+        Assert.All(
+            ReviewedArguments,
+            reviewed =>
+            {
+                Assert.Contains(reviewed.File, ContentFreeLogFiles);
+
+                Assert.False(string.IsNullOrWhiteSpace(reviewed.Reason));
+
+                Assert.Contains(
+                    reviewed.Expression,
+                    LoggedArgumentExpressions(File.ReadAllText(Path.Combine(root, reviewed.File))));
+            });
+    }
+
+    /// <summary>
+    /// Every file on an erasure path that logs is one the scan reads. The list above is closed by hand, so
+    /// this is what makes a new logging file join it instead of passing unread.
+    /// </summary>
+    [Fact]
+    public void Every_file_on_an_erasure_path_that_logs_is_in_the_scan()
+    {
+        (string Path, string Text)[] discovered = DiscoverErasureSources();
+
+        // The discovery is only as good as its paths, so it is shown to reach each kind of file it names.
+        string[] reached =
+        [
+            "Memory/MemoryErasureRelease.cs",
+            "Security/MemoryErasureKeyring.cs",
+            "Data/MemoryErasureKeyWarmup.cs",
+            "Covenant/CovenantEntryErasureService.cs",
+            "Data/Covenant/CovenantEntryErasurePlan.cs",
+            "Data/Covenant/CovenantAgentErasureGate.cs",
+            "Backup/BackupRestoreErasureEvidenceApplier.cs",
+            "Data/CovenantLabeledArtifactGuard.cs",
+            "Weave/EmbeddingsResetService.cs",
+        ];
+
+        Assert.All(reached, path => Assert.Contains(discovered, source => source.Path == path));
+
+        Assert.Empty(UnscannedLoggingFiles(discovered, ContentFreeLogFiles));
+    }
+
+    [Fact]
+    public void The_discovery_flags_a_logging_file_the_scan_does_not_read()
+    {
+        const string logging = """
+            internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger)
+            {
+                internal void Erase(int store) => logger.LogInformation("Erased in {Store}.", store);
+            }
+            """;
+
+        const string attribute = """
+            internal static partial class Fixture
+            {
+                [LoggerMessage(EventId = 1, Level = LogLevel.Information, Message = "Erased in {Store}.")]
+                internal static partial void Erased(ILogger logger, int store);
+            }
+            """;
+
+        const string silent = """
+            internal sealed class Fixture
+            {
+                internal int Erase(int store) => store + 1;
+            }
+            """;
+
+        (string Path, string Text)[] sources =
+        [
+            ("Memory/NewEraser.cs", logging),
+            ("Memory/NewAttributeEraser.cs", attribute),
+            ("Memory/Quiet.cs", silent),
+            ("Memory/Listed.cs", logging),
+        ];
+
+        Assert.Equal(
+            ["Memory/NewAttributeEraser.cs", "Memory/NewEraser.cs"],
+            UnscannedLoggingFiles(sources, ["Memory/Listed.cs"]).Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -433,7 +581,7 @@ public sealed class MemoryErasureStructuralTests
         const string flagged = """
             internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger)
             {
-                internal void Erase(string name) => logger.LogWarning("Erased {Name}.", name);
+                internal void Erase(int store) => logger.LogWarning("Erased {Name}.", store);
             }
             """;
 
@@ -450,12 +598,14 @@ public sealed class MemoryErasureStructuralTests
             }
             """;
 
-        Assert.Equal(2, LogTemplateViolations(attribute).Count);
+        // Each method is refused twice, once for the placeholder it names and once for the parameter that
+        // fills it, because either half alone could carry the content.
+        Assert.Equal(4, LogTemplateViolations(attribute).Count);
 
         const string clean = """
             internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger)
             {
-                internal void Erase(int store) => logger.LogInformation("Erased one item in store {Store}; {NameCount} names.", store, 1);
+                internal void Erase(int store) => logger.LogInformation("Erased one item in store {Store}; {Count} rows.", store, 1);
 
                 internal string Describe(string name) => string.Format("Erased {Name}.", name);
             }
@@ -465,26 +615,86 @@ public sealed class MemoryErasureStructuralTests
     }
 
     /// <summary>
+    /// The template is not the only half of a log line that can carry content: an innocuous placeholder name
+    /// can be filled with anything. A placeholder off the allow-list is refused, and so is any argument whose
+    /// identifier could hold content, whatever it is logged under.
+    /// </summary>
+    [Theory]
+    [InlineData("logger.LogInformation(\"Probe {Detail}.\", Convert.ToHexString(keyId));", 2)]
+    [InlineData("logger.LogInformation(\"Probe {Store}.\", Convert.ToHexString(keyId));", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Store}.\", fingerprint);", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Count}.\", item.Content.Length);", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Store}.\", subject.NormalizedName);", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Store}.\", requestDigest);", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Store}.\", preflightToken);", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Store}.\", identity.Value);", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Store}.\", facts.Text);", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Detail}.\", store);", 1)]
+    [InlineData("logger.LogInformation(\"Probe {Store}.\", store);", 0)]
+    [InlineData("logger.LogInformation(\"Probe {Store}: {Count}.\", store, rows.Count);", 0)]
+    [InlineData("logger.LogInformation(\"Probe {Store}: {FailureType}.\", store, failure.GetType().Name);", 1)]
+    public void The_log_template_scan_refuses_an_unreviewed_placeholder_or_a_content_bearing_argument(string call, int expected)
+    {
+        string source = $$"""
+            internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger)
+            {
+                internal void Erase(int store)
+                {
+                    {{call}}
+                }
+            }
+            """;
+
+        Assert.Equal(expected, LogTemplateViolations(source).Count);
+    }
+
+    /// <summary>
+    /// A reviewed argument excuses exactly the expression a reviewer read in exactly the file it was read
+    /// in, and nothing else that happens to match.
+    /// </summary>
+    [Fact]
+    public void A_reviewed_argument_excuses_only_its_own_file_and_expression()
+    {
+        const string source = """
+            internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger)
+            {
+                internal void Reset(Counts counts, Exception failure)
+                {
+                    logger.LogInformation("Discarded {FingerprintsDiscarded}.", counts.Fingerprints);
+
+                    logger.LogInformation("Discarded {FingerprintsDiscarded}.", counts.FingerprintList);
+                }
+            }
+            """;
+
+        Assert.Equal(2, LogTemplateViolations(source).Count);
+
+        Assert.Equal(2, LogTemplateViolations(source, "Memory/MemoryErasureRelease.cs").Count);
+
+        Assert.Single(LogTemplateViolations(source, "Memory/MemoryErasureAdministration.cs"));
+    }
+
+    /// <summary>
     /// Every logging call shape the listed files use, or could, is scanned: Serilog's static and
     /// instance API as well as <c>ILogger</c>, message definitions, scopes, and interpolated
     /// templates, which carry whatever they interpolate into the log whatever the placeholder is named.
     /// </summary>
     [Theory]
-    [InlineData("Log.Warning(\"Erased {Name}.\", name);", 1)]
-    [InlineData("Serilog.Log.Error(\"Released {Content}.\", name);", 1)]
-    [InlineData("global::Serilog.Log.Information(\"Erased {Key}.\", name);", 1)]
-    [InlineData("Log.ForContext<Fixture>().Debug(\"Erased {Facts}.\", name);", 1)]
-    [InlineData("_log.Verbose(\"Erased {NormalizedKey}.\", name);", 1)]
-    [InlineData("Log.Write(LogEventLevel.Warning, \"Erased {Fact}.\", name);", 1)]
-    [InlineData("Log.Fatal(\"Erased {name}.\", name);", 1)]
-    [InlineData("logger.LogWarning(\"Erased {Name}.\", name);", 1)]
-    [InlineData("logger.Log(LogLevel.Warning, \"Erased {Name}.\", name);", 1)]
-    [InlineData("_ = logger.BeginScope(\"Erasing {Name}.\", name);", 1)]
+    [InlineData("Log.Warning(\"Erased {Name}.\", store);", 1)]
+    [InlineData("Serilog.Log.Error(\"Released {Content}.\", store);", 1)]
+    [InlineData("global::Serilog.Log.Information(\"Erased {Key}.\", store);", 1)]
+    [InlineData("Log.ForContext<Fixture>().Debug(\"Erased {Facts}.\", store);", 1)]
+    [InlineData("_log.Verbose(\"Erased {NormalizedKey}.\", store);", 1)]
+    [InlineData("Log.Write(LogEventLevel.Warning, \"Erased {Fact}.\", store);", 1)]
+    [InlineData("Log.Fatal(\"Erased {name}.\", store);", 1)]
+    [InlineData("logger.LogWarning(\"Erased {Name}.\", store);", 1)]
+    [InlineData("logger.Log(LogLevel.Warning, \"Erased {Name}.\", store);", 1)]
+    [InlineData("_ = logger.BeginScope(\"Erasing {Name}.\", store);", 1)]
     [InlineData("_ = LoggerMessage.Define<string>(LogLevel.Information, new EventId(1), \"Erased {Key}.\");", 1)]
     [InlineData("Log.Information($\"Erased {name}.\");", 1)]
     [InlineData("logger.LogInformation($\"Erased {name}.\");", 1)]
-    [InlineData("Log.Warning(\"The erasure key is {KeyState}.\", name);", 0)]
-    [InlineData("logger.LogInformation(\"Checkpoint attempt: {WalCheckpointAttempt}.\", name);", 0)]
+    [InlineData("Log.Warning(\"The erasure key is {KeyState}.\", state);", 0)]
+    [InlineData("logger.LogInformation(\"Checkpoint attempt: {WalCheckpointAttempt}.\", attempt);", 0)]
     [InlineData("_ = string.Format(\"Erased {Name}.\", name);", 0)]
     public void The_log_template_scan_reads_every_logging_call_shape(string call, int expected)
     {
@@ -502,56 +712,197 @@ public sealed class MemoryErasureStructuralTests
     }
 
     /// <summary>
-    /// Every placeholder the scan forbids in a template passed to a <c>Log…</c> invocation or declared
-    /// on a <c>[LoggerMessage]</c> attribute.
+    /// Everything in a log line on an erasure path that could copy content into a log: a placeholder off the
+    /// allow-list in a template passed to a <c>Log…</c> invocation or declared on a <c>[LoggerMessage]</c>
+    /// attribute, an interpolated string, and an argument or declared parameter with an identifier that could
+    /// hold content.
     /// </summary>
-    private static List<string> LogTemplateViolations(string source)
+    /// <param name="source">The file's text.</param>
+    /// <param name="file">
+    /// The file's path relative to the Infrastructure root, which is what a reviewed argument is keyed by;
+    /// null for a fixture, which has none.
+    /// </param>
+    private static List<string> LogTemplateViolations(string source, string? file = null)
     {
-        CompilationUnitSyntax root = CSharpSyntaxTree
-            .ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))
-            .GetCompilationUnitRoot();
-
-        List<SyntaxNode> templates =
-        [
-            .. root.DescendantNodes()
-                .OfType<InvocationExpressionSyntax>()
-                .Where(static invocation => IsLogCall(invocation))
-                .Select(static invocation => (SyntaxNode)invocation.ArgumentList),
-            .. root.DescendantNodes()
-                .OfType<AttributeSyntax>()
-                .Where(static attribute => attribute.Name.ToString() is "LoggerMessage" or "LoggerMessageAttribute"
-                    || attribute.Name.ToString().EndsWith(".LoggerMessage", StringComparison.Ordinal)
-                    || attribute.Name.ToString().EndsWith(".LoggerMessageAttribute", StringComparison.Ordinal))
-                .Where(static attribute => attribute.ArgumentList is not null)
-                .Select(static attribute => (SyntaxNode)attribute.ArgumentList!),
-        ];
+        CompilationUnitSyntax root = ParseUnit(source);
 
         List<string> violations = [];
 
-        foreach (SyntaxNode arguments in templates)
+        foreach (InvocationExpressionSyntax invocation in root.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(static invocation => IsLogCall(invocation)))
         {
-            foreach (LiteralExpressionSyntax literal in arguments.DescendantNodes()
-                .OfType<LiteralExpressionSyntax>()
-                .Where(static literal => literal.IsKind(SyntaxKind.StringLiteralExpression)))
+            foreach (ArgumentSyntax argument in invocation.ArgumentList.Arguments)
             {
-                foreach (Match match in Placeholder.Matches(literal.Token.ValueText))
+                ScanTemplate(argument, violations);
+
+                ScanArgumentIdentifiers(argument.Expression, file, violations);
+            }
+        }
+
+        foreach (AttributeSyntax attribute in LoggerMessageAttributes(root).Where(static attribute => attribute.ArgumentList is not null))
+        {
+            ScanTemplate(attribute.ArgumentList!, violations);
+
+            if (attribute.Parent?.Parent is MethodDeclarationSyntax method)
+            {
+                foreach (ParameterSyntax parameter in method.ParameterList.Parameters
+                    .Where(static parameter => parameter.Type?.ToString() is not ("ILogger" or "Exception")
+                        && parameter.Type?.ToString().EndsWith(".ILogger", StringComparison.Ordinal) is not true))
                 {
-                    if (ForbiddenPlaceholders.Contains(match.Groups["name"].Value))
+                    string name = parameter.Identifier.ValueText;
+
+                    if (ContentBearingIdentifier.IsMatch(name) && !IsReviewed(file, name))
                     {
-                        violations.Add($"{match.Value} in \"{literal.Token.ValueText}\"");
+                        violations.Add($"the parameter {name} of the log message {method.Identifier.ValueText}");
                     }
                 }
-            }
-
-            foreach (InterpolatedStringExpressionSyntax interpolated in arguments.DescendantNodes()
-                .OfType<InterpolatedStringExpressionSyntax>())
-            {
-                violations.Add($"an interpolated string in a log call: {interpolated}");
             }
         }
 
         return violations;
     }
+
+    /// <summary>
+    /// The placeholders in every string literal under a node that are not on the allow-list, and every
+    /// interpolated string under it, which carries whatever it interpolates whatever the placeholder is named.
+    /// </summary>
+    private static void ScanTemplate(SyntaxNode node, List<string> violations)
+    {
+        foreach (LiteralExpressionSyntax literal in node.DescendantNodesAndSelf()
+            .OfType<LiteralExpressionSyntax>()
+            .Where(static literal => literal.IsKind(SyntaxKind.StringLiteralExpression)))
+        {
+            foreach (Match match in Placeholder.Matches(literal.Token.ValueText))
+            {
+                if (!AllowedPlaceholders.Contains(match.Groups["name"].Value))
+                {
+                    violations.Add($"{match.Value} in \"{literal.Token.ValueText}\" is not an allowed placeholder");
+                }
+            }
+        }
+
+        foreach (InterpolatedStringExpressionSyntax interpolated in node.DescendantNodesAndSelf()
+            .OfType<InterpolatedStringExpressionSyntax>())
+        {
+            violations.Add($"an interpolated string in a log call: {interpolated}");
+        }
+    }
+
+    /// <summary>
+    /// An argument that mentions an identifier which could hold content, unless a reviewer has read that
+    /// exact expression in that exact file. An interpolated string is refused as a whole by
+    /// <see cref="ScanTemplate"/>, so its identifiers are not counted twice.
+    /// </summary>
+    private static void ScanArgumentIdentifiers(ExpressionSyntax expression, string? file, List<string> violations)
+    {
+        if (expression.DescendantNodesAndSelf().OfType<InterpolatedStringExpressionSyntax>().Any())
+        {
+            return;
+        }
+
+        string[] matching =
+        [
+            .. expression.DescendantTokens()
+                .Where(static token => token.IsKind(SyntaxKind.IdentifierToken))
+                .Select(static token => token.ValueText)
+                .Where(static identifier => ContentBearingIdentifier.IsMatch(identifier))
+                .Distinct(StringComparer.Ordinal),
+        ];
+
+        if (matching.Length > 0 && !IsReviewed(file, Compact(expression)))
+        {
+            violations.Add($"the argument {Compact(expression)} names {string.Join(", ", matching)}");
+        }
+    }
+
+    private static bool IsReviewed(string? file, string expression) =>
+        file is not null
+        && ReviewedArguments.Any(reviewed =>
+            string.Equals(reviewed.File, file, StringComparison.Ordinal)
+            && string.Equals(reviewed.Expression, expression, StringComparison.Ordinal));
+
+    /// <summary>An expression's text with every run of whitespace removed, so a reviewed one survives a reflow.</summary>
+    private static string Compact(SyntaxNode node) =>
+        string.Concat(node.ToString().Where(static character => !char.IsWhiteSpace(character)));
+
+    /// <summary>The compacted text of every non-template argument of every log call in a file.</summary>
+    private static List<string> LoggedArgumentExpressions(string source) =>
+    [
+        .. ParseUnit(source)
+            .DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(static invocation => IsLogCall(invocation))
+            .SelectMany(static invocation => invocation.ArgumentList.Arguments)
+            .Select(static argument => Compact(argument.Expression)),
+    ];
+
+    private static IEnumerable<AttributeSyntax> LoggerMessageAttributes(CompilationUnitSyntax root) =>
+        root.DescendantNodes()
+            .OfType<AttributeSyntax>()
+            .Where(static attribute => attribute.Name.ToString() is "LoggerMessage" or "LoggerMessageAttribute"
+                || attribute.Name.ToString().EndsWith(".LoggerMessage", StringComparison.Ordinal)
+                || attribute.Name.ToString().EndsWith(".LoggerMessageAttribute", StringComparison.Ordinal));
+
+    /// <summary>Whether a file writes any log line or declares any log message.</summary>
+    private static bool LogsAnything(string source)
+    {
+        CompilationUnitSyntax root = ParseUnit(source);
+
+        return root.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(static invocation => IsLogCall(invocation))
+            || LoggerMessageAttributes(root).Any();
+    }
+
+    /// <summary>
+    /// The files on an erasure path that log, and are not among the files the scan reads. Each is a file
+    /// whose log lines nothing has checked.
+    /// </summary>
+    private static List<string> UnscannedLoggingFiles(
+        IEnumerable<(string Path, string Text)> sources,
+        IEnumerable<string> scanned)
+    {
+        HashSet<string> read = new(scanned, StringComparer.Ordinal);
+
+        return
+        [
+            .. sources
+                .Where(source => !read.Contains(source.Path) && LogsAnything(source.Text))
+                .Select(static source => source.Path),
+        ];
+    }
+
+    /// <summary>
+    /// Every source file on <see cref="ErasurePaths"/>, with the path relative to the Infrastructure root
+    /// and its text.
+    /// </summary>
+    private static (string Path, string Text)[] DiscoverErasureSources()
+    {
+        string root = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), InfrastructureRoot);
+
+        List<(string Path, string Text)> found = [];
+
+        foreach ((string directory, string pattern, bool recursive) in ErasurePaths)
+        {
+            string folder = Path.Combine(root, directory);
+
+            Assert.True(Directory.Exists(folder), $"{InfrastructureRoot}/{directory} is named as an erasure path but does not exist.");
+
+            foreach (string file in Directory.EnumerateFiles(
+                folder,
+                pattern,
+                recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly))
+            {
+                found.Add((Path.GetRelativePath(root, file).Replace('\\', '/'), File.ReadAllText(file)));
+            }
+        }
+
+        Assert.NotEmpty(found);
+
+        return [.. found.DistinctBy(static source => source.Path, StringComparer.Ordinal)];
+    }
+
+    private static CompilationUnitSyntax ParseUnit(string source) =>
+        CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview)).GetCompilationUnitRoot();
 
     /// <summary>
     /// Whether an invocation writes a log line or declares a log template.
