@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Collection("ProcessEnvironment")]
 public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 {
-
     private readonly string? _originalDotnetEnvironment;
 
     private readonly string? _originalAspNetCoreEnvironment;
@@ -29,7 +28,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
     public GrimoireMaintenanceConnectionFactoryTests()
     {
-
         _originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
 
         _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
@@ -43,7 +41,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _testHome);
 
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
-
     }
 
     [Theory]
@@ -56,7 +53,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
     public async Task Capability_mismatch_or_terminal_state_is_typed_and_performs_zero_construction_or_open(
         CapabilityMismatch mismatch)
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(1);
@@ -94,7 +90,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         if (mismatch == CapabilityMismatch.Reused)
         {
-
             Result<IGrimoireTrackedMaintenanceHandle> first = capability.Consume(
                 exactLane.Owner,
                 exactLane.Generation,
@@ -104,13 +99,10 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
 
             Assert.True(first.Value.ReportNotOpened().IsSuccess);
-
         }
         else if (mismatch == CapabilityMismatch.Disposed)
         {
-
             await capability.DisposeAsync();
-
         }
 
         RecordingRuntime runtime = new(initializeProvider: false)
@@ -152,13 +144,11 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Adopter_owned_interlock_refuses_a_retired_lane_before_construction_or_open()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(3);
@@ -216,13 +206,11 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Assert.Equal(0, initializer.InitializeCount);
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Fact]
     public async Task Native_runtime_failure_precedes_provider_construction_and_reports_not_opened_once()
     {
-
         List<string> events = [];
 
         RecordingHandle handle = new(events);
@@ -262,13 +250,11 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Assert.Equal(0, handle.PhysicallyClosedCount);
 
         Assert.Equal(["consume", "runtime", "not-opened"], events);
-
     }
 
     [Fact]
     public async Task Provider_construction_failure_reports_not_opened_once_before_any_open_start()
     {
-
         List<string> events = [];
 
         RecordingHandle handle = new(events);
@@ -303,13 +289,11 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Assert.Equal(["consume", "runtime", "passphrase", "not-opened"], events);
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Fact]
     public async Task Open_start_refusal_disposes_the_unopened_provider_and_reports_not_opened_once()
     {
-
         List<string> events = [];
 
         RecordingHandle handle = new(events)
@@ -342,13 +326,11 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             events);
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Fact]
     public async Task Native_open_failure_reports_physical_closure_once_after_open_start()
     {
-
         Directory.Delete(ArcanumPaths.GrimoireDirectory, recursive: true);
 
         List<string> events = [];
@@ -381,7 +363,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Assert.Equal(0, initializer.InitializeCount);
 
         AssertOrdered(events, "open-start", "physically-closed");
-
     }
 
     [Theory]
@@ -390,7 +371,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
     public async Task Initializer_failure_or_cancellation_disposes_before_reporting_physical_closure(
         bool cancellation)
     {
-
         List<string> events = [];
 
         RecordingHandle handle = new(events);
@@ -417,17 +397,13 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         if (cancellation)
         {
-
             _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => open);
-
         }
         else
         {
-
             Result<IGrimoireMaintenanceConnectionLease> result = await open;
 
             AssertUnavailable(result);
-
         }
 
         Assert.Equal(CovenantSqliteConnectionMode.ExclusiveMaintenance, initializer.Mode);
@@ -445,13 +421,11 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Assert.Equal(ConnectionState.Closed, initializer.Connection.State);
 
         AssertOrdered(events, "open-start", "initializer", "physically-closed");
-
     }
 
     [Fact]
     public async Task Successful_open_is_canonical_unpooled_read_write_and_exclusively_initialized()
     {
-
         List<string> events = [];
 
         RecordingHandle handle = new(events);
@@ -498,13 +472,71 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         AssertOrdered(events, "consume", "runtime", "passphrase", "open-start", "initializer");
 
         await lease.DisposeAsync();
+    }
 
+    [SkippableFact]
+    public async Task OpenJournalCandidateReopenAsync_OpensAPathContainingQuestionMarkAndPercent()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "A Windows file name cannot contain a question mark.");
+
+        string directory = Path.Combine(_testHome, "reopen-special-characters");
+
+        Directory.CreateDirectory(directory);
+
+        string databasePath = Path.Combine(directory, "a?b%c#d.db");
+
+        SqliteNativeRuntime.Instance.Initialize();
+
+        await using (SqliteConnection seed = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+
+            Password = "journal-maintenance-passphrase",
+
+            Pooling = false,
+        }.ToString()))
+        {
+            await seed.OpenAsync();
+
+            await using SqliteCommand create = seed.CreateCommand();
+
+            create.CommandText = "CREATE TABLE probe (value INTEGER NOT NULL); INSERT INTO probe (value) VALUES (7);";
+
+            _ = await create.ExecuteNonQueryAsync();
+        }
+
+        GrimoireMaintenanceConnectionFactory factory = new(
+            new RecordingPassphraseSource(),
+            new RecordingInitializer(),
+            new RecordingRuntime(initializeProvider: true));
+
+        Result<IGrimoireMaintenanceConnectionLease> result =
+            await factory.OpenJournalCandidateReopenAsync(
+                new RecordingCapability(new RecordingHandle())
+                {
+                    CanonicalPath = databasePath,
+
+                    Mode = CovenantMaintenanceConnectionMode.ReadOnly,
+
+                    Purpose = CovenantMaintenanceConnectionPurpose.ReopenVerification,
+                },
+                new RecordingLane(Owner(11), 14),
+                CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        await using IGrimoireMaintenanceConnectionLease lease = result.Value;
+
+        await using SqliteCommand read = lease.Connection.CreateCommand();
+
+        read.CommandText = "SELECT value FROM probe";
+
+        Assert.Equal(7L, await read.ExecuteScalarAsync());
     }
 
     [Fact]
     public async Task Lease_disposal_closes_and_disposes_before_reporting_once()
     {
-
         List<string> events = [];
 
         RecordingHandle handle = new(events);
@@ -537,13 +569,11 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Assert.Equal(ConnectionState.Closed, handle.StateAtPhysicalClose);
 
         AssertOrdered(events, "initializer", "physically-closed");
-
     }
 
     [Fact]
     public async Task Lane_disposal_waits_for_the_factory_lease_to_physically_close()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(11);
@@ -586,12 +616,10 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     public void Dispose()
     {
-
         SqliteConnection.ClearAllPools();
 
         global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", _originalDotnetEnvironment);
@@ -602,11 +630,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         if (Directory.Exists(_testHome))
         {
-
             Directory.Delete(_testHome, recursive: true);
-
         }
-
     }
 
     private static GrimoireConnectionAdmissionGate CreateGate() =>
@@ -619,7 +644,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireConnectionAdmissionGate gate,
         CovenantExclusiveRecoveryOwner owner)
     {
-
         Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(owner);
 
         Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
@@ -632,7 +656,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         return closed.Value;
-
     }
 
     private static CovenantExclusiveRecoveryOwner Owner(byte seed) =>
@@ -643,21 +666,17 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
     private static void AssertUnavailable(Result<IGrimoireMaintenanceConnectionLease> result)
     {
-
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
-
     }
 
     private static void AssertOrdered(IReadOnlyList<string> events, params string[] expected)
     {
-
         int previous = -1;
 
         foreach (string value in expected)
         {
-
             int current = events.ToList().IndexOf(value);
 
             Assert.True(
@@ -665,14 +684,11 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
                 $"Expected '{value}' after index {previous}: {string.Join(", ", events)}");
 
             previous = current;
-
         }
-
     }
 
     public enum CapabilityMismatch : byte
     {
-
         ForeignOwner = 1,
 
         ForeignGeneration = 2,
@@ -684,14 +700,12 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Reused = 7,
 
         Disposed = 8,
-
     }
 
     private sealed class RecordingCapability(
         IGrimoireTrackedMaintenanceHandle handle,
         List<string>? events = null) : IGrimoireMaintenanceConnectionCapability
     {
-
         private readonly List<string> _events = events ?? [];
 
         internal int ConsumeCount { get; private set; }
@@ -710,23 +724,19 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             CovenantMaintenanceConnectionPurpose purpose,
             IGrimoireMaintenanceIoLane lane)
         {
-
             ConsumeCount++;
 
             _events.Add("consume");
 
             return Result<IGrimoireTrackedMaintenanceHandle>.Success(handle);
-
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class RecordingHandle(List<string>? events = null)
         : IGrimoireTrackedMaintenanceHandle
     {
-
         private readonly List<string> _events = events ?? [];
 
         internal Func<ConnectionState?>? ObserveState { get; set; }
@@ -743,29 +753,24 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         public Result ReportOpenStarted()
         {
-
             OpenStartedCount++;
 
             _events.Add("open-start");
 
             return OpenStartedResult;
-
         }
 
         public Result ReportNotOpened()
         {
-
             NotOpenedCount++;
 
             _events.Add("not-opened");
 
             return Result.Success();
-
         }
 
         public Result ReportPhysicallyClosed()
         {
-
             PhysicallyClosedCount++;
 
             StateAtPhysicalClose = ObserveState?.Invoke() ?? ConnectionState.Closed;
@@ -773,25 +778,20 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             _events.Add("physically-closed");
 
             return Result.Success();
-
         }
 
         public ValueTask DisposeAsync()
         {
-
             _events.Add("handle-disposed");
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private class RecordingLane(
         CovenantExclusiveRecoveryOwner owner,
         long generation) : IGrimoireMaintenanceIoLane
     {
-
         public CovenantExclusiveRecoveryOwner Owner { get; } = owner;
 
         public long Generation { get; } = generation;
@@ -803,7 +803,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             ValueTask.FromResult(Result.Success());
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class ForeignLane(
@@ -814,7 +813,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         bool initializeProvider,
         List<string>? events = null) : ISqliteNativeRuntime
     {
-
         private readonly List<string> _events = events ?? [];
 
         internal Exception? Failure { get; init; }
@@ -823,33 +821,25 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         public void Initialize()
         {
-
             InitializeCount++;
 
             _events.Add("runtime");
 
             if (Failure is not null)
             {
-
                 throw Failure;
-
             }
 
             if (initializeProvider)
             {
-
                 SqliteNativeRuntime.Instance.Initialize();
-
             }
-
         }
-
     }
 
     private class RecordingPassphraseSource(List<string>? events = null)
         : IGrimoireDbPassphraseSource
     {
-
         private readonly List<string> _events = events ?? [];
 
         internal int ReadCount { get; private set; }
@@ -858,42 +848,34 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         {
             get
             {
-
                 ReadCount++;
 
                 _events.Add("passphrase");
 
                 return "journal-maintenance-passphrase";
-
             }
         }
 
         public void SetPassphrase(string passphrase) => throw new NotSupportedException();
-
     }
 
     private sealed class ThrowingPassphraseSource(List<string>? events = null)
         : RecordingPassphraseSource(events)
     {
-
         public override string Passphrase
         {
             get
             {
-
                 _ = base.Passphrase;
 
                 throw new InvalidOperationException("provider construction failure");
-
             }
         }
-
     }
 
     private sealed class RecordingInitializer(List<string>? events = null)
         : ICovenantSqliteConnectionInitializer
     {
-
         private readonly List<string> _events = events ?? [];
 
         internal Exception? Failure { get; init; }
@@ -909,7 +891,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             CovenantSqliteConnectionMode mode,
             CancellationToken cancellationToken)
         {
-
             InitializeCount++;
 
             Connection = connection;
@@ -921,7 +902,6 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             return Failure is null
                 ? ValueTask.CompletedTask
                 : ValueTask.FromException(Failure);
-
         }
 
         public CovenantSqliteAuthorizationScope Authorize(
@@ -933,12 +913,10 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
             RestoreStagingManagedAuthoritySanitizationCapability authority,
             RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class NoOpDrain : ICovenantConnectionDrain
     {
-
         public IDisposable Register(SqliteConnection connection) => new NoOpDisposable();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
@@ -948,13 +926,9 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         private sealed class NoOpDisposable : IDisposable
         {
-
             public void Dispose()
             {
             }
-
         }
-
     }
-
 }
