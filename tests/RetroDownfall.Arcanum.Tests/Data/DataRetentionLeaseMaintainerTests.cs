@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
@@ -250,37 +249,99 @@ public sealed class DataRetentionLeaseMaintainerTests
         Assert.Equal(0, Volatile.Read(ref renewals));
     }
 
+    /// <summary>
+    /// A renewal that throws cancels the running action, waits for it to finish, and rethrows the
+    /// renewal's own exception, leaving no task whose fault nobody observed.
+    /// </summary>
+    /// <remarks>
+    /// The heartbeat is fired by hand through the tracking provider, so the renewal runs exactly once and
+    /// at a known moment. The action only ends when its token is cancelled, so a maintainer that rethrew
+    /// without cancelling it, or returned before joining it, fails the bounded waits here instead of
+    /// passing.
+    /// </remarks>
     [Fact]
-
-    public void RunAsync_FinallyObservesTheCancelledLosingHeartbeatDelay()
+    public async Task RunAsync_WhenRenewalThrows_CancelsActionAndRethrows()
     {
-        string source = File.ReadAllText(
-            Path.Combine(
-                FindRepositoryRoot(),
-                "src",
-                "RetroDownfall.Arcanum.Infrastructure",
-                "Data",
-                "DataRetentionLeaseMaintainer.cs"));
+        TrackingTimeProvider timeProvider = new();
 
-        string compactSource = string.Concat(
-            source.Where(static character => !char.IsWhiteSpace(character)));
+        InvalidOperationException renewalFailure = new("renewal failed");
 
-        Assert.Contains(
-            "finally{try{heartbeatCancellation.Cancel();}finally{"
-                + "if(pendingHeartbeatDelayisnotnull){"
-                + "awaitObserveCompletionAsync(pendingHeartbeatDelay).ConfigureAwait(false);",
-            compactSource,
-            StringComparison.Ordinal);
+        TaskCompletionSource actionCancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        List<Exception> unobserved = [];
+
+        void RecordUnobserved(object? sender, UnobservedTaskExceptionEventArgs args)
+        {
+            lock (unobserved)
+            {
+                unobserved.AddRange(args.Exception.InnerExceptions);
+            }
+        }
+
+        TaskScheduler.UnobservedTaskException += RecordUnobserved;
+
+        try
+        {
+            await RenewalThrowsAsync(timeProvider, renewalFailure, actionCancelled);
+
+            GC.Collect();
+
+            GC.WaitForPendingFinalizers();
+
+            GC.Collect();
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= RecordUnobserved;
+        }
+
+        Assert.Empty(unobserved);
     }
 
-    private static string FindRepositoryRoot(
-        [CallerFilePath] string sourceFilePath = "") =>
-        Path.GetFullPath(
-            Path.Combine(
-                Path.GetDirectoryName(sourceFilePath)!,
-                "..",
-                "..",
-                ".."));
+    /// <summary>
+    /// The body of the renewal-throws case, in its own method so no local outlives it and the collection
+    /// after it can finalize every task it created.
+    /// </summary>
+    private static async Task RenewalThrowsAsync(
+        TrackingTimeProvider timeProvider,
+        InvalidOperationException renewalFailure,
+        TaskCompletionSource actionCancelled)
+    {
+        DataRetentionLeaseMaintainer maintainer = new(
+            (_, _, _, _, _) => Task.FromException<bool>(renewalFailure),
+            timeProvider,
+            leaseDuration: TimeSpan.FromMinutes(2),
+            heartbeatInterval: TimeSpan.FromMinutes(1));
+
+        Task<int> running = maintainer.RunAsync(
+            Guid.NewGuid(),
+            "retention-owner",
+            async cancellationToken =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+                    return 42;
+                }
+                finally
+                {
+                    actionCancelled.TrySetResult();
+                }
+            },
+            CancellationToken.None);
+
+        await timeProvider.TimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        timeProvider.FireLatest();
+
+        Exception? observed = await Record.ExceptionAsync(
+            async () => _ = await running.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.Same(renewalFailure, observed);
+
+        Assert.True(actionCancelled.Task.IsCompleted, "The maintainer returned before the action finished.");
+    }
 
     private sealed class TrackingTimeProvider : TimeProvider
     {
@@ -294,15 +355,28 @@ public sealed class DataRetentionLeaseMaintainerTests
 
         internal int Disposals => Volatile.Read(ref _disposals);
 
+        private (TimerCallback Callback, object? State)? _latest;
+
         public override ITimer CreateTimer(
             TimerCallback callback,
             object? state,
             TimeSpan dueTime,
             TimeSpan period)
         {
+            _latest = (callback, state);
+
             TimerCreated.TrySetResult();
 
             return new TrackingTimer(this);
+        }
+
+        /// <summary>Fires the most recently created timer, as if its due time had passed.</summary>
+        internal void FireLatest()
+        {
+            (TimerCallback callback, object? state) = _latest
+                ?? throw new InvalidOperationException("No timer has been created.");
+
+            callback(state);
         }
 
         private void RecordDisposal()
