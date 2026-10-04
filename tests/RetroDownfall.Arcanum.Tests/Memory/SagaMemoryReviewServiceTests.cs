@@ -876,6 +876,139 @@ public sealed class SagaMemoryReviewServiceTests
             CancellationToken.None).ConfigureAwait(false))!.Lifecycle.PinnedAtUtc);
     }
 
+    /// <summary>
+    /// R-025: "atomically apply" has to survive a failure that happens after validation, inside the
+    /// write, and after an earlier decision in the same batch already ran. The stale-item case above is
+    /// caught by validation before any decision runs, so it would stay green with no rollback at all.
+    /// A trigger that aborts the second correction's version insert is a failure validation cannot see.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_later_decision_failure_rolls_back_earlier_corrections_receipts_and_marker()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        DateTimeOffset created = DateTimeOffset.Parse(
+            "2026-09-28T12:00:00Z",
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        await InsertAsync(harness, "m-1", "first", created).ConfigureAwait(false);
+
+        await InsertAsync(harness, "m-2", "second", created.AddMinutes(1)).ConfigureAwait(false);
+
+        ReviewRuntime runtime = CreateRuntime(harness);
+
+        SagaReviewPageDto page = (await runtime.Service.ListAsync(
+            new SagaReviewListRequest(SagaMemoryScopeKind.Global, null, 10, null),
+            CancellationToken.None).ConfigureAwait(false)).Value;
+
+        // Newest first, so m-2 is decided (and written) before m-1 fails.
+        Assert.Equal(["m-2", "m-1"], page.Items.Select(static item => item.SubjectId));
+
+        const string FailingContent = "trigger-me";
+
+        SagaReviewBulkPrepareRequest request = new(
+            Guid.Parse("88888888-8888-8888-8888-888888888888"),
+            SagaMemoryScopeKind.Global,
+            CampaignId: null,
+            MemoryReviewAction.Correct,
+            [
+                new SagaReviewDecision(page.Items[0].ObservationToken, "second corrected"),
+                new SagaReviewDecision(page.Items[1].ObservationToken, FailingContent),
+            ]);
+
+        Result<MemoryReviewBulkPlanDto> plan = await runtime.Service.PrepareAsync(
+            request,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(plan.IsSuccess, plan.Error.Message);
+
+        BeforeApply before = await CaptureBeforeApplyAsync(harness, "m-2").ConfigureAwait(false);
+
+        // Survives validation and the first decision, then aborts the second correction's version insert.
+        await ExecuteRawAsync(
+            harness,
+            $"""
+            CREATE TEMP TRIGGER fail_second_correction BEFORE INSERT ON annal_versions
+            WHEN NEW.ContentHash = x'{Convert.ToHexString(AnnalContentDigest.ForSagaMemory(FailingContent))}'
+            BEGIN SELECT RAISE(ABORT, 'injected late failure'); END
+            """).ConfigureAwait(false);
+
+        // Not SQLITE_BUSY, so SqliteBusyRetry does not retry it: the storage fault escapes the apply.
+        _ = await Assert.ThrowsAnyAsync<Exception>(() => runtime.Service.ApplyAsync(
+            new SagaReviewBulkApplyRequest(request, plan.Value.PreparedPlanToken),
+            CancellationToken.None)).ConfigureAwait(false);
+
+        await AssertNothingChangedSinceAsync(harness, before, "m-2", "second").ConfigureAwait(false);
+
+        Assert.Equal("first", (await harness.Store.ReadCurationRowAsync(
+            "m-1",
+            CancellationToken.None).ConfigureAwait(false))!.Memory.Content);
+    }
+
+    /// <summary>
+    /// R-025: the same atomicity when the later decision fails by returning a failure rather than by
+    /// throwing. The memory's stored content drifted from its Annals head after the plan was prepared,
+    /// so correcting it back to the head's content appends nothing and that decision reports an
+    /// integrity failure after the earlier decision's writes landed.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_later_decision_that_reports_failure_rolls_back_earlier_corrections_receipts_and_marker()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        DateTimeOffset created = DateTimeOffset.Parse(
+            "2026-09-28T12:00:00Z",
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        await InsertAsync(harness, "m-1", "first", created).ConfigureAwait(false);
+
+        await InsertAsync(harness, "m-2", "second", created.AddMinutes(1)).ConfigureAwait(false);
+
+        ReviewRuntime runtime = CreateRuntime(harness);
+
+        SagaReviewPageDto page = (await runtime.Service.ListAsync(
+            new SagaReviewListRequest(SagaMemoryScopeKind.Global, null, 10, null),
+            CancellationToken.None).ConfigureAwait(false)).Value;
+
+        Assert.Equal(["m-2", "m-1"], page.Items.Select(static item => item.SubjectId));
+
+        SagaReviewBulkPrepareRequest request = new(
+            Guid.Parse("99999999-9999-9999-9999-999999999999"),
+            SagaMemoryScopeKind.Global,
+            CampaignId: null,
+            MemoryReviewAction.Correct,
+            [
+                new SagaReviewDecision(page.Items[0].ObservationToken, "second corrected"),
+                new SagaReviewDecision(page.Items[1].ObservationToken, "first"),
+            ]);
+
+        Result<MemoryReviewBulkPlanDto> plan = await runtime.Service.PrepareAsync(
+            request,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(plan.IsSuccess, plan.Error.Message);
+
+        await ExecuteRawAsync(
+            harness,
+            "UPDATE saga_memories SET Content = 'drifted' WHERE Id = 'm-1'").ConfigureAwait(false);
+
+        BeforeApply before = await CaptureBeforeApplyAsync(harness, "m-2").ConfigureAwait(false);
+
+        Result<MemoryReviewBulkResultDto> applied = await runtime.Service.ApplyAsync(
+            new SagaReviewBulkApplyRequest(request, plan.Value.PreparedPlanToken),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(applied.IsFailure);
+
+        await AssertNothingChangedSinceAsync(harness, before, "m-2", "second").ConfigureAwait(false);
+
+        Assert.Equal("drifted", (await harness.Store.ReadCurationRowAsync(
+            "m-1",
+            CancellationToken.None).ConfigureAwait(false))!.Memory.Content);
+    }
+
     [SkippableFact]
     public async Task Superseded_confirm_token_is_stale_and_refresh_only_exposes_the_actionable_head()
     {
@@ -1020,6 +1153,95 @@ public sealed class SagaMemoryReviewServiceTests
         SagaReviewItemDto unreviewed = Assert.Single(queue.Items);
 
         Assert.Equal("concurrent", unreviewed.SubjectId);
+    }
+
+    /// <summary>What a failed bulk apply must leave exactly as it found it.</summary>
+    private sealed record BeforeApply(
+        byte[] Embedding,
+        AnnalClaimHead Head,
+        long MarkerReviewedThrough,
+        long MarkerRevision,
+        int Versions,
+        int ReviewEvents);
+
+    private static async Task<BeforeApply> CaptureBeforeApplyAsync(SagaStoreHarness harness, string firstDecidedId)
+    {
+        (long reviewedThrough, long revision) = await ReadMarkerAsync(harness).ConfigureAwait(false);
+
+        return new BeforeApply(
+            await harness.EmbeddingBytesAsync(firstDecidedId).ConfigureAwait(false),
+            (await harness.Annals.GetClaimAsync(
+                AnnalSubjectStore.Saga,
+                firstDecidedId,
+                CancellationToken.None).ConfigureAwait(false))!,
+            reviewedThrough,
+            revision,
+            await harness.CountAsync("annal_versions", "1 = 1").ConfigureAwait(false),
+            await harness.CountAsync("annal_review_events", "1 = 1").ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Asserts the first decided memory's content, embedding and claim head, the marker, the version and
+    /// review-event counts, and the receipts are all exactly as <paramref name="before"/> recorded them.
+    /// </summary>
+    private static async Task AssertNothingChangedSinceAsync(
+        SagaStoreHarness harness,
+        BeforeApply before,
+        string firstDecidedId,
+        string originalContent)
+    {
+        Assert.Equal(originalContent, (await harness.Store.ReadCurationRowAsync(
+            firstDecidedId,
+            CancellationToken.None).ConfigureAwait(false))!.Memory.Content);
+
+        Assert.Equal(before.Embedding, await harness.EmbeddingBytesAsync(firstDecidedId).ConfigureAwait(false));
+
+        AnnalClaimHead head = (await harness.Annals.GetClaimAsync(
+            AnnalSubjectStore.Saga,
+            firstDecidedId,
+            CancellationToken.None).ConfigureAwait(false))!;
+
+        Assert.Equal(before.Head.CurrentRevision, head.CurrentRevision);
+
+        Assert.Equal(before.Head.CurrentVersionId, head.CurrentVersionId);
+
+        Assert.Equal(0, await harness.CountAsync("annal_review_decision_receipts", "1 = 1").ConfigureAwait(false));
+
+        (long reviewedThrough, long revision) = await ReadMarkerAsync(harness).ConfigureAwait(false);
+
+        Assert.Equal(before.MarkerReviewedThrough, reviewedThrough);
+
+        Assert.Equal(before.MarkerRevision, revision);
+
+        Assert.Equal(before.Versions, await harness.CountAsync("annal_versions", "1 = 1").ConfigureAwait(false));
+
+        Assert.Equal(
+            before.ReviewEvents,
+            await harness.CountAsync("annal_review_events", "1 = 1").ConfigureAwait(false));
+    }
+
+    private static async Task<(long ReviewedThrough, long Revision)> ReadMarkerAsync(SagaStoreHarness harness)
+    {
+        await using System.Data.Common.DbCommand command = harness.Connection.CreateCommand();
+
+        command.CommandText =
+            "SELECT ReviewedThroughSequence, Revision FROM annal_review_markers WHERE SubjectStoreCode = 1";
+
+        await using System.Data.Common.DbDataReader reader = await command.ExecuteReaderAsync()
+            .ConfigureAwait(false);
+
+        Assert.True(await reader.ReadAsync().ConfigureAwait(false), "The Saga review marker was never created.");
+
+        return (reader.GetInt64(0), reader.GetInt64(1));
+    }
+
+    private static async Task ExecuteRawAsync(SagaStoreHarness harness, string sql)
+    {
+        await using System.Data.Common.DbCommand command = harness.Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     /// <summary>

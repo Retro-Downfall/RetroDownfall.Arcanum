@@ -743,12 +743,19 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
         Assert.True(authorizedReplay.Value.Replayed);
     }
 
+    /// <summary>
+    /// R-025: a batch that applies one correction and then meets a stale target has to roll the applied
+    /// correction back with its receipts and marker. The earlier version of this test used Confirm, which
+    /// writes nothing, and receipts are written after the loop, so a zero receipt count held with or
+    /// without a rollback.
+    /// </summary>
     [Fact]
-    public async Task One_stale_target_rolls_back_the_entire_batch()
+    public async Task One_stale_target_after_an_applied_correction_rolls_back_the_earlier_correction_receipts_and_marker()
     {
         await using CorrectionFixture test = new(fixture, annals: true);
 
         LexiconEntryDetail first = await test.SeedAsync();
+
         Assert.True((await test.Concrete.UpsertAsync("Second", "place", ["east"], LexiconScope.Global)).IsSuccess);
 
         ILexiconMemoryReviewService review = Assert.IsAssignableFrom<ILexiconMemoryReviewService>(test.Concrete);
@@ -756,20 +763,63 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
         var listed = await review.ListAsync(
             new(LexiconCorrectionTests.Global, 50, null), null, CancellationToken.None);
 
+        // Newest first: "Second" is decided, and its correction written, before the stale "Entity" is met.
+        Assert.Equal(2, listed.Value.Items.Length);
+
+        Assert.Equal(first.Entry.Id, listed.Value.Items[1].EntryId);
+
         LexiconReviewBulkPrepareRequest request = new(
             Guid.NewGuid(),
             LexiconCorrectionTests.Global,
-            MemoryReviewAction.Confirm,
-            [.. listed.Value.Items.Select(static item => new LexiconReviewDecision(item.ObservationToken, null))]);
+            MemoryReviewAction.Correct,
+            [
+                new LexiconReviewDecision(listed.Value.Items[0].ObservationToken, new("place", ["east", "west"])),
+                new LexiconReviewDecision(listed.Value.Items[1].ObservationToken, new("person", ["gamma"])),
+            ]);
 
         var prepared = await review.PrepareAsync(request, null, CancellationToken.None);
 
+        Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+        // The stale target: corrected elsewhere after the plan was prepared.
         Assert.True((await test.Service.CorrectAsync(first.Target, new("person", ["changed"]), null)).IsSuccess);
+
+        string[] storeBefore = await test.SnapshotAsync();
+
+        object? markerBefore = await test.ScalarAsync(
+            "SELECT ReviewedThroughSequence || ':' || Revision FROM annal_review_markers WHERE SubjectStoreCode = 2");
+
+        Assert.NotNull(markerBefore);
+
+        object? eventsBefore = await test.ScalarAsync("SELECT count(*) FROM annal_review_events");
 
         var applied = await review.ApplyAsync(new(request, prepared.Value.PreparedPlanToken), null, CancellationToken.None);
 
         Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.MemoryReview.StaleObservation, applied.Error.Code);
+
         Assert.Equal(0L, await test.ScalarAsync("SELECT count(*) FROM annal_review_decision_receipts"));
+
+        Assert.Equal(
+            markerBefore,
+            await test.ScalarAsync(
+                "SELECT ReviewedThroughSequence || ':' || Revision FROM annal_review_markers WHERE SubjectStoreCode = 2"));
+
+        Assert.Equal(eventsBefore, await test.ScalarAsync("SELECT count(*) FROM annal_review_events"));
+
+        // The first decision's correction is gone with everything it wrote: entry, search row, Annals
+        // version and head, and provenance.
+        Assert.Equal(storeBefore, await test.SnapshotAsync());
+
+        LexiconEntryDetail second = (await test.Concrete.ShowExactAsync(
+            LexiconCorrectionTests.Global,
+            "second",
+            null)).Value.Value;
+
+        Assert.Equal("place", second.Entry.Type);
+
+        Assert.Equal(["east"], second.Entry.Facts);
     }
 
     [Fact]
