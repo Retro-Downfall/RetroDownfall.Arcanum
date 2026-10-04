@@ -244,6 +244,55 @@ public sealed class DocumentationCodeContradictionTests
         }
     }
 
+    [Fact]
+    public void The_design_does_not_claim_a_runtime_native_proof_that_no_host_code_calls()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        const string claimedCall = "SqliteNativeRuntimeValidator.ValidateAsync";
+
+        // The behavioral and hash proof is documented as a pre-open guarantee only while some host
+        // code calls it. The validator and its result type do not count as a call site.
+        string sourceRoot = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src");
+
+        bool hasProductionCallSite = Directory
+            .EnumerateFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(path => !Path.GetFileName(path).StartsWith("SqliteNativeRuntimeValidat", StringComparison.Ordinal))
+            .Any(path => File.ReadAllText(path).Contains("SqliteNativeRuntimeValidator", StringComparison.Ordinal));
+
+        if (!hasProductionCallSite)
+        {
+            Assert.DoesNotContain(claimedCall, design, StringComparison.Ordinal);
+
+            string section = DocumentSection(design, "**Runtime proof.**", "**Compatibility.**");
+
+            Assert.Contains("build, CI, and test-time", section, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("before the Grimoire opens", section, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void The_native_sqlcipher_targets_do_not_describe_the_embedded_manifest_as_a_runtime_input()
+    {
+        string targets = File
+            .ReadAllText(
+                Path.Combine(
+                    TestRepositoryPaths.RepositoryRoot(),
+                    "src",
+                    "RetroDownfall.Arcanum.NativeSqlCipher",
+                    "buildTransitive",
+                    "RetroDownfall.Arcanum.NativeSqlCipher.targets"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.DoesNotContain("The runtime validator compares", targets, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("rather than being read from a", targets, StringComparison.Ordinal);
+
+        Assert.Contains("test-time", targets, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
