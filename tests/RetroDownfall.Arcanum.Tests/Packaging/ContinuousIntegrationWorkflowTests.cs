@@ -892,6 +892,41 @@ public sealed class ContinuousIntegrationWorkflowTests
     }
 
     /// <summary>
+    /// Every workflow that publishes a shipping archive audits the detailed Native AOT diagnostics for
+    /// the exact RID first. The shipping publish deliberately suppresses dependency summary
+    /// diagnostics after that audit has classified them, so a release that skipped the audit would
+    /// accept a first-party IL warning that CI's host-RID lane never saw for this RID. Windows already
+    /// audited; the macOS release did not.
+    /// </summary>
+    [Theory]
+
+    [InlineData("build-windows.yml", "./scripts/verify-aot-il-warnings.sh \"$RID\"", "package-windows.ps1")]
+
+    [InlineData("release-macos-arm64.yml", "./scripts/verify-aot-il-warnings.sh osx-arm64", "build-arcanum.sh")]
+
+    public void Every_release_workflow_audits_aot_diagnostics_before_it_packages(
+        string workflowFile,
+        string auditInvocation,
+        string packagingInvocation)
+    {
+        string path = Path.Combine(FindRepositoryRoot(), ".github", "workflows", workflowFile);
+
+        WorkflowJob job = Assert.Single(
+            JobsIn(path),
+            candidate => candidate.Body.Contains(packagingInvocation, StringComparison.Ordinal));
+
+        int audit = job.Body.IndexOf(auditInvocation, StringComparison.Ordinal);
+
+        int packaging = job.Body.IndexOf(packagingInvocation, StringComparison.Ordinal);
+
+        Assert.True(audit >= 0, $"{workflowFile} never runs `{auditInvocation}`, so a first-party AOT warning unique to the released RID ships unaudited.");
+
+        Assert.True(audit < packaging, $"{workflowFile} audits Native AOT diagnostics only after packaging has already published.");
+
+        Assert.Contains("ripgrep", job.Body[..audit], StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Both variables are set in exactly one place — <c>.github/workflows/ci.yml</c> — and dropping
     /// one from a lane costs nothing visible. <c>ARCANUM_REQUIRE_WINDOWS_SUITE</c> is what turns a
     /// lane whose platform-gated tests all skipped into a red build, and

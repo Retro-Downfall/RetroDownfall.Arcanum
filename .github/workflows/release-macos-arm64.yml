@@ -255,6 +255,18 @@ jobs:
           fi
           echo "The signing keychain holds the identity this release names."
 
+      # Packaging performs a fresh Native AOT publish under the warning-free profile, which suppresses
+      # dependency summary diagnostics once the diagnostic audit has classified their detailed
+      # warnings. Run that audit for this exact RID first (build-windows.yml already does): a prior CI
+      # run may belong to another commit and cannot prove this release input. It sits after the
+      # seconds-long signing checks above and before the Native AOT compile, so a bad certificate
+      # still fails fast. The cost is a second full AOT compile.
+      - name: Audit Native AOT diagnostics for the exact RID
+        run: |
+          set -euo pipefail
+          rg --version
+          ./scripts/verify-aot-il-warnings.sh osx-arm64
+
       - name: Package Arcanum (notarized zip)
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
