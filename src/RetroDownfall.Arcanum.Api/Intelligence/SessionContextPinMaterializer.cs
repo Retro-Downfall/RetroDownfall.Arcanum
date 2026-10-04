@@ -30,8 +30,14 @@ public sealed class SessionContextPinMaterializer(
     ISessionAttachmentStore attachments,
     ISessionRepository sessions)
 {
-    private const string PerTurnTruncationSuffix =
-        "\n[TRUNCATED BY PER-TURN CONTEXT BUDGET]";
+    private const string StartMarker = "[UNTRUSTED SESSION CONTEXT DATA]";
+
+    private const string EndMarker = "[END UNTRUSTED SESSION CONTEXT DATA]";
+
+    private const string PerTurnTruncationNotice = "[TRUNCATED BY PER-TURN CONTEXT BUDGET]";
+
+    /// <summary>Longest source label, id or diagnostic echoed into a block header.</summary>
+    private const int MaxHeaderValueChars = 256;
 
     private const string DirectoryTruncationSuffix =
         "[TRUNCATED BY CONTEXT MATERIALIZATION BUDGET]";
@@ -70,19 +76,29 @@ public sealed class SessionContextPinMaterializer(
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
             {
-                materialized = new(SessionContextPinStatus.Error, null, ex.Message);
+                materialized = new(SessionContextPinStatus.Error, null, DescribeFailure(ex));
             }
 
-            string block = FormatAsUntrustedData(pin, materialized);
-            int blockBytes = Encoding.UTF8.GetByteCount(block);
-            if (blockBytes > remaining)
+            // A diagnostic pin's target is its whole body, so its stable id is the pin id.
+            string sourceId = materialized.SourceId
+                ?? (pin.Kind == SessionContextPinKind.Diagnostic
+                    ? pin.Id.ToString("N")
+                    : pin.TargetIdentifier);
+
+            string? framed = FormatAsUntrustedData(pin, materialized, sourceId, remaining);
+
+            if (framed is null)
             {
-                block = AppendSuffixWithinUtf8Budget(
-                    block,
-                    PerTurnTruncationSuffix,
-                    remaining);
-                blockBytes = Encoding.UTF8.GetByteCount(block);
+                // Not even an empty frame fits in what is left, so defer the pin rather than emit an
+                // unclosed envelope.
+                omitted++;
+
+                continue;
             }
+
+            string block = framed;
+
+            int blockBytes = Encoding.UTF8.GetByteCount(block);
 
             TextContent content = new(block);
 
@@ -92,7 +108,7 @@ public sealed class SessionContextPinMaterializer(
                 new ContextPinMaterializedItem(
                     pin.Id,
                     pin.Kind,
-                    materialized.SourceId ?? pin.TargetIdentifier,
+                    sourceId,
                     pin.DisplayLabel,
                     materialized.SourceHash
                         ?? Convert.ToHexString(
@@ -651,29 +667,116 @@ public sealed class SessionContextPinMaterializer(
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            error = ex.Message;
+            error = DescribeFailure(ex);
             return false;
         }
     }
 
-    private static string FormatAsUntrustedData(SessionContextPinRecord pin, MaterializedPin value)
+    /// <summary>
+    /// Frames one pin as untrusted data: a single-line header, the content inside an adaptive backtick
+    /// fence, and a fixed footer. Returns <see langword="null"/> when <paramref name="budgetBytes"/> cannot
+    /// hold even the frame around empty content. When the whole block does not fit, the footer (fence,
+    /// truncation notice and end marker) is reserved first and only the content is cut, so the block is
+    /// always balanced and ends with the end marker inside the exact budget.
+    /// </summary>
+    private static string? FormatAsUntrustedData(
+        SessionContextPinRecord pin,
+        MaterializedPin value,
+        string sourceId,
+        int budgetBytes)
     {
         string content = value.Content ?? string.Empty;
+
         int fenceLength = Math.Max(3, LongestBacktickRun(content) + 1);
+
         string fence = new('`', fenceLength);
-        return $"""
-            [UNTRUSTED SESSION CONTEXT DATA]
-            source-kind: {pin.Kind}
-            source-label: {pin.DisplayLabel}
-            source-id: {pin.TargetIdentifier}
-            status: {value.Status}
-            diagnostic: {value.Diagnostic ?? "none"}
-            {fence}data
-            {content}
-            {fence}
-            [END UNTRUSTED SESSION CONTEXT DATA]
-            """;
+
+        string header =
+            StartMarker + "\n"
+            + "source-kind: " + pin.Kind + "\n"
+            + "source-label: " + SingleLine(pin.DisplayLabel) + "\n"
+            + "source-id: " + SingleLine(sourceId) + "\n"
+            + "status: " + value.Status + "\n"
+            + "diagnostic: " + (value.Diagnostic is null ? "none" : SingleLine(value.Diagnostic)) + "\n"
+            + fence + "data\n";
+
+        string footer = "\n" + fence + "\n" + EndMarker;
+
+        int headerBytes = Encoding.UTF8.GetByteCount(header);
+
+        int contentBytes = Encoding.UTF8.GetByteCount(content);
+
+        int footerBytes = Encoding.UTF8.GetByteCount(footer);
+
+        if (headerBytes + contentBytes + footerBytes <= budgetBytes)
+        {
+            return header + content + footer;
+        }
+
+        string truncatedFooter = "\n" + fence + "\n" + PerTurnTruncationNotice + "\n" + EndMarker;
+
+        int contentBudget = budgetBytes - headerBytes - Encoding.UTF8.GetByteCount(truncatedFooter);
+
+        return contentBudget < 0
+            ? null
+            : header + TruncateUtf8(content, contentBudget) + truncatedFooter;
     }
+
+    /// <summary>
+    /// Renders a header value on one bounded line. Line breaks, other control characters, backslashes and
+    /// backticks are escaped, so a label, id or diagnostic can neither open a line that looks like the end
+    /// marker or a fence nor repeat an arbitrarily large body outside the fenced data.
+    /// </summary>
+    private static string SingleLine(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        StringBuilder line = new(Math.Min(value.Length, MaxHeaderValueChars) + 3);
+
+        int taken = 0;
+
+        foreach (char c in value)
+        {
+            if (taken >= MaxHeaderValueChars)
+            {
+                if (line.Length > 0 && char.IsHighSurrogate(line[^1]))
+                {
+                    line.Length--;
+                }
+
+                _ = line.Append("...");
+
+                break;
+            }
+
+            taken++;
+
+            _ = c switch
+            {
+                '\\' => line.Append("\\\\"),
+                '\r' => line.Append("\\r"),
+                '\n' => line.Append("\\n"),
+                '\t' => line.Append("\\t"),
+                '`' => line.Append("\\u0060"),
+                _ when char.IsControl(c) || c is '\u2028' or '\u2029' =>
+                    line.Append("\\u").Append(((int)c).ToString("x4", System.Globalization.CultureInfo.InvariantCulture)),
+                _ => line.Append(c),
+            };
+        }
+
+        return line.ToString();
+    }
+
+    private static string DescribeFailure(Exception failure) =>
+        failure switch
+        {
+            UnauthorizedAccessException => "Access to the pin source was denied.",
+            IOException => "An I/O error prevented reading the pin source.",
+            _ => "The pin source could not be materialized.",
+        };
 
     private static int LongestBacktickRun(string value)
     {
