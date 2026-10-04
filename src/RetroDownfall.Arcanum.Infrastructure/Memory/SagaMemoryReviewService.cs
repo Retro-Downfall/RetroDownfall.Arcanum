@@ -7,6 +7,7 @@ using System.Text;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.AI;
 
@@ -31,7 +32,8 @@ internal sealed class SagaMemoryReviewService(
     IOptionsMonitor<ArcanumSettings> options,
     IMemoryErasureKeyProvider erasureKeys,
     IOperatorAuthorityContextIssuer releaseAuthority,
-    TimeProvider timeProvider) : ISagaMemoryReviewService
+    TimeProvider timeProvider,
+    ILogger<SagaMemoryReviewService>? logger = null) : ISagaMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
@@ -52,6 +54,10 @@ internal sealed class SagaMemoryReviewService(
     private static readonly Error RequestReuse = new(
         ErrorCodes.MemoryReview.RequestReuse,
         "This memory-review request identity already belongs to a different decision set.");
+
+    private static readonly Error WriteFailed = new(
+        ErrorCodes.Saga.WriteFailed,
+        "The Saga review decisions could not be persisted. Nothing was written.");
 
     public async Task<Result<SagaReviewPageDto>> ListAsync(
         SagaReviewListRequest request,
@@ -407,6 +413,29 @@ internal sealed class SagaMemoryReviewService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        try
+        {
+            return await ApplyCoreAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException
+            and not GrimoireMaintenanceUnavailableException)
+        {
+            // A storage fault inside the transaction already rolled it back. Mapped here, the way Lexicon
+            // maps its own, so the host reports this store's code instead of a bare 500. Logged by type
+            // and error code only: a driver message can carry what it was trying to write.
+            logger?.LogError(
+                "Saga memory review apply failed: {FailureType} (SQLite error {SqliteErrorCode}).",
+                failure.GetType(),
+                (failure as SqliteException)?.SqliteErrorCode);
+
+            return Result<MemoryReviewBulkResultDto>.Failure(WriteFailed);
+        }
+    }
+
+    private async Task<Result<MemoryReviewBulkResultDto>> ApplyCoreAsync(
+        SagaReviewBulkApplyRequest request,
+        CancellationToken cancellationToken)
+    {
         Result validation = request.Validate();
 
         if (validation.IsFailure)

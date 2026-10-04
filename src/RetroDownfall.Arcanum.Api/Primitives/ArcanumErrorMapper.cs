@@ -34,7 +34,9 @@ internal static class ArcanumErrorMapper
 
             ErrorCodes.Lexicon.CurationIntegrityFailed
                 or ErrorCodes.Lexicon.WriteFailed
-                or ErrorCodes.Lexicon.SearchFailed =>
+                or ErrorCodes.Lexicon.SearchFailed
+                or ErrorCodes.Saga.WriteFailed
+                or ErrorCodes.Covenant.WriteFailed =>
                 StatusCodes.Status500InternalServerError,
 
             ErrorCodes.MemoryReview.InvalidToken

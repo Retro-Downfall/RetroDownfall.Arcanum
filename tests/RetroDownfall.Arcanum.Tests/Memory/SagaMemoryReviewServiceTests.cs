@@ -934,16 +934,89 @@ public sealed class SagaMemoryReviewServiceTests
             BEGIN SELECT RAISE(ABORT, 'injected late failure'); END
             """).ConfigureAwait(false);
 
-        // Not SQLITE_BUSY, so SqliteBusyRetry does not retry it: the storage fault escapes the apply.
-        _ = await Assert.ThrowsAnyAsync<Exception>(() => runtime.Service.ApplyAsync(
+        // Not SQLITE_BUSY, so SqliteBusyRetry does not retry it: the storage fault is mapped to a stable
+        // error rather than escaping the apply.
+        Result<MemoryReviewBulkResultDto> failed = await runtime.Service.ApplyAsync(
             new SagaReviewBulkApplyRequest(request, plan.Value.PreparedPlanToken),
-            CancellationToken.None)).ConfigureAwait(false);
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(failed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Saga.WriteFailed, failed.Error.Code);
 
         await AssertNothingChangedSinceAsync(harness, before, "m-2", "second").ConfigureAwait(false);
 
         Assert.Equal("first", (await harness.Store.ReadCurationRowAsync(
             "m-1",
             CancellationToken.None).ConfigureAwait(false))!.Memory.Content);
+    }
+
+    /// <summary>
+    /// R-171: a storage fault inside the apply used to escape as a raw exception, which the host reported
+    /// as a generic 500 with no store-specific code, while Lexicon mapped the same fault. It is now the
+    /// store's own write-failed error, content-free, with the transaction rolled back.
+    /// </summary>
+    [SkippableFact]
+    public async Task Apply_maps_a_storage_fault_to_an_error_result()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        DateTimeOffset created = DateTimeOffset.Parse(
+            "2026-09-28T12:00:00Z",
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        await InsertAsync(harness, "m-1", "first", created).ConfigureAwait(false);
+
+        ReviewRuntime runtime = CreateRuntime(harness);
+
+        SagaReviewItemDto item = Assert.Single((await runtime.Service.ListAsync(
+            new SagaReviewListRequest(SagaMemoryScopeKind.Global, null, 10, null),
+            CancellationToken.None).ConfigureAwait(false)).Value.Items);
+
+        const string FailingContent = "trigger-me";
+
+        SagaReviewBulkPrepareRequest request = new(
+            Guid.Parse("AAAAAAAA-1111-2222-3333-444444444444"),
+            SagaMemoryScopeKind.Global,
+            CampaignId: null,
+            MemoryReviewAction.Correct,
+            [new SagaReviewDecision(item.ObservationToken, FailingContent)]);
+
+        Result<MemoryReviewBulkPlanDto> plan = await runtime.Service.PrepareAsync(
+            request,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(plan.IsSuccess, plan.Error.Message);
+
+        await ExecuteRawAsync(
+            harness,
+            $"""
+            CREATE TEMP TRIGGER fail_correction BEFORE INSERT ON annal_versions
+            WHEN NEW.ContentHash = x'{Convert.ToHexString(AnnalContentDigest.ForSagaMemory(FailingContent))}'
+            BEGIN SELECT RAISE(ABORT, 'injected storage fault'); END
+            """).ConfigureAwait(false);
+
+        Result<MemoryReviewBulkResultDto> failed = await runtime.Service.ApplyAsync(
+            new SagaReviewBulkApplyRequest(request, plan.Value.PreparedPlanToken),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(failed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Saga.WriteFailed, failed.Error.Code);
+
+        // Content-free: the message names neither the memory nor the replacement text.
+        Assert.DoesNotContain(FailingContent, failed.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("m-1", failed.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("injected", failed.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal("first", (await harness.Store.ReadCurationRowAsync(
+            "m-1",
+            CancellationToken.None).ConfigureAwait(false))!.Memory.Content);
+
+        Assert.Equal(0, await harness.CountAsync("annal_review_decision_receipts", "1 = 1").ConfigureAwait(false));
     }
 
     /// <summary>

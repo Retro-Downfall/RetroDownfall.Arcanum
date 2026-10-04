@@ -84,6 +84,8 @@ public sealed class MemoryErasureStructuralTests
         "Backup/BackupRestoreService.ErasureEvidence.cs",
         "Backup/BackupRestoreSchemaDrain.cs",
         "Data/CovenantLabeledArtifactGuard.cs",
+        "Memory/SagaMemoryReviewService.cs",
+        "Covenant/CovenantMemoryReviewService.cs",
     ];
 
     /// <summary>
