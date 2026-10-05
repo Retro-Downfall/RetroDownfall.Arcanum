@@ -580,8 +580,9 @@ public sealed class CovenantPublicContractTests
     public void ValidateSearchText_counts_policy_whitespace_terms()
     {
         // 33 terms separated by U+3000 (ideographic space), which the Unicode policy treats as
-        // whitespace but the old ASCII-only split did not.
-        string query = string.Join('　', Enumerable.Repeat("a", CovenantLimits.MaxSearchQueryTerms + 1));
+        // whitespace but the old ASCII-only split did not. Escapes, not literals, so the separator
+        // survives an editor or formatter that normalizes exotic whitespace.
+        string query = string.Join('\u3000', Enumerable.Repeat("a", CovenantLimits.MaxSearchQueryTerms + 1));
 
         Result validated = CovenantWireValidation.ValidateSearchText(query);
 
@@ -589,9 +590,10 @@ public sealed class CovenantPublicContractTests
 
         Assert.Equal(ErrorCodes.Validation.InvalidQuery, validated.Error.Code);
 
+        // The cap itself: 32 terms separated by U+00A0 (no-break space) are still accepted.
         Assert.True(
             CovenantWireValidation.ValidateSearchText(
-                string.Join(' ', Enumerable.Repeat("a", CovenantLimits.MaxSearchQueryTerms))).IsSuccess);
+                string.Join('\u00A0', Enumerable.Repeat("a", CovenantLimits.MaxSearchQueryTerms))).IsSuccess);
     }
 
     [Fact]

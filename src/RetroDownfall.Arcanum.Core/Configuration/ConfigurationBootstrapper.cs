@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.Json;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -10,8 +11,19 @@ public static class ConfigurationBootstrapper
 {
     public const int MaxConfigurationBytes = 10 * 1024 * 1024;
 
-    /// <summary>Test seam: invoked with the path each time the persisted file is opened for reading.</summary>
-    internal static Action<string>? PersistedFileReadObserver { get; set; }
+    private static readonly AsyncLocal<Action<string>?> PersistedFileReadObserverScope = new();
+
+    /// <summary>
+    /// Test seam: invoked with the path each time the persisted file is opened for reading. Scoped to
+    /// the setting execution context, so a configuration load running on an unrelated thread (another
+    /// test class in parallel) is never counted.
+    /// </summary>
+    internal static Action<string>? PersistedFileReadObserver
+    {
+        get => PersistedFileReadObserverScope.Value;
+
+        set => PersistedFileReadObserverScope.Value = value;
+    }
 
     public static IConfigurationBuilder AddArcanumConfiguration(this IConfigurationBuilder builder)
     {
@@ -25,7 +37,7 @@ public static class ConfigurationBootstrapper
 
         if (raw is not null)
         {
-            builder.AddJsonStream(new MemoryStream(raw, writable: false));
+            builder.Add(new ValidatedSnapshotJsonConfigurationSource(raw));
         }
 
         ConfigurationEnvironmentSnapshot environment =
@@ -289,6 +301,33 @@ public static class ConfigurationBootstrapper
         catch (ArgumentException)
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Feeds the JSON provider the bytes <see cref="ReadPersistedArcanumSettingsFile"/> already
+    /// validated, rather than letting it open the file a second time.
+    /// </summary>
+    private sealed class ValidatedSnapshotJsonConfigurationSource(byte[] raw) : IConfigurationSource
+    {
+        public IConfigurationProvider Build(IConfigurationBuilder builder) =>
+            new ValidatedSnapshotJsonConfigurationProvider(raw);
+    }
+
+    /// <summary>
+    /// A JSON provider over an in-memory snapshot. <c>AddJsonStream</c> would work once and then throw
+    /// from <c>IConfigurationRoot.Reload()</c> ("cannot be loaded more than once") and would leave its
+    /// stream undisposed; this one reads a fresh, disposed stream from the same validated bytes on every
+    /// load, so a reload is a no-op against the snapshot instead of a crash.
+    /// </summary>
+    private sealed class ValidatedSnapshotJsonConfigurationProvider(byte[] raw)
+        : JsonStreamConfigurationProvider(new JsonStreamConfigurationSource())
+    {
+        public override void Load()
+        {
+            using MemoryStream stream = new(raw, writable: false);
+
+            Load(stream);
         }
     }
 }

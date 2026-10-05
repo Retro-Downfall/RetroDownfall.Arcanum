@@ -589,6 +589,209 @@ public sealed class ApplicationLauncherTests
         Assert.Equal(packagedExecutable, started!.FileName);
     }
 
+    [Fact]
+
+    public void Legacy_compendium_launcher_names_the_exception_type_when_an_executable_fails_to_start()
+    {
+        string baseDirectory = Path.Combine(Path.GetTempPath(), "compendium-start-failure");
+
+        string executable = Path.Combine(baseDirectory, "RetroDownfall.Compendium.Ux");
+
+        CompendiumLauncher launcher = new(
+            () => baseDirectory,
+            path => string.Equals(path, executable, StringComparison.Ordinal),
+            _ => throw new InvalidOperationException("secret path /home/someone/.config/key"),
+            CompendiumLaunchPlatform.MacOS,
+            Architecture.X64);
+
+        CompendiumLaunchResult result = launcher.TryLaunch();
+
+        Assert.False(result.Launched);
+
+        Assert.Equal(executable, result.ExecutablePath);
+
+        Assert.Contains(nameof(InvalidOperationException), result.Message, StringComparison.Ordinal);
+
+        // The type only: exception message text can carry paths and secrets.
+        Assert.DoesNotContain("secret path", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+
+    public void Legacy_compendium_launcher_names_the_exception_type_when_the_development_project_fails_to_start()
+    {
+        string repositoryRoot = Path.Combine(Path.GetTempPath(), "compendium-dev-start-failure");
+
+        string baseDirectory = Path.Combine(repositoryRoot, "artifacts", "bin");
+
+        string projectPath = Path.Combine(repositoryRoot, CompendiumLauncher.ProjectRelativePath);
+
+        CompendiumLauncher launcher = new(
+            () => baseDirectory,
+            path => string.Equals(path, projectPath, StringComparison.Ordinal),
+            _ => throw new UnauthorizedAccessException("denied /private/path"),
+            CompendiumLaunchPlatform.MacOS,
+            Architecture.X64);
+
+        CompendiumLaunchResult result = launcher.TryLaunch();
+
+        Assert.False(result.Launched);
+
+        Assert.Equal(projectPath, result.ExecutablePath);
+
+        Assert.Contains(nameof(UnauthorizedAccessException), result.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("/private/path", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+
+    public void Legacy_compendium_launcher_does_not_blame_the_development_project_for_an_earlier_executable_exception()
+    {
+        string repositoryRoot = Path.Combine(Path.GetTempPath(), "compendium-mixed-start-failure");
+
+        string baseDirectory = Path.Combine(repositoryRoot, "artifacts", "bin");
+
+        string executable = Path.Combine(baseDirectory, "RetroDownfall.Compendium.Ux");
+
+        string projectPath = Path.Combine(repositoryRoot, CompendiumLauncher.ProjectRelativePath);
+
+        CompendiumLauncher launcher = new(
+            () => baseDirectory,
+            path => string.Equals(path, executable, StringComparison.Ordinal)
+                || string.Equals(path, projectPath, StringComparison.Ordinal),
+            startInfo => startInfo.FileName == executable
+                ? throw new InvalidOperationException("executable refused")
+                : false,
+            CompendiumLaunchPlatform.MacOS,
+            Architecture.X64);
+
+        CompendiumLaunchResult result = launcher.TryLaunch();
+
+        Assert.False(result.Launched);
+
+        Assert.Equal(projectPath, result.ExecutablePath);
+
+        Assert.Contains("failed to start it.", result.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(nameof(InvalidOperationException), result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+
+    public void Legacy_compendium_launcher_never_runs_the_development_project_without_the_opt_in()
+    {
+        string repositoryRoot = Path.Combine(Path.GetTempPath(), "compendium-dev-not-opted-in");
+
+        string baseDirectory = Path.Combine(repositoryRoot, "artifacts", "bin");
+
+        string projectPath = Path.Combine(repositoryRoot, CompendiumLauncher.ProjectRelativePath);
+
+        List<ProcessStartInfo> started = [];
+
+        CompendiumLauncher launcher = new(
+            () => baseDirectory,
+            path => string.Equals(path, projectPath, StringComparison.Ordinal),
+            startInfo =>
+            {
+                started.Add(startInfo);
+
+                return true;
+            },
+            CompendiumLaunchPlatform.MacOS,
+            Architecture.X64,
+            allowDevelopmentProject: false);
+
+        CompendiumLaunchResult result = launcher.TryLaunch();
+
+        Assert.Empty(started);
+
+        Assert.False(result.Launched);
+
+        Assert.Null(result.ExecutablePath);
+
+        // The display-only fallback is still printed, repository-relative.
+        Assert.Contains(
+            $"dotnet run --project {CompendiumLauncher.ProjectRelativePath}",
+            result.Message,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(projectPath, result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+
+    public void Legacy_compendium_launcher_still_prefers_an_installed_executable_without_the_opt_in()
+    {
+        string repositoryRoot = Path.Combine(Path.GetTempPath(), "compendium-dev-not-opted-in-installed");
+
+        string baseDirectory = Path.Combine(repositoryRoot, "artifacts", "bin");
+
+        string executable = Path.Combine(baseDirectory, "RetroDownfall.Compendium.Ux");
+
+        string projectPath = Path.Combine(repositoryRoot, CompendiumLauncher.ProjectRelativePath);
+
+        List<ProcessStartInfo> started = [];
+
+        CompendiumLauncher launcher = new(
+            () => baseDirectory,
+            path => string.Equals(path, executable, StringComparison.Ordinal)
+                || string.Equals(path, projectPath, StringComparison.Ordinal),
+            startInfo =>
+            {
+                started.Add(startInfo);
+
+                return startInfo.FileName == executable;
+            },
+            CompendiumLaunchPlatform.MacOS,
+            Architecture.X64,
+            allowDevelopmentProject: false);
+
+        CompendiumLaunchResult result = launcher.TryLaunch();
+
+        Assert.True(result.Launched);
+
+        Assert.Equal(executable, result.ExecutablePath);
+
+        Assert.Single(started);
+    }
+
+    [Fact]
+
+    public void Legacy_compendium_launcher_runs_the_development_project_when_it_is_allowed()
+    {
+        string repositoryRoot = Path.Combine(Path.GetTempPath(), "compendium-dev-opted-in");
+
+        string baseDirectory = Path.Combine(repositoryRoot, "artifacts", "bin");
+
+        string projectPath = Path.Combine(repositoryRoot, CompendiumLauncher.ProjectRelativePath);
+
+        ProcessStartInfo? started = null;
+
+        CompendiumLauncher launcher = new(
+            () => baseDirectory,
+            path => string.Equals(path, projectPath, StringComparison.Ordinal),
+            startInfo =>
+            {
+                started = startInfo;
+
+                return true;
+            },
+            CompendiumLaunchPlatform.MacOS,
+            Architecture.X64,
+            allowDevelopmentProject: true);
+
+        CompendiumLaunchResult result = launcher.TryLaunch();
+
+        Assert.True(result.Launched);
+
+        Assert.Equal(projectPath, result.ExecutablePath);
+
+        Assert.NotNull(started);
+
+        Assert.Equal("dotnet", started!.FileName);
+    }
+
     private static ApplicationDeepLink CreateSessionDeepLink() =>
         new(
             ApplicationDeepLink.CurrentSchemaVersion,

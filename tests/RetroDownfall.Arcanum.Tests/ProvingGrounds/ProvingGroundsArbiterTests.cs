@@ -247,6 +247,79 @@ public sealed class ProvingGroundsArbiterTests
         Assert.True(valid[0].Passed);
     }
 
+    [Fact]
+    public async Task JsonSchemaInquisitor_TypeUnion_AcceptsAnyDeclaredMember()
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(
+            """{"properties":{"id":{"type":["string","integer"]}}}""").RootElement;
+
+        foreach (string output in new[] { """{"id":"a"}""", """{"id":5}""" })
+        {
+            IReadOnlyList<InquisitorVerdict> accepted = await arbiter.AdjudicateAsync(
+                output,
+                [new JsonSchemaInquisitor(schema)],
+                judgeModel: null);
+
+            Assert.True(accepted[0].Passed, accepted[0].Detail);
+        }
+
+        IReadOnlyList<InquisitorVerdict> rejected = await arbiter.AdjudicateAsync(
+            """{"id":true}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(rejected[0].Passed);
+    }
+
+    [Fact]
+    public async Task JsonSchemaInquisitor_UnknownMemberOfATypeUnion_FailsClosed()
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(
+            """{"properties":{"x":{"type":["string","mystery"]}}}""").RootElement;
+
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
+            """{"x":"hi"}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(verdicts[0].Passed);
+
+        Assert.Contains("mystery", verdicts[0].Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The earlier hand-rolled check refused any root that was not an object; the shared validator
+    /// drops that rule, so a root array now satisfies (or violates) <c>type: array</c> on its merits.
+    /// </summary>
+    [Fact]
+    public async Task JsonSchemaInquisitor_RootArraySchema_ValidatesTheArray()
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(
+            """{"type":"array","items":{"type":"integer"}}""").RootElement;
+
+        IReadOnlyList<InquisitorVerdict> valid = await arbiter.AdjudicateAsync(
+            "[1,2]",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.True(valid[0].Passed, valid[0].Detail);
+
+        IReadOnlyList<InquisitorVerdict> invalid = await arbiter.AdjudicateAsync(
+            """[1,"a"]""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(invalid[0].Passed);
+
+        Assert.Contains("[1]", invalid[0].Detail, StringComparison.Ordinal);
+    }
+
     private static ProvingGroundsArbiter CreateArbiter(
         IArcanumIntelligenceProvider intelligence)
     {

@@ -31,6 +31,10 @@ public static class AnnalContentDigest
     private const char FieldSeparator = '\u001F';
 
     /// <summary>The binding for one Saga memory's stored content.</summary>
+    /// <exception cref="EncoderFallbackException">
+    /// <paramref name="content"/> holds an unpaired surrogate. Hashing the U+FFFD a lenient encoder would
+    /// substitute would bind a claim to bytes the text never had, so the digest refuses instead.
+    /// </exception>
     public static byte[] ForSagaMemory(string content)
     {
         ArgumentNullException.ThrowIfNull(content);
@@ -39,6 +43,10 @@ public static class AnnalContentDigest
     }
 
     /// <summary>The binding for one Lexicon entity's type and fact set.</summary>
+    /// <exception cref="EncoderFallbackException">
+    /// <paramref name="type"/> or <paramref name="factsText"/> holds an unpaired surrogate (see
+    /// <see cref="ForSagaMemory"/>).
+    /// </exception>
     /// <param name="factsText">
     /// The newline-joined projection <c>lexicon_entries.FactsText</c> stores, not the JSON. The
     /// projection is what changes when a fact is appended, and it is what the full-text index already

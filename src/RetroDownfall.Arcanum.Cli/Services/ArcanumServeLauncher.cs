@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -23,7 +24,12 @@ internal sealed class ArcanumServeLauncher(
 
     internal const string NoAutoServeEnvVar = "ARCANUM_NO_AUTO_SERVE";
 
-    internal const string DevLauncherEnvVar = "ARCANUM_DEV_LAUNCHER";
+    /// <summary>
+    /// One variable, two readers: this launcher re-launches the host through
+    /// <c>dotnet &lt;entry assembly&gt; serve</c>, and desktop discovery offers the repository
+    /// project to a Native AOT image. Sharing the Core constant keeps the two from drifting.
+    /// </summary>
+    internal const string DevLauncherEnvVar = ApplicationDiscoveryEnvironment.DevelopmentProjectOptInVariable;
 
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(2);
 

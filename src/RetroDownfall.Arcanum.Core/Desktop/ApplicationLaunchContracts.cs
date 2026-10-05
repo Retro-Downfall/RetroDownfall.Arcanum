@@ -113,13 +113,31 @@ public sealed record ApplicationDiscoveryEnvironment(
         };
     }
 
-    /// <summary>Environment variable that opts a published image into running the repository project.</summary>
+    /// <summary>
+    /// Environment variable that opts a published image into running the repository project, for
+    /// both <see cref="ApplicationLauncher"/> and the legacy <see cref="CompendiumLauncher"/> behind
+    /// <c>arcanum config open</c> and The Forge. The same variable also makes <c>arcanum serve</c>
+    /// auto-start re-launch the host through <c>dotnet &lt;entry assembly&gt; serve</c>; both
+    /// meanings are documented together in <c>docs/Compendium.README.md</c>.
+    /// </summary>
     public const string DevelopmentProjectOptInVariable = "ARCANUM_DEV_LAUNCHER";
 
-    private static bool DevelopmentProjectLaunchAllowed() =>
-        RuntimeFeature.IsDynamicCodeSupported
+    internal static bool DevelopmentProjectLaunchAllowed() =>
+        DevelopmentProjectLaunchAllowed(
+            RuntimeFeature.IsDynamicCodeSupported,
+            static name => global::System.Environment.GetEnvironmentVariable(name));
+
+    /// <summary>
+    /// A JIT build always offers the repository project; a Native AOT image offers it only when the
+    /// opt-in variable is exactly <c>1</c>. Separate from the process reads so both arms are
+    /// testable from a JIT test host.
+    /// </summary>
+    internal static bool DevelopmentProjectLaunchAllowed(
+        bool isDynamicCodeSupported,
+        Func<string, string?> readEnvironmentVariable) =>
+        isDynamicCodeSupported
         || string.Equals(
-            global::System.Environment.GetEnvironmentVariable(DevelopmentProjectOptInVariable),
+            readEnvironmentVariable(DevelopmentProjectOptInVariable),
             "1",
             StringComparison.Ordinal);
 

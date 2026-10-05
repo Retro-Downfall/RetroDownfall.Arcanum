@@ -165,9 +165,14 @@ public sealed class ProvingGroundsArbiter(
 
     private static string? FindUnsupportedType(JsonSchemaDefinition schema)
     {
-        if (!string.IsNullOrEmpty(schema.Type) && !SupportedSchemaTypes.Contains(schema.Type))
+        // Every member of a type union, not only the first: a later unrecognized member must not be
+        // accepted silently because an earlier one was fine.
+        foreach (string declared in schema.AlternativeTypes.Prepend(schema.Type))
         {
-            return schema.Type;
+            if (!string.IsNullOrEmpty(declared) && !SupportedSchemaTypes.Contains(declared))
+            {
+                return declared;
+            }
         }
 
         foreach (JsonSchemaDefinition property in schema.Properties.Values)
