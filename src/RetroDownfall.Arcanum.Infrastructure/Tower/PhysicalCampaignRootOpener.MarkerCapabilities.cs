@@ -1697,27 +1697,15 @@ internal static partial class CampaignMarkerNativeMethods
     /// Flushes a retained directory handle, or reports that the platform cannot prove it.
     /// </summary>
     /// <remarks>
-    /// Windows exposes no directory-handle flush and journals directory metadata itself, so the barrier
-    /// is satisfied there rather than demonstrated. That distinction is stated rather than papered over:
-    /// a call that silently returned success on a platform where it does nothing would let the rename
-    /// phase claim a durability guarantee it never obtained (§10.17).
+    /// The shared <see cref="Storage.DurableDirectoryFlush"/> issues <c>F_FULLFSYNC</c> on macOS, where a
+    /// plain <c>fsync</c> leaves the entry in the drive's cache. Windows exposes no directory-handle
+    /// flush and journals directory metadata itself, so the barrier is satisfied there rather than
+    /// demonstrated. That distinction is stated rather than papered over: a call that silently returned
+    /// success on a platform where it does nothing would let the rename phase claim a durability
+    /// guarantee it never obtained (§10.17).
     /// </remarks>
-    internal static bool TryFlushDirectory(SafeFileHandle directory)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return true;
-        }
-
-        if (directory is null || directory.IsInvalid || directory.IsClosed)
-        {
-            return false;
-        }
-
-        int descriptor = directory.DangerousGetHandle().ToInt32();
-
-        return descriptor >= 0 && Fsync(descriptor) == 0;
-    }
+    internal static bool TryFlushDirectory(SafeFileHandle directory) =>
+        Storage.DurableDirectoryFlush.TryFlush(directory);
 
     /// <summary>
     /// Reports whether the calling process owns the object at the supplied path.
@@ -1964,9 +1952,6 @@ internal static partial class CampaignMarkerNativeMethods
 
     [LibraryImport("libc", EntryPoint = "flock", SetLastError = true)]
     private static partial int Flock(int descriptor, int operation);
-
-    [LibraryImport("libc", EntryPoint = "fsync", SetLastError = true)]
-    private static partial int Fsync(int fileDescriptor);
 
     [LibraryImport("libc", EntryPoint = "geteuid")]
     private static partial uint GetEffectiveUserId();

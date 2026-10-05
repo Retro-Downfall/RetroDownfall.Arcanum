@@ -70,6 +70,10 @@ internal static class AtomicFile
     /// Optional hook invoked after the rename but before mandatory staged identity/content
     /// verification. This exists for deterministic race testing; normal callers leave it unset.
     /// </param>
+    /// <param name="flushParentDirectory">
+    /// The directory barrier issued right after the rename; <see cref="DurableDirectoryFlush.TryFlushParentOf"/>
+    /// when unset. This exists so tests can observe the barrier; normal callers leave it unset.
+    /// </param>
     /// <returns>
     /// An <see cref="AtomicReplaceStatus"/> describing whether the destination was replaced and
     /// whether post-move verification (and any rollback) succeeded.
@@ -83,7 +87,8 @@ internal static class AtomicFile
         Func<bool>? afterReplace = null,
         Action? beforeMove = null,
         Action? afterMoveBeforeVerify = null,
-        FileContentBaseline? expectedDestinationContent = null)
+        FileContentBaseline? expectedDestinationContent = null,
+        Func<string, bool>? flushParentDirectory = null)
     {
         bool replaced = false;
 
@@ -302,6 +307,16 @@ internal static class AtomicFile
                 overwrite: destinationExisted);
 
             replaced = true;
+
+            // The rename is durable only once its directory entry is: flush the parent through the
+            // shared barrier (F_FULLFSYNC on macOS). The move has already happened, so a refused
+            // barrier is logged rather than reported as a failed replace.
+            if (!(flushParentDirectory ?? DurableDirectoryFlush.TryFlushParentOf)(destinationPath))
+            {
+                Serilog.Log.Warning(
+                    "The directory holding {Path} could not be flushed after its atomic replace.",
+                    destinationPath);
+            }
 
             afterMoveBeforeVerify?.Invoke();
 
