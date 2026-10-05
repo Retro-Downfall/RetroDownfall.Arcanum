@@ -47,14 +47,17 @@ on:
 permissions:
   contents: read
 
-# Queue, never cancel. Two dispatches that both leave `version` blank would each compute "highest
-# existing beta + 1" and then interleave their per-file uploads into the same draft, shipping a zip
-# from one run beside a checksum file from the other. One group per requested version serializes
-# exactly the runs that could collide: an explicit version is its own group, and every blank version
-# shares `auto`. `cancel-in-progress` stays false because a release must never be cancelled by
-# whatever is dispatched next (the same reason ci.yml carries the opposite setting and this file
-# does not). This is the only `concurrency:` in the file: the workflow is also `workflow_call`, and
-# a group on a called job would serialize against the caller's own.
+# Never cancel a run in progress. Two dispatches that both leave `version` blank would each compute
+# "highest existing beta + 1" and then interleave their per-file uploads into the same draft,
+# shipping a zip from one run beside a checksum file from the other. One group per requested
+# version serializes exactly the runs that could collide: an explicit version is its own group, and
+# every blank version shares `auto`. `cancel-in-progress` stays false because a release must never
+# be cancelled by whatever is dispatched next (the same reason ci.yml carries the opposite setting
+# and this file does not). GitHub keeps one pending run per group, so this is not a queue: a second
+# dispatch waits behind the running release, and a third supersedes (cancels) the one that was
+# waiting. Dispatch again after the running release finishes if a superseded run was wanted. This
+# is the only `concurrency:` in the file: the workflow is also `workflow_call`, and a group on a
+# called job would serialize against the caller's own.
 concurrency:
   group: release-${{ inputs.version || 'auto' }}
   cancel-in-progress: false

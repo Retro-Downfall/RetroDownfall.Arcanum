@@ -542,6 +542,51 @@ public sealed class ReleasePipelineTests
     }
 
     /// <summary>
+    /// With <c>cancel-in-progress: false</c> GitHub runs one release at a time and keeps only one
+    /// pending run per group: a third dispatch cancels the one that was waiting. The group therefore
+    /// protects a run in progress and the draft it is assembling, and it does not queue every
+    /// dispatch. The workflow's comment and both documents must say what it does.
+    /// </summary>
+    [Fact]
+    public void The_release_concurrency_documentation_says_a_waiting_dispatch_is_superseded_not_queued()
+    {
+        string root = RepositoryRoot();
+
+        string release = File
+            .ReadAllText(Path.Combine(root, ".github", "workflows", "release.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Queue, never cancel", release, StringComparison.Ordinal);
+
+        int concurrency = release.IndexOf("\nconcurrency:\n", StringComparison.Ordinal);
+
+        Assert.True(concurrency > 0, "release.yml lost its top-level concurrency group.");
+
+        string comment = release[..concurrency];
+
+        Assert.Contains("supersede", comment, StringComparison.OrdinalIgnoreCase);
+
+        foreach (string document in new[] { "Arcanum.DESIGN.md", "Arcanum.Engineering.md" })
+        {
+            string text = File
+                .ReadAllText(Path.Combine(root, "docs", document))
+                .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+            int group = text.IndexOf("release-<version or auto>", StringComparison.Ordinal);
+
+            Assert.True(group >= 0, $"{document} no longer documents the release concurrency group.");
+
+            string paragraph = text[group..Math.Min(text.Length, group + 700)];
+
+            Assert.Contains("supersede", paragraph, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain("queue instead", paragraph, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("queues rather than cancels", text[Math.Max(0, group - 400)..group], StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
     /// A draft release holds a tag name and a target commit and writes neither into the repository
     /// until it is published. Created without <c>--target</c> the draft points at the default
     /// branch's head at that moment, so publishing it later tags whatever landed after the build

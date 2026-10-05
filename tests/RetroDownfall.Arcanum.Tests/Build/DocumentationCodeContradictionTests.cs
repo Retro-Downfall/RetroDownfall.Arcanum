@@ -285,15 +285,7 @@ public sealed class DocumentationCodeContradictionTests
 
         // The behavioral and hash proof is documented as a pre-open guarantee only while some host
         // code calls it. The validator and its result type do not count as a call site.
-        string sourceRoot = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src");
-
-        bool hasProductionCallSite = Directory
-            .EnumerateFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Where(path => !Path.GetFileName(path).StartsWith("SqliteNativeRuntimeValidat", StringComparison.Ordinal))
-            .Any(path => File.ReadAllText(path).Contains("SqliteNativeRuntimeValidator", StringComparison.Ordinal));
-
-        if (!hasProductionCallSite)
+        if (!NativeRuntimeValidatorHasProductionCallSite())
         {
             Assert.DoesNotContain(claimedCall, design, StringComparison.Ordinal);
 
@@ -302,6 +294,103 @@ public sealed class DocumentationCodeContradictionTests
             Assert.Contains("build, CI, and test-time", section, StringComparison.Ordinal);
 
             Assert.DoesNotContain("before the Grimoire opens", section, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The validator's own type documentation is the first thing a reader of the class sees, and it
+    /// used to say the proof runs "before the Grimoire is opened" and that a mismatch makes the
+    /// Grimoire unavailable. No host code calls it, so that is a guarantee the tree does not provide.
+    /// </summary>
+    [Fact]
+    public void The_native_runtime_validator_type_documentation_does_not_claim_a_pre_open_guarantee()
+    {
+        if (NativeRuntimeValidatorHasProductionCallSite())
+        {
+            return;
+        }
+
+        string source = ReadSource("Infrastructure", "Data", "SqliteNativeRuntimeValidator.cs");
+
+        string typeDocumentation = source[..source.IndexOf("internal sealed class SqliteNativeRuntimeValidator", StringComparison.Ordinal)];
+
+        Assert.DoesNotContain("before the Grimoire is opened", typeDocumentation, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("the Grimoire is unavailable", typeDocumentation, StringComparison.Ordinal);
+
+        Assert.Contains("test-time", typeDocumentation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Only the test classes whose source calls the validator exercise it. The delivery test hashes the
+    /// delivered file against the on-disk manifest and never constructs the validator, so naming it
+    /// beside the validator tells a reader a proof ran that did not.
+    /// </summary>
+    [Fact]
+    public void The_validator_is_documented_as_exercised_only_by_the_test_classes_that_call_it()
+    {
+        string testDirectory = Path.Combine(
+            TestRepositoryPaths.RepositoryRoot(),
+            "tests",
+            "RetroDownfall.Arcanum.Tests",
+            "NativeSqlCipher");
+
+        string[] testClasses =
+        [
+            .. Directory
+                .EnumerateFiles(testDirectory, "*Tests.cs")
+                .Select(static path => Path.GetFileNameWithoutExtension(path)),
+        ];
+
+        string[] callers =
+        [
+            .. testClasses.Where(name => File
+                .ReadAllText(Path.Combine(testDirectory, name + ".cs"))
+                .Contains("SqliteNativeRuntimeValidator", StringComparison.Ordinal)),
+        ];
+
+        Assert.NotEmpty(callers);
+
+        string[] nonCallers = [.. testClasses.Except(callers, StringComparer.Ordinal)];
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string section = DocumentSection(design, "**Runtime proof.**", "**Compatibility.**");
+
+        string targets = File
+            .ReadAllText(
+                Path.Combine(
+                    TestRepositoryPaths.RepositoryRoot(),
+                    "src",
+                    "RetroDownfall.Arcanum.NativeSqlCipher",
+                    "buildTransitive",
+                    "RetroDownfall.Arcanum.NativeSqlCipher.targets"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        (string Origin, string Claim)[] claims =
+        [
+            ("DESIGN section 5.4 runtime proof", Regex.Match(section, @"exercised by ([^,.;]*)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)).Groups[1].Value),
+
+            ("NativeSqlCipher targets comment", Regex.Match(targets, @"validator\s+\(([^)]*)\)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)).Groups[1].Value),
+        ];
+
+        foreach ((string origin, string claim) in claims)
+        {
+            Assert.True(claim.Length > 0, $"{origin} no longer says which tests exercise the validator.");
+
+            foreach (string caller in callers)
+            {
+                Assert.True(
+                    claim.Contains(caller, StringComparison.Ordinal),
+                    $"{origin} omits {caller}, which calls the validator: {claim}");
+            }
+
+            foreach (string nonCaller in nonCallers)
+            {
+                Assert.True(
+                    !claim.Contains(nonCaller, StringComparison.Ordinal),
+                    $"{origin} names {nonCaller} as exercising the validator, but its source never calls it.");
+            }
         }
     }
 
@@ -323,6 +412,27 @@ public sealed class DocumentationCodeContradictionTests
         Assert.DoesNotContain("rather than being read from a", targets, StringComparison.Ordinal);
 
         Assert.Contains("test-time", targets, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The testing section's description of <c>HostProjectFeatureSwitchTests</c> is where a reader
+    /// learns what stops a managed fallback. It named only the Native AOT and ReadyToRun checks and
+    /// left out the publish guard, which is what rejects a publish with no runtime identifier.
+    /// </summary>
+    [Fact]
+    public void The_design_describes_the_publish_guard_that_host_project_feature_switch_tests_pin()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string bullet = design
+            .Split('\n')
+            .Single(static line => line.StartsWith("- `HostProjectFeatureSwitchTests`", StringComparison.Ordinal));
+
+        Assert.Contains("ARC0001", bullet, StringComparison.Ordinal);
+
+        Assert.Contains("ArcanumDevPublish", bullet, StringComparison.Ordinal);
+
+        Assert.Contains("RID-qualified", bullet, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -887,6 +997,17 @@ public sealed class DocumentationCodeContradictionTests
                     $"{reference} still describes a renderer the CLI no longer has: {stale}");
             }
         }
+    }
+
+    private static bool NativeRuntimeValidatorHasProductionCallSite()
+    {
+        string sourceRoot = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src");
+
+        return Directory
+            .EnumerateFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(path => !Path.GetFileName(path).StartsWith("SqliteNativeRuntimeValidat", StringComparison.Ordinal))
+            .Any(path => File.ReadAllText(path).Contains("SqliteNativeRuntimeValidator", StringComparison.Ordinal));
     }
 
     private static string ReadDocument(string fileName) =>
