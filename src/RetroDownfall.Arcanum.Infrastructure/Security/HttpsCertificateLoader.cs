@@ -136,6 +136,21 @@ public static class HttpsCertificateLoader
         }
     }
 
+    /// <summary>
+    /// Key storage used when a PFX bundle is loaded on the given platform.
+    /// </summary>
+    /// <remarks>
+    /// The ephemeral key set keeps the key out of every user or machine store for the life of a
+    /// short-lived host, but two platforms cannot serve TLS from it: macOS keychain-backed import rejects
+    /// it, and Windows Schannel cannot bind a key that lives only in memory (the same reason the PEM path
+    /// rehydrates into <see cref="PemRehydrationKeyStorageFlags"/>). Those two use the default key set,
+    /// whose key container is released when the certificate is disposed.
+    /// </remarks>
+    internal static X509KeyStorageFlags PfxKeyStorageFlagsFor(bool isMacOS, bool isWindows) =>
+        isMacOS || isWindows
+            ? X509KeyStorageFlags.DefaultKeySet
+            : X509KeyStorageFlags.EphemeralKeySet;
+
     private static HttpsCertificateLoadResult LoadPfx(
         string certificatePath,
         string? password,
@@ -147,11 +162,9 @@ public static class HttpsCertificateLoader
                 FormatFailure(certificatePath, "PFX", "missing file"));
         }
 
-        // macOS keychain-backed key import rejects the ephemeral key set; every other platform uses it
-        // so the key is never persisted to a user or machine store during a short-lived host process.
-        X509KeyStorageFlags keyStorageFlags = OperatingSystem.IsMacOS()
-            ? X509KeyStorageFlags.DefaultKeySet
-            : X509KeyStorageFlags.EphemeralKeySet;
+        X509KeyStorageFlags keyStorageFlags = PfxKeyStorageFlagsFor(
+            OperatingSystem.IsMacOS(),
+            OperatingSystem.IsWindows());
 
         try
         {
