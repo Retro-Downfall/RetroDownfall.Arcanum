@@ -53,6 +53,12 @@ public sealed class BackupArchiveCodecOptions
     /// </summary>
     internal Action<string>? AfterExtractedEntryForTests { get; init; }
 
+    /// <summary>
+    /// Invoked with the destination path the instant after the staged archive has been moved onto it,
+    /// before anything re-checks it; replacing the path here simulates a swap in that window.
+    /// </summary>
+    internal Action<string>? AfterArchivePublishedForTests { get; init; }
+
     internal Action<int>? InspectPlaintextBufferSizeForTests { get; init; }
 
     internal Action<long>? InspectAuthenticatedPlaintextProgressForTests { get; init; }

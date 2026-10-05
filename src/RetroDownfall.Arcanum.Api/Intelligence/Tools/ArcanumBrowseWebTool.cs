@@ -86,8 +86,8 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
     /// <summary>
     /// The resolver is required here rather than a nullable default: the public constructor supplies the
-    /// system resolver, and a test supplies its own, so no instance validates a URL against a resolver
-    /// nobody chose.
+    /// system resolver, and every in-assembly construction site and test supplies its clock and resolver
+    /// explicitly, so no instance validates a URL against a resolver nobody chose.
     /// </summary>
     internal ArcanumBrowseWebTool(
         IHttpClientFactory httpClientFactory,

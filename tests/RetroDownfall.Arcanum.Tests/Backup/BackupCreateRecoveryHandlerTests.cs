@@ -1,3 +1,9 @@
+using System.Runtime.Versioning;
+
+using System.Security.AccessControl;
+
+using System.Security.Principal;
+
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Backup;
@@ -249,26 +255,45 @@ public sealed class BackupCreateRecoveryHandlerTests : IDisposable
                 | UnixFileMode.GroupExecute);
         }
 
-        BackupCreateRecoveryHandler handler = new();
-
-        LongRunningOperationRecoveryResult result = await handler.RecoverAsync(
-            Operation(PlannedCheckpoint(outputPath, stagingPath)),
-            CancellationToken.None);
-
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
-
-        Assert.Equal(BackupCreateRecoveryHandler.StagingCleanupFailed, result.ErrorCode);
-
-        Assert.True(Directory.Exists(stagingPath));
+        await AssertStagingPreservedAsync(outputPath, stagingPath);
     }
 
+    /// <summary>
+    /// The Windows counterpart of the case above: the directory is widened through its ACL, which is
+    /// where owner-only is decided there.
+    /// </summary>
+    /// <remarks>
+    /// Windows lane only; it was not run on the macOS host this was written on.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Windows_a_planned_checkpoint_with_an_empty_directory_readable_by_everyone_is_preserved()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "Windows lane only: the ACL that makes the directory non-owner-only exists there.");
+
+        string outputPath = Path.Combine(_root, "portable.arcbackup");
+
+        string stagingPath = CreateStagingDirectory(_root);
+
+        if (OperatingSystem.IsWindows())
+        {
+            GrantWindowsWorldRead(stagingPath);
+        }
+
+        await AssertStagingPreservedAsync(outputPath, stagingPath);
+    }
+
+    /// <summary>
+    /// A staging path that is a link is not a directory the creation made, wherever the link points.
+    /// </summary>
+    /// <remarks>
+    /// Skipped, with the reason, on a lane that may not create a symbolic link: Windows needs a
+    /// privilege (Developer Mode or an elevated token) the lane does not assume.
+    /// </remarks>
     [SkippableFact]
     public async Task A_planned_checkpoint_whose_staging_path_is_a_symbolic_link_is_preserved()
     {
-        Skip.If(
-            OperatingSystem.IsWindows(),
-            "Creating a symbolic link needs a privilege the Windows lane does not assume.");
-
         string outputPath = Path.Combine(_root, "portable.arcbackup");
 
         string target = Path.Combine(_root, "link-target");
@@ -279,7 +304,15 @@ public sealed class BackupCreateRecoveryHandlerTests : IDisposable
             _root,
             ".arcanum-backup-stage-" + Guid.NewGuid().ToString("N"));
 
-        Directory.CreateSymbolicLink(stagingPath, target);
+        try
+        {
+            Directory.CreateSymbolicLink(stagingPath, target);
+        }
+        catch (Exception exception) when (
+            exception is UnauthorizedAccessException or IOException)
+        {
+            Skip.If(true, "Creating a symbolic link needs a privilege this lane does not have.");
+        }
 
         BackupCreateRecoveryHandler handler = new();
 
@@ -406,5 +439,39 @@ public sealed class BackupCreateRecoveryHandlerTests : IDisposable
             PublicSummary: "Backup staging requires recovery.",
             TerminalErrorCode: null,
             Revision: 3);
+    }
+
+    private static async Task AssertStagingPreservedAsync(
+        string outputPath,
+        string stagingPath)
+    {
+        BackupCreateRecoveryHandler handler = new();
+
+        LongRunningOperationRecoveryResult result = await handler.RecoverAsync(
+            Operation(PlannedCheckpoint(outputPath, stagingPath)),
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(BackupCreateRecoveryHandler.StagingCleanupFailed, result.ErrorCode);
+
+        Assert.True(Directory.Exists(stagingPath));
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void GrantWindowsWorldRead(string directory)
+    {
+        DirectoryInfo info = new(directory);
+
+        DirectorySecurity security = info.GetAccessControl();
+
+        security.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.WorldSid, domainSid: null),
+            FileSystemRights.ReadAndExecute,
+            InheritanceFlags.None,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+
+        info.SetAccessControl(security);
     }
 }

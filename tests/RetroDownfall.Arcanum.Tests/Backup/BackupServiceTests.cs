@@ -914,12 +914,17 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Equal(BackupCreateStatus.Complete, created.Status);
     }
 
+    /// <summary>
+    /// The safety backup a restore takes is protected by the passphrase of the archive being restored,
+    /// which the operator did not choose just now, so the restore's own path accepts one below the
+    /// floor; the public create path does not.
+    /// </summary>
     [Fact]
-    public async Task A_passphrase_that_already_protects_an_archive_is_accepted_below_the_minimum()
+    public async Task A_passphrase_that_already_protects_an_archive_is_accepted_below_the_minimum_on_the_restore_path()
     {
         BackupService service = CreateService(Paths(), new CountingSecretReader());
 
-        BackupCreateResult created = await service.CreateAsync(
+        BackupCreateResult created = await service.CreateSafetyBackupAsync(
             new BackupCreateRequest(
                 new BackupPlanRequest(
                     BackupScope.MetadataOnly,
@@ -927,12 +932,58 @@ public sealed class BackupServiceTests : IDisposable
                     Include: [],
                     Exclude: []),
                 Path.Combine(_root, "reused.arcbackup"),
-                Overwrite: false,
-                ReusesExistingPassphrase: true),
+                Overwrite: false),
             "legacy".AsMemory(),
             CancellationToken.None);
 
         Assert.Equal(BackupCreateStatus.Complete, created.Status);
+    }
+
+    /// <summary>
+    /// The exemption is not something a caller can ask for through the create contract: the request
+    /// carries no such switch, and the only path that skips the floor is internal to the assembly.
+    /// </summary>
+    [Fact]
+    public void The_public_create_contract_has_no_way_to_skip_the_passphrase_floor()
+    {
+        Assert.DoesNotContain(
+            typeof(BackupCreateRequest).GetProperties(),
+            static property => property.Name.Contains("Passphrase", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            typeof(BackupCreateRequest).GetConstructors().SelectMany(static constructor => constructor.GetParameters()),
+            static parameter => parameter.Name!.Contains("Passphrase", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            typeof(BackupService).GetMethods(),
+            static method => method.Name.Contains("Safety", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            typeof(IBackupService).GetMethods(),
+            static method => method.Name.Contains("Safety", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The same request through the public path is refused: below-floor passphrases are exempt only
+    /// where the restore, and nothing else, asks for it.
+    /// </summary>
+    [Fact]
+    public async Task The_public_create_path_refuses_the_passphrase_the_restore_path_accepts()
+    {
+        BackupService service = CreateService(Paths(), new CountingSecretReader());
+
+        _ = await Assert.ThrowsAnyAsync<ArgumentException>(
+            () => service.CreateAsync(
+                new BackupCreateRequest(
+                    new BackupPlanRequest(
+                        BackupScope.MetadataOnly,
+                        SessionId: null,
+                        Include: [],
+                        Exclude: []),
+                    Path.Combine(_root, "public-short.arcbackup"),
+                    Overwrite: false),
+                "legacy".AsMemory(),
+                CancellationToken.None));
     }
 
     /// <summary>

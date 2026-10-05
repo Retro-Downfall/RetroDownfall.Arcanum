@@ -6601,7 +6601,13 @@ public sealed partial class WizardIntelligenceProvider(
         {
             // Constructor compatibility for embedders that have not yet registered the
             // provider catalog. The production host always registers the native catalog.
-            tools.Add(new ArcanumBrowseWebTool(httpClientFactory, settings, logger));
+            tools.Add(
+                new ArcanumBrowseWebTool(
+                    httpClientFactory,
+                    settings,
+                    logger,
+                    TimeProvider.System,
+                    new RetroDownfall.Arcanum.Infrastructure.Security.SystemDnsResolver()));
         }
 
         if (ShouldDisableMcpTools(request))

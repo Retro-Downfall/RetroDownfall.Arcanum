@@ -284,22 +284,32 @@ public sealed class BackupArchiveCodec
 
             File.Move(tempPath, fullDestinationPath, overwrite);
 
+            _options.AfterArchivePublishedForTests?.Invoke(fullDestinationPath);
+
             // A move keeps the file's mode and ACL, so re-applying them is belt and braces and a
-            // failure to do so is a warning (logged by the permission helper), not grounds to remove
-            // what has been published. What does still refuse is a destination that is no longer the
-            // staged file, which is reported without deleting anything.
+            // failure to do so is a warning, not grounds to remove what has been published. What does
+            // still refuse is a destination that is no longer the staged file, which is reported as
+            // that, without deleting anything; it is checked before the re-apply so permissions are
+            // never applied to a file that is not ours, and again after it.
             if (!temporaryArchive.MatchesPathIdentity(fullDestinationPath))
             {
                 throw new IOException(
-                    "The published backup archive could not be verified with owner-only permissions.");
+                    "The published backup archive path changed immediately after publication, so its permissions were not re-applied and nothing was removed.");
             }
 
-            _ = SecureFilePermissions.TryApplyOwnerOnlyFileStrict(fullDestinationPath);
+            // The permission helper logs when the apply itself throws, but is silent when the apply
+            // succeeds and the verification that follows it does not, so that case is logged here.
+            if (!SecureFilePermissions.TryApplyOwnerOnlyFileStrict(fullDestinationPath))
+            {
+                Serilog.Log.Warning(
+                    "The published backup archive {Path} could not be verified with owner-only permissions after publication; it was left in place.",
+                    fullDestinationPath);
+            }
 
             if (!temporaryArchive.MatchesPathIdentity(fullDestinationPath))
             {
                 throw new IOException(
-                    "The published backup archive could not be verified with owner-only permissions.");
+                    "The published backup archive path changed while its permissions were being re-applied; it was left as found.");
             }
 
             return effectiveManifest;
@@ -713,10 +723,12 @@ public sealed class BackupArchiveCodec
     /// exact bytes and the manifest is compared under that identity. This is the second question,
     /// which the ordinal key cannot answer: two entry paths that differ only in case, or only in the
     /// trailing dots and spaces Windows drops from a name, are two entries in the manifest and one
-    /// file on such a volume, where the second write truncates the first. Nothing downstream would notice — the manifest comparison verifies against hashes taken
-    /// from the decrypted stream rather than from the files on disk, and staging tests only that each
-    /// referenced path exists — so the restore would report completed with one entry silently carrying
-    /// the other's bytes.
+    /// file on such a volume, where the second write truncates the first. So is an entry named like
+    /// another entry's directory, which no volume can lay down as both a file and a directory.
+    /// Nothing downstream would notice — the manifest comparison verifies against hashes taken from
+    /// the decrypted stream rather than from the files on disk, and staging tests only that each
+    /// referenced path exists — so the restore would report completed with one entry silently
+    /// carrying the other's bytes.
     ///
     /// <para>Refused on every platform rather than only where the volume folds the two together.
     /// Whether the collision materialises is a property of the machine the archive lands on, and this
@@ -731,15 +743,10 @@ public sealed class BackupArchiveCodec
         // Already normalized to form C: a record whose path is not its own canonical rendering is
         // refused as it is read. The fold is the planner's, so an archive this build writes is one
         // this build accepts.
-        HashSet<string> folded = new(BackupArchivePathFolding.KeyComparer);
-
-        foreach (string archivePath in archivePaths)
+        if (BackupArchivePathFolding.FindCollidingIndexes([.. archivePaths]).Count > 0)
         {
-            if (!folded.Add(BackupArchivePathFolding.CollisionKey(archivePath)))
-            {
-                throw new InvalidDataException(
-                    "Backup archive entry paths collide when compared without case.");
-            }
+            throw new InvalidDataException(
+                "Backup archive entry paths cannot all become files on one destination: two collide when compared without case or trailing dots and spaces, or one is named like another's directory.");
         }
     }
 

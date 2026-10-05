@@ -91,17 +91,17 @@ public sealed record BackupPlanRequest(
     BackupComponent[] Include,
     BackupComponent[] Exclude);
 
-/// <param name="ReusesExistingPassphrase">
-/// The passphrase is not one chosen for this archive but the one that already protects an archive the
-/// operator holds, as with the safety backup a restore takes under the passphrase of the archive it is
-/// restoring. It is exempt from <see cref="BackupPassphrasePolicy"/>, because refusing it would
-/// refuse the restore of an archive written before the floor existed.
-/// </param>
+/// <remarks>
+/// Every request made through <see cref="IBackupService.CreateAsync"/> is held to
+/// <see cref="BackupPassphrasePolicy"/>. The one caller that legitimately writes an archive under a
+/// passphrase it did not choose, the safety backup a restore takes under the passphrase of the archive
+/// it is restoring, does not do it through this contract: the exemption lives on an assembly-internal
+/// path of the physical service, so nothing that can build this request can switch the floor off.
+/// </remarks>
 public sealed record BackupCreateRequest(
     BackupPlanRequest Plan,
     string? OutputPath,
-    bool Overwrite,
-    bool ReusesExistingPassphrase = false);
+    bool Overwrite);
 
 public sealed record BackupPlanComponent(
     BackupComponent Component,

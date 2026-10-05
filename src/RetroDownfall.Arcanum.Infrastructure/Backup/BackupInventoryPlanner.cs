@@ -57,6 +57,9 @@ public sealed record BackupInventory(
 
 public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 {
+    private const string CollidingArchivePathsDetail =
+        "Selected files have archive paths that collide when compared without case or trailing dots and spaces, or that name a file where another file needs a directory, so no destination volume can restore them all.";
+
     private static readonly BackupComponent[] ExplicitOnlyComponents =
     [
         BackupComponent.TrustedMcpWorkspaceMetadata,
@@ -274,22 +277,12 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             components,
             cancellationToken);
 
-        if (selected.Contains(BackupComponent.CompendiumSettings)
-            && selected.Contains(BackupComponent.Configuration))
-        {
-            ComponentAccumulator config = components[BackupComponent.Configuration];
-
-            components[BackupComponent.CompendiumSettings].Set(
-                config.Status,
-                "Compendium uses the shared arcanum.json entry; no duplicate file is stored.");
-        }
-
         files.Sort(
             static (left, right) => StringComparer.Ordinal.Compare(
                 left.ArchivePath,
                 right.ArchivePath));
 
-        FailCollidingArchivePaths(files, components);
+        ResolveArchivePathCollisionsAndAliases(selected, files, components);
 
         BackupPlanComponent[] planComponents = components.Values
             .OrderBy(static component => component.Component)
@@ -307,6 +300,33 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             [.. warnings.Distinct(StringComparer.Ordinal)]);
 
         return new BackupInventory(plan, files, requiredKeyIds);
+    }
+
+    /// <summary>
+    /// The last two steps of a plan, in the one order that keeps them right: withdraw the files whose
+    /// archive paths collide, then copy the Configuration status onto the Compendium alias.
+    /// </summary>
+    /// <remarks>
+    /// The alias reports what the Configuration entry it shares ended up as, so it has to be read after
+    /// the collision pass has had its say; copied before, a Configuration that then failed left the
+    /// alias reporting a complete component beside a failed plan.
+    /// </remarks>
+    internal static void ResolveArchivePathCollisionsAndAliases(
+        IReadOnlySet<BackupComponent> selected,
+        List<BackupInventoryFile> files,
+        IReadOnlyDictionary<BackupComponent, ComponentAccumulator> components)
+    {
+        FailCollidingArchivePaths(files, components);
+
+        if (selected.Contains(BackupComponent.CompendiumSettings)
+            && selected.Contains(BackupComponent.Configuration))
+        {
+            ComponentAccumulator config = components[BackupComponent.Configuration];
+
+            components[BackupComponent.CompendiumSettings].Set(
+                config.Status,
+                "Compendium uses the shared arcanum.json entry; no duplicate file is stored.");
+        }
     }
 
     private static HashSet<BackupComponent> DefaultComponents(BackupScope scope) =>
@@ -1525,37 +1545,24 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
     /// hashes taken from the decrypted stream, and then cannot be restored. Every member of a
     /// colliding group is withdrawn rather than an arbitrary survivor, because neither of them is
     /// the one the operator meant. An exact duplicate is the same condition, so it takes the same
-    /// route instead of aborting the whole plan with an exception.
+    /// route instead of aborting the whole plan with an exception. A file whose name folds onto the
+    /// name of another entry's directory is the same condition again: the file and every entry beneath
+    /// that directory are withdrawn together.
     /// </remarks>
     private static void FailCollidingArchivePaths(
         List<BackupInventoryFile> files,
         IReadOnlyDictionary<BackupComponent, ComponentAccumulator> components)
     {
-        Dictionary<string, List<int>> groups = new(BackupArchivePathFolding.KeyComparer);
+        string[] archivePaths =
+        [
+            .. files.Select(static file => file.ArchivePath.Normalize(NormalizationForm.FormC)),
+        ];
 
-        for (int index = 0; index < files.Count; index++)
+        HashSet<int> colliding = BackupArchivePathFolding.FindCollidingIndexes(archivePaths);
+
+        if (colliding.Count == 0)
         {
-            string key = BackupArchivePathFolding.CollisionKey(
-                files[index].ArchivePath.Normalize(NormalizationForm.FormC));
-
-            if (!groups.TryGetValue(key, out List<int>? members))
-            {
-                members = [];
-
-                groups.Add(key, members);
-            }
-
-            members.Add(index);
-        }
-
-        HashSet<int> colliding = [];
-
-        foreach (List<int> members in groups.Values)
-        {
-            if (members.Count > 1)
-            {
-                colliding.UnionWith(members);
-            }
+            return;
         }
 
         for (int index = files.Count - 1; index >= 0; index--)
@@ -1573,9 +1580,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
             accumulator.Remove(removed.Size);
 
-            accumulator.Set(
-                BackupComponentStatus.Failed,
-                "Selected files have archive paths that collide when compared without case or trailing dots and spaces, so no destination volume can restore them all.");
+            accumulator.FailWith(CollidingArchivePathsDetail);
 
             accumulator.NonportablePaths.Add(removed.SourcePath);
         }
@@ -1600,7 +1605,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         return builder.ToString();
     }
 
-    private sealed class ComponentAccumulator(
+    internal sealed class ComponentAccumulator(
         BackupComponent component,
         BackupComponentStatus status,
         string detail)
@@ -1634,6 +1639,29 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             Files = checked(Files - 1);
 
             Bytes = checked(Bytes - bytes);
+        }
+
+        /// <summary>
+        /// Fails the component for one more reason without losing the ones already recorded: the first
+        /// failure replaces the placeholder detail, a later one is appended once.
+        /// </summary>
+        public void FailWith(string reason)
+        {
+            if (Status != BackupComponentStatus.Failed)
+            {
+                Status = BackupComponentStatus.Failed;
+
+                Detail = reason;
+
+                return;
+            }
+
+            if (!Detail.Contains(reason, StringComparison.Ordinal))
+            {
+                Detail = Detail.Length == 0
+                    ? reason
+                    : $"{Detail} {reason}";
+            }
         }
 
         public void Set(BackupComponentStatus next, string nextDetail)

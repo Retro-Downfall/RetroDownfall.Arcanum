@@ -646,6 +646,198 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             BackupArchivePathFolding.KeyComparer);
     }
 
+    /// <summary>
+    /// A file and a directory cannot share a name on a destination that ignores case and trailing dots,
+    /// so a file named like another file's directory is the same collision as two files with one name.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_file_named_like_another_files_directory_is_a_failed_component()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows cannot create the trailing-dot name; this builds the collision on a POSIX volume.");
+
+        await CreateInventoryDatabaseAsync(seedSql: null);
+
+        await WriteFileAsync("spells/alpha/SPELL.md", "unrelated");
+
+        await WriteFileAsync("spells/beta.", "a file whose name Windows would fold onto the directory below");
+
+        await WriteFileAsync("spells/beta/SPELL.md", "inside the directory");
+
+        BackupInventory inventory = await PlanGlobalSpellsAsync();
+
+        BackupPlanComponent component = Assert.Single(
+            inventory.Plan.Components,
+            static item => item.Component == BackupComponent.GlobalSpells);
+
+        Assert.Equal(BackupComponentStatus.Failed, component.Status);
+
+        // The file and everything under the directory it collides with are withdrawn; the unrelated
+        // sibling stays.
+        Assert.Equal(
+            ["authored/spells/alpha/SPELL.md"],
+            inventory.Files.Select(static file => file.ArchivePath));
+
+        Assert.Equal(2, component.NonportablePaths.Length);
+    }
+
+    [Theory]
+    [InlineData(new[] { "a/Notes/SPELL.md", "a/notes/SPELL.md", "a/other.md" }, new[] { 0, 1 })]
+    [InlineData(new[] { "a/SPELL.md.", "a/SPELL.md" }, new[] { 0, 1 })]
+    [InlineData(new[] { "a", "A/x", "A/y", "b" }, new[] { 0, 1, 2 })]
+    [InlineData(new[] { "x/a.", "x/A/y", "x/b" }, new[] { 0, 1 })]
+    [InlineData(new[] { "dup", "dup" }, new[] { 0, 1 })]
+    [InlineData(new[] { "A/x", "a/y" }, new int[0])]
+    [InlineData(new[] { "a.b", "a/b" }, new int[0])]
+    [InlineData(new[] { "ab", "a/x" }, new int[0])]
+    [InlineData(new[] { "a/b/c", "a/b", "a/d" }, new[] { 0, 1 })]
+    public void Colliding_archive_paths_are_found_by_case_trailing_dots_and_file_versus_directory(
+        string[] archivePaths,
+        int[] expectedMembers)
+    {
+        HashSet<int> colliding = BackupArchivePathFolding.FindCollidingIndexes(archivePaths);
+
+        Assert.Equal(
+            expectedMembers.Order(),
+            colliding.Order());
+    }
+
+    /// <summary>
+    /// The planner's file-system-independent counterpart of the case-only test above, which cannot
+    /// build its two names on a volume that folds case: the same shared fold, fed the case pair the
+    /// real tree would have held.
+    /// </summary>
+    [Fact]
+    public void A_case_only_collision_fails_the_owning_component_without_a_case_sensitive_volume()
+    {
+        Dictionary<BackupComponent, BackupInventoryPlanner.ComponentAccumulator> components = Accumulators();
+
+        List<BackupInventoryFile> files =
+        [
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/Notes/SPELL.md"),
+
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/notes/SPELL.md"),
+
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/other/SPELL.md"),
+        ];
+
+        Resolve(
+            new HashSet<BackupComponent> { BackupComponent.GlobalSpells },
+            files,
+            components);
+
+        BackupPlanComponent component = components[BackupComponent.GlobalSpells].ToPlanComponent();
+
+        Assert.Equal(BackupComponentStatus.Failed, component.Status);
+
+        Assert.Equal(
+            ["authored/spells/other/SPELL.md"],
+            files.Select(static file => file.ArchivePath));
+
+        Assert.Equal(1, component.Files);
+
+        Assert.Equal(2, component.NonportablePaths.Length);
+    }
+
+    /// <summary>
+    /// A component that already failed for another reason keeps saying why: the collision adds its own
+    /// reason instead of replacing the first one with the last.
+    /// </summary>
+    [Fact]
+    public void A_collision_adds_to_an_earlier_failure_detail_instead_of_replacing_it()
+    {
+        Dictionary<BackupComponent, BackupInventoryPlanner.ComponentAccumulator> components = Accumulators();
+
+        components[BackupComponent.GlobalSpells].Set(
+            BackupComponentStatus.Failed,
+            "A required file is a symbolic link.");
+
+        List<BackupInventoryFile> files =
+        [
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/a/SPELL.md"),
+
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/a/SPELL.md."),
+
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/b/SPELL.md"),
+
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/b/SPELL.md "),
+        ];
+
+        Resolve(
+            new HashSet<BackupComponent> { BackupComponent.GlobalSpells },
+            files,
+            components);
+
+        BackupPlanComponent component = components[BackupComponent.GlobalSpells].ToPlanComponent();
+
+        Assert.Equal(BackupComponentStatus.Failed, component.Status);
+
+        Assert.Contains("symbolic link", component.Detail, StringComparison.Ordinal);
+
+        // Four withdrawn files in two colliding groups, one explanation of the collision.
+        Assert.Equal(
+            1,
+            component.Detail.Split("collide").Length - 1);
+    }
+
+    /// <summary>
+    /// The Compendium alias reports whatever the Configuration entry it shares ended up as, and that
+    /// includes the collision pass, which runs last.
+    /// </summary>
+    [Fact]
+    public void The_compendium_alias_follows_the_configuration_status_after_the_collision_pass()
+    {
+        Dictionary<BackupComponent, BackupInventoryPlanner.ComponentAccumulator> components = Accumulators();
+
+        List<BackupInventoryFile> files =
+        [
+            InventoryFile(BackupComponent.Configuration, "configuration/arcanum.json"),
+
+            InventoryFile(BackupComponent.Configuration, "configuration/ARCANUM.json"),
+        ];
+
+        Resolve(
+            new HashSet<BackupComponent>
+            {
+                BackupComponent.Configuration,
+
+                BackupComponent.CompendiumSettings,
+            },
+            files,
+            components);
+
+        Assert.Equal(
+            BackupComponentStatus.Failed,
+            components[BackupComponent.Configuration].Status);
+
+        Assert.Equal(
+            BackupComponentStatus.Failed,
+            components[BackupComponent.CompendiumSettings].Status);
+    }
+
+    /// <summary>
+    /// Windows drops trailing dots and spaces from a name, which is the premise of the fold; this runs
+    /// where that is true instead of assuming it from the other platforms.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_treats_a_trailing_dot_name_as_the_same_destination()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "Windows lane only: the platform that folds trailing dots and spaces is the one this asserts about.");
+
+        await WriteFileAsync("spells/alpha/SPELL.md", "first");
+
+        await WriteFileAsync("spells/alpha/SPELL.md.", "second");
+
+        string[] names = Directory.GetFiles(Path.Combine(_root, "spells", "alpha"));
+
+        string only = Assert.Single(names);
+
+        Assert.Equal("second", await File.ReadAllTextAsync(only));
+    }
+
     private async Task AssertCollidingSpellTreeFailsAsync()
     {
         BackupInventory inventory = await PlanGlobalSpellsAsync();
@@ -1201,4 +1393,41 @@ public sealed class BackupInventoryPlannerTests : IDisposable
 
         _ = await command.ExecuteNonQueryAsync();
     }
+
+    private static Dictionary<BackupComponent, BackupInventoryPlanner.ComponentAccumulator> Accumulators() =>
+        Enum.GetValues<BackupComponent>().ToDictionary(
+            static component => component,
+            static component => new BackupInventoryPlanner.ComponentAccumulator(
+                component,
+                BackupComponentStatus.Complete,
+                "Selected."));
+
+    /// <summary>
+    /// The planner's own last step, run over files the accumulators have already counted the way the
+    /// real enumeration counts them.
+    /// </summary>
+    private static void Resolve(
+        IReadOnlySet<BackupComponent> selected,
+        List<BackupInventoryFile> files,
+        Dictionary<BackupComponent, BackupInventoryPlanner.ComponentAccumulator> components)
+    {
+        foreach (BackupInventoryFile file in files)
+        {
+            components[file.Component].Add(file.Size);
+        }
+
+        BackupInventoryPlanner.ResolveArchivePathCollisionsAndAliases(selected, files, components);
+    }
+
+    private static BackupInventoryFile InventoryFile(
+        BackupComponent component,
+        string archivePath) =>
+        new(
+            component,
+            "/source/" + archivePath,
+            archivePath,
+            Size: 1,
+            Sha256: new string('0', 64),
+            VolumeId: 1,
+            FileId: 1);
 }
