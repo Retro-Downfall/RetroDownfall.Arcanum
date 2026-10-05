@@ -2047,7 +2047,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             {
                 _logger.LogWarning(
                     "Full-installation reset marker-pair operation hit an unexpected {ExceptionType} during {Phase} (step {Step}); reporting recovery required.",
-                    exception.GetType().FullName,
+                    ExceptionKind(exception),
                     phase,
                     step ?? "none");
             }
@@ -2057,6 +2057,29 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             // Diagnostics only: the answer the caller gets is already decided.
         }
     }
+
+    /// <summary>
+    /// A bounded, content-free name for the kind of exception a catch-all absorbed.
+    /// </summary>
+    /// <remarks>
+    /// A closed set matched by type rather than read from the exception: the type's name is the one
+    /// thing worth logging, and reading it reflectively would put a reflection-shaped call on a path the
+    /// hosted-producer analysis has to classify, for no gain over naming the families that can occur
+    /// here. Anything outside the set is reported as <c>Other</c>.
+    /// </remarks>
+    private static string ExceptionKind(Exception exception) =>
+        exception switch
+        {
+            OperationCanceledException => nameof(OperationCanceledException),
+            TimeoutException => nameof(TimeoutException),
+            SqliteException => nameof(SqliteException),
+            IOException => nameof(IOException),
+            UnauthorizedAccessException => nameof(UnauthorizedAccessException),
+            NotSupportedException => nameof(NotSupportedException),
+            ArgumentException => nameof(ArgumentException),
+            InvalidOperationException => nameof(InvalidOperationException),
+            _ => "Other",
+        };
 
     private static Result Inert() =>
         Result.Failure(new Error(

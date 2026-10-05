@@ -1211,7 +1211,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             logger.Entries,
             static candidate => candidate.Level >= LogLevel.Warning);
 
-        Assert.Contains("System.InvalidOperationException", entry.Message);
+        Assert.Contains("InvalidOperationException", entry.Message);
 
         Assert.Contains("pair-effects", entry.Message);
 
@@ -1284,7 +1284,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 logger.Entries,
                 static candidate => candidate.Level >= LogLevel.Warning);
 
-            Assert.Contains("System.InvalidOperationException", entry.Message);
+            Assert.Contains("InvalidOperationException", entry.Message);
 
             Assert.Contains("begin-pre-journal", entry.Message);
 
