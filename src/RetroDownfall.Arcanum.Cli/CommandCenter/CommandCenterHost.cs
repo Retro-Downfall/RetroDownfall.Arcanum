@@ -510,7 +510,7 @@ internal sealed class CommandCenterHost(
                     if (chord.IsEnter && chord.IsCtrl)
                     {
                         e.Handled = true;
-                        CancellationToken submitToken = state.TurnCts?.Token ?? linked.Token;
+                        CancellationToken submitToken = state.TurnTokenOr(linked.Token);
                         _ = SubmitHumanPromptAsync(state, window, app, uiChannel.Writer, submitToken);
                         return;
                     }
@@ -750,7 +750,7 @@ internal sealed class CommandCenterHost(
                     || state.Overlay == CommandCenterOverlayKind.HumanPrompt)
                 {
                     // Bind submit to turn CTS so CancelTurn cancels in-flight submit.
-                    CancellationToken submitToken = state.TurnCts?.Token ?? linked.Token;
+                    CancellationToken submitToken = state.TurnTokenOr(linked.Token);
                     _ = SubmitHumanPromptAsync(state, window, app, ui, submitToken);
                 }
                 else
@@ -770,7 +770,7 @@ internal sealed class CommandCenterHost(
 
             case CommandCenterAction.CancelTurn:
                 // Cancel only — Host owns TurnCts disposal. Cancelling TurnCts aborts in-flight submit.
-                state.TurnCts?.Cancel();
+                _ = state.TryCancelTurn();
                 _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
                 break;
 

@@ -183,7 +183,66 @@ internal sealed class CommandCenterState
 
     public string StreamingAssistantText { get; set; } = string.Empty;
 
-    public CancellationTokenSource? TurnCts { get; set; }
+    private CancellationTokenSource? _turnCts;
+
+    /// <summary>
+    /// The current turn's token source. The submit path owns it — it creates, publishes, and disposes
+    /// it — so everything else reads it through <see cref="TryCancelTurn"/> and <see cref="TurnTokenOr"/>,
+    /// which tolerate the disposal that can land at any moment.
+    /// </summary>
+    public CancellationTokenSource? TurnCts
+    {
+        get => Volatile.Read(ref _turnCts);
+        set => Volatile.Write(ref _turnCts, value);
+    }
+
+    /// <summary>
+    /// Cancels the turn in flight. Returns <see langword="false"/> when there is none, or when the submit
+    /// path disposed its source between the read and the call: Ctrl+C reaches this from a fire-and-forget
+    /// task, where the <see cref="ObjectDisposedException"/> a disposed source throws would go unobserved.
+    /// </summary>
+    public bool TryCancelTurn()
+    {
+        CancellationTokenSource? turn = TurnCts;
+        if (turn is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            turn.Cancel();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            // The turn finished and the submit path disposed its source first; nothing is left to cancel.
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The current turn's token, or <paramref name="fallback"/> when no turn is in flight or its source
+    /// has just been disposed (reading <see cref="CancellationTokenSource.Token"/> then throws).
+    /// </summary>
+    public CancellationToken TurnTokenOr(CancellationToken fallback)
+    {
+        CancellationTokenSource? turn = TurnCts;
+        if (turn is null)
+        {
+            return fallback;
+        }
+
+        try
+        {
+            return turn.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            // Same race as TryCancelTurn: the source went away between the read and the call.
+            return fallback;
+        }
+    }
 
     public bool RequestExit { get; set; }
 
