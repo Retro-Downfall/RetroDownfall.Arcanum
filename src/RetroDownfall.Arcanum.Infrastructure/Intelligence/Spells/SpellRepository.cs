@@ -55,8 +55,6 @@ internal sealed partial class SpellRepository : ISpellRepository
     /// </summary>
     internal Action? AfterSpellDirectoryPublishedForTests { get; set; }
 
-    private readonly IOptionsMonitor<ArcanumSettings> _settingsMonitor;
-
     public SpellRepository(
         ILogger<SpellRepository> logger,
         IServiceScopeFactory scopeFactory,
@@ -68,8 +66,6 @@ internal sealed partial class SpellRepository : ISpellRepository
         _scopeFactory = scopeFactory;
 
         _mcpManager = mcpManager;
-
-        _settingsMonitor = settingsMonitor;
 
         _searchService = new SpellSearchService(settingsMonitor);
     }
@@ -588,15 +584,38 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         var scripts = new List<SpellExportScriptDto>();
 
+        // The files a bundle leaves out are named, so a caller can tell a complete bundle from a partial one.
+        // The list is bounded like the bundle itself; a spell with a directory full of unusable files still
+        // answers with a short list, not an unbounded one.
+        var omittedScripts = new List<string>();
+
         string scriptsDir = Path.Combine(dir, "scripts");
 
         if (Directory.Exists(scriptsDir))
         {
             long totalScriptBytes = 0;
 
-            foreach (string path in Directory.EnumerateFiles(scriptsDir))
+            // Ordinal file-name order, the order the scanner lists a spell's scripts in, so which scripts a
+            // capped bundle keeps does not depend on the order the filesystem hands them back in.
+            string[] paths = Directory
+                .EnumerateFiles(scriptsDir)
+                .OrderBy(static path => Path.GetFileName(path), StringComparer.Ordinal)
+                .ToArray();
+
+            bool stopped = false;
+
+            foreach (string path in paths)
             {
                 ct.ThrowIfCancellationRequested();
+
+                string fileName = Path.GetFileName(path);
+
+                if (stopped)
+                {
+                    RecordOmittedScript(omittedScripts, fileName);
+
+                    continue;
+                }
 
                 if (scripts.Count >= MaxSpellScriptCount)
                 {
@@ -605,7 +624,11 @@ internal sealed partial class SpellRepository : ISpellRepository
                         name,
                         MaxSpellScriptCount);
 
-                    break;
+                    stopped = true;
+
+                    RecordOmittedScript(omittedScripts, fileName);
+
+                    continue;
                 }
 
                 if (!TryGetExportableFileLength(path, workspaceRoot, out long fileLength))
@@ -614,6 +637,8 @@ internal sealed partial class SpellRepository : ISpellRepository
                         "Skipping non-regular script {ScriptPath} for spell {SpellName} export.",
                         path,
                         name);
+
+                    RecordOmittedScript(omittedScripts, fileName);
 
                     continue;
                 }
@@ -627,6 +652,8 @@ internal sealed partial class SpellRepository : ISpellRepository
                         fileLength,
                         perFileCap);
 
+                    RecordOmittedScript(omittedScripts, fileName);
+
                     continue;
                 }
 
@@ -639,7 +666,11 @@ internal sealed partial class SpellRepository : ISpellRepository
                         fileLength,
                         aggregateScriptCap);
 
-                    break;
+                    stopped = true;
+
+                    RecordOmittedScript(omittedScripts, fileName);
+
+                    continue;
                 }
 
                 // Scripts are binary, so the bytes go out as read: the secure read returns raw bytes and
@@ -656,16 +687,26 @@ internal sealed partial class SpellRepository : ISpellRepository
                         name,
                         scriptRead.Status);
 
+                    RecordOmittedScript(omittedScripts, fileName);
+
                     continue;
                 }
 
-                scripts.Add(new SpellExportScriptDto(Path.GetFileName(path), Convert.ToBase64String(scriptRead.Bytes.Span)));
+                scripts.Add(new SpellExportScriptDto(fileName, Convert.ToBase64String(scriptRead.Bytes.Span)));
 
                 totalScriptBytes += scriptRead.Bytes.Length;
             }
         }
 
-        return new SpellExportDto(metadata, fullContent, scripts);
+        return new SpellExportDto(metadata, fullContent, scripts, omittedScripts);
+    }
+
+    private static void RecordOmittedScript(List<string> omittedScripts, string fileName)
+    {
+        if (omittedScripts.Count < MaxSpellScriptCount)
+        {
+            omittedScripts.Add(fileName);
+        }
     }
 
     public async Task<Result<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken ct)
@@ -1178,24 +1219,32 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             // The version file is read first, through the scanner's hardened path, so a version that is a FIFO or
             // a link out of the workspace fails before the backup is written rather than leaving it half done.
+            long maxSpellFileBytes = GetMaxSpellFileSizeBytes();
+
             string? newActiveContent = null;
+
+            string refusal = "is not inside the workspace";
 
             if (WorkspacePathPolicy.RevalidatePathBeforeIo(Path.GetFullPath(workspaceRoot), versionPath))
             {
                 SecureUtf8FileReadResult versionRead = await SecureFileReader
-                    .ReadUtf8TextAsync(versionPath, (int)Math.Min(GetMaxSpellFileSizeBytes(), int.MaxValue - 1), ct)
+                    .ReadUtf8TextAsync(versionPath, (int)Math.Min(maxSpellFileBytes, int.MaxValue - 1), ct)
                     .ConfigureAwait(false);
 
                 if (versionRead.Status is SecureFileReadStatus.Success)
                 {
                     newActiveContent = versionRead.Text;
                 }
+                else
+                {
+                    refusal = DescribeVersionFileRefusal(versionRead.Status, maxSpellFileBytes);
+                }
             }
 
             if (newActiveContent is null)
             {
                 return Result<SpellVersionDto>.Failure(
-                    new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" is not a readable regular file for spell \"{trimmedName}\"."));
+                    new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" of spell \"{trimmedName}\" {refusal}."));
             }
 
             string? recordedActiveVersion = workspaceSpell.SkillMetadata?.ActiveVersion;
@@ -1244,6 +1293,21 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
+
+    /// <summary>
+    /// Says why a version file could not be read for activation, so an oversize or non-UTF-8 file is not
+    /// reported as though it were a link or a FIFO. The spell scanner applies the same limits, so a file these
+    /// refuse is one the catalog could not load back after it had been activated.
+    /// </summary>
+    private static string DescribeVersionFileRefusal(SecureFileReadStatus status, long maxSpellFileBytes) =>
+        status switch
+        {
+            SecureFileReadStatus.TooLarge => $"is larger than the {maxSpellFileBytes}-byte spell file limit",
+            SecureFileReadStatus.InvalidUtf8 => "is not valid UTF-8 text",
+            SecureFileReadStatus.NotFound => "does not exist",
+            SecureFileReadStatus.Rejected => "is not a regular file inside the spell directory (a symbolic link, a hard-linked file, a FIFO or a device is refused)",
+            _ => "could not be read",
+        };
 
     /// <summary>
     /// Compares two spell file paths for filesystem identity. Version labels permit

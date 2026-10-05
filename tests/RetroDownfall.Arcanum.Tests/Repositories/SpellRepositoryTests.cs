@@ -968,8 +968,12 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.False(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "not-base64")));
     }
 
+    /// <summary>
+    /// Past the cap the bundle keeps the first scripts by ordinal file name, whatever order the filesystem lists
+    /// them in, and names the ones it left out, so a caller can tell the bundle is partial.
+    /// </summary>
     [SkippableFact]
-    public async Task ExportAsync_stops_at_the_script_count_cap()
+    public async Task ExportAsync_keeps_the_first_scripts_by_name_at_the_count_cap_and_names_the_rest()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -979,7 +983,10 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         Directory.CreateDirectory(scriptsDir);
 
-        foreach (int index in Enumerable.Range(0, SpellRepository.MaxSpellScriptCount + 5))
+        int total = SpellRepository.MaxSpellScriptCount + 5;
+
+        // Highest name first, so a listing that follows creation order meets the names backwards.
+        foreach (int index in Enumerable.Range(0, total).Reverse())
         {
             await File.WriteAllBytesAsync(Path.Combine(scriptsDir, $"tiny-{index:D3}.sh"), "x"u8.ToArray());
         }
@@ -990,7 +997,37 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         Assert.NotNull(exported);
 
-        Assert.Equal(SpellRepository.MaxSpellScriptCount, exported!.Scripts.Count);
+        string[] expectedKept = Enumerable.Range(0, SpellRepository.MaxSpellScriptCount).Select(index => $"tiny-{index:D3}.sh").ToArray();
+
+        string[] expectedOmitted = Enumerable.Range(SpellRepository.MaxSpellScriptCount, 5).Select(index => $"tiny-{index:D3}.sh").ToArray();
+
+        Assert.Equal(expectedKept, exported!.Scripts.Select(static script => script.FileName).ToArray());
+
+        Assert.Equal(expectedOmitted, exported.OmittedScripts);
+    }
+
+    [SkippableFact]
+    public async Task ExportAsync_reports_no_omitted_scripts_when_the_bundle_is_complete()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("complete-bundle");
+
+        Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
+
+        await File.WriteAllBytesAsync(Path.Combine(spellDir, "scripts", "only.sh"), "echo ok"u8.ToArray());
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto? exported = await repository.ExportAsync("complete-bundle", _workspaceRoot, CancellationToken.None);
+
+        Assert.NotNull(exported);
+
+        Assert.Equal("only.sh", Assert.Single(exported!.Scripts).FileName);
+
+        Assert.NotNull(exported.OmittedScripts);
+
+        Assert.Empty(exported.OmittedScripts!);
     }
 
     /// <summary>
@@ -1396,6 +1433,8 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         SpellExportScriptDto single = Assert.Single(exported!.Scripts);
 
         Assert.Equal("small.sh", single.FileName);
+
+        Assert.Equal(["big.sh"], exported.OmittedScripts);
     }
 
     [SkippableFact]
@@ -1438,14 +1477,14 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.NotNull(exported);
 
         Assert.Equal(scriptsWithinAggregateCap, exported!.Scripts.Count);
+
+        Assert.Equal([$"{scriptsWithinAggregateCap:D2}.sh"], exported.OmittedScripts);
     }
 
     [SkippableFact]
     public async Task ExportAsync_skips_a_script_symlinked_outside_the_spell_directory()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows lane does not hold.");
 
         string spellDir = await WriteExportableSpellAsync("symlink-script");
 
@@ -1467,7 +1506,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
             await File.WriteAllBytesAsync(secretPath, secret);
 
-            File.CreateSymbolicLink(Path.Combine(scriptsDir, "loot"), secretPath);
+            SkipUnlessSymbolicLinkCanBeCreated(Path.Combine(scriptsDir, "loot"), secretPath);
 
             SpellRepository repository = CreateRepository();
 
@@ -1478,6 +1517,8 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             SpellExportScriptDto single = Assert.Single(exported!.Scripts);
 
             Assert.Equal("real.sh", single.FileName);
+
+            Assert.Equal(["loot"], exported.OmittedScripts);
 
             Assert.DoesNotContain(
                 exported.Scripts,
@@ -1494,8 +1535,6 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows lane does not hold.");
-
         string spellDir = await WriteExportableSpellAsync("symlink-version");
 
         string secretDir = Path.Combine(Path.GetTempPath(), "arcanum-spell-secret", Guid.NewGuid().ToString("N"));
@@ -1508,7 +1547,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
             await File.WriteAllTextAsync(secretPath, "OUTSIDE-CONTENT-NEVER-ACTIVATED");
 
-            File.CreateSymbolicLink(Path.Combine(spellDir, "SPELL.v2.0.md"), secretPath);
+            SkipUnlessSymbolicLinkCanBeCreated(Path.Combine(spellDir, "SPELL.v2.0.md"), secretPath);
 
             SpellRepository repository = CreateRepository();
 
@@ -1518,7 +1557,12 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
                 _workspaceRoot,
                 CancellationToken.None);
 
+            // The refusal itself is pinned: a spell lookup miss or any other failure must not satisfy this.
             Assert.True(activated.IsFailure);
+
+            Assert.Equal(ErrorCodes.Spell.NotFound, activated.Error.Code);
+
+            Assert.Contains("not inside the workspace", activated.Error.Message, StringComparison.Ordinal);
 
             string active = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
 
@@ -1530,6 +1574,174 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         {
             Directory.Delete(secretDir, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// A link that stays inside the workspace passes containment, so it is the secure read's no-follow open that
+    /// refuses it.
+    /// </summary>
+    [SkippableFact]
+    public async Task ActivateVersionAsync_refuses_a_version_file_that_is_a_link_inside_the_workspace()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("inner-link-version");
+
+        string target = Path.Combine(_workspaceRoot, "inner-target.md");
+
+        await File.WriteAllTextAsync(target, "LINKED-CONTENT-NEVER-ACTIVATED");
+
+        SkipUnlessSymbolicLinkCanBeCreated(Path.Combine(spellDir, "SPELL.v2.0.md"), target);
+
+        SpellRepository repository = CreateRepository();
+
+        Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
+            "inner-link-version",
+            "2.0",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(activated.IsFailure);
+
+        Assert.Equal(ErrorCodes.Spell.NotFound, activated.Error.Code);
+
+        Assert.Contains("not a regular file", activated.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("LINKED-CONTENT-NEVER-ACTIVATED", await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md")), StringComparison.Ordinal);
+
+        Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
+    }
+
+    [SkippableFact]
+    public async Task ActivateVersionAsync_refuses_a_hard_linked_version_file()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("hardlink-version");
+
+        string aliasTarget = Path.Combine(_workspaceRoot, "alias-of-version.md");
+
+        await File.WriteAllTextAsync(aliasTarget, "ALIASED-CONTENT-NEVER-ACTIVATED");
+
+        Skip.IfNot(HardLinkTestSupport.TryCreate(Path.Combine(spellDir, "SPELL.v2.0.md"), aliasTarget), "Hard links are unavailable on this host.");
+
+        SpellRepository repository = CreateRepository();
+
+        Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
+            "hardlink-version",
+            "2.0",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(activated.IsFailure);
+
+        Assert.Equal(ErrorCodes.Spell.NotFound, activated.Error.Code);
+
+        Assert.Contains("not a regular file", activated.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ALIASED-CONTENT-NEVER-ACTIVATED", await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md")), StringComparison.Ordinal);
+
+        Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
+    }
+
+    [SkippableFact]
+    public async Task ActivateVersionAsync_does_not_block_on_a_fifo_version_file()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string spellDir = await WriteExportableSpellAsync("fifo-version");
+
+        string fifo = Path.Combine(spellDir, "SPELL.v2.0.md");
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        SpellRepository repository = CreateRepository();
+
+        Task<Result<SpellVersionDto>> activation = Task.Run(
+            () => repository.ActivateVersionAsync("fifo-version", "2.0", _workspaceRoot, CancellationToken.None));
+
+        Task finished = await Task.WhenAny(activation, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        if (!ReferenceEquals(finished, activation))
+        {
+            // Pair the blocked open(2) with a writer so the stuck thread is released before the test fails.
+            await Task.WhenAny(Task.Run(() => File.WriteAllBytes(fifo, [])), Task.Delay(TimeSpan.FromSeconds(5)));
+
+            Assert.Fail("ActivateVersionAsync blocked opening a FIFO version file instead of refusing it.");
+        }
+
+        Result<SpellVersionDto> activated = await activation;
+
+        Assert.True(activated.IsFailure);
+
+        Assert.Equal(ErrorCodes.Spell.NotFound, activated.Error.Code);
+
+        Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
+    }
+
+    /// <summary>
+    /// A version file the scanner could never load back (over the spell file limit) is refused, and the refusal
+    /// says why rather than claiming the file is not a regular file.
+    /// </summary>
+    [SkippableFact]
+    public async Task ActivateVersionAsync_names_the_size_limit_when_the_version_file_is_too_large()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("oversize-version");
+
+        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
+
+        await File.WriteAllBytesAsync(Path.Combine(spellDir, "SPELL.v2.0.md"), new byte[checked((int)perFileCap + 1)]);
+
+        SpellRepository repository = CreateRepository();
+
+        Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
+            "oversize-version",
+            "2.0",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(activated.IsFailure);
+
+        Assert.Equal(ErrorCodes.Spell.NotFound, activated.Error.Code);
+
+        Assert.Contains("larger than", activated.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("not a regular file", activated.Error.Message, StringComparison.Ordinal);
+
+        Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
+    }
+
+    /// <summary>
+    /// A version file that is not UTF-8 text gets its own reason too.
+    /// </summary>
+    [SkippableFact]
+    public async Task ActivateVersionAsync_names_the_encoding_when_the_version_file_is_not_utf8()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("latin1-version");
+
+        await File.WriteAllBytesAsync(Path.Combine(spellDir, "SPELL.v2.0.md"), [0xFF, 0xFE, 0xFD, 0x80]);
+
+        SpellRepository repository = CreateRepository();
+
+        Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
+            "latin1-version",
+            "2.0",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(activated.IsFailure);
+
+        Assert.Equal(ErrorCodes.Spell.NotFound, activated.Error.Code);
+
+        Assert.Contains("UTF-8", activated.Error.Message, StringComparison.Ordinal);
+
+        Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
     }
 
     [SkippableFact]
@@ -1573,14 +1785,90 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         SpellExportScriptDto single = Assert.Single(exported!.Scripts);
 
         Assert.Equal("real.sh", single.FileName);
+
+        Assert.Equal(["wedge.sh"], exported.OmittedScripts);
+    }
+
+    [SkippableFact]
+    public async Task ExportAsync_skips_a_hard_linked_script_and_sidecar()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("hardlink-script");
+
+        string scriptsDir = Path.Combine(spellDir, "scripts");
+
+        Directory.CreateDirectory(scriptsDir);
+
+        await File.WriteAllBytesAsync(Path.Combine(scriptsDir, "real.sh"), "echo ok"u8.ToArray());
+
+        string scriptAlias = Path.Combine(_workspaceRoot, "alias-of-script.sh");
+
+        await File.WriteAllBytesAsync(scriptAlias, "ALIASED-SCRIPT-NEVER-EXPORTED"u8.ToArray());
+
+        Skip.IfNot(HardLinkTestSupport.TryCreate(Path.Combine(scriptsDir, "alias.sh"), scriptAlias), "Hard links are unavailable on this host.");
+
+        string sidecarAlias = Path.Combine(_workspaceRoot, "alias-of-sidecar.json");
+
+        await File.WriteAllTextAsync(
+            sidecarAlias,
+            """{"name":"hardlink-script","version":"9.9.9","description":"ALIASED-SIDECAR","tags":[],"declaredTools":[],"dependencies":[]}""");
+
+        Skip.IfNot(HardLinkTestSupport.TryCreate(Path.Combine(spellDir, "SPELL.json"), sidecarAlias), "Hard links are unavailable on this host.");
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto? exported = await repository.ExportAsync("hardlink-script", _workspaceRoot, CancellationToken.None);
+
+        Assert.NotNull(exported);
+
+        Assert.Equal("real.sh", Assert.Single(exported!.Scripts).FileName);
+
+        Assert.Equal(["alias.sh"], exported.OmittedScripts);
+
+        Assert.Null(exported.Metadata);
+    }
+
+    /// <summary>
+    /// The scanner never lists a SPELL.md it cannot prove regular, so a FIFO planted there ends the export before
+    /// any open; what this pins is that the export does not wait for a writer.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExportAsync_does_not_block_on_a_fifo_spell_file()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string spellDir = Path.Combine(_workspaceRoot, "spells", "fifo-spell-file");
+
+        Directory.CreateDirectory(spellDir);
+
+        string fifo = Path.Combine(spellDir, "SPELL.md");
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        SpellRepository repository = CreateRepository();
+
+        Task<SpellExportDto?> export = Task.Run(
+            () => repository.ExportAsync("fifo-spell-file", _workspaceRoot, CancellationToken.None));
+
+        Task finished = await Task.WhenAny(export, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        if (!ReferenceEquals(finished, export))
+        {
+            await Task.WhenAny(Task.Run(() => File.WriteAllBytes(fifo, [])), Task.Delay(TimeSpan.FromSeconds(5)));
+
+            Assert.Fail("ExportAsync blocked opening a FIFO SPELL.md instead of refusing it.");
+        }
+
+        Assert.Null(await export);
     }
 
     [SkippableFact]
     public async Task ExportAsync_ignores_a_sidecar_symlinked_outside_the_spell_directory()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows lane does not hold.");
 
         string spellDir = await WriteExportableSpellAsync("symlink-sidecar");
 
@@ -1596,7 +1884,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
                 secretPath,
                 """{"name":"symlink-sidecar","version":"9.9.9","description":"OUTSIDE-SIDECAR","tags":[],"declaredTools":[],"dependencies":[]}""");
 
-            File.CreateSymbolicLink(Path.Combine(spellDir, "SPELL.json"), secretPath);
+            SkipUnlessSymbolicLinkCanBeCreated(Path.Combine(spellDir, "SPELL.json"), secretPath);
 
             SpellRepository repository = CreateRepository();
 
@@ -1725,6 +2013,23 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             {
                 Directory.Delete(tempHome, recursive: true);
             }
+        }
+    }
+
+    /// <summary>
+    /// Creates the link, or skips the test when this host will not let the process make one (Windows needs a
+    /// privilege or developer mode that not every lane holds). Skipping here, rather than for every Windows run,
+    /// keeps the reparse-point case covered wherever it can be exercised.
+    /// </summary>
+    private static void SkipUnlessSymbolicLinkCanBeCreated(string linkPath, string targetPath)
+    {
+        try
+        {
+            File.CreateSymbolicLink(linkPath, targetPath);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            Skip.If(true, $"Creating a symbolic link is not permitted on this host: {ex.GetType().Name}.");
         }
     }
 
