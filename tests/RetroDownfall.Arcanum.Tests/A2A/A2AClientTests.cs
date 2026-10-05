@@ -474,6 +474,151 @@ public sealed class A2AClientTests
         Assert.Equal(ErrorCodes.Sending.AgentCardInvalid, result.Error.Code);
     }
 
+    /// <summary>
+    /// The cap that actually defends against a hostile peer is the one on the streamed body: a card with no
+    /// declared length, or a gzip stream, never trips the header check. The body here is valid JSON far
+    /// beyond the limit and carries no content length, so only the read loop can stop it — and it must stop
+    /// it near the cap, not after the peer has finished sending.
+    /// </summary>
+    [Fact]
+    public async Task DispatchSendingAsync_OversizedCardWithNoDeclaredLength_IsCutOffNearTheCap()
+    {
+        AgentCard card = BuildFakeCard();
+
+        card.Description = new string('a', checked((int)A2AClientService.MaxAgentCardBytes) * 2);
+
+        using UnknownLengthCardHandler handler = new(card);
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(handler.Served, "the card was never requested, so this proves nothing.");
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentCardInvalid, result.Error.Code);
+
+        // Valid JSON of twice the cap: reading it all would have produced a card, or at worst a parse error
+        // after the whole body was buffered. Stopping at the cap leaves the peer's tail unread.
+        Assert.True(
+            handler.MostBytesReadFromOneResponse <= A2AClientService.MaxAgentCardBytes + 64 * 1024,
+            $"The client read {handler.MostBytesReadFromOneResponse} bytes of one card response; the cap is "
+            + $"{A2AClientService.MaxAgentCardBytes}.");
+    }
+
+    /// <summary>
+    /// The 16 MiB bound on a buffered RPC response is applied by <c>HttpClient.MaxResponseContentBufferSize</c>
+    /// only if the SDK reads RPC responses as buffered content rather than as a stream it consumes itself.
+    /// The registration test shows the value; this shows the behaviour, through the real SDK client.
+    /// </summary>
+    [Fact]
+    public async Task DispatchSendingAsync_RpcResponseBeyondTheBodyCap_FailsInsteadOfBufferingIt()
+    {
+        string oversizedAnswer = new('a', checked((int)A2AClientService.MaxRpcResponseBytes) + 1024 * 1024);
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(new EchoingAgentHandler(oversizedAnswer));
+
+        using HttpMessageHandler handler = server.CreateHandler();
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("what is the answer?", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentUnreachable, result.Error.Code);
+
+        Assert.Contains(
+            A2AClientService.MaxRpcResponseBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            result.Error.Message,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <see cref="A2AClientService"/> fetches the Agent Card itself because the SDK's resolver reads it with
+    /// no size limit. That replacement must not change what the peer is asked: this holds the request to
+    /// exactly what the SDK resolver sends, so a header the resolver adds in a later SDK is noticed here
+    /// instead of by a peer that requires it.
+    /// </summary>
+    [Fact]
+    public async Task DispatchSendingAsync_CardRequest_IsExactlyWhatTheSdkCardResolverSends()
+    {
+        AgentCard card = BuildFakeCard();
+
+        using RecordingHttpHandler resolverHandler = new(_ => Task.FromResult(CardResponse(card)));
+
+        using HttpClient resolverClient = new(resolverHandler, disposeHandler: false);
+
+        A2ACardResolver resolver = new(new Uri(DiscoveryUrl), resolverClient, "/.well-known/agent-card.json");
+
+        AgentCard resolved = await resolver.GetAgentCardAsync();
+
+        // The service reaches the card first and then an RPC the same handler cannot answer; only the first
+        // request is the card fetch.
+        using RecordingHttpHandler serviceHandler = new(_ => Task.FromResult(CardResponse(card)));
+
+        A2AClientService client = CreateClient(serviceHandler, EnabledSettings());
+
+        _ = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(DescribeRequest(resolverHandler.Requests[0]), DescribeRequest(serviceHandler.Requests[0]));
+
+        Assert.Equal(resolved.Name, card.Name);
+    }
+
+    [Fact]
+    public async Task CancelRemoteTaskAsync_MalformedCancelResponse_ReturnsAgentUnreachableInsteadOfThrowing()
+    {
+        // The card is served, and every call after it is answered with a body that is not JSON.
+        using RecordingHttpHandler handler = new(request => Task.FromResult(
+            request.Method == HttpMethod.Get
+                ? CardResponse(BuildFakeCard())
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{ this is not json", System.Text.Encoding.UTF8, "application/json"),
+                }));
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        // The answer is remote-authored: a peer that cannot be read is a failed cancel, not an exception
+        // out of the cancel verb.
+        Result result = await client
+            .CancelRemoteTaskAsync(DiscoveryUrl, "remote-task-1")
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentUnreachable, result.Error.Code);
+    }
+
+    private static HttpResponseMessage CardResponse(AgentCard card)
+    {
+        ByteArrayContent content = new(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+            card,
+            (System.Text.Json.Serialization.Metadata.JsonTypeInfo<AgentCard>)
+                A2AJsonUtilities.DefaultOptions.GetTypeInfo(typeof(AgentCard))));
+
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
+
+    private static string DescribeRequest(HttpRequestMessage request) =>
+        $"{request.Method} {request.RequestUri} ["
+        + string.Join(
+            "; ",
+            request.Headers
+                .OrderBy(static header => header.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(static header => $"{header.Key}={string.Join(",", header.Value)}"))
+        + "]";
+
     private static A2AClientService CreateClient(
         HttpMessageHandler handler,
         ArcanumSettings settings,
@@ -660,6 +805,99 @@ public sealed class A2AClientTests
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
         }
+    }
+
+    /// <summary>
+    /// Answers every Agent Card request with a valid card whose body has no declared length (the stream
+    /// cannot seek, so <c>Content-Length</c> is unknown), counting how much of it each response's reader
+    /// actually pulled.
+    /// </summary>
+    private sealed class UnknownLengthCardHandler(AgentCard card) : HttpMessageHandler
+    {
+        private int _requests;
+
+        private long _mostBytesRead;
+
+        public bool Served => Volatile.Read(ref _requests) > 0;
+
+        public long MostBytesReadFromOneResponse => Interlocked.Read(ref _mostBytesRead);
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            _ = Interlocked.Increment(ref _requests);
+
+            byte[] body = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+                card,
+                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<AgentCard>)
+                    A2AJsonUtilities.DefaultOptions.GetTypeInfo(typeof(AgentCard)));
+
+            StreamContent content = new(new ForwardOnlyStream(body, bytesRead =>
+            {
+                long observed;
+
+                while (bytesRead > (observed = Interlocked.Read(ref _mostBytesRead)))
+                {
+                    if (Interlocked.CompareExchange(ref _mostBytesRead, bytesRead, observed) == observed)
+                    {
+                        break;
+                    }
+                }
+            }));
+
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    /// <summary>A readable stream that cannot seek and so has no length, reporting its running total.</summary>
+    private sealed class ForwardOnlyStream(byte[] body, Action<long> onRead) : Stream
+    {
+        private long _position;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => _position;
+
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            int available = (int)Math.Min(buffer.Length, body.Length - _position);
+
+            body.AsSpan((int)_position, available).CopyTo(buffer);
+
+            _position += available;
+
+            onRead(_position);
+
+            return available;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Read(buffer.Span));
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class RecordingHttpHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> responder) : HttpMessageHandler

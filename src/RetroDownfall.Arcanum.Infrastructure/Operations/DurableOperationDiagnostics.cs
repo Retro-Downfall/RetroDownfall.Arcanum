@@ -35,8 +35,8 @@ internal sealed class DurableOperationDiagnostics(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // The fake and SQL stores differ on whether ListAsync honours the state filter, and a health
-        // probe must not over-report; filter defensively rather than trusting the query shape.
+        // A health probe must not over-report, so the state is checked again here rather than trusting
+        // that every store honoured the query's filter.
         LongRunningOperation[] needsRepair =
         [
             .. awaitingRepair.Where(static operation =>

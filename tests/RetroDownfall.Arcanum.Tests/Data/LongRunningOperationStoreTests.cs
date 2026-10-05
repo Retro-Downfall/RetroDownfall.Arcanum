@@ -839,6 +839,76 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.True(renewed);
     }
 
+    /// <summary>
+    /// The anonymous A2A callback route resolves its config id through this filter, so the SQL has to
+    /// compare the stored reference exactly and combine with the kind and state filters — the ledger test
+    /// reaches it only through the ledger, which would also pass if every row came back.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_CheckpointReference_returns_only_the_rows_carrying_exactly_that_reference()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = new(2026, 10, 5, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation wanted = await CreateAsync(store, now);
+
+        LongRunningOperation other = await CreateAsync(store, now.AddSeconds(1));
+
+        LongRunningOperation unreferenced = await CreateAsync(store, now.AddSeconds(2));
+
+        foreach ((LongRunningOperation operation, string reference) in new[]
+                 {
+                     (wanted, "a2a-callback:wanted"),
+                     (other, "a2a-callback:other"),
+                 })
+        {
+            _ = await store.TryAcquireLeaseAsync(operation.Id, "worker", now, now.AddMinutes(1));
+
+            Assert.True(await store.SaveCheckpointAsync(
+                operation.Id,
+                "worker",
+                expectedCheckpointVersion: 0,
+                checkpointVersion: 1,
+                checkpointPayload: [1],
+                checkpointReference: reference,
+                publicSummary: "Awaiting a callback.",
+                now.AddSeconds(5)));
+        }
+
+        LongRunningOperation match = Assert.Single(await store.ListAsync(
+            new LongRunningOperationQuery(CheckpointReference: "a2a-callback:wanted")));
+
+        Assert.Equal(wanted.Id, match.Id);
+
+        // An exact comparison: a prefix, another case and a reference nobody wrote match nothing.
+        Assert.Empty(await store.ListAsync(new LongRunningOperationQuery(CheckpointReference: "a2a-callback:")));
+
+        Assert.Empty(await store.ListAsync(new LongRunningOperationQuery(CheckpointReference: "A2A-CALLBACK:WANTED")));
+
+        Assert.Empty(await store.ListAsync(new LongRunningOperationQuery(CheckpointReference: "a2a-callback:missing")));
+
+        // The reference narrows alongside the other filters rather than replacing them.
+        Assert.Single(await store.ListAsync(new LongRunningOperationQuery(
+            LongRunningOperationKinds.BlobEncryptionMigration,
+            CheckpointReference: "a2a-callback:wanted")));
+
+        Assert.Empty(await store.ListAsync(new LongRunningOperationQuery(
+            LongRunningOperationKinds.A2AOutboundSending,
+            CheckpointReference: "a2a-callback:wanted")));
+
+        // No reference — null or empty — is no filter, rows without a reference included.
+        Assert.Equal(
+            3,
+            (await store.ListAsync(new LongRunningOperationQuery(CheckpointReference: string.Empty))).Count);
+
+        Assert.Contains(
+            await store.ListAsync(new LongRunningOperationQuery()),
+            operation => operation.Id == unreferenced.Id);
+    }
+
     [SkippableFact]
     public async Task SaveCheckpointAsync_IsMonotonicAndRejectsDuplicateVersion()
     {

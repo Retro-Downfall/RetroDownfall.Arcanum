@@ -363,7 +363,7 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         }
 
         // POST {ServerPath}/callbacks/{configId} is anonymous, so a well-formed id nothing ever minted is
-        // the cheapest request a stranger can make. It must be answered by a keyed lookup, not by reading
+        // the cheapest request a stranger can make. It must be answered by a filtered lookup, not by reading
         // (and decrypting, and deserialising) every open outbound Sending to compare their config ids.
         Assert.Null(await ledger.FindOutboundCallbackAsync(A2ACallbackConfigId.Mint()));
 

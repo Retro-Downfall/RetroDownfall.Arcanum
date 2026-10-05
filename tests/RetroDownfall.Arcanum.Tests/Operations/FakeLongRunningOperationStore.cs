@@ -223,13 +223,37 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
         }
     }
 
+    /// <summary>
+    /// Mirrors the SQL store's <c>ListAsync</c>: the kind, state and checkpoint-reference filters, newest
+    /// first, and a page of <c>Limit</c> (clamped to 1–500) rows from <c>Offset</c>. A fake that ignored
+    /// them answered every query with every row, so a caller that pages until a short page — the ledger's
+    /// <c>FindOpenAsync</c> — never saw one and looped for as long as there were a page's worth of rows.
+    /// </summary>
     public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
         LongRunningOperationQuery query,
         CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _listCallCount);
 
-        return Task.FromResult<IReadOnlyList<LongRunningOperation>>([.. _operations.Values]);
+        int limit = Math.Clamp(query.Limit, 1, 500);
+
+        int offset = Math.Max(0, query.Offset);
+
+        LongRunningOperation[] page =
+        [
+            .. _operations.Values
+                .Where(operation => string.IsNullOrWhiteSpace(query.Kind)
+                    || string.Equals(operation.Kind, query.Kind, StringComparison.Ordinal))
+                .Where(operation => query.State is null || operation.State == query.State)
+                .Where(operation => string.IsNullOrEmpty(query.CheckpointReference)
+                    || string.Equals(operation.CheckpointReference, query.CheckpointReference, StringComparison.Ordinal))
+                .OrderByDescending(static operation => operation.CreatedAt)
+                .ThenBy(static operation => operation.Id)
+                .Skip(offset)
+                .Take(limit),
+        ];
+
+        return Task.FromResult<IReadOnlyList<LongRunningOperation>>(page);
     }
 
     public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(

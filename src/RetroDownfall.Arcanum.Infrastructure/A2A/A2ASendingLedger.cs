@@ -624,9 +624,12 @@ internal sealed class A2ASendingLedger(
 
         try
         {
-            // Keyed lookup: SQLite returns only the row whose checkpoint reference is this id's, so a
-            // well-formed id nothing ever minted reads no rows at all instead of every open Sending.
-            // The payload comparison stays as the authority — the reference is only the index.
+            // Filtered lookup: SQLite compares the checkpoint reference on the open rows of this kind and
+            // returns only the one that is this id's, so a well-formed id nothing ever minted reads,
+            // decrypts and deserialises no rows instead of every open Sending. No index covers the
+            // reference — the kind and state index narrows the rows and the compare is a column read — so
+            // this saves the payload work, not the visit. The payload comparison stays as the authority:
+            // the reference is only the filter.
             LongRunningOperation? match = await FindOpenAsync(
                     LongRunningOperationKinds.A2AOutboundSending,
                     record => record is
