@@ -65,25 +65,29 @@ internal sealed record SagaExtractionAttemptResult(
 
 /// <param name="FailedThroughEntrySequence">The interval whose consecutive failures this ladder counts.</param>
 /// <param name="Attempt">Every consecutive failure of that interval; it sets the backoff rung.</param>
-/// <param name="PaidFailures">
-/// The failures that came after an extraction response was already paid for. Only these count toward
-/// abandonment: an unavailable or failing provider bills nothing, so retrying it on the capped ladder is
-/// never an endless billable round-trip.
+/// <param name="CountedFailures">
+/// The failures that count toward abandonment: a schema-invalid extraction response, or an unexpected
+/// exception after a usable one. A provider outage is never counted, whether the extraction provider fails
+/// or every eligible conclusion then fails to embed, so it keeps the interval on the capped ladder until the
+/// provider recovers.
 /// </param>
 internal sealed record SagaExtractionRetryState(
     long FailedThroughEntrySequence,
     int Attempt,
-    int PaidFailures);
+    int CountedFailures);
 
 internal sealed class SagaExtractionAttemptContext
 {
     internal SagaExtractionRequest? ActiveSegment { get; set; }
 
     /// <summary>
-    /// Whether the active page already received a successful extraction-model response. A failure after
-    /// that point re-buys the same response on retry, so it is the only kind that counts toward abandonment.
+    /// Whether the active page's failure counts toward abandonment. It is set once the extraction model
+    /// answers, so a schema-invalid response or an unexpected exception after a usable one counts. It is
+    /// cleared again when every eligible conclusion then fails to embed: that is the embedding provider's
+    /// outage, not a deterministic model-shape failure, and it re-buys at most one extraction response per
+    /// ladder rung rather than ending the ladder.
     /// </summary>
-    internal bool ExtractionResponsePaid { get; set; }
+    internal bool FailureCountsTowardAbandonment { get; set; }
 }
 
 /// <summary>
@@ -126,7 +130,7 @@ public sealed class SagaExtractionService : BackgroundService
 
     private static readonly TimeSpan MaximumAutomaticRetryDelay = TimeSpan.FromMinutes(5);
 
-    private const int MaximumPaidFailuresBeforeAbandonment = 5;
+    private const int MaximumCountedFailuresBeforeAbandonment = 5;
 
     private static readonly TimeSpan ErasureKeyDeferralDelay = TimeSpan.FromMinutes(1);
 
@@ -153,6 +157,15 @@ public sealed class SagaExtractionService : BackgroundService
     private readonly ConcurrentDictionary<Guid, SagaExtractionPendingWork> _pending = new();
 
     private readonly ConcurrentDictionary<Guid, SagaExtractionRetryState> _retryAttempts = new();
+
+    /// <summary>
+    /// Intervals abandoned after <see cref="MaximumCountedFailuresBeforeAbandonment"/> counted failures, each
+    /// with its own provenance policy, ordered by sequence. Abandonment stops the billable ladder, but the
+    /// policy is still known while this process lives, so the next turn's gap review uses it instead of
+    /// deny-all. Mutated only under <see cref="_pendingPolicySync"/>; an interval is dropped once the durable
+    /// cursor passes it. A restart loses it, and only a policy that is lost leaves a gap to deny-all.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, ImmutableArray<SagaExtractionRequest>> _abandonedSegments = new();
 
     private readonly object _pendingPolicySync = new();
 
@@ -207,6 +220,11 @@ public sealed class SagaExtractionService : BackgroundService
         }
     }
 
+    internal IReadOnlyList<SagaExtractionRequest> AbandonedSegmentsForTests(Guid sessionId) =>
+        _abandonedSegments.TryGetValue(sessionId, out ImmutableArray<SagaExtractionRequest> abandoned)
+            ? abandoned
+            : [];
+
     internal int RetryAttemptForTests(Guid sessionId) =>
         _retryAttempts.TryGetValue(sessionId, out SagaExtractionRetryState? state)
             ? state.Attempt
@@ -252,6 +270,8 @@ public sealed class SagaExtractionService : BackgroundService
         {
             lock (_pendingPolicySync)
             {
+                incoming = ReclaimAbandonedSegments(incoming);
+
                 while (true)
                 {
                     if (_pending.TryGetValue(incoming.SessionId, out SagaExtractionPendingWork? existing))
@@ -304,6 +324,133 @@ public sealed class SagaExtractionService : BackgroundService
                 incoming.SessionId);
         }
     }
+
+    /// <summary>
+    /// A duplicate request for an abandoned interval reopens it with a fresh ladder. The abandoned policy
+    /// and the duplicate merge exactly as two pending duplicates would, intersecting attachment authority, so
+    /// the duplicate cannot grant the interval new authority. Called only under <see cref="_pendingPolicySync"/>.
+    /// </summary>
+    private SagaExtractionPendingWork ReclaimAbandonedSegments(SagaExtractionPendingWork incoming)
+    {
+        if (!_abandonedSegments.TryGetValue(
+                incoming.SessionId,
+                out ImmutableArray<SagaExtractionRequest> abandoned))
+        {
+            return incoming;
+        }
+
+        ImmutableArray<SagaExtractionRequest> reclaimed =
+        [
+            .. abandoned.Where(segment => incoming.Segments.Any(request => IsSameInterval(request, segment))),
+        ];
+
+        if (reclaimed.IsEmpty)
+        {
+            return incoming;
+        }
+
+        SetAbandonedSegments(
+            incoming.SessionId,
+            [.. abandoned.Where(segment => !reclaimed.Any(request => IsSameInterval(request, segment)))]);
+
+        return MergePendingWork(
+            new SagaExtractionPendingWork(incoming.SessionId, reclaimed),
+            incoming);
+    }
+
+    /// <summary>
+    /// Keeps the failed interval's own policy when counted failures abandon it. The latest pending version
+    /// already carries any stricter duplicate merged during the ladder. Called only under
+    /// <see cref="_pendingPolicySync"/>.
+    /// </summary>
+    private void RetainAbandonedSegment(
+        SagaExtractionPendingWork abandonedWork,
+        SagaExtractionRequest? failedSegment)
+    {
+        if (failedSegment is null)
+        {
+            return;
+        }
+
+        SagaExtractionRequest retained = abandonedWork.Segments.FirstOrDefault(
+            segment => IsSameInterval(segment, failedSegment)) ?? failedSegment;
+
+        ImmutableArray<SagaExtractionRequest> existing = _abandonedSegments.TryGetValue(
+            abandonedWork.SessionId,
+            out ImmutableArray<SagaExtractionRequest> current)
+                ? current
+                : [];
+
+        SagaExtractionRequest? earlier = existing.FirstOrDefault(segment => IsSameInterval(segment, retained));
+
+        if (earlier is not null)
+        {
+            retained = MergeSameInterval(earlier, retained);
+        }
+
+        SetAbandonedSegments(
+            abandonedWork.SessionId,
+            [
+                .. existing
+                    .Where(segment => !IsSameInterval(segment, retained))
+                    .Append(retained)
+                    .OrderBy(static segment => segment.ThroughEntrySequence)
+                    .ThenBy(static segment => segment.AfterEntrySequenceExclusive),
+            ]);
+    }
+
+    /// <summary>
+    /// The abandoned interval whose own policy covers the next gap page: the oldest one the cursor has not
+    /// passed that starts before <paramref name="beforeEntrySequence"/>, the later segment's lower bound.
+    /// </summary>
+    private SagaExtractionRequest? FindAbandonedSegment(
+        Guid sessionId,
+        long exhaustedThroughSequence,
+        long beforeEntrySequence) =>
+        _abandonedSegments.TryGetValue(sessionId, out ImmutableArray<SagaExtractionRequest> abandoned)
+            ? abandoned.FirstOrDefault(segment =>
+                segment.ThroughEntrySequence > exhaustedThroughSequence
+                && segment.AfterEntrySequenceExclusive < beforeEntrySequence)
+            : null;
+
+    private void ReleaseAbandonedSegmentsThrough(
+        Guid sessionId,
+        long cursorEntrySequence)
+    {
+        lock (_pendingPolicySync)
+        {
+            if (!_abandonedSegments.TryGetValue(
+                    sessionId,
+                    out ImmutableArray<SagaExtractionRequest> abandoned))
+            {
+                return;
+            }
+
+            SetAbandonedSegments(
+                sessionId,
+                [.. abandoned.Where(segment => segment.ThroughEntrySequence > cursorEntrySequence)]);
+        }
+    }
+
+    private void SetAbandonedSegments(
+        Guid sessionId,
+        ImmutableArray<SagaExtractionRequest> segments)
+    {
+        if (segments.IsEmpty)
+        {
+            _ = _abandonedSegments.TryRemove(sessionId, out _);
+
+            return;
+        }
+
+        _abandonedSegments[sessionId] = segments;
+    }
+
+    private static bool IsSameInterval(
+        SagaExtractionRequest left,
+        SagaExtractionRequest right) =>
+        left.AfterEntrySequenceExclusive == right.AfterEntrySequenceExclusive
+        && left.ThroughEntrySequence == right.ThroughEntrySequence;
 
     private static SagaExtractionPendingWork MergePendingWork(
         SagaExtractionPendingWork existing,
@@ -495,6 +642,11 @@ public sealed class SagaExtractionService : BackgroundService
 
                         _ = _retryAttempts.TryRemove(sessionId, out _);
 
+                        lock (_pendingPolicySync)
+                        {
+                            _ = _abandonedSegments.TryRemove(sessionId, out _);
+                        }
+
                         continue;
                     }
 
@@ -577,22 +729,32 @@ public sealed class SagaExtractionService : BackgroundService
                     if (NextRetryDelay(
                             sessionId,
                             attempt.FailedSegment,
-                            attemptContext.ExtractionResponsePaid) is not { } delay)
+                            attemptContext.FailureCountsTowardAbandonment) is not { } delay)
                     {
                         _logger.LogError(
-                            "Saga extraction for session {SessionId} failed {Attempts} times after a paid extraction response; abandoning the failed interval. The exact cursor is unchanged, so a later successful turn can re-enqueue its unpaid suffix under fail-closed gap provenance.",
+                            "Saga extraction for session {SessionId} reached {Attempts} counted failures (a schema-invalid extraction response, or an unexpected error after a usable one); abandoning the failed interval. The exact cursor is unchanged and the interval keeps its own provenance policy, so a later successful turn reviews it again under that policy.",
                             sessionId,
-                            MaximumPaidFailuresBeforeAbandonment);
+                            MaximumCountedFailuresBeforeAbandonment);
 
-                        SagaExtractionPendingWork abandoned = _pending.TryRemove(
-                            sessionId,
-                            out SagaExtractionPendingWork? latestAtAbandonment)
-                                ? latestAtAbandonment
-                                : request;
+                        SagaExtractionPendingWork? remainder;
 
-                        SagaExtractionPendingWork? remainder = PreserveSegmentsAfterFailure(
-                            abandoned,
-                            attempt.FailedSegment);
+                        lock (_pendingPolicySync)
+                        {
+                            SagaExtractionPendingWork abandoned = _pending.TryRemove(
+                                sessionId,
+                                out SagaExtractionPendingWork? latestAtAbandonment)
+                                    ? latestAtAbandonment
+                                    : request;
+
+                            // Abandonment ends the billable ladder, not the interval's provenance. Taking
+                            // the pending work and retaining its policy under one lock means a duplicate
+                            // enqueued meanwhile either merged before this or reclaims the retained policy.
+                            RetainAbandonedSegment(abandoned, attempt.FailedSegment);
+
+                            remainder = PreserveSegmentsAfterFailure(
+                                abandoned,
+                                attempt.FailedSegment);
+                        }
 
                         if (remainder is not null)
                         {
@@ -651,6 +813,8 @@ public sealed class SagaExtractionService : BackgroundService
                 _pending.Clear();
 
                 _retryAttempts.Clear();
+
+                _abandonedSegments.Clear();
             }
         }
     }
@@ -689,36 +853,35 @@ public sealed class SagaExtractionService : BackgroundService
 
     /// <summary>
     /// Records one failed attempt for a session and returns how long to wait before the next one,
-    /// doubling each rung up to <see cref="MaximumAutomaticRetryDelay"/>. An unpaid failure — the
-    /// embedding provider unavailable, the extraction provider failing or throwing — never ends the
-    /// ladder: the interval keeps its own provenance policy and retries on the capped schedule for as long
-    /// as the process lives, so a provider outage longer than the early rungs loses nothing. Returns
-    /// <see langword="null"/> once <see cref="MaximumPaidFailuresBeforeAbandonment"/> failures came after a
-    /// paid extraction response, at which point the interval is abandoned: a deterministic failure — an
-    /// extraction model that never emits parseable JSON, an embedding model name that fails every
-    /// <c>EmbedAsync</c> — must not become an endless ladder of billable provider round-trips. Abandoning
-    /// marks no Entry paid because the exact cursor is not advanced; a later successful turn can
-    /// re-enqueue the suffix with a fresh ladder, and that lost provenance interval is reviewed under the
-    /// fail-closed gap policy.
+    /// doubling each rung up to <see cref="MaximumAutomaticRetryDelay"/>. A provider outage never ends the
+    /// ladder: the embedding provider unavailable, the extraction provider failing or throwing, and every
+    /// eligible conclusion failing to embed all keep the interval under its own provenance policy on the
+    /// capped schedule for as long as the process lives, so an outage longer than the early rungs loses
+    /// nothing. Returns <see langword="null"/> once <see cref="MaximumCountedFailuresBeforeAbandonment"/>
+    /// counted failures (a schema-invalid extraction response, or an unexpected exception after a usable
+    /// one) have accumulated, at which point the interval is abandoned: an extraction model that never emits
+    /// schema-valid JSON must not become an endless ladder of billable provider round-trips. Abandoning
+    /// marks no Entry paid because the exact cursor is not advanced, and the interval keeps its own policy,
+    /// so a later successful turn reviews it again under that policy with a fresh ladder.
     /// </summary>
     private TimeSpan? NextRetryDelay(
         Guid sessionId,
         SagaExtractionRequest? failedSegment,
-        bool paidFailure)
+        bool countsTowardAbandonment)
     {
         SagaExtractionRetryState state;
 
-        int paid = paidFailure ? 1 : 0;
+        int counted = countsTowardAbandonment ? 1 : 0;
 
         if (failedSegment is null)
         {
             state = _retryAttempts.AddOrUpdate(
                 sessionId,
-                _ => new SagaExtractionRetryState(long.MinValue, 1, paid),
+                _ => new SagaExtractionRetryState(long.MinValue, 1, counted),
                 (_, previous) => previous with
                 {
                     Attempt = previous.Attempt + 1,
-                    PaidFailures = previous.PaidFailures + paid,
+                    CountedFailures = previous.CountedFailures + counted,
                 });
         }
         else
@@ -727,17 +890,17 @@ public sealed class SagaExtractionService : BackgroundService
 
             state = _retryAttempts.AddOrUpdate(
                 sessionId,
-                _ => new SagaExtractionRetryState(failedThroughEntrySequence, 1, paid),
+                _ => new SagaExtractionRetryState(failedThroughEntrySequence, 1, counted),
                 (_, previous) => previous.FailedThroughEntrySequence == failedThroughEntrySequence
                     ? previous with
                     {
                         Attempt = previous.Attempt + 1,
-                        PaidFailures = previous.PaidFailures + paid,
+                        CountedFailures = previous.CountedFailures + counted,
                     }
-                    : new SagaExtractionRetryState(failedThroughEntrySequence, 1, paid));
+                    : new SagaExtractionRetryState(failedThroughEntrySequence, 1, counted));
         }
 
-        if (state.PaidFailures >= MaximumPaidFailuresBeforeAbandonment)
+        if (state.CountedFailures >= MaximumCountedFailuresBeforeAbandonment)
         {
             _ = _retryAttempts.TryRemove(sessionId, out _);
 
@@ -928,23 +1091,43 @@ public sealed class SagaExtractionService : BackgroundService
 
             attemptContext.ActiveSegment = sourceSegment;
 
-            attemptContext.ExtractionResponsePaid = false;
+            attemptContext.FailureCountsTowardAbandonment = false;
 
             long pageFrontier;
 
             if (exhaustedThroughSequence < pageRequest.AfterEntrySequenceExclusive)
             {
-                pageFrontier = pageRequest.AfterEntrySequenceExclusive;
-
-                // Pending queue state is intentionally ephemeral. After restart (or bounded retry
-                // abandonment), a later exact interval may be the only signal left. Review the gap
-                // so its cursor can catch up, but grant it no attachment or ordinary-memory authority.
-                pageRequest = new SagaExtractionRequest(
+                // A later exact interval may be the only signal left for an earlier one. An interval
+                // abandoned while this process lives still has its own policy, and its gap is reviewed
+                // under that policy. Pending queue state is otherwise ephemeral: when the policy is truly
+                // gone (a restart), review the gap so the cursor can catch up, but grant it no attachment
+                // or ordinary-memory authority.
+                SagaExtractionRequest? abandonedPolicy = FindAbandonedSegment(
                     sessionId,
-                    [],
-                    HadUnprovenancedAttachmentContent: true,
-                    AfterEntrySequenceExclusive: exhaustedThroughSequence,
-                    ThroughEntrySequence: pageFrontier);
+                    exhaustedThroughSequence,
+                    pageRequest.AfterEntrySequenceExclusive);
+
+                if (abandonedPolicy is not null
+                    && abandonedPolicy.AfterEntrySequenceExclusive <= exhaustedThroughSequence)
+                {
+                    pageFrontier = Math.Min(
+                        abandonedPolicy.ThroughEntrySequence,
+                        pageRequest.AfterEntrySequenceExclusive);
+
+                    pageRequest = abandonedPolicy;
+                }
+                else
+                {
+                    pageFrontier = abandonedPolicy?.AfterEntrySequenceExclusive
+                        ?? pageRequest.AfterEntrySequenceExclusive;
+
+                    pageRequest = new SagaExtractionRequest(
+                        sessionId,
+                        [],
+                        HadUnprovenancedAttachmentContent: true,
+                        AfterEntrySequenceExclusive: exhaustedThroughSequence,
+                        ThroughEntrySequence: pageFrontier);
+                }
             }
             else
             {
@@ -1047,7 +1230,9 @@ public sealed class SagaExtractionService : BackgroundService
                     sourceSegment);
             }
 
-            attemptContext.ExtractionResponsePaid = true;
+            // From here a failure re-buys this response on retry, so a schema-invalid response or an
+            // unexpected exception counts toward abandonment. An embedding outage clears it again below.
+            attemptContext.FailureCountsTowardAbandonment = true;
 
             IReadOnlyList<SagaExtractionCandidate>? memories = ParseMemories(
                 result.Value.Text,
@@ -1241,6 +1426,13 @@ public sealed class SagaExtractionService : BackgroundService
                     sessionId,
                     eligibleCount);
 
+                // Reaching here means every eligible conclusion failed to embed: an embedded one is
+                // always inserted, suppressed, or thrown. The extraction model answered correctly, and
+                // the configuration-only availability check cannot see an embedding endpoint outage, so
+                // this is not counted: the interval stays on the capped ladder under its own policy
+                // until the embedding provider recovers, rather than being abandoned within seconds.
+                attemptContext.FailureCountsTowardAbandonment = false;
+
                 return new SagaExtractionAttemptResult(
                     SagaExtractionOutcome.Retry,
                     sourceSegment);
@@ -1258,6 +1450,8 @@ public sealed class SagaExtractionService : BackgroundService
                 sessionId,
                 cursor,
                 cancellationToken).ConfigureAwait(false);
+
+            ReleaseAbandonedSegmentsThrough(sessionId, exhaustedThroughSequence);
 
             // Durable forward progress starts a new consecutive-failure ladder for the next page.
             // Otherwise four failures on this page would make the next page's first failure terminal.
