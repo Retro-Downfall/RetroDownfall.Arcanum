@@ -1400,7 +1400,9 @@ internal sealed class ApprenticeService(
             }
             apprentice.SessionId = session.Value;
 
-            await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
+            // The Session row now exists, so binding it is past the point of no return: a Pause or host
+            // stop landing here must not leave an orphan Session and create another one on Resume.
+            _ = await repo.UpdateProgressAsync(apprentice, CancellationToken.None).ConfigureAwait(false);
 
             return ApprenticeUnitDisposition.Continue;
         }

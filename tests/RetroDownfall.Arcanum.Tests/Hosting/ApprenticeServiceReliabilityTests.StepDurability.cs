@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -81,6 +82,69 @@ public sealed partial class ApprenticeServiceReliabilityTests
         AssertStepCommittedThenPaused(repo.Get(apprenticeId));
 
         await AssertResumeDoesNotRerunTheStepAsync(service, repo, intelligence, apprenticeId);
+    }
+
+    [Fact]
+    public async Task Pause_after_session_creation_still_binds_the_session()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Guid sessionId = Guid.NewGuid();
+
+        CancellationSensitiveRepository repo = new(SessionlessApprentice(
+            apprenticeId,
+            campaignId,
+            Path.Combine(Path.GetTempPath(), $"apprentice-bind-{Guid.NewGuid():N}")));
+
+        RecordingCanonicalCampaignContextResolver resolver = new(CanonicalCampaignContext.Create(
+            SessionCampaignBinding.ForCampaign(campaignId),
+            campaignAvailabilityGeneration: 3,
+            pathIdentityPolicyVersion: 1,
+            pathIdentityRevision: null,
+            rootIdentityDigest: null));
+
+        RecordingSessionTurnBeginStore turnStore = new(sessionId);
+
+        CountingSessionStepIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            campaignResolver: resolver,
+            turnBeginStore: turnStore);
+
+        // The Session row exists from here on; a pause landing now must not leave it unbound.
+        turnStore.AfterCreate = () => CancelExecutionLease(service, apprenticeId);
+
+        Result<string> started = await service.StartAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(started.IsSuccess, started.IsFailure ? started.Error.Message : null);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice paused = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), paused.Status);
+
+        Assert.Equal(sessionId, paused.SessionId);
+
+        turnStore.AfterCreate = null;
+
+        Result<string> resumed = await service.ResumeAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        _ = Assert.Single(turnStore.Creations);
+
+        Assert.Equal(1, intelligence.StreamCalls);
+
+        Assert.Equal(sessionId, repo.Get(apprenticeId).SessionId);
     }
 
     private static void AssertStepCommittedThenPaused(Apprentice persisted)

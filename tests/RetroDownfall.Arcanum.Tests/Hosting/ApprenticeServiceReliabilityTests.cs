@@ -5973,6 +5973,9 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         internal int BeginCalls => Volatile.Read(ref _beginCalls);
 
+        /// <summary>Runs once the Session is durably created, before the caller sees its id.</summary>
+        internal Action? AfterCreate { get; set; }
+
         public ValueTask<Result<Guid>> CreateBoundSessionAsync(
             CanonicalCampaignContext campaign,
             string title,
@@ -5981,6 +5984,8 @@ public sealed partial class ApprenticeServiceReliabilityTests
             cancellationToken.ThrowIfCancellationRequested();
 
             Creations.Enqueue(new SessionCreationCall(campaign, title));
+
+            AfterCreate?.Invoke();
 
             return ValueTask.FromResult(_createResult);
         }
