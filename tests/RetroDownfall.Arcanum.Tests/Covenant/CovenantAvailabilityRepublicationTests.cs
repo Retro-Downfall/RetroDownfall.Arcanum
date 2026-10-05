@@ -349,9 +349,9 @@ public sealed class CovenantAvailabilityRepublicationTests
     }
 
     /// <summary>
-    /// A fresh installation records a full rebuild as owed, and nothing in a host clears that record.
-    /// Once one pass has synchronized search, the accelerator answers every query, so status asks the
-    /// operator for no rebuild.
+    /// A fresh installation records a full rebuild as owed because nothing has built its projection. Once
+    /// one pass has adopted the empty projection and synchronized search, the accelerator answers every
+    /// query, so status asks the operator for no rebuild and the recorded debt is cleared with it.
     /// </summary>
     [SkippableFact]
     public async Task A_fresh_installation_reports_no_rebuild_guidance_once_a_pass_has_synchronized_search()
@@ -374,9 +374,9 @@ public sealed class CovenantAvailabilityRepublicationTests
 
         Assert.Equal(CovenantSearchRebuildGuidance.None, search.Guidance);
 
-        // The persisted record is untouched; only what status asks of the operator changed.
+        // The pass that published a tuple equal to the canonical sequence cleared the debt it adopted.
         Assert.Equal(
-            (long)CovenantFtsRebuildState.FullRebuildRequired,
+            (long)CovenantFtsRebuildState.Idle,
             await ScalarAsync(host, "SELECT RebuildStateCode FROM covenant_state WHERE StateKey = 1;"));
     }
 
@@ -840,9 +840,9 @@ public sealed class CovenantAvailabilityRepublicationTests
 
     /// <summary>
     /// A projection that is merely pending, because a write landed after the last pass applied a published
-    /// tuple, is something to wait out. Both routes say so, though a fresh installation still carries the
-    /// full rebuild it recorded when it was created: that debt describes the empty projection the first pass
-    /// adopted, not the delta waiting behind it.
+    /// tuple, is something to wait out. Both routes say so. The first pass adopted the empty projection and
+    /// cleared the full rebuild a fresh installation records, and the delta waiting behind the published
+    /// tuple does not owe a rebuild of its own.
     /// </summary>
     [SkippableFact]
     public async Task A_projection_pending_behind_a_published_tuple_reports_wait_for_synchronization_on_both_routes()
@@ -862,7 +862,7 @@ public sealed class CovenantAvailabilityRepublicationTests
         _ = await driver.SetCovenantAsync(CovenantScope.Global, null, HarborKey, "Moor at the east harbor.");
 
         Assert.Equal(
-            (long)CovenantFtsRebuildState.FullRebuildRequired,
+            (long)CovenantFtsRebuildState.Idle,
             await ScalarAsync(host, "SELECT RebuildStateCode FROM covenant_state WHERE StateKey = 1;"));
 
         CovenantSearchHealthDto status = await SearchAsync(client);
