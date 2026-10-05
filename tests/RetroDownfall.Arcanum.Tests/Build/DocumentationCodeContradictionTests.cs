@@ -661,6 +661,27 @@ public sealed class DocumentationCodeContradictionTests
     }
 
     /// <summary>
+    /// <c>WebResearch.UnsupportedOperation</c> is what the native web workflows answer when
+    /// <c>Arcanum:Features:WebBrowsing</c> is off, and that is the cause an operator meets first, so the
+    /// catalog row names it beside the provider causes.
+    /// </summary>
+    [Fact]
+    public void The_api_catalog_says_WebResearch_UnsupportedOperation_also_means_the_web_workflows_are_off()
+    {
+        string workflow = ReadSource("Api", "Intelligence", "WebResearchWorkflowService.cs");
+
+        Assert.Contains("Native web workflows are disabled. Enable Arcanum:Features:WebBrowsing.", workflow, StringComparison.Ordinal);
+
+        string row = Assert.Single(
+            ReadDocument("Arcanum.API.md").Split('\n'),
+            static line => line.StartsWith("| `Lexicon.CurationUnavailable`; `WebResearch.MissingCredential`", StringComparison.Ordinal));
+
+        Assert.Contains("`Arcanum:Features:WebBrowsing`", row, StringComparison.Ordinal);
+
+        Assert.Contains("an unavailable provider or static reader", row, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The A2A server routes are mapped when <c>Arcanum:Features:A2AServer</c> is true, and the documents
     /// say that flag alone gates them. The Conclave flag is derived from it, so a document that lists
     /// both as conditions sends an operator to set a flag the host sets for them.
