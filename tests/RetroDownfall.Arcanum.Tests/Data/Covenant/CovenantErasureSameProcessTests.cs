@@ -772,6 +772,17 @@ public sealed class CovenantErasureSameProcessTests
 
         _ = await repository.CancelAsync(running, CancellationToken.None);
 
+        // Cancellation is cooperative: until the runner reports the body drained, the execution still owns
+        // its daemon's single-flight slot, so it stays an active conflict and is not deletable.
+        DataRetentionPlan draining = await harness.PlanFactoryAsync();
+
+        Assert.Contains(
+            draining.Conflicts,
+            conflict => conflict.Code == "Data.DaemonExecutionActive"
+                && conflict.ResourceId == running);
+
+        await repository.ReportDrainedAsync(running, CancellationToken.None);
+
         DataRetentionPlan ready = await harness.PlanFactoryAsync();
 
         Assert.DoesNotContain(

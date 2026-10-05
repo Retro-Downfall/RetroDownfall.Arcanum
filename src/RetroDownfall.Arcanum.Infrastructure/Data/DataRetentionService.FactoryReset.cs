@@ -222,7 +222,7 @@ internal sealed partial class DataRetentionService
                 null,
                 cancellationToken).ConfigureAwait(false);
 
-            long terminalHistory = history.LongCount(IsTerminalDaemonExecution);
+            long terminalHistory = history.LongCount(IsDeletableTerminalDaemonExecution);
 
             AddFactoryPlanItem(
                 items,
@@ -309,7 +309,7 @@ internal sealed partial class DataRetentionService
                 : [.. (await daemonExecutions.GetHistoryAsync(
                         null,
                         cancellationToken).ConfigureAwait(false))
-                    .Where(IsTerminalDaemonExecution)];
+                    .Where(IsDeletableTerminalDaemonExecution)];
 
             FactoryFileSystemSnapshot fileSystem = CaptureFactoryFileSystemSnapshot();
 
@@ -804,7 +804,7 @@ internal sealed partial class DataRetentionService
                 null,
                 cancellationToken).ConfigureAwait(false);
 
-            reconciled &= remaining.All(static execution => !IsTerminalDaemonExecution(execution));
+            reconciled &= remaining.All(execution => !IsDeletableTerminalDaemonExecution(execution));
         }
 
         return reconciled;
@@ -1546,10 +1546,13 @@ internal sealed partial class DataRetentionService
         }
     }
 
-    private static bool IsTerminalDaemonExecution(DaemonExecutionSummary execution) =>
+    // A cancelled execution whose body has not drained is not deletable yet; it is reported as an active
+    // conflict instead, because deleting it would strand the daemon's single-flight slot.
+    private bool IsDeletableTerminalDaemonExecution(DaemonExecutionSummary execution) =>
         execution.Status is DaemonJobStatus.Completed
             or DaemonJobStatus.Failed
-            or DaemonJobStatus.Cancelled;
+            or DaemonJobStatus.Cancelled
+        && daemonExecutions?.IsAwaitingDrain(execution.Id) != true;
 
     private static EnumerationOptions FactoryLogEnumeration { get; } =
         new()

@@ -34,7 +34,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -45,14 +44,11 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
 
     public DataRetentionDaemonHistoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _root = Path.Combine(
@@ -64,45 +60,35 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection =
                 (SqliteConnection)_db.Database.GetDbConnection();
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task Prune_ReportsAndDeletesAllOldTerminalDaemonExecutions()
     {
-
         RequireSqlCipher();
 
         FakeTimeProvider time = new();
@@ -181,14 +167,12 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         Assert.Single(remaining);
 
         Assert.Contains(remaining, item => item.Id == running);
-
     }
 
     [SkippableFact]
 
     public async Task RecoverPrune_AcceptsOpaqueDaemonExecutionCandidateId()
     {
-
         RequireSqlCipher();
 
         FakeTimeProvider time = new();
@@ -289,7 +273,6 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             await repository.GetHistoryAsync(
                 null,
                 CancellationToken.None));
-
     }
 
     private DataRetentionService CreateService(
@@ -298,7 +281,6 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         TimeProvider time,
         IDaemonExecutionMutationGate? daemonMutationGate = null)
     {
-
         LongRunningOperationStore operations = new(
             _db!,
             TestOrdinaryConnectionFactory.For(_db!));
@@ -317,29 +299,22 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             attachmentStore: null,
             repository,
             daemonMutationGate ?? repository as IDaemonExecutionMutationGate);
-
     }
 
     private static ArcanumSettings CreateSettings() =>
         new()
         {
-
             Retention = new RetentionSettings
             {
-
                 AutomaticSweepsEnabled = false,
 
                 DaemonHistory = new RetentionRuleSettings
                 {
-
                     Enabled = true,
 
                     Days = 1,
-
                 },
-
             },
-
         };
 
     private static void RequireSqlCipher() =>
@@ -351,7 +326,6 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         TimeProvider time,
         int activateOnHistoryCall) : IDaemonExecutionRepository
     {
-
         public const string ExecutionId = "factory-boundary-running";
 
         private readonly InMemoryDaemonExecutionRepository _inner = new(
@@ -364,12 +338,10 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             string? daemonId,
             CancellationToken ct)
         {
-
             int call = Interlocked.Increment(ref _historyCalls);
 
             if (call == activateOnHistoryCall)
             {
-
                 bool started = await _inner.TryStartAsync(
                     "factory-boundary",
                     "Factory Boundary",
@@ -377,11 +349,9 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
                     ct);
 
                 Assert.True(started);
-
             }
 
             return await _inner.GetHistoryAsync(daemonId, ct);
-
         }
 
         public Task<DaemonExecutionDetail?> GetAsync(
@@ -440,16 +410,17 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         public bool HasRunningExecution(string daemonId) =>
             _inner.HasRunningExecution(daemonId);
 
+        public bool IsAwaitingDrain(string executionId) =>
+            _inner.IsAwaitingDrain(executionId);
+
         public CancellationTokenSource? GetCancellationTokenSource(
             string executionId) =>
             _inner.GetCancellationTokenSource(executionId);
-
     }
 
     internal sealed class BlockingDaemonMutationGate(
         IDaemonExecutionMutationGate inner) : IDaemonExecutionMutationGate
     {
-
         private readonly TaskCompletionSource _acquired = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -461,7 +432,6 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         public async ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
             CancellationToken cancellationToken = default)
         {
-
             IAsyncDisposable lease = await inner.AcquireExclusiveAsync(
                 cancellationToken);
 
@@ -470,11 +440,8 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             await _release.Task.WaitAsync(cancellationToken);
 
             return lease;
-
         }
 
         public void Release() => _release.TrySetResult();
-
     }
-
 }
