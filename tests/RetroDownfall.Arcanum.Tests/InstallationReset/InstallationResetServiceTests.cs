@@ -1610,15 +1610,26 @@ public sealed partial class InstallationResetServiceTests
     }
 
     [Theory]
+    [InlineData(ErrorCodes.Data.InvalidRequest)]
     [InlineData(ErrorCodes.Data.PlanChanged)]
     [InlineData(ErrorCodes.Data.Blocked)]
+    [InlineData(ErrorCodes.Data.ConfirmationRequired)]
     [InlineData(ErrorCodes.Data.InventoryUnavailable)]
+    [InlineData(ErrorCodes.Data.Conflict)]
+    [InlineData(ErrorCodes.Data.NotFound)]
+    [InlineData(ErrorCodes.Covenant.ForbiddenAuthority)]
     public async Task Failed_apply_that_is_a_proven_pre_effect_refusal_retires_the_record_and_reports_the_failure(
         string dataErrorCode)
     {
         // Inventory unavailable is only a pre-effect refusal because the stopped-host data service
         // answers it solely for failures before its canonical action has started; one raised after the
         // action began reports recovery required instead (see InstallationResetExistingGrimoireTests).
+        //
+        // Conflict, not found and the labelled-artifact refusal are the data service's other
+        // documented mutated-nothing refusals: each is raised inside the transaction that would
+        // delete, ahead of its first write, so the transaction rolls back untouched. Leaving them out
+        // kept the record on a refusal that would repeat identically on every resume, and reported it
+        // as recovery required instead of the code the operator needs.
         FakeDataService data = new(CreateDataPlan("workspace-data"))
         {
             ApplyResult = Result<DataRetentionApplyResult>.Failure(new Error(
@@ -1877,6 +1888,11 @@ public sealed partial class InstallationResetServiceTests
     {
         // A mutation that reports failure may have done nothing, so it is the one case where the
         // operator is still told a retry is a fresh start.
+        //
+        // The cancellation has to be observed for this to say anything: it is raised inside the
+        // mutation after it has already answered, so the failure checkpoint that follows trips on it
+        // and the cancellation catch is what writes the record. That catch checkpoints whatever the
+        // progress holds, which is the in-memory point of no return the service set before the call.
         using CancellationTokenSource cancellation = new();
 
         FakeActiveStore active = new();
@@ -1886,14 +1902,60 @@ public sealed partial class InstallationResetServiceTests
             Result = Result.Failure(new Error(
                 "Daemon.UninstallFailed",
                 "daemon uninstall failed")),
+            CancelAfterReturning = cancellation,
         };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            preDataMutation: preData);
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        // The cancellation was observed, so the record the operator is told about came from the
+        // cancellation catch rather than from the failure branch.
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(result.Value.Verification.RemainingIssues).Code);
+
+        Assert.False(result.Value.PointOfNoReturn);
+
+        Assert.NotNull(active.Record);
+
+        Assert.False(active.Record.PointOfNoReturn);
+    }
+
+    [Fact]
+    public async Task Cancellation_before_the_daemon_uninstall_starts_leaves_the_point_of_no_return_unset()
+    {
+        // The token is already cancelled when the uninstall is about to be called, so nothing can have
+        // been uninstalled. Marking the record past its point of no return anyway told the operator an
+        // irreversible step might have happened when none had, and the store keeps that flag forever.
+        using CancellationTokenSource cancellation = new();
+
+        FakeActiveStore active = new();
+
+        FakePreDataMutation preData = new();
 
         active.WriteOverride = _ =>
         {
-            if (preData.Executed)
-            {
-                cancellation.Cancel();
-            }
+            cancellation.Cancel();
 
             return Result.Success();
         };
@@ -1919,7 +1981,13 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
+        Assert.False(preData.Executed);
+
         Assert.True(result.Value.ResumeRequired);
+
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(result.Value.Verification.RemainingIssues).Code);
 
         Assert.False(result.Value.PointOfNoReturn);
 
@@ -2023,6 +2091,186 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(
             InstallationResetItemStatus.Deleted,
             Assert.Single(active.Record.CredentialResults).Status);
+    }
+
+    [Fact]
+    public async Task Completed_record_cancelled_at_its_final_retirement_is_checkpointed_as_cancelled_and_a_resume_retires_it()
+    {
+        // The cancellation lands after the credentials were deleted and recorded, and before the record
+        // is retired. The checkpoint the cancellation catch writes has to be built from what that call
+        // just did: the store refuses a record that takes a recorded removal back, so one built from
+        // the progress the call never updated is refused and the caller is told the store failed
+        // rather than that the reset was cancelled. And what the checkpoint says must not poison the
+        // next run: a Completed record carrying the cancellation's recovery code has to be finishable.
+        using CancellationTokenSource cancellation = new();
+
+        FakeCredentialInventory credentials = new(
+            [
+                new InstallationResetCredentialSummary(
+                    "accepted-account",
+                    InstallationResetItemStatus.Pending),
+            ]);
+
+        FakeActiveStore active = new()
+        {
+            WriteOverride = record =>
+            {
+                if (record.CredentialResults.Any(static result =>
+                        result.Status is InstallationResetItemStatus.Deleted))
+                {
+                    cancellation.Cancel();
+                }
+
+                return Result.Success();
+            },
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            credentials,
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        active.Seed(CreateActive(plan, InstallationResetPhase.Completed));
+
+        Result<InstallationResetResult> cancelled = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(cancelled.IsSuccess, cancelled.IsFailure ? cancelled.Error.Message : null);
+
+        Assert.True(cancelled.Value.ResumeRequired);
+
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(cancelled.Value.Verification.RemainingIssues).Code);
+
+        Assert.False(active.Retired);
+
+        Assert.NotNull(active.Record);
+
+        Assert.Equal(
+            InstallationResetItemStatus.Deleted,
+            Assert.Single(active.Record.CredentialResults).Status);
+
+        active.WriteOverride = null;
+
+        Result<InstallationResetResult> resumed = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        Assert.False(resumed.Value.ResumeRequired);
+
+        Assert.True(active.Retired);
+    }
+
+    [Fact]
+    public async Task Completed_record_with_a_stale_error_code_from_an_earlier_attempt_retires_once_it_verifies()
+    {
+        // A Completed record gets its error code from an attempt that did not finish: a final cleanup
+        // that failed verification, or a checkpoint written for a cancellation. Treating that code as
+        // current evidence made a record that now verifies clean report recovery required on every
+        // run, so a reset that had done everything could never be retired.
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        active.Seed(CreateActive(plan, InstallationResetPhase.Completed) with
+        {
+            LastErrorCode = ErrorCodes.Data.ReconciliationFailed,
+        });
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(result.Value.ResumeRequired);
+
+        Assert.Null(result.Value.ErrorCode);
+
+        Assert.True(active.Retired);
+    }
+
+    [Fact]
+    public async Task Completed_record_whose_final_cleanup_still_fails_verification_keeps_its_error_code()
+    {
+        // The other half of the rule above: the earlier code is superseded only by a verification that
+        // actually passed. A final cleanup that still fails keeps the record, and says so.
+        FakeActiveStore active = new();
+
+        FakeOfflineCleanup cleanup = new()
+        {
+            Result = Result<InstallationResetOfflineCleanupResult>.Success(
+                new InstallationResetOfflineCleanupResult(
+                    FilesDeleted: 0,
+                    EstimatedBytesDeleted: 0,
+                    CredentialResults: [],
+                    PreservedBackups: [],
+                    Verification: new InstallationResetVerification(
+                        false,
+                        [
+                            new InstallationResetIssueSummary(
+                                ErrorCodes.Data.ReconciliationFailed,
+                                "A target is still present."),
+                        ]))),
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            cleanup);
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        active.Seed(CreateActive(plan, InstallationResetPhase.Completed) with
+        {
+            LastErrorCode = ErrorCodes.Data.ReconciliationFailed,
+        });
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.False(active.Retired);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, active.Record?.LastErrorCode);
     }
 
     [Fact]
@@ -4779,6 +5027,16 @@ public sealed partial class InstallationResetServiceTests
             // the token that just cancelled the operation look like it worked.
             cancellationToken.ThrowIfCancellationRequested();
 
+            // And it refuses a record that takes back a credential removal it already holds, which is
+            // what stops a checkpoint built from stale progress from reaching disk.
+            if (Record is { } durable
+                && !CredentialsAreMonotonic(durable.CredentialResults, record.CredentialResults))
+            {
+                return Task.FromResult(Result.Failure(new Error(
+                    ErrorCodes.Covenant.IntegrityFailure,
+                    "The installation-reset active evidence did not authenticate.")));
+            }
+
             Writes.Add(record);
 
             if (WriteOverride is { } writeOverride)
@@ -4802,6 +5060,10 @@ public sealed partial class InstallationResetServiceTests
             Guid operationId,
             CancellationToken cancellationToken)
         {
+            // Checked before anything is recorded: the real store checks at its entry, so a retirement
+            // requested on a cancelled token never happens and leaves the record where it was.
+            cancellationToken.ThrowIfCancellationRequested();
+
             Retired = true;
 
             RecordAtRetirement = Record;
@@ -4853,6 +5115,44 @@ public sealed partial class InstallationResetServiceTests
                         InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
                         Publication(Record),
                         LegacyRecord: null));
+
+        /// <summary>
+        /// The real store's credential rule: an account that already reads as removed or preserved
+        /// cannot come back as pending, unavailable or failed, and cannot be dropped.
+        /// </summary>
+        private static bool CredentialsAreMonotonic(
+            InstallationResetCredentialResult[] current,
+            InstallationResetCredentialResult[] next)
+        {
+            foreach (InstallationResetCredentialResult prior in current)
+            {
+                InstallationResetCredentialResult? later = next.FirstOrDefault(
+                    candidate => string.Equals(
+                        candidate.Account,
+                        prior.Account,
+                        StringComparison.Ordinal));
+
+                if (later is null)
+                {
+                    return false;
+                }
+
+                bool priorSucceeded = prior.Status is InstallationResetItemStatus.Preserved
+                    or InstallationResetItemStatus.Deleted
+                    or InstallationResetItemStatus.Absent;
+
+                bool laterFailed = later.Status is InstallationResetItemStatus.Pending
+                    or InstallationResetItemStatus.Unavailable
+                    or InstallationResetItemStatus.Failed;
+
+                if (priorSucceeded && laterFailed)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
 
         private static InstallationResetActivePublication Publication(
             InstallationResetActiveRecord record) =>
@@ -4936,6 +5236,13 @@ public sealed partial class InstallationResetServiceTests
         /// </summary>
         public CancellationTokenSource? CancelDuringExecute { get; set; }
 
+        /// <summary>
+        /// Cancelled after the mutation has already produced its answer, and the answer is returned
+        /// rather than thrown. This is the shape that lets the caller's next token check, not the
+        /// mutation's own, be the one that observes the cancellation.
+        /// </summary>
+        public CancellationTokenSource? CancelAfterReturning { get; set; }
+
         public Task<Result> ExecuteAsync(CancellationToken cancellationToken)
         {
             Executed = true;
@@ -4951,6 +5258,8 @@ public sealed partial class InstallationResetServiceTests
             {
                 throw exception;
             }
+
+            CancelAfterReturning?.Cancel();
 
             return Task.FromResult(Result);
         }
