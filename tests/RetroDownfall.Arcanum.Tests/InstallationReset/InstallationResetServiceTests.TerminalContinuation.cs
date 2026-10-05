@@ -449,6 +449,11 @@ public sealed partial class InstallationResetServiceTests
         // delete the one piece of evidence that claim needs. So the arm stays recovery required: it
         // is the fail-closed ending, and routing this arm through the stopped-host authority instead
         // is an open owner decision, not something this test or the arm assumes.
+        //
+        // The store here is a double with no payload rule. Against the real store the arm does not get
+        // this far - see InstallationResetActiveStoreTests.Advance_refuses_to_move_a_record_carrying_
+        // the_remediation_claim_out_of_its_pre_effect_shape - so every test in this partial that runs
+        // the arm past its claim is exercising the service's own decisions, not the store's agreement.
         Guid operationId = Guid.Parse("6a6a6a6a-6a6a-4a6a-8a6a-6a6a6a6a6a6a");
 
         FakeDataService data = new(CreateDataPlan("global-data"))

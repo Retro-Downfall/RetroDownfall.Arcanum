@@ -2936,6 +2936,68 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Advance_refuses_to_move_a_record_carrying_the_remediation_claim_out_of_its_pre_effect_shape()
+    {
+        // What the service's attested arm cannot do against the real store. That arm continues from a
+        // record that still carries the remediation claim, and its first checkpoint past the claim
+        // (a point of no return, a phase, a recorded credential removal) is a record the store's
+        // payload rule refuses: a claim-bearing record has to stay in the exact Prepared, pre-effect
+        // shape. The service tests exercise the arm's continuation and its cancellation handling
+        // against a double that has no such rule, so this is the executable statement of what they do
+        // not cover. Whoever makes the continuation reachable has to decide when the claim is retired,
+        // and this test is where that decision will first be felt.
+        string guardedRoot = _workspace.CreateSubdir("claim-pre-effect-shape");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("51111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord claimed = CreateCheckpointRecord(
+            installationId,
+            HostToolsMarkerPairResetPhase.PairJournaled);
+
+        InstallationResetActivePublication publication = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            claimed,
+            CancellationToken.None));
+
+        InstallationResetActiveRecord[] refused =
+        [
+            claimed with { PointOfNoReturn = true },
+            claimed with { Phase = InstallationResetPhase.DataResetComplete },
+            claimed with { FilesDeleted = 1 },
+            claimed with { LastErrorCode = null },
+        ];
+
+        foreach (InstallationResetActiveRecord candidate in refused)
+        {
+            Assert.True(
+                (await store.AdvanceAsync(
+                    heldLock,
+                    publication,
+                    candidate,
+                    CancellationToken.None)).IsFailure);
+        }
+
+        // The refusals changed nothing: the same publication is still the current one.
+        Result<InstallationResetActiveRecoveryState> inspected = await store.InspectAsync(
+            CancellationToken.None);
+
+        Assert.True(inspected.IsSuccess, inspected.IsFailure ? inspected.Error.Message : null);
+
+        Assert.Equal(
+            publication.EnvelopeDigest,
+            Assert.IsType<InstallationResetActivePublication>(inspected.Value.Publication)
+                .EnvelopeDigest);
+    }
+
+    [Fact]
     public async Task Recover_and_retire_observe_a_cancelled_token_before_doing_anything()
     {
         // The reset service's cancellation handling reads the store back before the first thing a
