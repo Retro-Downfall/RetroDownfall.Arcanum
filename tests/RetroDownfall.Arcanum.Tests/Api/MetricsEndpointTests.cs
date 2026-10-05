@@ -7,20 +7,16 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class MetricsEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public MetricsEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task GetMetrics_WithoutApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -28,13 +24,11 @@ public sealed class MetricsEndpointTests
         HttpResponseMessage response = await client.GetAsync("/metrics");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task GetMetrics_WithXArcanumKey_ReturnsPrometheusText()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -51,14 +45,12 @@ public sealed class MetricsEndpointTests
 
         Assert.Contains("arcanum_operations", body, StringComparison.Ordinal);
 
-        Assert.Contains("kind=\"workspace-index\"", body, StringComparison.Ordinal);
-
+        Assert.Contains("kind=\"subagent\"", body, StringComparison.Ordinal);
     }
 
     [SkippableFact]
     public async Task GetMetrics_WithBearerAuthorization_ReturnsPrometheusText()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -75,13 +67,11 @@ public sealed class MetricsEndpointTests
         string body = await response.Content.ReadAsStringAsync();
 
         Assert.Contains("arcanum_", body, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task GetMetrics_WithInvalidBearer_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -91,13 +81,11 @@ public sealed class MetricsEndpointTests
         HttpResponseMessage response = await client.GetAsync("/metrics");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task GetMetrics_ApiMetricsPath_IsNotMapped()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -105,13 +93,11 @@ public sealed class MetricsEndpointTests
         HttpResponseMessage response = await client.GetAsync("/api/metrics");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task GetMetrics_WhenDisabled_Returns404()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -127,7 +113,5 @@ public sealed class MetricsEndpointTests
         HttpResponseMessage response = await client.GetAsync("/metrics");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
-
 }
