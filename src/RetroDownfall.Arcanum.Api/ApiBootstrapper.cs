@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.HostFiltering;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
@@ -245,6 +246,82 @@ public static class ApiBootstrapper
     internal static bool IsHostFilteringEffective(IConfiguration configuration) =>
         !ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(configuration));
 
+    /// <summary>
+    /// Gives the framework's host-filtering middleware the names a loopback-only host answers to, and
+    /// leaves it unconfigured on an all-interfaces bind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// There is deliberately no <c>UseHostFiltering</c> call of Arcanum's own. <c>WebApplication.CreateSlimBuilder</c>
+    /// (what <c>arcanum serve</c> and the dev host both use) registers the framework's host-filtering startup
+    /// filter, which puts the middleware first in the pipeline on every host and enforces whatever
+    /// <see cref="HostFilteringOptions.AllowedHosts"/> holds. Its own fallback, <c>*</c>, applies only while
+    /// that list is empty. So the one decision this method makes is whether to put anything in the list, and
+    /// a list registered on an all-interfaces bind would refuse every network client and every reverse proxy
+    /// relaying a public name, whatever any later <c>Use</c> call chose.
+    /// </para>
+    /// <para>
+    /// The effective bind is decided once, here, from the same configuration Kestrel is configured from. The
+    /// callback authority is read from the startup settings when the middleware first needs the list, as the
+    /// route that receives the callback is mapped from them, so a change to it takes effect on restart.
+    /// </para>
+    /// </remarks>
+    internal static IServiceCollection AddArcanumHostFiltering(this IServiceCollection services, IConfiguration configuration)
+    {
+        if (!IsHostFilteringEffective(configuration))
+        {
+            return services;
+        }
+
+        services.AddOptions<HostFilteringOptions>()
+            .Configure<IOptionsMonitor<ArcanumSettings>>(static (options, settings) =>
+                options.AllowedHosts = [.. ResolveAllowedHostNames(settings.CurrentValue)]);
+
+        return services;
+    }
+
+    /// <summary>
+    /// The names a loopback-only host answers to: the loopback names, plus the host of the callback base
+    /// URL the operator told peers to post to when the callback surface is on.
+    /// </summary>
+    internal static string[] ResolveAllowedHostNames(ArcanumSettings settings)
+    {
+        string? callbackHost = ResolveCallbackAuthorityHost(settings);
+
+        return callbackHost is null
+            ? [.. LoopbackHostNames]
+            : [.. LoopbackHostNames, callbackHost];
+    }
+
+    /// <summary>
+    /// The host of <c>Arcanum:Integrations:A2A:PushCallbackBaseUrl</c>, in the form a client puts in a
+    /// <c>Host</c> header, or <see langword="null"/> when there is none to answer.
+    /// </summary>
+    /// <remarks>
+    /// <c>null</c> unless the callback route is mapped (<see cref="A2ACallbackEndpoints.IsSurfaceEnabled"/>):
+    /// the name is the operator's statement of where a peer reaches that route, and with the surface off
+    /// there is no route and no peer. A value that is not an absolute http or https URL adds nothing (the
+    /// configuration validator refuses one at startup). The URI parser also refuses a host with a <c>*</c>
+    /// in it, so a configured URL can never widen the list into one of the middleware's wildcard patterns.
+    /// </remarks>
+    internal static string? ResolveCallbackAuthorityHost(ArcanumSettings settings)
+    {
+        if (!A2ACallbackEndpoints.IsSurfaceEnabled(settings))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(settings.ResolveA2A().PushCallbackBaseUrl, UriKind.Absolute, out Uri? baseUrl)
+            || (baseUrl.Scheme != Uri.UriSchemeHttp && baseUrl.Scheme != Uri.UriSchemeHttps))
+        {
+            return null;
+        }
+
+        // Host, not IdnHost: an IPv6 literal stays bracketed, the form the middleware compares it in, and the
+        // middleware puts a Unicode name through IDNA itself.
+        return baseUrl.Host;
+    }
+
     private static bool IsRateLimitEnabled(IConfiguration configuration)
         => ArcanumEnvironment.IsRateLimitEnabled(
             rateLimitConfigEnabled: false,
@@ -315,9 +392,7 @@ public static class ApiBootstrapper
         // returns, and UseArcanumExceptionHandler's status-code hook answers them.
         services.Configure<RouteHandlerOptions>(static options => options.ThrowOnBadRequest = true);
 
-        // The names a loopback-only host answers to. Registered unconditionally and applied by
-        // UseArcanumHostFiltering only when the bind is loopback-only.
-        services.AddHostFiltering(static options => options.AllowedHosts = [.. LoopbackHostNames]);
+        services.AddArcanumHostFiltering(configuration);
 
         services.AddProblemDetails();
 
@@ -520,26 +595,6 @@ public static class ApiBootstrapper
         services.AddSingleton<SpellWorkspaceResolver>();
 
         return services;
-    }
-
-    /// <summary>
-    /// Refuses a request whose <c>Host</c> header names anything but a loopback name, on a loopback-only
-    /// bind; a no-op on an all-interfaces bind.
-    /// </summary>
-    /// <remarks>
-    /// Registered first, ahead of the exception handler, so a refused request reaches no other
-    /// middleware and no route. The framework's host-filtering middleware answers it with a bare 400.
-    /// The loopback gates judge the socket peer, which is no defence against a page that has rebound its
-    /// own DNS name to 127.0.0.1: the browser really is on the same machine, and only the name it sends
-    /// gives it away. A name configured by the operator is not yet accepted (there is no setting for it),
-    /// so a loopback-only host reached by any other name is refused.
-    /// </remarks>
-    public static void UseArcanumHostFiltering(this WebApplication app)
-    {
-        if (IsHostFilteringEffective(app.Configuration))
-        {
-            app.UseHostFiltering();
-        }
     }
 
     /// <summary>

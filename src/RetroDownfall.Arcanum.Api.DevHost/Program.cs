@@ -63,8 +63,6 @@ builder.Services.AddArcanumApiServices(builder.Configuration);
 
 WebApplication app = builder.Build();
 
-app.UseArcanumHostFiltering();
-
 app.UseArcanumExceptionHandler();
 
 app.UseArcanumResponseCompression();

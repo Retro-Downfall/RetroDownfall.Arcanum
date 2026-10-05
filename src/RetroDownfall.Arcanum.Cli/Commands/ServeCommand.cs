@@ -219,8 +219,6 @@ public sealed class ServeCommand(
             listenHost,
             listenPort);
 
-        app.UseArcanumHostFiltering();
-
         app.UseArcanumExceptionHandler();
 
         app.UseArcanumResponseCompression();

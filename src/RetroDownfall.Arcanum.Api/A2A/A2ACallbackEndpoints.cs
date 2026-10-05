@@ -34,17 +34,29 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 [ExcludeFromCodeCoverage] // Reason: thin HTTP glue; behavior covered via A2ASendingCallbackRegistry and A2A callback tests.
 internal static class A2ACallbackEndpoints
 {
+    /// <summary>
+    /// Whether the callback route exists for these settings: Conclave and the A2A surface on, and
+    /// push notifications enabled. The one definition the route mapping, the per-call gate and the
+    /// Host-header allow-list (which answers the callback's configured name) all read.
+    /// </summary>
+    internal static bool IsSurfaceEnabled(ArcanumSettings settings)
+    {
+        ConclaveA2ASettings a2a = settings.ResolveA2A();
+
+        return settings.ResolveConclave().Enabled && a2a.Enabled && a2a.PushNotificationsEnabled;
+    }
+
     public static IEndpointRouteBuilder MapA2ACallbacks(
         this IEndpointRouteBuilder app,
         ArcanumSettings startupSettings,
         string? rateLimiterPolicyName)
     {
-        ConclaveA2ASettings a2a = startupSettings.ResolveA2A();
-
-        if (!startupSettings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.PushNotificationsEnabled)
+        if (!IsSurfaceEnabled(startupSettings))
         {
             return app;
         }
+
+        ConclaveA2ASettings a2a = startupSettings.ResolveA2A();
 
         RouteHandlerBuilder route = app.MapPost(
             $"{A2AClientService.ResolveCallbackPath(a2a)}/{{configId}}",
@@ -70,11 +82,7 @@ internal static class A2ACallbackEndpoints
         HttpContext context,
         CancellationToken cancellationToken)
     {
-        ConclaveA2ASettings current = settings.CurrentValue.ResolveA2A();
-
-        if (!settings.CurrentValue.ResolveConclave().Enabled
-            || !current.Enabled
-            || !current.PushNotificationsEnabled)
+        if (!IsSurfaceEnabled(settings.CurrentValue))
         {
             // Routes are mapped from the boot snapshot but gated per call, like every other Conclave
             // surface: turning the feature off mid-run closes the door immediately.
