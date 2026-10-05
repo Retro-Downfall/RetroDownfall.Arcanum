@@ -62,21 +62,18 @@ internal sealed class DaemonProcessRunner(TimeSpan timeout) : IDaemonProcessRunn
             cancellationToken,
             deadline.Token);
 
+        // The three awaitables are started together and joined by the very first statement of the protected
+        // block that follows, which is the shape the hosted-producer inventory accepts for a process boundary
+        // reached from a retained admission.
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(linked.Token);
+
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(linked.Token);
+
+        Task exitTask = process.WaitForExitAsync(linked.Token);
+
         try
         {
-            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(linked.Token);
-
-            Task<string> stderrTask = process.StandardError.ReadToEndAsync(linked.Token);
-
-            Task exitTask = process.WaitForExitAsync(linked.Token);
-
             await Task.WhenAll(exitTask, stdoutTask, stderrTask).ConfigureAwait(false);
-
-            return new DaemonProcessOutcome(
-                process.ExitCode,
-                await stdoutTask.ConfigureAwait(false),
-                await stderrTask.ConfigureAwait(false),
-                null);
         }
         catch (OperationCanceledException)
         {
@@ -102,6 +99,12 @@ internal sealed class DaemonProcessRunner(TimeSpan timeout) : IDaemonProcessRunn
 
             return StartFailure(fileName, ex);
         }
+
+        return new DaemonProcessOutcome(
+            process.ExitCode,
+            await stdoutTask.ConfigureAwait(false),
+            await stderrTask.ConfigureAwait(false),
+            null);
     }
 
     private static DaemonProcessOutcome StartFailure(string fileName, Exception exception) =>
