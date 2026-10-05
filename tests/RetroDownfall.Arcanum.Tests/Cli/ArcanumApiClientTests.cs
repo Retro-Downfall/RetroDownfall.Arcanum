@@ -942,6 +942,55 @@ public sealed class ArcanumApiClientTests
     }
 
     /// <summary>
+    /// An exported attachment is decrypted content, so its staging file must be owner-only before the
+    /// first byte lands in it rather than created with the umask's permissions and narrowed later,
+    /// the same as the file and batch downloads.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task DownloadSessionAttachmentAsync_stages_the_export_owner_only_before_the_first_write()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are what this asserts against.");
+
+        string root = Path.Combine(Path.GetTempPath(), $"arcanum-attachment-export-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            ModePeekingStream body = new(root, [1, 2, 3]);
+
+            RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(body),
+            });
+
+            ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+            Result<long> result = await client.DownloadSessionAttachmentAsync(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                Path.Combine(root, "out.bin"),
+                overwrite: false,
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+
+            Assert.True(body.ObservedStagingFile, "The staging file did not exist when the body was first read.");
+
+            const UnixFileMode GroupOrOtherAccess =
+                UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+
+            Assert.Equal((UnixFileMode)0, body.StagingMode & GroupOrOtherAccess);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// Streams and operations that have no expected duration stay on the unbounded client: the
     /// headers deadline belongs to the short-call client only.
     /// </summary>

@@ -26,6 +26,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Wards;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -1741,18 +1742,10 @@ public sealed partial class ArcanumApiClient(
 
             long byteCount = 0;
 
-            await using (FileStream destination = new(
-                             temporaryPath,
-
-                             FileMode.CreateNew,
-
-                             FileAccess.Write,
-
-                             FileShare.None,
-
-                             bufferSize: 81_920,
-
-                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The staging file holds decrypted content, so it is owner-only before the first byte is
+            // written, like the file and batch download staging file, not created with the umask's
+            // permissions and narrowed after the move.
+            await using (FileStream destination = SecureFilePermissions.CreateOwnerOnlyTempFile(temporaryPath))
 
             {
                 byte[] buffer = new byte[81_920];

@@ -147,6 +147,34 @@ public sealed class FileBatchApiClient(
         CancellationToken cancellationToken) =>
         PostBatchMutationAsync(batchId, "reset", cancellationToken);
 
+    /// <summary>
+    /// What a download reports for a destination the runtime cannot normalise, from the client and
+    /// from the commands that normalise the destination first, so both say the same thing.
+    /// </summary>
+    internal static readonly Error InvalidDestinationError =
+        new("Files.WriteFailed", "The download destination is not a valid path.");
+
+    /// <summary>
+    /// Normalises <paramref name="path"/> without letting a path the runtime rejects (an embedded NUL,
+    /// a reserved character or a length the platform refuses) escape as an unhandled exception.
+    /// </summary>
+    internal static bool TryGetFullPath(string path, out string fullPath)
+    {
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            fullPath = path;
+
+            return false;
+        }
+    }
+
     public async Task<Result<long>> DownloadFileAsync(
         string fileId,
         string destinationPath,
@@ -160,17 +188,9 @@ public sealed class FileBatchApiClient(
             // Preparing the destination is part of the download: a parent that cannot be created or a
             // path that cannot be normalised is a write failure the operator can act on, and it must
             // be reported as one rather than escape this method as an unhandled exception.
-            string fullDestination;
-
-            try
+            if (!TryGetFullPath(destinationPath, out string fullDestination))
             {
-                fullDestination = Path.GetFullPath(destinationPath);
-            }
-            catch (Exception exception) when (
-                exception is ArgumentException or NotSupportedException)
-            {
-                return Result<long>.Failure(
-                    new Error("Files.WriteFailed", "The download destination is not a valid path."));
+                return Result<long>.Failure(InvalidDestinationError);
             }
 
             string directory = Path.GetDirectoryName(fullDestination)

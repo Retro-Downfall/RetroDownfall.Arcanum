@@ -34,7 +34,10 @@ public sealed class FileBatchCommands(
     {
         if (!File.Exists(path))
         {
-            dispatcher.WriteDiagnostic($"Local file not found: {Path.GetFullPath(path)}");
+            // The path is echoed as the operator typed it when the runtime cannot normalise it.
+            _ = FileBatchApiClient.TryGetFullPath(path, out string shown);
+
+            dispatcher.WriteDiagnostic($"Local file not found: {shown}");
 
             return 1;
         }
@@ -122,10 +125,14 @@ public sealed class FileBatchCommands(
             return WriteError(metadata.Error);
         }
 
-        string destination = Path.GetFullPath(
-            string.IsNullOrWhiteSpace(output)
-                ? SafeFilename(metadata.Value)
-                : output);
+        if (!FileBatchApiClient.TryGetFullPath(
+                string.IsNullOrWhiteSpace(output)
+                    ? SafeFilename(metadata.Value)
+                    : output,
+                out string destination))
+        {
+            return WriteError(FileBatchApiClient.InvalidDestinationError);
+        }
 
         bool overwrite = File.Exists(destination);
 
@@ -451,10 +458,14 @@ public sealed class FileBatchCommands(
             return 1;
         }
 
-        string destination = Path.GetFullPath(
-            string.IsNullOrWhiteSpace(output)
-                ? $"{SafeIdentifier(id)}-{kind}.jsonl"
-                : output);
+        if (!FileBatchApiClient.TryGetFullPath(
+                string.IsNullOrWhiteSpace(output)
+                    ? $"{SafeIdentifier(id)}-{kind}.jsonl"
+                    : output,
+                out string destination))
+        {
+            return WriteError(FileBatchApiClient.InvalidDestinationError);
+        }
 
         bool overwrite = File.Exists(destination);
 
