@@ -1124,9 +1124,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                     ("Id", "Kind", "State", "RecoveryPolicy", "SessionId", "CreatedAt",
                      "PublicSummary")
                 SELECT
-                    '{activeOperationId:N}', '{LongRunningOperationKinds.WorkspaceIndex}',
+                    '{activeOperationId:N}', '{LongRunningOperationKinds.Subagent}',
                     {(int)LongRunningOperationState.Running},
-                    {(int)LongRunningOperationRecoveryPolicy.RestartIdempotently},
+                    {(int)LongRunningOperationRecoveryPolicy.AbandonSafely},
                     session."Id", NEW."CreatedAt", 'Boundary session operation'
                 FROM "Sessions" session
                 WHERE lower(replace(session."Id", '-', '')) = '{sessionId:N}';
@@ -1164,86 +1164,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             "LongRunningOperations",
             "Id",
             activeOperationId.ToString("N")));
-    }
-
-    [SkippableFact]
-
-    public async Task ApplyAsync_Prune_WhenWorkspaceIndexStartsAtBoundary_PreservesWorkspaceCandidate()
-    {
-        RequireSqlCipher();
-
-        string chunkId = "boundary-workspace-" + Guid.NewGuid().ToString("N");
-
-        await ExecuteAsync(
-            """
-            INSERT INTO workspace_file_chunks
-                (ChunkId, WorkspacePath, RelativePath, ChunkIndex, Content, CharOffset,
-                 CharLength, FileLastWriteTime, IndexedAt)
-            VALUES
-                (@id, '/workspace', 'boundary.cs', 0, 'old', 0, 3, @at, @at)
-            """,
-            ("@id", chunkId),
-            ("@at", OldTimestamp));
-
-        await ExecuteAsync(
-            """
-            INSERT INTO workspace_file_embeddings (ChunkId, Embedding, Dim)
-            VALUES (@id, @embedding, 1)
-            """,
-            ("@id", chunkId),
-            ("@embedding", new byte[] { 0, 0, 128, 63 }));
-
-        Guid activeOperationId = Guid.NewGuid();
-
-        await ExecuteAsync(
-            $"""
-            CREATE TRIGGER protect_workspace_after_retention_start
-            AFTER INSERT ON "LongRunningOperations"
-            WHEN NEW."Kind" = '{LongRunningOperationKinds.DataRetentionPrune}'
-            BEGIN
-                INSERT INTO "LongRunningOperations"
-                    ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary")
-                VALUES
-                    ('{activeOperationId:N}', '{LongRunningOperationKinds.WorkspaceIndex}',
-                     {(int)LongRunningOperationState.Running},
-                     {(int)LongRunningOperationRecoveryPolicy.RestartIdempotently},
-                     NEW."CreatedAt", 'Boundary workspace operation');
-            END;
-            """);
-
-        ArcanumSettings settings = CreatePruneSettings();
-
-        settings.Retention.WorkspaceIndexes = EnabledRule();
-
-        IDataRetentionService service = CreateService(settings);
-
-        DataRetentionRequest request = new(DataRetentionOperation.Prune);
-
-        DataRetentionPlan plan = await service.PlanAsync(
-            request,
-            CancellationToken.None);
-
-        Assert.Contains("workspace:" + chunkId, plan.CandidateIds);
-
-        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
-            new DataRetentionApplyRequest(request, plan.PlanId),
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess, result.Error.Message);
-
-        Assert.Contains(
-            result.Value.Conflicts,
-            static conflict => conflict.Code == ErrorCodes.Data.PlanChanged);
-
-        Assert.Equal(1, await CountAsync(
-            "workspace_file_chunks",
-            "ChunkId",
-            chunkId));
-
-        Assert.Equal(1, await CountAsync(
-            "workspace_file_embeddings",
-            "ChunkId",
-            chunkId));
     }
 
     [SkippableFact]
@@ -1331,9 +1251,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         LongRunningOperation operation = await operations.CreateAsync(
             new LongRunningOperationCreateRequest(
-                LongRunningOperationKinds.WorkspaceIndex,
-                LongRunningOperationRecoveryPolicy.RestartIdempotently,
-                "Indexing session workspace.",
+                LongRunningOperationKinds.Subagent,
+                LongRunningOperationRecoveryPolicy.AbandonSafely,
+                "Delegated child turn.",
                 now,
                 SessionId: sessionId,
                 RunId: runId,
@@ -2785,7 +2705,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         LongRunningOperation priorOperation = await operations.CreateAsync(
             new LongRunningOperationCreateRequest(
-                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationKinds.BlobEncryptionMigration,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 "Completed before factory reset.",
                 now.AddDays(-2)));

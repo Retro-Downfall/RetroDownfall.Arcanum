@@ -759,7 +759,7 @@ public sealed partial class DataRetentionServiceTests
 
         await ExecuteAsync(
             "UPDATE LongRunningOperations SET Kind = @kind WHERE lower(replace(Id, '-', '')) = @id",
-            ("@kind", LongRunningOperationKinds.WorkspaceIndex),
+            ("@kind", LongRunningOperationKinds.BlobEncryptionMigration),
             ("@id", continuation.OperationId.ToString("N")));
 
         LongRunningOperation before = Assert.IsType<LongRunningOperation>(

@@ -3318,12 +3318,13 @@
       "threatOrFailureModel": "One provider request needs a bounded context slice, but durable extraction must checkpoint and continue every slice.",
       "classification": "Arbitrary product restriction",
       "action": "replace with adaptive behavior",
-      "replacementOrContinuation": "Process oldest-first timestamp-group-safe checkpoint pages inside one ordered provenance interval at a time, review any cursor-to-interval gap under deny-all provenance, advance the exact sequence cursor only after successful persistence, and continue until caught up or cancelled.",
+      "replacementOrContinuation": "Process oldest-first timestamp-group-safe checkpoint pages inside one ordered provenance interval at a time, review a cursor-to-interval gap under an abandoned interval's own retained policy while the process lives and under deny-all provenance only when that policy was lost, advance the exact sequence cursor only after successful persistence, and continue until caught up or cancelled.",
       "tests": [
         "SagaExtractionServiceTests.ExtractForSessionAsync_MoreThanFormerTailWindow_ProcessesEveryEntryOldestFirst",
         "SagaExtractionServiceTests.ExtractForSessionAsync_PageBoundary_KeepsToolCallAndResultTogether",
         "SagaExtractionServiceTests.ExecuteAsync_LaterIntervalMergedDuringFirstPage_DoesNotAuthorizeEarlierRemainder",
         "SagaExtractionServiceTests.ExecuteAsync_LaterIntervalAlone_ProcessesUnpaidGapWithNoProvenanceAuthority",
+        "SagaExtractionServiceTests.ExecuteAsync_AbandonedIntervalReviewedByNextTurn_KeepsItsOwnProvenancePolicy",
         "SagaExtractionServiceTests.ExecuteAsync_SharedTimestampAcrossFrontiers_ProcessesEachEntryExactlyOnce",
         "ConstraintInventoryTests",
         "UnrestrictedHarnessContractTests"

@@ -378,8 +378,6 @@ public sealed partial class DataRetentionServiceTests
 
     [InlineData(MemoryResetScope.Entry)]
 
-    [InlineData(MemoryResetScope.Attachments)]
-
     public async Task ApplyAsync_ResetMemory_WhenRelevantWorkAppearsAtBoundary_FailsClosed(
         MemoryResetScope scope)
     {
@@ -393,23 +391,15 @@ public sealed partial class DataRetentionServiceTests
 
         Guid conflictId = Guid.NewGuid();
 
-        string triggerMutation = scope == MemoryResetScope.Entry
-            ? $"""
-                INSERT INTO "InferenceRuns"
-                    ("Id", "RequestId", "Surface", "Purpose", "StartedAt", "Status")
-                VALUES
-                    ('{conflictId:N}', 'boundary-memory-reset', 'test', 'retention-test',
-                     NEW."CreatedAt", {(int)InferenceRunStatus.Running});
-                """
-            : $"""
-                INSERT INTO "LongRunningOperations"
-                    ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary")
-                VALUES
-                    ('{conflictId:N}', '{LongRunningOperationKinds.AttachmentPromotion}',
-                     {(int)LongRunningOperationState.Running},
-                     {(int)LongRunningOperationRecoveryPolicy.ReconcileAndComplete},
-                     NEW."CreatedAt", 'Boundary attachment promotion');
-                """;
+        // An active inference run is the memory reset's boundary guard for every scope; attachment
+        // promotion and workspace indexing record no durable operation that could stand in for one.
+        string triggerMutation = $"""
+            INSERT INTO "InferenceRuns"
+                ("Id", "RequestId", "Surface", "Purpose", "StartedAt", "Status")
+            VALUES
+                ('{conflictId:N}', 'boundary-memory-reset', 'test', 'retention-test',
+                 NEW."CreatedAt", {(int)InferenceRunStatus.Running});
+            """;
 
         await ExecuteAsync(
             $"""
@@ -476,11 +466,11 @@ public sealed partial class DataRetentionServiceTests
                     ("Id", "Kind", "State", "RecoveryPolicy", "SessionId", "CreatedAt",
                      "PublicSummary")
                 VALUES
-                    ('{conflictId:N}', '{LongRunningOperationKinds.WorkspaceIndex}',
+                    ('{conflictId:N}', '{LongRunningOperationKinds.Subagent}',
                      {(int)LongRunningOperationState.Running},
-                     {(int)LongRunningOperationRecoveryPolicy.RestartIdempotently},
+                     {(int)LongRunningOperationRecoveryPolicy.AbandonSafely},
                      '{sessionId:N}', '2000-01-01T00:00:00.0000000+00:00',
-                     'Boundary workspace indexing');
+                     'Boundary delegated child turn');
             END;
             """);
 
@@ -700,9 +690,9 @@ public sealed partial class DataRetentionServiceTests
                 (@id, @kind, @state, @policy, @sessionId, @at, 'Boundary active work')
             """,
             ("@id", Guid.NewGuid().ToString()),
-            ("@kind", LongRunningOperationKinds.WorkspaceIndex),
+            ("@kind", LongRunningOperationKinds.Subagent),
             ("@state", (int)LongRunningOperationState.Running),
-            ("@policy", (int)LongRunningOperationRecoveryPolicy.RestartIdempotently),
+            ("@policy", (int)LongRunningOperationRecoveryPolicy.AbandonSafely),
             ("@sessionId", sessionId.ToString()),
             ("@at", OldTimestamp));
 

@@ -155,6 +155,60 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         Assert.Null(loaded.CompletedAt);
     }
 
+    /// <summary>
+    /// A batch this process is still dispatching is InProgress by design, not stranded. Reconciling it
+    /// would seal its live lines and re-queue it under the running worker.
+    /// </summary>
+    [SkippableFact]
+    public async Task ReconcileStranded_SkipsBatchesInFlightInThisProcess()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = await SeedInputFileAsync("{}");
+
+        Guid batchId = Guid.NewGuid();
+
+        await _batches!.CreateAsync(
+            new BatchRecord(batchId, inputFileId, "/v1/chat/completions", BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null),
+            CancellationToken.None);
+
+        TaskCompletionSource liveWorker = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        BatchRecoveryService recovery = CreateRecoveryService(
+            observeProcessing: processing => RegisterInFlight(processing, batchId, liveWorker.Task));
+
+        try
+        {
+            await recovery.ReconcileStrandedAsync(CancellationToken.None);
+
+            BatchRecord? loaded = await _batches.GetByIdAsync(batchId, CancellationToken.None);
+
+            Assert.NotNull(loaded);
+
+            Assert.Equal(BatchStatuses.InProgress, loaded!.Status);
+        }
+        finally
+        {
+            liveWorker.TrySetResult();
+        }
+    }
+
+    private static void RegisterInFlight(BatchProcessingService processing, Guid batchId, Task worker)
+    {
+        System.Reflection.FieldInfo? field = typeof(BatchProcessingService).GetField(
+            "_inFlight",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        ConcurrentDictionary<Guid, Task> inFlight =
+            Assert.IsType<ConcurrentDictionary<Guid, Task>>(field!.GetValue(processing));
+
+        Assert.True(inFlight.TryAdd(batchId, worker));
+
+        Assert.True(processing.IsBatchInFlight(batchId));
+    }
+
     [SkippableFact]
     public async Task ReconcileStrandedAsync_resumes_durable_recovery_claim_after_restart()
     {
@@ -457,7 +511,8 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
     private BatchRecoveryService CreateRecoveryService(
         Func<ArcanumDbContext, IBatchAccountingRecoveryStore>? accountingRecoveryFactory = null,
-        ConcurrentBag<ScopedDatabaseIdentity>? scopedDatabases = null)
+        ConcurrentBag<ScopedDatabaseIdentity>? scopedDatabases = null,
+        Action<BatchProcessingService>? observeProcessing = null)
     {
         ServiceCollection services = new();
 
@@ -496,6 +551,8 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             root,
             new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<BatchProcessingService>.Instance);
+
+        observeProcessing?.Invoke(processing);
 
         return new BatchRecoveryService(
             root.GetRequiredService<IServiceScopeFactory>(),

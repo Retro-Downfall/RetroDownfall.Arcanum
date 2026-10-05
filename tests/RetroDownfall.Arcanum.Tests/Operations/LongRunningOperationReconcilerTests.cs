@@ -41,7 +41,7 @@ public sealed class LongRunningOperationReconcilerTests
 
         // Stands in for a handler whose work outruns the two-minute recovery lease.
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             supportedCheckpointVersion: 0,
             _ =>
             {
@@ -50,9 +50,9 @@ public sealed class LongRunningOperationReconcilerTests
                 return LongRunningOperationRecoveryResult.Completed();
             });
 
-        _ = store.Seed(LongRunningOperationKinds.Batch, LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        _ = store.Seed(LongRunningOperationKinds.BlobEncryptionMigration, LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
-        _ = store.Seed(LongRunningOperationKinds.Batch, LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        _ = store.Seed(LongRunningOperationKinds.BlobEncryptionMigration, LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
         LongRunningOperationReconciler reconciler = CreateReconciler(store, time, handler);
 
@@ -113,10 +113,10 @@ public sealed class LongRunningOperationReconcilerTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             supportedCheckpointVersion: 1);
         LongRunningOperation future = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently,
             checkpointVersion: 9);
 
@@ -191,10 +191,10 @@ public sealed class LongRunningOperationReconcilerTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         LongRunningOperation stale = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             supportedCheckpointVersion: 0);
 
         store.ClassifiedLeaseOverride = (current, _) =>
@@ -223,14 +223,14 @@ public sealed class LongRunningOperationReconcilerTests
         FakeLongRunningOperationStore inner = new(time);
 
         _ = inner.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
         CountingOperationStore broadOnly = new(inner);
 
         LongRunningOperationReconciler reconciler = new(
             broadOnly,
-            [new RecordingRecoveryHandler(LongRunningOperationKinds.WorkspaceIndex, 0)],
+            [new RecordingRecoveryHandler(LongRunningOperationKinds.BlobEncryptionKeyRotation, 0)],
             time,
             NullLogger<LongRunningOperationReconciler>.Instance,
             new LongRunningOperationOwnership());
@@ -251,14 +251,14 @@ public sealed class LongRunningOperationReconcilerTests
         FakeLongRunningOperationStore inner = new(time);
 
         _ = inner.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
         PagingOnlyOperationStore discoveryOnly = new(inner);
 
         LongRunningOperationReconciler reconciler = new(
             discoveryOnly,
-            [new RecordingRecoveryHandler(LongRunningOperationKinds.WorkspaceIndex, 0)],
+            [new RecordingRecoveryHandler(LongRunningOperationKinds.BlobEncryptionKeyRotation, 0)],
             time,
             NullLogger<LongRunningOperationReconciler>.Instance,
             new LongRunningOperationOwnership());
@@ -278,10 +278,10 @@ public sealed class LongRunningOperationReconcilerTests
         FakeLongRunningOperationStore inner = new(time);
         CountingOperationStore ordinaryDecorator = new(inner);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             supportedCheckpointVersion: 0);
         LongRunningOperation operation = inner.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
         LongRunningOperationReconciler reconciler = new(
@@ -316,13 +316,13 @@ public sealed class LongRunningOperationReconcilerTests
         List<string> order = [];
 
         RecordingRecoveryHandler ordinary = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             supportedCheckpointVersion: 0,
             _ =>
             {
                 lock (order)
                 {
-                    order.Add(LongRunningOperationKinds.WorkspaceIndex);
+                    order.Add(LongRunningOperationKinds.BlobEncryptionKeyRotation);
                 }
 
                 return LongRunningOperationRecoveryResult.Completed();
@@ -342,7 +342,7 @@ public sealed class LongRunningOperationReconcilerTests
 
         // Seeded oldest-first in the *wrong* order, so only priority can produce the right one.
         _ = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         time.Advance(TimeSpan.FromMinutes(1));
         _ = store.Seed(
@@ -357,7 +357,7 @@ public sealed class LongRunningOperationReconcilerTests
             maxConcurrency: 1);
 
         Assert.Equal(
-            [LongRunningOperationKinds.BackupCreate, LongRunningOperationKinds.WorkspaceIndex],
+            [LongRunningOperationKinds.BackupCreate, LongRunningOperationKinds.BlobEncryptionKeyRotation],
             order);
     }
 
@@ -370,12 +370,12 @@ public sealed class LongRunningOperationReconcilerTests
     {
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
-        RecordingRecoveryHandler only = new(LongRunningOperationKinds.Batch, supportedCheckpointVersion: 0);
+        RecordingRecoveryHandler only = new(LongRunningOperationKinds.BlobEncryptionMigration, supportedCheckpointVersion: 0);
 
         LongRunningOperationReconciler reconciler = CreateReconciler(store, time, only);
 
-        Assert.DoesNotContain(LongRunningOperationKinds.Batch, reconciler.MissingHandlerKinds);
-        Assert.Contains(LongRunningOperationKinds.InferenceRun, reconciler.MissingHandlerKinds);
+        Assert.DoesNotContain(LongRunningOperationKinds.BlobEncryptionMigration, reconciler.MissingHandlerKinds);
+        Assert.Contains(LongRunningOperationKinds.Subagent, reconciler.MissingHandlerKinds);
     }
 
     /// <summary>
@@ -414,10 +414,10 @@ public sealed class LongRunningOperationReconcilerTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             supportedCheckpointVersion: 0);
         _ = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
         LongRunningOperationReconciler reconciler = CreateReconciler(store, time, handler);
@@ -437,11 +437,11 @@ public sealed class LongRunningOperationReconcilerTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             supportedCheckpointVersion: 0,
             static _ => new LongRunningOperationRecoveryResult(LongRunningOperationState.Running));
         LongRunningOperation seeded = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
         LongRunningOperationReconciler reconciler = CreateReconciler(store, time, handler);
@@ -473,15 +473,15 @@ public sealed class LongRunningOperationReconcilerTests
         for (int index = 0; index < 8; index++)
         {
             _ = shared.Seed(
-                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationKinds.BlobEncryptionKeyRotation,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently);
         }
 
         RecordingRecoveryHandler scopedHandler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             supportedCheckpointVersion: 0);
         RecordingRecoveryHandler sharedHandler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionKeyRotation,
             supportedCheckpointVersion: 0,
             static _ => throw new InvalidOperationException(
                 "Recovery used the shared scope's handler."));
@@ -526,7 +526,7 @@ public sealed class LongRunningOperationReconcilerTests
         CancellationTokenSource cts = new();
 
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             supportedCheckpointVersion: 0,
             _ =>
             {
@@ -536,7 +536,7 @@ public sealed class LongRunningOperationReconcilerTests
             });
 
         LongRunningOperation seeded = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
 
         LongRunningOperationReconciler reconciler = new(
@@ -559,27 +559,6 @@ public sealed class LongRunningOperationReconcilerTests
             operation => operation.Id == seeded.Id);
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
-    }
-
-    /// <summary>
-    /// The registry exists so an operator can learn what recovery does without reading the
-    /// handler's source (registry header comment). <see cref="WorkspaceIndexRecoveryHandler"/> closes
-    /// the row and re-enumerates nothing, deferring to the next background tick — the descriptor's
-    /// operator-facing text has to say that, not its opposite, and has to name the service that
-    /// actually owns the kind (<c>WorkspaceIndexingService</c>, not <c>WorkspaceIndexService</c>).
-    /// <see cref="LongRunningOperationReconciler"/> is what consumes this registry at startup priority
-    /// and checkpoint-window resolution, so its descriptor content is exercised here.
-    /// </summary>
-    [Fact]
-    public void WorkspaceIndex_recovery_intent_matches_the_handler_it_describes()
-    {
-        LongRunningOperationRecoveryDescriptor descriptor =
-            LongRunningOperationRecoveryRegistry.Find(LongRunningOperationKinds.WorkspaceIndex)!;
-
-        Assert.Contains("close", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("background tick", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("re-enumerate", descriptor.RecoveryIntent, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("WorkspaceIndexingService", descriptor.Owner);
     }
 }
 

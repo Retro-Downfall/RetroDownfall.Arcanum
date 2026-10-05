@@ -8,6 +8,11 @@ public sealed record ApprenticeCheckpoint
 
     private readonly List<string> _completedToolCallIds = [];
 
+    /// <summary>
+    /// Carried forward on every checkpoint rewrite, but no execution path records into it: recovery
+    /// resumes from the persisted step position and delegation lineage, and an interrupted step is
+    /// re-run rather than replayed past the tool calls it already made.
+    /// </summary>
     public IReadOnlyList<string> CompletedToolCallIds
     {
         // Return a non-downcastable read-only view so a consumer cannot cast back to List<string>

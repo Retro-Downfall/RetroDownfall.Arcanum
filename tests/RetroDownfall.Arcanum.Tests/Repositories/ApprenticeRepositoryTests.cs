@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -188,9 +189,23 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
 
         Assert.Contains(resumable, a => a.Id == planning.Id);
 
-        IReadOnlyList<Apprentice> interrupted = await repository.GetInterruptedPlanningAsync(CancellationToken.None);
+        Apprentice queuedRestart = await repository.AddAsync(
+            new Apprentice
+            {
+                Id = Guid.NewGuid(),
+                Name = "Queued restart",
+                Goal = "Run the plan it already has",
+                Status = ApprenticeStatus.Planning.ToString(),
+                Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0, Description = "Known step" }]),
+                WorkspacePath = "/tmp/queued-restart",
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            CancellationToken.None);
 
-        Assert.Empty(interrupted);
+        resumable = await repository.GetResumableAsync(CancellationToken.None);
+
+        Assert.Contains(resumable, a => a.Id == queuedRestart.Id);
 
         running.Status = ApprenticeStatus.Completed.ToString();
 
@@ -205,6 +220,199 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
         Assert.True(deleted);
 
         Assert.Null(await repository.GetByIdAsync(idle.Id, CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task UpdateProgressAsync_writes_execution_columns_and_leaves_an_operator_status_alone()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Guid sessionId = await AddSessionAsync();
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Paused, currentStep: 0, errorMessage: "operator paused"),
+            CancellationToken.None);
+
+        Apprentice progressed = CopyOf(stored);
+
+        progressed.Status = ApprenticeStatus.Running.ToString();
+
+        progressed.ErrorMessage = null;
+
+        progressed.Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0, Status = "completed" }]);
+
+        progressed.CurrentStep = 1;
+
+        progressed.SessionId = sessionId;
+
+        progressed.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint { CurrentStep = 1 });
+
+        Assert.True(await repository.UpdateProgressAsync(progressed, CancellationToken.None));
+
+        Apprentice loaded = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), loaded.Status);
+
+        Assert.Equal("operator paused", loaded.ErrorMessage);
+
+        Assert.Equal(progressed.Plan, loaded.Plan);
+
+        Assert.Equal(1, loaded.CurrentStep);
+
+        Assert.Equal(sessionId, loaded.SessionId);
+
+        Assert.Equal(progressed.CheckpointData, loaded.CheckpointData);
+
+        Assert.False(await repository.UpdateProgressAsync(
+            NewApprentice(ApprenticeStatus.Running, currentStep: 0),
+            CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task TryUpdateAsync_writes_only_while_status_and_current_step_are_unchanged()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Cancelled, currentStep: 1),
+            CancellationToken.None);
+
+        Apprentice failed = CopyOf(stored);
+
+        failed.Status = ApprenticeStatus.Failed.ToString();
+
+        failed.ErrorMessage = "step failed";
+
+        string[] executing = [ApprenticeStatus.Running.ToString(), ApprenticeStatus.Planning.ToString()];
+
+        Assert.False(await repository.TryUpdateAsync(failed, executing, 1, CancellationToken.None));
+
+        Assert.False(await repository.TryUpdateAsync(
+            failed,
+            [ApprenticeStatus.Cancelled.ToString()],
+            0,
+            CancellationToken.None));
+
+        Apprentice unchanged = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Cancelled.ToString(), unchanged.Status);
+
+        Assert.Null(unchanged.ErrorMessage);
+
+        Assert.True(await repository.TryUpdateAsync(
+            failed,
+            [ApprenticeStatus.Cancelled.ToString()],
+            1,
+            CancellationToken.None));
+
+        Apprentice written = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), written.Status);
+
+        Assert.Equal("step failed", written.ErrorMessage);
+    }
+
+    [SkippableFact]
+    public async Task TryUpdateStatusAsync_sets_only_the_status_and_only_from_an_expected_status()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Running, currentStep: 0),
+            CancellationToken.None);
+
+        // The execution commits a step after an operator's snapshot of the row was taken.
+        Apprentice progressed = CopyOf(stored);
+
+        progressed.CurrentStep = 1;
+
+        Assert.True(await repository.UpdateProgressAsync(progressed, CancellationToken.None));
+
+        Assert.False(await repository.TryUpdateStatusAsync(
+            stored.Id,
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Escalated.ToString()],
+            CancellationToken.None));
+
+        Assert.True(await repository.TryUpdateStatusAsync(
+            stored.Id,
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Running.ToString(), ApprenticeStatus.Planning.ToString()],
+            CancellationToken.None));
+
+        Apprentice paused = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), paused.Status);
+
+        Assert.Equal(1, paused.CurrentStep);
+
+        Assert.False(await repository.TryUpdateStatusAsync(
+            Guid.NewGuid(),
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Running.ToString()],
+            CancellationToken.None));
+    }
+
+    private static Apprentice NewApprentice(
+        ApprenticeStatus status,
+        int currentStep,
+        string? errorMessage = null)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        return new Apprentice
+        {
+            Id = Guid.NewGuid(),
+            Name = "Conditional writer",
+            Goal = "Keep concurrent writers from reverting each other",
+            Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0 }]),
+            CurrentStep = currentStep,
+            Status = status.ToString(),
+            WorkspacePath = "/tmp/conditional",
+            ErrorMessage = errorMessage,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+    }
+
+    private static Apprentice CopyOf(Apprentice source) => new()
+    {
+        Id = source.Id,
+        CampaignId = source.CampaignId,
+        Name = source.Name,
+        Goal = source.Goal,
+        Plan = source.Plan,
+        CurrentStep = source.CurrentStep,
+        Status = source.Status,
+        SessionId = source.SessionId,
+        WorkspacePath = source.WorkspacePath,
+        CheckpointData = source.CheckpointData,
+        ErrorMessage = source.ErrorMessage,
+        CreatedAt = source.CreatedAt,
+        UpdatedAt = source.UpdatedAt,
+    };
+
+    private async Task<Guid> AddSessionAsync()
+    {
+        Session session = new()
+        {
+            Id = Guid.NewGuid(),
+            Status = "active",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+
+        _db!.Sessions.Add(session);
+
+        await _db.SaveChangesAsync();
+
+        return session.Id;
     }
 
     [SkippableFact]

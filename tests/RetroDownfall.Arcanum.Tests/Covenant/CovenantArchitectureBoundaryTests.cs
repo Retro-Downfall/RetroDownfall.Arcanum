@@ -175,18 +175,6 @@ public sealed class CovenantArchitectureBoundaryTests
     private static RecoveryEffectContract[] RecoveryEffectContracts() =>
         [
             new(
-                "RetroDownfall.Arcanum.Api.Intelligence.BatchOperationRecoveryHandler",
-                LongRunningOperationKinds.Batch,
-                [0],
-                [
-                    "System.IO.File.Delete"
-                ]),
-            new(
-                "RetroDownfall.Arcanum.Infrastructure.Operations.AttachmentPromotionRecoveryHandler",
-                LongRunningOperationKinds.AttachmentPromotion,
-                [0],
-                ["RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentStore.ReconcileAsync"]),
-            new(
                 "RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionMigrationRecoveryHandler",
                 LongRunningOperationKinds.BlobEncryptionMigration,
                 [0, 1],

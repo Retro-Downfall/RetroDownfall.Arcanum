@@ -1212,6 +1212,75 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Null(await GetExtractionCursorAsync(sessionId));
     }
 
+    /// <summary>
+    /// Per-candidate inserts commit before the page cursor, so an in-process fault on a later candidate
+    /// leaves the earlier conclusion durable with the cursor unmoved. The retry re-reviews the same page
+    /// and must recognise that conclusion rather than store it a second time.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExtractForSessionAsync_SecondInsertThrows_RetryDoesNotDuplicateFirstMemory()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "Two durable facts are stated in this turn.");
+
+        // The second embedding of the first attempt has the wrong width, so the store refuses the second
+        // insert by throwing after the first insert has already committed.
+        FakeWeaveService weave = new()
+        {
+            VectorForCall = callCount => callCount == 2 ? new float[TestDimensions + 1] : Vec(1f),
+        };
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "First durable fact.", "attachmentId": null }, { "content": "Second durable fact.", "attachmentId": null }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None));
+
+        Assert.Equal(1, await CountMemoriesAsync());
+
+        Assert.Null(await GetExtractionCursorAsync(sessionId));
+
+        SagaExtractionOutcome retried = await ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        Assert.Equal(SagaExtractionOutcome.Completed, retried);
+
+        SagaMemoryDto[] memories = await CreateStore().ListAsync(
+            null,
+            sessionId,
+            MemoryScope.Installation,
+            10,
+            0,
+            CancellationToken.None);
+
+        Assert.Equal(
+            ["First durable fact.", "Second durable fact."],
+            memories.Select(static memory => memory.Content).Order(StringComparer.Ordinal));
+
+        Assert.NotNull(await GetExtractionCursorAsync(sessionId));
+    }
+
     [SkippableFact]
     public async Task ExtractForSessionAsync_EmptyMemoriesArray_NoInserts_StillAdvancesWatermark()
     {
@@ -1384,7 +1453,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         Assert.Equal(SagaExtractionOutcome.Completed, resumedOutcome);
 
-        Assert.Equal(3, await CountMemoriesAsync());
+        // All three pages return the same conclusion, which the Session stores once.
+        Assert.Equal(1, await CountMemoriesAsync());
 
         Assert.Equal(latestTimestamp, await GetWatermarkAsync(sessionId));
 
@@ -2500,6 +2570,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// Models a restart: the earlier turn's process-local interval policy is gone and only the later
+    /// interval was enqueued, so the gap is the one case still reviewed under deny-all provenance.
+    /// </summary>
     [SkippableFact]
     public async Task ExecuteAsync_LaterIntervalAlone_ProcessesUnpaidGapWithNoProvenanceAuthority()
     {
@@ -3147,9 +3221,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             AvailabilityForCheck = checkCount => checkCount % 2 == 1,
         };
 
+        // Unavailability bills nothing and so never counts toward abandonment; only the five schema-invalid
+        // responses after the first committed page do, so the second interval is abandoned on its fifth
+        // counted failure, on the ninth availability check.
         FakeIntelligenceProvider intelligence = new()
         {
-            ExpectedCallCount = 4,
+            ExpectedCallCount = 6,
             TextForCall = callCount => callCount == 1
                 ? """{ "memories": [] }"""
                 : "not valid json",
@@ -3201,9 +3278,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     completionTimeout.Token);
             }
 
-            Assert.Equal(4, intelligence.CallCount);
+            Assert.Equal(6, intelligence.CallCount);
 
-            Assert.Equal(5, weave.AvailabilityCheckCount);
+            Assert.Equal(9, weave.AvailabilityCheckCount);
 
             Assert.Equal(0, service.RetryAttemptForTests(sessionId));
 
@@ -3363,8 +3440,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// A failure before cursor selection bought no extraction response, so it never counts toward
+    /// abandonment: past the former five-attempt ladder both independently queued frontiers are still
+    /// pending with their own provenance, and the oldest one owns the retry ladder.
+    /// </summary>
     [Fact]
-    public async Task ExecuteAsync_PreCursorFailure_AbandonsOnePendingFrontierAtATime()
+    public async Task ExecuteAsync_PreCursorFailure_KeepsEveryFrontierPendingBeyondTheFormerLadder()
     {
         Guid sessionId = Guid.NewGuid();
 
@@ -3415,18 +3497,23 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(5));
+            using CancellationTokenSource ladderTimeout = new(TimeSpan.FromSeconds(10));
 
-            while (service.PendingRequestsForTests.Count != 0)
+            while (service.RetryAttemptForTests(sessionId) <= 6)
             {
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
-                    completionTimeout.Token);
+                    ladderTimeout.Token);
             }
 
-            Assert.Equal(10, gate.WorkLeaseAttempts);
+            Assert.Collection(
+                service.PendingSegmentsForTests(sessionId),
+                first => Assert.Equal(1, first.ThroughEntrySequence),
+                second => Assert.Equal(2, second.ThroughEntrySequence));
 
-            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+            Assert.True(gate.WorkLeaseAttempts > 6);
+
+            Assert.Equal(0, intelligence.CallCount);
         }
         finally
         {
@@ -3835,6 +3922,420 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// An extraction-provider outage outlasting the five-rung ladder is not a deterministic failure: no
+    /// extraction response was ever paid for, so the interval keeps its own policy and retries on the capped
+    /// schedule until the provider recovers, rather than being abandoned. The embedding-provider outage has
+    /// its own test below.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_ProviderOutageBeyondLadder_StillExtractsOrdinaryMemoryOnRecovery()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "The operator prefers tabs over spaces in every repository.");
+
+        long throughSequence = _seededSequence;
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            FailureForCall = callCount => callCount <= 5
+                ? new Error(ErrorCodes.Hub.Error, "Simulated extraction provider outage.")
+                : null,
+            NextText = """{ "memories": [{ "content": "The operator prefers tabs over spaces.", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(10));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(6, intelligence.CallCount);
+
+            SagaMemoryDto memory = Assert.Single(
+                await CreateStore().ListAsync(
+                    null,
+                    sessionId,
+                    MemoryScope.Installation,
+                    10,
+                    0,
+                    CancellationToken.None));
+
+            Assert.Equal("The operator prefers tabs over spaces.", memory.Content);
+
+            Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+
+            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// An embedding outage outlasting the five-rung ladder is not a model-shape failure. The configuration-only
+    /// availability check stays true, so the outage shows up only as every eligible conclusion failing to
+    /// embed; that is the embedding provider's answer rather than a malformed extraction response, so it never
+    /// counts toward abandonment. The interval keeps its own policy on the capped schedule, and its ordinary
+    /// conclusion is stored once the embedding provider recovers.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_EmbeddingOutageBeyondLadder_StillExtractsOrdinaryMemoryOnRecovery()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "The operator prefers tabs over spaces in every repository.");
+
+        long throughSequence = _seededSequence;
+
+        FakeWeaveService weave = new()
+        {
+            EmbedFailsForCall = callCount => callCount <= 6,
+        };
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "The operator prefers tabs over spaces.", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(10));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(7, weave.EmbedCallCount);
+
+            Assert.Equal(7, intelligence.CallCount);
+
+            SagaMemoryDto memory = Assert.Single(
+                await CreateStore().ListAsync(
+                    null,
+                    sessionId,
+                    MemoryScope.Installation,
+                    10,
+                    0,
+                    CancellationToken.None));
+
+            Assert.Equal("The operator prefers tabs over spaces.", memory.Content);
+
+            Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+
+            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Five schema-invalid responses abandon the interval, which stops the billable ladder, but abandonment
+    /// in a live process does not lose the interval's provenance. The next turn's gap review uses the
+    /// abandoned interval's own policy, so its ordinary and attachment-backed conclusions are stored rather
+    /// than discarded under deny-all, which stays reserved for a policy a restart actually lost.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_AbandonedIntervalReviewedByNextTurn_KeepsItsOwnProvenancePolicy()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "first turn consulted the design notes");
+
+        long firstThroughSequence = _seededSequence;
+
+        Guid attachmentId = Guid.NewGuid();
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            TextForCall = callCount => callCount switch
+            {
+                <= 5 => "not valid json",
+                6 => $$"""{ "memories": [{ "content": "first interval ordinary conclusion", "attachmentId": null }, { "content": "first interval attachment conclusion", "attachmentId": "{{attachmentId}}" }] }""",
+                _ => """{ "memories": [] }""",
+            },
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [CreateProvenance(sessionId, attachmentId)],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: firstThroughSequence));
+
+            using CancellationTokenSource abandonmentTimeout = new(TimeSpan.FromSeconds(5));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    abandonmentTimeout.Token);
+            }
+
+            Assert.Equal(5, intelligence.CallCount);
+
+            Assert.Null(await GetExtractionCursorAsync(sessionId));
+
+            Assert.Equal(
+                firstThroughSequence,
+                Assert.Single(service.AbandonedSegmentsForTests(sessionId)).ThroughEntrySequence);
+
+            _ = await CreateEntryAsync(sessionId, "later turn entry");
+
+            long laterThroughSequence = _seededSequence;
+
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: firstThroughSequence,
+                    ThroughEntrySequence: laterThroughSequence));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(5));
+
+            while (service.PendingRequestsForTests.Count != 0
+                || intelligence.CallCount < 7)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(7, intelligence.CallCount);
+
+            Assert.Contains("first turn consulted the design notes", intelligence.StatelessUserContents[5], StringComparison.Ordinal);
+
+            Assert.DoesNotContain("without durable provenance", intelligence.StatelessUserContents[5], StringComparison.Ordinal);
+
+            Assert.DoesNotContain("later turn entry", intelligence.StatelessUserContents[5], StringComparison.Ordinal);
+
+            Assert.Contains("later turn entry", intelligence.StatelessUserContents[6], StringComparison.Ordinal);
+
+            IReadOnlyList<SagaMemoryDto> memories = await CreateStore().ListAsync(
+                null,
+                sessionId,
+                MemoryScope.Installation,
+                10,
+                0,
+                CancellationToken.None);
+
+            SagaMemoryDto ordinary = Assert.Single(
+                memories,
+                memory => memory.Content == "first interval ordinary conclusion");
+
+            Assert.Null(ordinary.AttachmentProvenance);
+
+            SagaMemoryDto attachmentBacked = Assert.Single(
+                memories,
+                memory => memory.Content == "first interval attachment conclusion");
+
+            Assert.Equal(attachmentId, attachmentBacked.AttachmentProvenance?.AttachmentId);
+
+            Assert.Equal(laterThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+
+            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+
+            Assert.Empty(service.AbandonedSegmentsForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// A duplicate request for an abandoned interval reopens it with a fresh ladder, and the retained policy
+    /// merges with the duplicate exactly as two pending duplicates would: the unprovenanced-content guard the
+    /// abandoned request carried still applies, so the duplicate cannot grant the interval new authority.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_DuplicateOfAbandonedInterval_MergesWithItsRetainedPolicy()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "turn that materialized ephemeral attachment content");
+
+        long throughSequence = _seededSequence;
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            TextForCall = callCount => callCount <= 5
+                ? "not valid json"
+                : """{ "memories": [{ "content": "conclusion the guard must still discard", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: true,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            using CancellationTokenSource abandonmentTimeout = new(TimeSpan.FromSeconds(5));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    abandonmentTimeout.Token);
+            }
+
+            Assert.Equal(5, intelligence.CallCount);
+
+            Assert.Single(service.AbandonedSegmentsForTests(sessionId));
+
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            Assert.Empty(service.AbandonedSegmentsForTests(sessionId));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(5));
+
+            while (service.PendingRequestsForTests.Count != 0
+                || intelligence.CallCount < 6)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(6, intelligence.CallCount);
+
+            Assert.Contains("without durable provenance", intelligence.StatelessUserContents[5], StringComparison.Ordinal);
+
+            Assert.Equal(0, weave.EmbedCallCount);
+
+            Assert.Empty(
+                await CreateStore().ListAsync(
+                    null,
+                    sessionId,
+                    MemoryScope.Installation,
+                    10,
+                    0,
+                    CancellationToken.None));
+
+            Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
     [SkippableFact]
     public async Task ExecuteAsync_PermanentlyFailingExtraction_StopsRetryingAfterBoundedAttempts()
     {
@@ -3910,6 +4411,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(10, intelligence.CallCount);
 
             Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+
+            // The duplicate reclaimed the abandoned interval for its fresh ladder, and the second
+            // abandonment retains that one interval again rather than a second copy of it.
+            Assert.Single(service.AbandonedSegmentsForTests(sessionId));
         }
         finally
         {
@@ -5347,6 +5852,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public bool EmbedShouldFail { get; set; }
 
+        /// <summary>When set, decides per 1-based call number whether the embedding fails, ahead of <see cref="EmbedShouldFail"/>.</summary>
+        internal Func<int, bool>? EmbedFailsForCall { get; init; }
+
         public int EmbedCallCount => Volatile.Read(ref _embedCallCount);
 
         public int AvailabilityCheckCount => Volatile.Read(ref _availabilityCheckCount);
@@ -5354,6 +5862,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         internal Func<int, Task>? OnEmbedAsync { get; init; }
 
         internal Func<int, bool>? AvailabilityForCheck { get; init; }
+
+        /// <summary>When set, supplies the vector for each embedding call by its 1-based call number.</summary>
+        internal Func<int, float[]>? VectorForCall { get; init; }
 
         public bool IsAvailable
         {
@@ -5374,12 +5885,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 await OnEmbedAsync(callCount);
             }
 
-            if (EmbedShouldFail)
+            if (EmbedFailsForCall?.Invoke(callCount) ?? EmbedShouldFail)
             {
                 return Result<Embedding<float>>.Failure(new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure."));
             }
 
-            return Result<Embedding<float>>.Success(new Embedding<float>(Vec(1f)));
+            return Result<Embedding<float>>.Success(
+                new Embedding<float>(VectorForCall?.Invoke(callCount) ?? Vec(1f)));
         }
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken) =>
@@ -5449,6 +5961,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public Error? NextFailure { get; set; }
 
+        /// <summary>When set, decides per call whether the provider fails, ahead of <see cref="NextFailure"/>.</summary>
+        internal Func<int, Error?>? FailureForCall { get; init; }
+
         public int ExpectedCallCount { get; init; }
 
         public int CallCount => Volatile.Read(ref _callCount);
@@ -5499,7 +6014,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 await BeforeResultAsync(callCount, cancellationToken).ConfigureAwait(false);
             }
 
-            if (NextFailure is { } failure)
+            if ((FailureForCall?.Invoke(callCount) ?? NextFailure) is { } failure)
             {
                 return Result<PromptTurnResult>.Failure(failure);
             }

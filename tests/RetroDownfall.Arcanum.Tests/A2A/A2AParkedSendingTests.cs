@@ -27,7 +27,6 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// </summary>
 public sealed class A2AParkedSendingTests
 {
-
     private static ArcanumSettings EnabledSettings() => new()
     {
         Features = new FeatureSettings { Conclave = true, A2AServer = true },
@@ -39,7 +38,6 @@ public sealed class A2AParkedSendingTests
     [Fact]
     public async Task EscalatedSending_RecordsTheParkedStateOnTheDurableRecord()
     {
-
         Harness harness = new();
 
         harness.QueueEscalation("which environment should I deploy to?");
@@ -60,13 +58,11 @@ public sealed class A2AParkedSendingTests
 
         // A parked Sending has not settled, so its record stays open.
         Assert.Empty(harness.Ledger.Released);
-
     }
 
     [Fact]
     public async Task ContinuationAfterARestart_ResumesTheOriginalApprenticeInsteadOfMintingASecond()
     {
-
         FakeParkedLedger ledger = new();
 
         Guid original = Guid.NewGuid();
@@ -89,13 +85,11 @@ public sealed class A2AParkedSendingTests
         // The failure #64 removed, displaced past a restart boundary: a second Apprentice with none of the
         // first one's plan, session, or progress.
         Assert.Empty(restarted.Archmage.Created);
-
     }
 
     [Fact]
     public async Task ContinuationWithNoDurableRecordAtAll_StillMintsAFreshApprentice()
     {
-
         Harness harness = new();
 
         harness.QueueCompletion();
@@ -108,13 +102,11 @@ public sealed class A2AParkedSendingTests
         Assert.Single(harness.Archmage.Created);
 
         Assert.Empty(harness.Runtime.IntervenedApprenticeIds);
-
     }
 
     [Fact]
     public async Task ParkedContinuations_AreBounded_AndTheEvictedOneResolvesThroughItsDurableRecord()
     {
-
         Harness harness = new();
 
         // Only an answer or a cancel ever retires a park, so every peer that escalates and then does
@@ -123,11 +115,9 @@ public sealed class A2AParkedSendingTests
         // to be too, on a key a peer chooses.
         for (int index = 0; index <= ArcanumA2AAgentHandler.MaxParkedContinuations; index++)
         {
-
             harness.QueueEscalation("which environment should I deploy to?");
 
             _ = await harness.RunAsync(harness.Request("deploy the service", taskId: $"task-{index}"));
-
         }
 
         Guid firstApprentice = harness.Archmage.Created[0].Id;
@@ -155,13 +145,11 @@ public sealed class A2AParkedSendingTests
         Assert.Equal(1, harness.Ledger.ParkedLookups.Count(id => string.Equals(id, newest, StringComparison.Ordinal)));
 
         Assert.Empty(harness.Archmage.Created.Skip(ArcanumA2AAgentHandler.MaxParkedContinuations + 1));
-
     }
 
     [Fact]
     public async Task CancelRacingTheParkOfAnEscalation_StillDrivesTheTerminalTransitionItself()
     {
-
         Harness harness = new();
 
         harness.QueueEscalation("which environment should I deploy to?");
@@ -190,13 +178,11 @@ public sealed class A2AParkedSendingTests
         // The park is gone with the cancel, so the durable record settles with it instead of staying open
         // for reconciliation to keep re-examining.
         Assert.NotEmpty(harness.Ledger.Released);
-
     }
 
     [Fact]
     public async Task CancelAfterARestart_CancelsTheParkedApprenticeAndAnswersThePeer()
     {
-
         FakeParkedLedger ledger = new();
 
         Guid original = Guid.NewGuid();
@@ -216,7 +202,6 @@ public sealed class A2AParkedSendingTests
         Assert.Equal([original], restarted.Runtime.CancelledApprenticeIds);
 
         Assert.Equal(TaskState.Canceled, await DrainStateAsync(queue));
-
     }
 
     // ── the peer's follow-up can reach the handler at all ──────────────────────────────────────────
@@ -224,7 +209,6 @@ public sealed class A2AParkedSendingTests
     [Fact]
     public async Task TaskStore_RehydratesAParkedTaskRecordedByAPreviousProcess()
     {
-
         FakeParkedLedger ledger = new();
 
         ledger.Parked["task-1"] = new ParkedRow(Guid.NewGuid(), "ctx-restored", default);
@@ -242,13 +226,11 @@ public sealed class A2AParkedSendingTests
         Assert.Equal("ctx-restored", rehydrated.ContextId);
 
         Assert.Equal(TaskState.InputRequired, rehydrated.Status.State);
-
     }
 
     [Fact]
     public async Task TaskStore_RehydratesAParkedTaskOnce_AndThenServesItFromMemory()
     {
-
         FakeParkedLedger ledger = new();
 
         ledger.Parked["task-1"] = new ParkedRow(Guid.NewGuid(), "ctx-restored", default);
@@ -269,23 +251,19 @@ public sealed class A2AParkedSendingTests
         // and both of those re-save this entry through the handler, so a peer polling a parked Sending
         // must not re-scan the whole ledger once per tasks/get.
         Assert.Equal(["task-1"], ledger.ParkedLookups);
-
     }
 
     [Fact]
     public async Task TaskStore_ReturnsNothingForATaskNobodyRecorded()
     {
-
         ArcanumA2ATaskStore store = new(ScopeFactoryFor(new FakeParkedLedger()), NullLogger<ArcanumA2ATaskStore>.Instance);
 
         Assert.Null(await store.GetTaskAsync("never-existed"));
-
     }
 
     [Fact]
     public async Task TaskStore_PrefersTheLiveTaskOverTheDurableRecord()
     {
-
         FakeParkedLedger ledger = new();
 
         ledger.Parked["task-1"] = new ParkedRow(Guid.NewGuid(), "ctx-restored", default);
@@ -308,13 +286,11 @@ public sealed class A2AParkedSendingTests
         Assert.Equal("ctx-live", live!.ContextId);
 
         Assert.Equal(TaskState.Working, live.Status.State);
-
     }
 
     [Fact]
     public async Task TaskStore_WithoutALedger_BehavesExactlyLikeTheInMemoryStore()
     {
-
         ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
 
         Assert.Null(await store.GetTaskAsync("task-1"));
@@ -328,22 +304,18 @@ public sealed class A2AParkedSendingTests
         await store.DeleteTaskAsync("task-1");
 
         Assert.Null(await store.GetTaskAsync("task-1"));
-
     }
 
     [Fact]
     public async Task TaskStore_RetainsOnlyABoundedNumberOfSettledTasks()
     {
-
         ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
 
         await store.SaveTaskAsync("still-working", Retained("still-working", TaskState.Working));
 
         for (int i = 0; i < ArcanumA2ATaskStore.RetainedTaskCap + 50; i++)
         {
-
             await store.SaveTaskAsync($"settled-{i}", Retained($"settled-{i}", TaskState.Completed));
-
         }
 
         // The SDK documents that it never calls DeleteTaskAsync and leaves pruning to the store, and
@@ -356,20 +328,16 @@ public sealed class A2AParkedSendingTests
         // A task that has not settled is never a candidate: it is live state nothing can rebuild, and
         // the peer driving it is still entitled to a tasks/get.
         Assert.NotNull(await store.GetTaskAsync("still-working"));
-
     }
 
     [Fact]
     public async Task TaskStore_NeverEvictsAnUnsettledTaskToStayUnderTheCap()
     {
-
         ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
 
         for (int i = 0; i < ArcanumA2ATaskStore.RetainedTaskCap + 50; i++)
         {
-
             await store.SaveTaskAsync($"working-{i}", Retained($"working-{i}", TaskState.Working));
-
         }
 
         // Genuinely that much in-flight work is real work, and dropping any of it would answer a live
@@ -377,7 +345,6 @@ public sealed class A2AParkedSendingTests
         Assert.NotNull(await store.GetTaskAsync("working-0"));
 
         Assert.NotNull(await store.GetTaskAsync($"working-{ArcanumA2ATaskStore.RetainedTaskCap + 49}"));
-
     }
 
     private static AgentTask Retained(string taskId, TaskState state) => new()
@@ -392,7 +359,6 @@ public sealed class A2AParkedSendingTests
     [Fact]
     public async Task TaskStore_ListTasks_HonoursTheContextAndStatusFiltersItIsGiven()
     {
-
         ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
 
         await SeedListableAsync(store, "mine-1", "ctx-mine", TaskState.Completed, minute: 1);
@@ -417,20 +383,16 @@ public sealed class A2AParkedSendingTests
             new ListTasksRequest { StatusTimestampAfter = ListBaseTime.AddMinutes(2) });
 
         Assert.Equal(["theirs-1"], recent.Tasks.Select(static task => task.Id));
-
     }
 
     [Fact]
     public async Task TaskStore_ListTasks_PagesAndReportsWhereTheNextPageStarts()
     {
-
         ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
 
         for (int i = 0; i < 5; i++)
         {
-
             await SeedListableAsync(store, $"task-{i}", "ctx", TaskState.Completed, minute: i);
-
         }
 
         ListTasksResponse first = await store.ListTasksAsync(new ListTasksRequest { PageSize = 2 });
@@ -456,13 +418,11 @@ public sealed class A2AParkedSendingTests
         Assert.Equal(["task-0"], last.Tasks.Select(static task => task.Id));
 
         Assert.Equal(string.Empty, last.NextPageToken);
-
     }
 
     [Fact]
     public async Task TaskStore_ListTasks_TrimsHistoryAndOmitsArtifactsUnlessAsked()
     {
-
         ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
 
         await SeedListableAsync(store, "task-1", "ctx", TaskState.Completed, minute: 1);
@@ -488,7 +448,6 @@ public sealed class A2AParkedSendingTests
         Assert.Equal(3, stored!.History!.Count);
 
         Assert.NotNull(stored.Artifacts);
-
     }
 
     private static readonly DateTimeOffset ListBaseTime = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -520,7 +479,6 @@ public sealed class A2AParkedSendingTests
     [Fact]
     public async Task ThroughTheProtocol_AContinuationAfterARestartResumesTheOriginalApprentice()
     {
-
         FakeParkedLedger ledger = new();
 
         Guid original = Guid.NewGuid();
@@ -554,13 +512,11 @@ public sealed class A2AParkedSendingTests
         Assert.Equal([original], restarted.Runtime.IntervenedApprenticeIds);
 
         Assert.Empty(restarted.Archmage.Created);
-
     }
 
     [Fact]
     public async Task ThroughTheProtocol_ACancelAfterARestartCancelsTheParkedApprentice()
     {
-
         FakeParkedLedger ledger = new();
 
         Guid original = Guid.NewGuid();
@@ -578,7 +534,6 @@ public sealed class A2AParkedSendingTests
         Assert.Equal(TaskState.Canceled, cancelled.Status.State);
 
         Assert.Equal([original], restarted.Runtime.CancelledApprenticeIds);
-
     }
 
     // ── reconciliation tells parked apart from abandoned ───────────────────────────────────────────
@@ -586,7 +541,6 @@ public sealed class A2AParkedSendingTests
     [Fact]
     public async Task InboundReconciliation_ParkedAndAnswerable_IsNotAbandoned()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         FakeApprentices apprentices = new()
@@ -607,13 +561,11 @@ public sealed class A2AParkedSendingTests
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, outcome.State);
 
         Assert.Equal(A2ASendingRecoveryOutcomes.InboundParkedAwaitingAnswer, outcome.ErrorCode);
-
     }
 
     [Fact]
     public async Task InboundReconciliation_ParkedButTheApprenticeIsGone_IsAbandoned()
     {
-
         A2AInboundSendingRecoveryHandler handler = new(
             new FakeApprentices(),
             NullLogger<A2AInboundSendingRecoveryHandler>.Instance);
@@ -625,13 +577,11 @@ public sealed class A2AParkedSendingTests
         Assert.Equal(LongRunningOperationState.Abandoned, outcome.State);
 
         Assert.Equal(A2ASendingRecoveryOutcomes.InboundApprenticeMissing, outcome.ErrorCode);
-
     }
 
     [Fact]
     public async Task InboundReconciliation_ParkedButTheApprenticeAlreadyFinished_IsAbandoned()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         FakeApprentices apprentices = new()
@@ -651,13 +601,11 @@ public sealed class A2AParkedSendingTests
         Assert.Equal(LongRunningOperationState.Abandoned, outcome.State);
 
         Assert.Equal(A2ASendingRecoveryOutcomes.InboundRelayAbandoned, outcome.ErrorCode);
-
     }
 
     [Fact]
     public async Task InboundReconciliation_NotParked_IsStillAbandonedWithTheRelayReason()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         FakeApprentices apprentices = new()
@@ -676,7 +624,6 @@ public sealed class A2AParkedSendingTests
         Assert.Equal(LongRunningOperationState.Abandoned, outcome.State);
 
         Assert.Equal(A2ASendingRecoveryOutcomes.InboundRelayAbandoned, outcome.ErrorCode);
-
     }
 
     // ── harness ────────────────────────────────────────────────────────────────────────────────────
@@ -685,27 +632,21 @@ public sealed class A2AParkedSendingTests
 
     private static IServiceScopeFactory ScopeFactoryFor(IA2ASendingLedger ledger)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton(ledger);
 
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-
     }
 
     private static async Task WaitForAsync(Func<bool> condition)
     {
-
         DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
 
         while (!condition() && DateTimeOffset.UtcNow < deadline)
         {
-
             await Task.Delay(25).ConfigureAwait(false);
-
         }
-
     }
 
     private static LongRunningOperation InboundOperation(string taskId, Guid apprenticeId, bool parked) =>
@@ -750,14 +691,12 @@ public sealed class A2AParkedSendingTests
 
     private static async Task<TaskState?> DrainStateAsync(AgentEventQueue queue)
     {
-
         queue.Complete();
 
         TaskState? latest = null;
 
         await foreach (StreamResponse response in queue)
         {
-
             A2ATaskStatus? status = response.PayloadCase switch
             {
                 StreamResponseCase.Task => response.Task?.Status,
@@ -767,25 +706,19 @@ public sealed class A2AParkedSendingTests
 
             if (status is not null)
             {
-
                 latest = status.State;
-
             }
-
         }
 
         return latest;
-
     }
 
     private sealed class Harness
     {
-
         private readonly Channel<ApprenticeEvent> _chronicle = Channel.CreateUnbounded<ApprenticeEvent>();
 
         public Harness(FakeParkedLedger? ledger = null)
         {
-
             Ledger = ledger ?? new FakeParkedLedger();
 
             Runtime = new RecordingRuntime(_chronicle.Reader);
@@ -808,7 +741,6 @@ public sealed class A2AParkedSendingTests
                 _scopeFactory,
                 new TestOptionsMonitor<ArcanumSettings>(EnabledSettings()),
                 NullLogger<ArcanumA2AAgentHandler>.Instance);
-
         }
 
         private readonly IServiceScopeFactory _scopeFactory;
@@ -854,20 +786,16 @@ public sealed class A2AParkedSendingTests
 
         public async Task<(TaskState? State, AgentEventQueue Queue)> RunAsync(RequestContext context)
         {
-
             AgentEventQueue queue = new();
 
             await Handler.ExecuteAsync(context, queue, CancellationToken.None);
 
             return (await DrainStateAsync(queue), queue);
-
         }
-
     }
 
     internal sealed class FakeParkedLedger : IA2ASendingLedger
     {
-
         public Dictionary<string, ParkedRow> Parked { get; } = [];
 
         public Dictionary<string, Guid> Recovered { get; } = [];
@@ -883,7 +811,6 @@ public sealed class A2AParkedSendingTests
             Guid apprenticeId,
             CancellationToken cancellationToken = default)
         {
-
             RegisteredInbound[taskId] = apprenticeId;
 
             A2ASendingLedgerEntry entry = new(Guid.NewGuid(), "test");
@@ -891,7 +818,6 @@ public sealed class A2AParkedSendingTests
             _entryTaskIds[entry.OperationId] = taskId;
 
             return Task.FromResult(entry);
-
         }
 
         public Task<A2ASendingLedgerEntry> RegisterOutboundAsync(
@@ -906,11 +832,9 @@ public sealed class A2AParkedSendingTests
             A2ARemoteCost cost,
             CancellationToken cancellationToken = default)
         {
-
             Settled.Add((entry, cost));
 
             return Task.CompletedTask;
-
         }
 
         public List<(A2ASendingLedgerEntry Entry, A2ARemoteCost Cost)> Settled { get; } = [];
@@ -931,11 +855,9 @@ public sealed class A2AParkedSendingTests
 
         public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
         {
-
             Released.Add(entry);
 
             return Task.CompletedTask;
-
         }
 
         /// <summary>
@@ -949,22 +871,16 @@ public sealed class A2AParkedSendingTests
             string? contextId,
             CancellationToken cancellationToken = default)
         {
-
             if (_entryTaskIds.TryGetValue(entry.OperationId, out string? taskId)
                 && RegisteredInbound.TryGetValue(taskId, out Guid apprenticeId))
             {
-
                 Parked[taskId] = new ParkedRow(apprenticeId, contextId, entry);
-
             }
 
             if (OnMarkParked is { } hook)
             {
-
                 await hook().ConfigureAwait(false);
-
             }
-
         }
 
         /// <summary>Every task id the durable park lookup was asked about, in order.</summary>
@@ -975,28 +891,23 @@ public sealed class A2AParkedSendingTests
             bool takeLease = true,
             CancellationToken cancellationToken = default)
         {
-
             ParkedLookups.Add(taskId);
 
             return Task.FromResult(Parked.TryGetValue(taskId, out ParkedRow row)
                 ? new A2AParkedSending(row.ApprenticeId, row.ContextId, row.Ledger)
                 : (A2AParkedSending?)null);
-
         }
 
         public Task<Guid?> FindInboundApprenticeAsync(string taskId, CancellationToken cancellationToken = default) =>
             Task.FromResult(Recovered.TryGetValue(taskId, out Guid id) ? id : (Guid?)null);
-
     }
 
     private sealed class RecordingArchmage : IConclaveArchmage
     {
-
         public List<Apprentice> Created { get; } = [];
 
         public Task<Result<Apprentice>> CastAsync(ConclaveCastRequest request, CancellationToken cancellationToken = default)
         {
-
             Apprentice apprentice = new()
             {
                 Id = Guid.NewGuid(),
@@ -1008,14 +919,11 @@ public sealed class A2AParkedSendingTests
             Created.Add(apprentice);
 
             return Task.FromResult(Result<Apprentice>.Success(apprentice));
-
         }
-
     }
 
     private sealed class RecordingRuntime(ChannelReader<ApprenticeEvent> chronicle) : IApprenticeRuntime
     {
-
         public List<Guid> CancelledApprenticeIds { get; } = [];
 
         public List<Guid> IntervenedApprenticeIds { get; } = [];
@@ -1033,11 +941,9 @@ public sealed class A2AParkedSendingTests
 
         public Task<Result<string>> CancelAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
         {
-
             CancelledApprenticeIds.Add(apprenticeId);
 
             return Task.FromResult(Result<string>.Success(string.Empty));
-
         }
 
         public Task<Result<ApprenticeDetailDto>> ReweaveAsync(
@@ -1051,39 +957,29 @@ public sealed class A2AParkedSendingTests
             bool resume,
             CancellationToken cancellationToken = default)
         {
-
             IntervenedApprenticeIds.Add(apprenticeId);
 
             InterventionGuidance.Add(guidance);
 
             return Task.FromResult(Result<string>.Success("resumed"));
-
         }
 
         public async IAsyncEnumerable<ApprenticeEvent> SubscribeChronicleAsync(
             Guid apprenticeId,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-
             while (await chronicle.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 while (chronicle.TryRead(out ApprenticeEvent? @event))
                 {
-
                     yield return @event;
-
                 }
-
             }
-
         }
-
     }
 
     private sealed class FakeApprentices : IApprenticeRepository
     {
-
         public Apprentice? Item { get; set; }
 
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -1102,20 +998,32 @@ public sealed class A2AParkedSendingTests
         public Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
             Task.FromResult(apprentice);
 
+        public Task<bool> UpdateProgressAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<bool> TryUpdateAsync(
+            Apprentice apprentice,
+            IReadOnlyCollection<string> expectedStatuses,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<Apprentice>>([]);
-
     }
 
     private sealed class StubSessionRepository : ISessionRepository
     {
-
         public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
             throw new NotSupportedException();
 
@@ -1157,7 +1065,5 @@ public sealed class A2AParkedSendingTests
         public Task UpdateSessionAsync(Session session, CancellationToken ct) => Task.CompletedTask;
 
         public Task ArchiveAsync(Guid id, CancellationToken ct) => Task.CompletedTask;
-
     }
-
 }
