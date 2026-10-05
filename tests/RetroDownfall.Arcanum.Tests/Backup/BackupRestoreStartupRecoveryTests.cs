@@ -464,6 +464,46 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(Directory.Exists(interrupted.DisplacedRoot));
     }
 
+    /// <summary>
+    /// A startup cancelled once the lease disposition has already committed still closes the anchor
+    /// and removes staging, because the disposition it would otherwise strand cannot be taken back.
+    /// </summary>
+    /// <remarks>
+    /// The finalizer runs only after <c>CommitAndReopen</c> succeeded, so cancelling from inside it is
+    /// cancelling from the step after the commit. The terminal steps are bookkeeping for a restore that
+    /// has finished: an active anchor naming a committed operation would make the next start try to
+    /// resume a disposition the gate has already spent.
+    /// </remarks>
+    [Fact]
+    public async Task Authority_recovery_closes_the_anchor_even_when_cancelled_after_the_disposition()
+    {
+        Interrupted interrupted = Interrupt(RestoreCrashPoint.AfterStagedRootRenamedToLive);
+
+        using CancellationTokenSource startup = new();
+
+        FakeCampaignPathMarkerLifecycle markers = new()
+        {
+            FinalizerOverride = new CancellingFinalizer(startup),
+        };
+
+        BackupRestoreRecovery recovery = Recovery(CovenantOperationGateFixture.CreateGate(), markers);
+
+        _ = Value(await recovery.RecoverPhysicalTopologyBeforeDatabaseAsync(
+            _lock,
+            Token));
+
+        Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
+            .RecoverAuthorityBeforeReadinessAsync(_lock, startup.Token);
+
+        Assert.True(startup.IsCancellationRequested);
+
+        Assert.Equal(BackupRestoreStartupRecoveryOutcome.RecoveredReady, Value(recovered));
+
+        Assert.Equal(BackupRestoreJournalAnchorState.Closed, ReadAnchor(interrupted).State);
+
+        Assert.False(Directory.Exists(interrupted.StagingRoot));
+    }
+
     [Fact]
     public async Task Authority_recovery_keeps_admission_closed_for_a_mismatched_owner()
     {
@@ -765,6 +805,20 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         return result.Value;
     }
 
+    /// <summary>Cancels startup from the one step after a successful disposition.</summary>
+    private sealed class CancellingFinalizer(CancellationTokenSource startup)
+        : ICovenantExclusivePostDispositionFinalizer
+    {
+        public ValueTask<Result> FinalizeAfterSuccessfulDispositionAsync(
+            CovenantExclusiveLeaseDisposition disposition,
+            CancellationToken cancellationToken)
+        {
+            startup.Cancel();
+
+            return ValueTask.FromResult(Result.Success());
+        }
+    }
+
     private sealed record Interrupted(
         string StagingRoot,
         string StagedRoot,
@@ -823,6 +877,9 @@ internal sealed class FakeCampaignPathMarkerLifecycle : ICampaignPathMarkerLifec
 
     internal RecordingPostDispositionFinalizer Finalizer { get; } = new();
 
+    /// <summary>The finalizer handed back instead of <see cref="Finalizer"/>, when set.</summary>
+    internal ICovenantExclusivePostDispositionFinalizer? FinalizerOverride { get; init; }
+
     internal CovenantExclusiveLeaseDisposition Disposition { get; init; } =
         CovenantExclusiveLeaseDisposition.CommitAndReopen;
 
@@ -856,7 +913,10 @@ internal sealed class FakeCampaignPathMarkerLifecycle : ICampaignPathMarkerLifec
             Failure is { } failure
                 ? Result<CampaignPathMarkerGateCompletion>.Failure(failure)
                 : Result<CampaignPathMarkerGateCompletion>.Success(
-                    new CampaignPathMarkerGateCompletion(Outcome, Disposition, Finalizer)));
+                    new CampaignPathMarkerGateCompletion(
+                        Outcome,
+                        Disposition,
+                        FinalizerOverride ?? Finalizer)));
     }
 
     public ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)

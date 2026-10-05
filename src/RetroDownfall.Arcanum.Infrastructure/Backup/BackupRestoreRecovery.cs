@@ -258,7 +258,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
             return Kept(reopened.Error);
         }
 
-        return await TerminateAsync(heldInstallationLock, active, owner, cancellationToken)
+        return await TerminateAsync(heldInstallationLock, active, owner)
             .ConfigureAwait(false);
     }
 
@@ -327,7 +327,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
             return Kept(committed.Error);
         }
 
-        return await TerminateAsync(heldInstallationLock, active, owner, cancellationToken)
+        return await TerminateAsync(heldInstallationLock, active, owner)
             .ConfigureAwait(false);
     }
 
@@ -355,15 +355,15 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// The order is the anchor's, not this method's: the tombstone is written before the journal is
     /// deleted, so an active anchor can never name a file that no longer exists. Staging goes last,
     /// because until the anchor is closed the journal inside it is the evidence recovery runs on.
+    /// <para>It takes no startup token. Every caller reaches it after the lease disposition has been
+    /// spent, and a cancellation observed here would leave an active anchor naming a disposition the
+    /// gate has already applied — bookkeeping after the point of no return runs to completion.</para>
     /// </remarks>
     private async Task<Result<BackupRestoreStartupRecoveryOutcome>> TerminateAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         BackupRestoreEvidence active,
-        CovenantExclusiveRecoveryOwner owner,
-        CancellationToken cancellationToken)
+        CovenantExclusiveRecoveryOwner owner)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
         await _markers!.ReleaseRetainedRootsAsync(owner.OperationId).ConfigureAwait(false);
 
         Result closed = _anchors.Close(
