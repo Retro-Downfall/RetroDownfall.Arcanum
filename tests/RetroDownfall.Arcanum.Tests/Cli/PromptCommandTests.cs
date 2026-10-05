@@ -305,6 +305,37 @@ public sealed class PromptCommandTests
         Assert.DoesNotContain("--sessionId", result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// <c>prompt import</c> reaches its campaign check only after it has read and parsed the export file, so
+    /// the diagnostic needs a real export to be seen; it names the option typed, and nothing is sent.
+    /// </summary>
+    [Fact]
+    public void Import_with_an_invalid_campaign_id_names_the_option_the_operator_typed()
+    {
+        string file = Path.Combine(Path.GetTempPath(), $"arcanum-prompt-import-{Guid.NewGuid():N}.json");
+
+        File.WriteAllText(file, "{\"name\":\"greeting\",\"version\":\"1\",\"tags\":[],\"template\":\"Hello\"}");
+
+        try
+        {
+            RecordingHandler handler = new();
+
+            CliTestResult result = RunCommand(handler, ["prompt", "import", "--file", file, "--campaign-id", "not-a-guid"]);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Contains("--campaign-id", result.Error, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--campaignId", result.Error, StringComparison.Ordinal);
+
+            Assert.Empty(handler.Requests);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
     [Fact]
     public void Update_without_any_field_exits_2_and_sends_nothing()
     {

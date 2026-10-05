@@ -1317,18 +1317,19 @@ public sealed class CovenantCommands(
     private CovenantExternalRetentionDisclosureWriter DisclosureWriter => new(dispatcher, settings);
 
     /// <summary>
-    /// Fails a host <see cref="Result"/>: a <c>Connection.*</c> error exits 3 so automation can tell an
-    /// unreachable host from a domain failure; every other host error keeps the generic exit code.
-    /// </summary>
-    /// <summary>
-    /// Sends the commit request of a confirmed mutation and, when the caller is cancelled while it is in
-    /// flight, says the mutation may still have been applied.
+    /// Sends the commit request of a confirmed mutation and says the mutation may still have been applied
+    /// when the caller is cancelled while it is being sent, or when the host never gave a typed answer.
     /// </summary>
     /// <remarks>
-    /// The host completes a committed mutation whatever the caller does afterwards, so Ctrl-C after the
-    /// request went out keeps its cancellation exit and names the mutation: the operator checks the key
-    /// rather than assuming nothing happened. A cancellation that lands before the request is sent cancels
-    /// a mutation that never started, and must not claim otherwise.
+    /// <para>The host completes a committed mutation whatever the caller does afterwards, so Ctrl-C keeps
+    /// its cancellation exit and names the mutation: the operator checks the key rather than assuming
+    /// nothing happened. A cancellation that lands before the request is sent cancels a mutation that never
+    /// started, and must not claim otherwise; one that lands during the send cannot tell whether the
+    /// request left, so the note says so.</para>
+    /// <para>A failed answer is read the way the erase verbs read it (<see cref="ArcanumApiClient.ErasureOutcomeUnknown"/>):
+    /// a typed refusal proves the commit rolled back and gets no note, while a timeout, a lost connection, an
+    /// unreadable answer or a host fault proves nothing, so the operator is told to look before trying again
+    /// and a retry does not become a second write.</para>
     /// </remarks>
     private async Task<Result<T>> CommitAsync<T>(
         Guid mutationId,
@@ -1339,20 +1340,35 @@ public sealed class CovenantCommands(
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        Result<T> committed;
+
         try
         {
-            return await send().ConfigureAwait(false);
+            committed = await send().ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            string campaignOption = campaignId is { } campaign ? $" --campaign {campaign:D}" : string.Empty;
-
             dispatcher.WriteDiagnostic(
-                $"The request to change '{key}' was already sent when the operation was cancelled, so Covenant mutation {mutationId:D} "
-                + $"may have been applied. Run 'arcanum memory covenant show {key}{campaignOption}' to see the outcome before trying again.");
+                $"The operation was cancelled while the request to change '{key}' was being sent, so Covenant mutation {mutationId:D} "
+                + $"may have been applied, or may never have reached the host. {CheckOutcomeAdvice(key, campaignId)}");
 
             throw;
         }
+
+        if (committed.IsFailure && ArcanumApiClient.ErasureOutcomeUnknown(committed.Error))
+        {
+            dispatcher.WriteDiagnostic(
+                $"The host did not confirm Covenant mutation {mutationId:D}, so it may have been applied. {CheckOutcomeAdvice(key, campaignId)}");
+        }
+
+        return committed;
+    }
+
+    private static string CheckOutcomeAdvice(string key, Guid? campaignId)
+    {
+        string campaignOption = campaignId is { } campaign ? $" --campaign {campaign:D}" : string.Empty;
+
+        return $"Run 'arcanum memory covenant show {key}{campaignOption}' to see the outcome before trying again.";
     }
 
     /// <summary>
@@ -1366,6 +1382,10 @@ public sealed class CovenantCommands(
             $"Api.PaginationNoProgress: the host returned a cursor it had already returned, so the Covenant {what} cannot be completed. "
             + "Nothing was printed; retry after repairing or upgrading the host.");
 
+    /// <summary>
+    /// Fails a host <see cref="Result"/>: a <c>Connection.*</c> error exits 3 so automation can tell an
+    /// unreachable host from a domain failure; every other host error keeps the generic exit code.
+    /// </summary>
     private int Fail(Error error) =>
         Fail(error, (CliExitCode)CliFailureExit.ExitCode(error));
 
