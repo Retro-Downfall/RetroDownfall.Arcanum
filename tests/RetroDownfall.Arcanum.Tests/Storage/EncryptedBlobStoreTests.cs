@@ -316,6 +316,115 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         await Assert.ThrowsAnyAsync<CryptographicException>(() => reader.CopyToAsync(output));
     }
 
+    // Version 1 binds no final-chunk marker, so a boundary truncation that rewrites the declared
+    // length still authenticates (the characterization below). Migration upgrades every v1 envelope
+    // it verifies to the current version, after which the same truncation is refused.
+    [Fact]
+    public async Task V1_blob_truncated_at_chunk_boundary_is_rejected()
+    {
+        const int chunkSize = 32;
+        byte[] key = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        byte[] plaintext = RandomNumberGenerator.GetBytes(96);
+        string path = Path.Combine(_root, "legacy-v1-upgrade");
+        await File.WriteAllBytesAsync(
+            path,
+            EncryptedBlobCompatibilityTests.BuildVersion1Envelope(
+                key,
+                plaintext,
+                chunkSize,
+                EncryptedBlobPurpose.UploadedFile));
+        EncryptedBlobStore store = CreateStore(chunkSize, key);
+        EncryptedBlobDescriptor legacy = await store.InspectAsync(
+            path,
+            EncryptedBlobPurpose.UploadedFile,
+            verifyAllChunks: true);
+        Assert.Equal(EncryptedBlobFormat.LegacyVersion1, legacy.Version);
+
+        string legacyCopy = Path.Combine(_root, "legacy-v1-truncated");
+        await File.WriteAllBytesAsync(
+            legacyCopy,
+            TruncateAtFirstChunkBoundary(await File.ReadAllBytesAsync(path), legacy.HeaderLength, chunkSize));
+        await using (Stream legacyReader = await store.OpenReadAsync(legacyCopy, EncryptedBlobPurpose.UploadedFile))
+        {
+            using MemoryStream legacyOutput = new();
+            await legacyReader.CopyToAsync(legacyOutput);
+            Assert.Equal(plaintext.AsSpan(0, chunkSize).ToArray(), legacyOutput.ToArray());
+        }
+
+        BlobEncryptionCandidate candidate = new(
+            BlobEncryptionRecordKind.UploadedFile,
+            "legacy-v1",
+            path,
+            EncryptedBlobPurpose.UploadedFile,
+            plaintext.Length,
+            Convert.ToHexString(SHA256.HashData(plaintext)),
+            EncryptedBlobFormat.LegacyVersion1,
+            legacy.KeyId);
+        RecordingMetadataStore metadata = new();
+        BlobEncryptionFileResult migrated = await new BlobEncryptionFileProcessor(metadata, store)
+            .MigrateAsync(candidate);
+
+        Assert.Equal(EncryptedBlobFormat.CurrentVersion, migrated.Descriptor.Version);
+        Assert.Equal(EncryptedBlobFormat.CurrentVersion, Assert.Single(metadata.Updated).Version);
+
+        await File.WriteAllBytesAsync(
+            path,
+            TruncateAtFirstChunkBoundary(
+                await File.ReadAllBytesAsync(path),
+                migrated.Descriptor.HeaderLength,
+                chunkSize));
+        await using Stream reader = await store.OpenReadAsync(path, EncryptedBlobPurpose.UploadedFile);
+        using MemoryStream output = new();
+
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => reader.CopyToAsync(output));
+    }
+
+    // The chunk counter is the low four bytes of every chunk nonce; a blob that needed a counter value
+    // past its range would repeat a nonce under the same key. The writer refuses it before reading a
+    // byte of plaintext or creating anything on disk.
+    [Fact]
+    public async Task Write_refuses_a_declared_length_beyond_the_chunk_counter()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 16);
+        string path = Path.Combine(_root, "too-many-chunks");
+        long declared = checked(16L * uint.MaxValue + 1);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.WriteAsync(
+            path,
+            new MemoryStream(),
+            EncryptedBlobPurpose.BatchArtifact,
+            plaintextLength: declared));
+
+        Assert.False(File.Exists(path));
+        Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
+    }
+
+    private static byte[] TruncateAtFirstChunkBoundary(byte[] envelope, int headerLength, int chunkSize)
+    {
+        byte[] truncated = envelope.AsSpan(0, headerLength + chunkSize + 16).ToArray();
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(truncated.AsSpan(16, 8), chunkSize);
+        return truncated;
+    }
+
+    private sealed class RecordingMetadataStore : IBlobEncryptionMetadataStore
+    {
+        public List<EncryptedBlobDescriptor> Updated { get; } = [];
+
+        public Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<BlobEncryptionCandidate>>([]);
+
+        public Task UpdateEncryptionMetadataAsync(
+            BlobEncryptionCandidate candidate,
+            EncryptedBlobDescriptor descriptor,
+            string plaintextSha256,
+            CancellationToken cancellationToken = default)
+        {
+            Updated.Add(descriptor);
+            return Task.CompletedTask;
+        }
+    }
+
     // The streaming writer discovers the length as it goes, so the chunk that turns out to be last
     // must still carry the final marker — including when the total is an exact multiple of the
     // chunk size, where the last full buffer would otherwise be sealed as a non-final chunk.

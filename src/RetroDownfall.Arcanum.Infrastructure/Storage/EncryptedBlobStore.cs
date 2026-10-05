@@ -36,6 +36,13 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
     private const int LegacyAadSuffixLength = 8;
 
     private const int LengthBoundAadSuffixLength = 17;
+
+    /// <summary>
+    /// The most chunks one envelope may hold. The chunk index is the low four bytes of every chunk
+    /// nonce, so the counter must never wrap: indices run from zero to <c>uint.MaxValue - 1</c> and the
+    /// counter itself never has to represent anything past <c>uint.MaxValue</c>.
+    /// </summary>
+    internal const long MaximumChunkCount = uint.MaxValue;
     private const string KeyDerivationLabel = "Arcanum.EncryptedBlob.v1:";
     private static ReadOnlySpan<byte> Magic => "ARCABLOB"u8;
 
@@ -148,6 +155,13 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         cancellationToken.ThrowIfCancellationRequested();
 
         long length = ResolvePlaintextLength(plaintext, plaintextLength);
+        if (ChunkCount(length, _chunkSize) > MaximumChunkCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(plaintextLength),
+                "The plaintext needs more chunks than one encrypted blob's nonce counter can address.");
+        }
+
         if (authenticatedMetadata.Length > MaximumMetadataLength)
         {
             throw new ArgumentOutOfRangeException(
@@ -532,7 +546,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                     .ConfigureAwait(false);
                 await output.WriteAsync(tag, cancellationToken).ConfigureAwait(false);
                 remaining -= expected;
-                chunkIndex++;
+                chunkIndex = checked(chunkIndex + 1);
             }
 
             while (remaining > 0);
@@ -658,9 +672,13 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         // OverflowException escape every corruption handler in the call chain.
         try
         {
-            long chunks = Math.Max(
-                1,
-                checked((descriptor.PlaintextLength + descriptor.ChunkSize - 1) / descriptor.ChunkSize));
+            long chunks = ChunkCount(descriptor.PlaintextLength, descriptor.ChunkSize);
+            if (chunks > MaximumChunkCount)
+            {
+                throw new InvalidDataException(
+                    "The encrypted blob declares more chunks than its nonce counter can address.");
+            }
+
             long expectedLength = checked(
                 descriptor.HeaderLength
                 + descriptor.PlaintextLength
@@ -678,6 +696,10 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                 ex);
         }
     }
+
+    /// <summary>The chunk count of a plaintext length: one empty chunk for empty content.</summary>
+    private static long ChunkCount(long plaintextLength, int chunkSize) =>
+        Math.Max(1, checked((plaintextLength + chunkSize - 1) / chunkSize));
 
     private static byte[] DerivePurposeKey(
         ReadOnlySpan<byte> masterKey,
@@ -900,7 +922,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                 _plainBuffer.AsSpan(0, count),
                 _aad);
             _remaining -= count;
-            _chunkIndex++;
+            _chunkIndex = checked(_chunkIndex + 1);
             _plainOffset = 0;
             _plainCount = count;
             return count > 0;
@@ -1148,6 +1170,12 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         // The AEAD seal, shared by both write paths so the nonce and AAD exist in exactly one place.
         private int SealBufferedChunk(bool isFinal)
         {
+            if (_chunkIndex >= MaximumChunkCount)
+            {
+                throw new InvalidOperationException(
+                    "The encrypted blob reached the most chunks its nonce counter can address.");
+            }
+
             int count = _bufferCount;
             BinaryPrimitives.WriteUInt32BigEndian(
                 _nonce.AsSpan(NoncePrefixLength),
@@ -1174,7 +1202,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             CryptographicOperations.ZeroMemory(_plainBuffer.AsSpan(0, count));
             CryptographicOperations.ZeroMemory(_cipherBuffer.AsSpan(0, count));
             _bufferCount = 0;
-            _chunkIndex++;
+            _chunkIndex = checked(_chunkIndex + 1);
         }
 
         private void EnsureWritable()

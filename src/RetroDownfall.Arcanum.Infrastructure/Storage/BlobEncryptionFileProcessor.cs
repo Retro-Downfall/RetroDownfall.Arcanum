@@ -40,6 +40,20 @@ public sealed class BlobEncryptionFileProcessor(
             ThrowIfInvalid(existing);
             EncryptedBlobDescriptor descriptor = existing.Descriptor
                 ?? throw new InvalidDataException("Encrypted blob descriptor was unavailable.");
+
+            // A verified envelope older than the current format is re-encrypted rather than adopted:
+            // version 1 binds no final-chunk marker or total length, so a chunk-boundary truncation of
+            // it still authenticates.
+            if (descriptor.Version < EncryptedBlobFormat.CurrentVersion)
+            {
+                return await RewriteEnvelopeAsync(
+                        candidate,
+                        existing.PlaintextLength,
+                        descriptor.AuthenticatedMetadata,
+                        requiredKeyId: null)
+                    .ConfigureAwait(false);
+            }
+
             await metadataStore.UpdateEncryptionMetadataAsync(
                     candidate,
                     descriptor,
@@ -106,6 +120,24 @@ public sealed class BlobEncryptionFileProcessor(
             return migrated;
         }
 
+        return await RewriteEnvelopeAsync(
+                candidate,
+                migrated.PlaintextLength,
+                migrated.Descriptor.AuthenticatedMetadata,
+                targetKeyId)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Re-encrypts a verified envelope in place under the current key and format, verifies what
+    /// landed, and only then commits its metadata.
+    /// </summary>
+    private async Task<BlobEncryptionFileResult> RewriteEnvelopeAsync(
+        BlobEncryptionCandidate candidate,
+        long plaintextLength,
+        ReadOnlyMemory<byte> authenticatedMetadata,
+        string? requiredKeyId)
+    {
         await using (Stream plaintext = await blobStore.OpenReadAsync(
                          candidate.Path,
                          candidate.Purpose,
@@ -116,7 +148,8 @@ public sealed class BlobEncryptionFileProcessor(
                     candidate.Path,
                     plaintext,
                     candidate.Purpose,
-                    plaintextLength: migrated.PlaintextLength,
+                    authenticatedMetadata,
+                    plaintextLength: plaintextLength,
                     cancellationToken: CancellationToken.None)
                 .ConfigureAwait(false);
         }
@@ -128,8 +161,9 @@ public sealed class BlobEncryptionFileProcessor(
             .ConfigureAwait(false);
         ThrowIfInvalid(replacement);
         EncryptedBlobDescriptor descriptor = replacement.Descriptor
-            ?? throw new InvalidDataException("Rotated blob descriptor was unavailable.");
-        if (!string.Equals(descriptor.KeyId, targetKeyId, StringComparison.Ordinal))
+            ?? throw new InvalidDataException("Rewritten blob descriptor was unavailable.");
+        if (requiredKeyId is not null
+            && !string.Equals(descriptor.KeyId, requiredKeyId, StringComparison.Ordinal))
         {
             throw new EncryptedBlobKeyException(
                 "The encrypted replacement was not written with the requested active key.");
