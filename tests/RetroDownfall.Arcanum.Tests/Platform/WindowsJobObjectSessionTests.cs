@@ -11,11 +11,9 @@ namespace RetroDownfall.Arcanum.Tests.Platform;
 [Collection("ChildProcess")]
 public sealed class WindowsJobObjectSessionTests
 {
-
     [Fact]
     public void BuildLimits_returns_null_when_no_job_enforceable_fields()
     {
-
         ResourceLimits limits = new()
         {
             MaxCpuSeconds = 0,
@@ -28,13 +26,11 @@ public sealed class WindowsJobObjectSessionTests
         Assert.Null(WindowsJobObjectSession.BuildLimits(limits));
 
         Assert.False(WindowsJobObjectSession.HasJobEnforceableLimits(limits));
-
     }
 
     [Fact]
     public void BuildLimits_maps_memory_cpu_and_active_process()
     {
-
         ResourceLimits limits = new()
         {
             MaxCpuSeconds = 12,
@@ -55,13 +51,11 @@ public sealed class WindowsJobObjectSessionTests
         Assert.Equal(12L * 10_000_000L, built.Value.PerProcessUserTime100Ns);
 
         Assert.Equal(3u, built.Value.ActiveProcessLimit);
-
     }
 
     [Fact]
     public void TryCreate_configures_kill_on_close_and_limits_via_api()
     {
-
         FakeWindowsJobObjectApi api = new();
 
         ResourceLimits limits = new() { MaxCpuSeconds = 5, MaxMemoryMb = 32, MaxProcessCount = 2 };
@@ -83,13 +77,11 @@ public sealed class WindowsJobObjectSessionTests
         Assert.Equal(5L * 10_000_000L, api.LastLimits.Value.PerProcessUserTime100Ns);
 
         Assert.Equal(2u, api.LastLimits.Value.ActiveProcessLimit);
-
     }
 
     [Fact]
     public void TryCreate_returns_error_when_create_fails()
     {
-
         FakeWindowsJobObjectApi api = new() { FailCreate = true };
 
         WindowsJobObjectSession? session = WindowsJobObjectSession.TryCreate(
@@ -102,13 +94,11 @@ public sealed class WindowsJobObjectSessionTests
         Assert.NotNull(error);
 
         Assert.Contains("could not be created", error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void TryCreate_returns_error_when_configure_fails()
     {
-
         FakeWindowsJobObjectApi api = new() { FailConfigure = true, LastError = 87 };
 
         WindowsJobObjectSession? session = WindowsJobObjectSession.TryCreate(
@@ -123,13 +113,11 @@ public sealed class WindowsJobObjectSessionTests
         Assert.Contains("could not be configured", error.Message, StringComparison.Ordinal);
 
         Assert.Contains("87", error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Assign_returns_error_when_api_rejects()
     {
-
         FakeWindowsJobObjectApi api = new() { FailAssign = true, LastError = 5 };
 
         using WindowsJobObjectSession session = WindowsJobObjectSession.TryCreate(
@@ -151,13 +139,11 @@ public sealed class WindowsJobObjectSessionTests
         Assert.Contains("5", assignError.Message, StringComparison.Ordinal);
 
         Assert.Equal(1, api.AssignCount);
-
     }
 
     [SkippableFact]
     public async Task ProcessResourceLimiter_Apply_uses_injected_windows_api_when_on_windows()
     {
-
         Skip.If(
             !OperatingSystem.IsWindows(),
             "Windows-only behaviour.");
@@ -181,18 +167,15 @@ public sealed class WindowsJobObjectSessionTests
         Assert.Equal(1, api.ConfigureCount);
 
         await result.CleanupAsync!(0);
-
     }
 
     [Fact]
     public async Task WindowsJobObject_AssignmentFailureKillsStartedProcess()
     {
-
         ProcessStartInfo psi;
 
         if (OperatingSystem.IsWindows())
         {
-
             psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
@@ -207,11 +190,9 @@ public sealed class WindowsJobObjectSessionTests
 
                 CreateNoWindow = true,
             };
-
         }
         else
         {
-
             psi = new ProcessStartInfo
             {
                 FileName = "/bin/sleep",
@@ -224,7 +205,6 @@ public sealed class WindowsJobObjectSessionTests
 
                 UseShellExecute = false,
             };
-
         }
 
         AssignFailingLimiterWithCapture limiter = new();
@@ -269,13 +249,11 @@ public sealed class WindowsJobObjectSessionTests
         Assert.False(
             stillAlive,
             "Assign-after-start failure must kill the started process tree before returning.");
-
     }
 
     [Fact]
     public async Task CappedChildProcessRunner_AssignAfterStartFailure_ReturnsApplyFailed()
     {
-
         ProcessStartInfo psi = CreateShortLivedProcessStartInfo();
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
@@ -290,18 +268,80 @@ public sealed class WindowsJobObjectSessionTests
         Assert.Equal(CappedChildProcessOutcome.ResourceLimitApplyFailed, result.Outcome);
 
         Assert.Contains("assign failed", result.ResourceLimitApplyError, StringComparison.OrdinalIgnoreCase);
+    }
 
+    /// <summary>
+    /// R-234: the Job Object enforces one effective ceiling — the smaller non-zero of
+    /// <see cref="ResourceLimits.MaxMemoryMb"/> and <see cref="ResourceLimits.MaxProcessMemoryMb"/> — so a
+    /// quota kill must be attributed to memory under that same ceiling. Classifying on
+    /// <see cref="ResourceLimits.MaxMemoryMb"/> alone reported a kill under the per-process ceiling as an
+    /// ordinary exit. Pure, so it runs on every host; the real Windows exit path is pinned below.
+    /// </summary>
+    [Theory]
+    [InlineData(0, 128, true)]
+    [InlineData(64, 0, true)]
+    [InlineData(64, 128, true)]
+    [InlineData(0, 0, false)]
+    public void Job_quota_exit_is_attributed_to_memory_under_the_effective_ceiling(
+        int maxMemoryMb,
+        int maxProcessMemoryMb,
+        bool attributedToMemory)
+    {
+        ResourceLimits limits = new() { MaxMemoryMb = maxMemoryMb, MaxProcessMemoryMb = maxProcessMemoryMb };
+
+        Assert.Equal(
+            attributedToMemory ? (ResourceLimitKind?)ResourceLimitKind.Memory : null,
+            CappedChildProcessRunner.ClassifyWindowsJobExit(WindowsJobObjectInterop.StatusQuotaExceeded, limits));
+
+        Assert.Null(CappedChildProcessRunner.ClassifyWindowsJobExit(1, limits));
+    }
+
+    /// <summary>
+    /// Windows lane: a real child exiting with <c>STATUS_QUOTA_EXCEEDED</c> while only the per-process
+    /// ceiling is configured is reported as a memory breach, not as a completed run. Not run on macOS.
+    /// </summary>
+    [SkippableFact]
+    public async Task CappedChildProcessRunner_quota_exit_under_only_the_per_process_ceiling_is_a_memory_breach_on_windows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Job Object exit classification is Windows behavior.");
+
+        ProcessStartInfo psi = new()
+        {
+            FileName = "cmd.exe",
+
+            ArgumentList = { "/c", "exit", "-1073741756" },
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+
+            UseShellExecute = false,
+
+            CreateNoWindow = true,
+        };
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(30),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 0, MaxProcessMemoryMb = 128 },
+            resourceLimiter: null,
+            CancellationToken.None);
+
+        Assert.Equal(WindowsJobObjectInterop.StatusQuotaExceeded, result.ExitCode);
+
+        Assert.Equal(CappedChildProcessOutcome.ResourceLimitExceeded, result.Outcome);
+
+        Assert.Equal(ResourceLimitKind.Memory, result.ExceededResource);
     }
 
     private static ProcessStartInfo CreateShortLivedProcessStartInfo()
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
-
                 FileName = "cmd.exe",
 
                 ArgumentList = { "/c", "echo", "ok" },
@@ -313,14 +353,11 @@ public sealed class WindowsJobObjectSessionTests
                 UseShellExecute = false,
 
                 CreateNoWindow = true,
-
             };
-
         }
 
         return new ProcessStartInfo
         {
-
             FileName = "/bin/echo",
 
             ArgumentList = { "ok" },
@@ -330,26 +367,21 @@ public sealed class WindowsJobObjectSessionTests
             RedirectStandardError = true,
 
             UseShellExecute = false,
-
         };
-
     }
 
     private sealed class AssignFailingLimiter : IProcessResourceLimiter
     {
-
         public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits) =>
             new(
                 null,
                 CleanupAsync: _ => Task.CompletedTask,
                 WasOomKilledAsync: null,
                 AssignAfterStart: _ => new ResourceLimitError("Job Object assign failed (test)."));
-
     }
 
     private sealed class AssignFailingLimiterWithCapture : IProcessResourceLimiter
     {
-
         public int CapturedPid { get; private set; }
 
         public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits) =>
@@ -363,12 +395,10 @@ public sealed class WindowsJobObjectSessionTests
 
                     return new ResourceLimitError("Job Object assign failed (test).");
                 });
-
     }
 
     private sealed class FakeWindowsJobObjectApi : IWindowsJobObjectApi
     {
-
         public bool FailCreate { get; set; }
 
         public bool FailConfigure { get; set; }
@@ -387,43 +417,33 @@ public sealed class WindowsJobObjectSessionTests
 
         public SafeJobHandle? CreateJobObject()
         {
-
             CreateCount++;
 
             if (FailCreate)
             {
-
                 return null;
-
             }
 
             // ownsHandle: false — never P/Invoke CloseHandle (safe on non-Windows test hosts).
             return new SafeJobHandle(new nint(1), ownsHandle: false);
-
         }
 
         public bool ConfigureLimits(SafeJobHandle job, in WindowsJobObjectLimits limits)
         {
-
             ConfigureCount++;
 
             LastLimits = limits;
 
             return !FailConfigure;
-
         }
 
         public bool AssignProcess(SafeJobHandle job, SafeHandle processHandle)
         {
-
             AssignCount++;
 
             return !FailAssign;
-
         }
 
         public int GetLastError() => LastError;
-
     }
-
 }

@@ -1307,7 +1307,11 @@ internal static class CappedChildProcessRunner
         return null;
     }
 
-    private static ResourceLimitKind? ClassifyWindowsJobExit(int exitCode, ResourceLimits resourceLimits)
+    /// <summary>
+    /// Attributes a Windows Job Object exit to the memory limit. Internal so the classification can be
+    /// pinned on every host: the only caller runs behind <see cref="OperatingSystem.IsWindows"/>.
+    /// </summary>
+    internal static ResourceLimitKind? ClassifyWindowsJobExit(int exitCode, ResourceLimits resourceLimits)
     {
         // Job Object process/job memory violations commonly surface as STATUS_QUOTA_EXCEEDED.
         // CPU-time kills do not have a stable, documented exit code we can trust across Windows
