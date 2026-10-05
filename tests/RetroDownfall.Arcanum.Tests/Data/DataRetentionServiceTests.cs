@@ -899,13 +899,18 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     /// by the lease alone once five minutes pass. The reconciler runs inside the call, after the delete
     /// and before the operation is finalized, with the clock moved past the lease: without the
     /// process-local ownership claim it claims the row and the apply can no longer finalize it.
+    ///
+    /// <para>The window is pinned rather than assumed. The hook fires on the apply's first operation read,
+    /// and the memory has to be gone already when it does, so the reconciler runs after the delete's
+    /// commit; and the reconciler has to have examined exactly that one expired row and skipped it, so it
+    /// had a genuine row to adopt rather than finding nothing to do.</para>
     /// </remarks>
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_WhenItOutlivesItsLease_IsNotAdoptedByTheReconciler()
     {
         RequireSqlCipher();
 
-        _ = await SeedAgedSagaMemoryAsync("outlives its lease");
+        string memoryId = await SeedAgedSagaMemoryAsync("outlives its lease");
 
         FakeTimeProvider clock = new();
 
@@ -915,6 +920,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         LongRunningOperationReconciliationSummary? summary = null;
 
+        int? memoriesWhenReconciled = null;
+
         HeartbeatCountingOperationStore operations = new(inner)
         {
             BeforeGetAsync = async (_, _) =>
@@ -923,6 +930,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 {
                     return;
                 }
+
+                memoriesWhenReconciled = await CountAsync("saga_memories", "Id", memoryId);
 
                 clock.Advance(DataRetentionLeaseMaintainer.DefaultLeaseDuration + TimeSpan.FromMinutes(1));
 
@@ -956,7 +965,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.NotNull(summary);
 
-        Assert.Equal(0, summary!.Claimed);
+        Assert.Equal(0, memoriesWhenReconciled);
+
+        Assert.Equal(1, summary!.Examined);
+
+        Assert.Equal(1, summary.Skipped);
+
+        Assert.Equal(0, summary.Claimed);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : string.Empty);
 
@@ -964,7 +979,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-
     public async Task ApplyAsync_Prune_WhenCancelled_ReleasesTheDurableLeaseAndNamesItselfInTheNextConflict()
     {
         RequireSqlCipher();
@@ -4832,6 +4846,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 leaseExpiresAt,
                 cancellationToken);
 
+        /// <summary>Runs before every checkpoint save, with the checkpoint version the save expects to replace.</summary>
+        internal Action<int>? BeforeSaveCheckpoint { get; init; }
+
         public Task<bool> SaveCheckpointAsync(
             Guid operationId,
             string ownerId,
@@ -4841,8 +4858,11 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             string? checkpointReference,
             string publicSummary,
             DateTimeOffset utcNow,
-            CancellationToken cancellationToken = default) =>
-            inner.SaveCheckpointAsync(
+            CancellationToken cancellationToken = default)
+        {
+            BeforeSaveCheckpoint?.Invoke(expectedCheckpointVersion);
+
+            return inner.SaveCheckpointAsync(
                 operationId,
                 ownerId,
                 expectedCheckpointVersion,
@@ -4852,6 +4872,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 publicSummary,
                 utcNow,
                 cancellationToken);
+        }
 
         /// <summary>Runs before every state transition, with the state being entered.</summary>
         internal Action<LongRunningOperationState>? BeforeTransition { get; init; }

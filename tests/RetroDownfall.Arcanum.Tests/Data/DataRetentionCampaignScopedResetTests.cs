@@ -550,6 +550,91 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountAllAsync("artifact_sensitivity"));
     }
 
+    /// <summary>
+    /// A Campaign-targeted reset that selects a memory whose identity cannot be read as one a label could
+    /// name is refused, and removes nothing.
+    /// </summary>
+    /// <remarks>
+    /// The identity column has no format check, so such a row is corruption or tampering, and the guard
+    /// cannot show it is unlabelled. Skipping it let the predicate delete remove a row nothing had been
+    /// asked about; the refusal is <c>Covenant.Unavailable</c>, the answer the embeddings reset gives a
+    /// label it cannot parse.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Campaign_scoped_saga_reset_refuses_when_a_member_identity_is_not_a_guid()
+    {
+        RequireSqlCipher();
+
+        const string Unreadable = "not-a-guid-memory";
+
+        await SeedSagaMemoryWithIdAsync(Unreadable, ResetCampaignA);
+
+        string readable = await SeedScopedSagaMemoryAsync(ResetCampaignA);
+
+        Result<DataRetentionApplyResult> applied = await TryApplyCampaignResetAsync(MemoryResetScope.Saga, ResetCampaignA);
+
+        Assert.True(applied.IsFailure, "The Campaign reset deleted a memory the labelled-artifact guard was never asked about.");
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, applied.Error.Code);
+
+        Assert.Equal(1, await CountSagaAsync(Unreadable));
+
+        Assert.Equal(1, await CountSagaAsync(readable));
+    }
+
+    /// <summary>
+    /// The member read covers every selection that deletes from the protected store's table, not only
+    /// the last one, and reports each identity once.
+    /// </summary>
+    /// <remarks>
+    /// Each store's list names its own table once today. A list that ever named it twice would otherwise
+    /// leave the first selection's rows unasked about while its delete still removed them.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_reset_member_read_covers_every_selection_of_the_protected_table()
+    {
+        RequireSqlCipher();
+
+        string inA = await SeedScopedSagaMemoryAsync(ResetCampaignA);
+
+        string inB = await SeedScopedSagaMemoryAsync(ResetCampaignB);
+
+        _ = await SeedScopedSagaMemoryAsync(Guid.NewGuid());
+
+        DataRetentionService.MemoryResetSelection[] selections =
+        [
+            OwnedBy("saga_memories", ResetCampaignA),
+            OwnedBy("saga_memory_embeddings", ResetCampaignB),
+            OwnedBy("saga_memories", ResetCampaignB),
+            OwnedBy("saga_memories", ResetCampaignA),
+        ];
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        Result<Guid[]> members = await DataRetentionService.ReadResetMemberIdsInTransactionAsync(
+            connection,
+            transaction,
+            selections,
+            "saga_memories",
+            CancellationToken.None);
+
+        Assert.True(members.IsSuccess, members.IsFailure ? members.Error.Message : string.Empty);
+
+        Assert.Equal(
+            new[] { Guid.Parse(inA), Guid.Parse(inB) }.Order(),
+            members.Value.Order());
+
+        static DataRetentionService.MemoryResetSelection OwnedBy(string table, Guid campaign) =>
+            new(
+                table,
+                table == "saga_memories"
+                    ? "\"CampaignId\" = @campaignId AND ScopeKindCode = 2"
+                    : "\"MemoryId\" IN (SELECT \"Id\" FROM \"saga_memories\" WHERE \"CampaignId\" = @campaignId)",
+                [("@campaignId", campaign.ToString("D").ToUpperInvariant())]);
+    }
+
     /// <summary>One live label, written through the production ledger.</summary>
     private async Task LabelArtifactAsync(SensitiveArtifactKind kind, Guid artifactId, Guid? campaignId)
     {
@@ -720,6 +805,18 @@ public sealed partial class DataRetentionServiceTests
     }
 
     private Task<string> SeedGlobalSagaMemoryAsync() => SeedSagaMemoryAsync(1, null);
+
+    /// <summary>A Campaign memory under an identity of the test's choosing, which the column does not check.</summary>
+    private Task SeedSagaMemoryWithIdAsync(string id, Guid campaignId) =>
+        ExecuteAsync(
+            """
+            INSERT INTO saga_memories
+                ("Id", "Content", "CreatedAt", "SessionId", "Tags", "Source", ScopeKindCode, CampaignId)
+            VALUES (@id, 'a conclusion', @at, NULL, NULL, 'test', 2, @campaignId)
+            """,
+            ("@id", id),
+            ("@at", OldTimestamp),
+            ("@campaignId", campaignId.ToString("D").ToUpperInvariant()));
 
     private async Task<string> SeedSagaMemoryAsync(int scopeKindCode, string? campaignId)
     {

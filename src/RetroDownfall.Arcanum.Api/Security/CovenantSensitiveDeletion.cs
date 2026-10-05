@@ -89,8 +89,10 @@ internal static class CovenantSensitiveDeletion
                 CovenantErasureBlocker.AuthorityStale => ErrorCodes.Covenant.StaleSnapshot,
 
                 // The purger reports a walk that failed after it had already erased an item as a blocked
-                // outcome rather than a failure, so the items it erased are not lost. That is the same
-                // condition a failure answers with Covenant.Unavailable, and it keeps that code and its 503.
+                // outcome rather than a failure, so the items it erased are not lost, under the blocker the
+                // failure's own code names. Storage that stopped answering, a cancellation, or an unexpected
+                // exception is this one: the same condition a failure answers with Covenant.Unavailable,
+                // and it keeps that code and its 503.
                 CovenantErasureBlocker.StorageUnavailable => ErrorCodes.Covenant.Unavailable,
 
                 _ => ErrorCodes.Covenant.ManualArtifactErasureRequired,

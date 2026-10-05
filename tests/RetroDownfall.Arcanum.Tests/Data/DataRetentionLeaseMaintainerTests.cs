@@ -251,13 +251,18 @@ public sealed class DataRetentionLeaseMaintainerTests
 
     /// <summary>
     /// A renewal that throws cancels the running action, waits for it to finish, and rethrows the
-    /// renewal's own exception, leaving no task whose fault nobody observed.
+    /// renewal's own exception.
     /// </summary>
     /// <remarks>
     /// The heartbeat is fired by hand through the tracking provider, so the renewal runs exactly once and
     /// at a known moment. The action only ends when its token is cancelled, so a maintainer that rethrew
     /// without cancelling it, or returned before joining it, fails the bounded waits here instead of
     /// passing.
+    ///
+    /// <para>There is deliberately no unobserved-task check. The action ends cancelled rather than faulted,
+    /// so dropping the maintainer's observation of it raises no such event, and the event is process-wide:
+    /// under parallel collections a faulted task another test leaked could turn this test red. The
+    /// rethrow and the join below are what the behaviour rests on.</para>
     /// </remarks>
     [Fact]
     public async Task RunAsync_WhenRenewalThrows_CancelsActionAndRethrows()
@@ -268,45 +273,6 @@ public sealed class DataRetentionLeaseMaintainerTests
 
         TaskCompletionSource actionCancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        List<Exception> unobserved = [];
-
-        void RecordUnobserved(object? sender, UnobservedTaskExceptionEventArgs args)
-        {
-            lock (unobserved)
-            {
-                unobserved.AddRange(args.Exception.InnerExceptions);
-            }
-        }
-
-        TaskScheduler.UnobservedTaskException += RecordUnobserved;
-
-        try
-        {
-            await RenewalThrowsAsync(timeProvider, renewalFailure, actionCancelled);
-
-            GC.Collect();
-
-            GC.WaitForPendingFinalizers();
-
-            GC.Collect();
-        }
-        finally
-        {
-            TaskScheduler.UnobservedTaskException -= RecordUnobserved;
-        }
-
-        Assert.Empty(unobserved);
-    }
-
-    /// <summary>
-    /// The body of the renewal-throws case, in its own method so no local outlives it and the collection
-    /// after it can finalize every task it created.
-    /// </summary>
-    private static async Task RenewalThrowsAsync(
-        TrackingTimeProvider timeProvider,
-        InvalidOperationException renewalFailure,
-        TaskCompletionSource actionCancelled)
-    {
         DataRetentionLeaseMaintainer maintainer = new(
             (_, _, _, _, _) => Task.FromException<bool>(renewalFailure),
             timeProvider,

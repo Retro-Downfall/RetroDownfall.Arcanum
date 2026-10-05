@@ -403,9 +403,12 @@ public sealed class EmbeddingsResetService(
 
         if (purged.Value.IsBlocked)
         {
-            // A walk that failed after it had already erased an item comes back blocked as unavailable
-            // rather than as a failure, so its erased items are not lost; it is still the Grimoire's
-            // condition to repair, answered as the failure arm above answers it.
+            // A walk that failed after it had already erased an item comes back blocked rather than as a
+            // failure, so its erased items are not lost, under the blocker the failure's own code names.
+            // Storage that stopped answering (or a cancellation, or an unexpected exception) is
+            // StorageUnavailable: still the Grimoire's condition to repair, answered as the failure arm
+            // above answers it. Any other blocker is the refusal below, as it is for an item the kernel
+            // itself blocked.
             if (purged.Value.Results.Any(static result =>
                     result.Disposition is CovenantSensitivePurgeDisposition.Blocked
                     && result.Blocker is CovenantErasureBlocker.StorageUnavailable))

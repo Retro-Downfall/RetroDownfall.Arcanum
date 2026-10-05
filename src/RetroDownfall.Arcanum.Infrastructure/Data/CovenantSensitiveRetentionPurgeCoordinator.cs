@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 
+using Microsoft.Extensions.Logging;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -55,7 +57,8 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     ICovenantAvailability availability,
     ICovenantProtectedArtifactErasureKernel artifacts,
     ICovenantManagedFileErasureKernel managedFiles,
-    CovenantSensitivePurgeAuthorityScope authorityScope) : ICovenantSensitiveArtifactPurger
+    CovenantSensitivePurgeAuthorityScope authorityScope,
+    ILogger<CovenantSensitiveRetentionPurgeCoordinator> logger) : ICovenantSensitiveArtifactPurger
 {
     /// <summary>
     /// Replaces the policy's executor for a kind, if set, so a test can reach an executor the policy does
@@ -319,7 +322,7 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
                 {
                     if (anyPurged)
                     {
-                        return Interrupted(results, ordered, index, progress);
+                        return Interrupted(results, ordered, index, progress, step.Error);
                     }
 
                     return step.Error;
@@ -331,14 +334,31 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
             }
             catch (OperationCanceledException) when (anyPurged)
             {
-                return Interrupted(results, ordered, index, progress);
+                // The caller's choice rather than a fault, so it is recorded below a warning.
+                logger.LogInformation(
+                    "A sensitivity purge was cancelled after it had erased an item; the {Remaining} labelled item(s) from there on were left in place.",
+                    ordered.Count - index);
+
+                return Interrupted(results, ordered, index, progress, CovenantErasureBlocker.StorageUnavailable);
+            }
+            catch (Exception exception) when (anyPurged)
+            {
+                // Rethrowing would discard the dispositions of the items already erased, which is the one
+                // fact the caller cannot rediscover. The exception is logged by type only: a kernel's
+                // message can name a managed file's location, and the cause is diagnosable without it.
+                logger.LogWarning(
+                    "A sensitivity purge failed with {ExceptionType} after it had erased an item; the {Remaining} labelled item(s) from there on were left in place.",
+                    exception.GetType().Name,
+                    ordered.Count - index);
+
+                return Interrupted(results, ordered, index, progress, CovenantErasureBlocker.StorageUnavailable);
             }
 
             if (classified.IsFailure)
             {
                 if (anyPurged)
                 {
-                    return Interrupted(results, ordered, index, progress);
+                    return Interrupted(results, ordered, index, progress, classified.Error);
                 }
 
                 return classified.Error;
@@ -361,6 +381,29 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     }
 
     /// <summary>
+    /// The outcome of a walk whose step or reread failed after at least one item had already been erased.
+    /// </summary>
+    /// <remarks>
+    /// The failure itself is replaced by the outcome, so it is logged here by its code (never its
+    /// message, which can describe the artifact) and carried as the blocker its code names, which is how
+    /// a route still answers that failure's own status.
+    /// </remarks>
+    private CovenantSensitivePurgeOutcome Interrupted(
+        Dictionary<Guid, CovenantSensitivePurgeResult> results,
+        IReadOnlyList<LabeledTarget> ordered,
+        int failedAt,
+        CovenantArtifactErasureProgress progress,
+        Error failure)
+    {
+        logger.LogWarning(
+            "A sensitivity purge failed with {Code} after it had erased an item; the {Remaining} labelled item(s) from there on were left in place.",
+            failure.Code,
+            ordered.Count - failedAt);
+
+        return Interrupted(results, ordered, failedAt, progress, InterruptionBlocker(failure));
+    }
+
+    /// <summary>
     /// The outcome of a walk that failed or was cancelled after at least one item had already been
     /// erased.
     /// </summary>
@@ -368,16 +411,18 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     /// The erased items' transactions have committed, so a bare failure would lose the one fact the
     /// caller cannot rediscover: that those artifacts are already gone. The items already classified keep
     /// their dispositions; the failing item and every labelled item after it are recorded
-    /// <see cref="CovenantSensitivePurgeDisposition.Blocked"/> with
-    /// <see cref="CovenantErasureBlocker.StorageUnavailable"/> and are never dispatched, so the caller
-    /// stops and reports, and a retry finds the purged ones unlabelled. A failure before anything was
-    /// erased is still returned as the failure itself, with its own code.
+    /// <see cref="CovenantSensitivePurgeDisposition.Blocked"/> under one blocker and are never
+    /// dispatched, exactly as a walk stopped by a blocked item records them, so the caller stops and
+    /// reports, and a retry finds the purged ones unlabelled. A failure before anything was erased is
+    /// still returned as the failure itself, with its own code, and an exception before anything was
+    /// erased still propagates.
     /// </remarks>
     private static CovenantSensitivePurgeOutcome Interrupted(
         Dictionary<Guid, CovenantSensitivePurgeResult> results,
         IReadOnlyList<LabeledTarget> ordered,
         int failedAt,
-        CovenantArtifactErasureProgress progress)
+        CovenantArtifactErasureProgress progress,
+        CovenantErasureBlocker blocker)
     {
         for (int index = failedAt; index < ordered.Count; index++)
         {
@@ -385,13 +430,39 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
                 results,
                 ordered[index],
                 CovenantSensitivePurgeDisposition.Blocked,
-                CovenantErasureBlocker.StorageUnavailable);
+                blocker);
         }
 
         return new CovenantSensitivePurgeOutcome(
             [.. results.Values],
-            progress.Add(new CovenantArtifactErasureProgress(0, 0, 0, CovenantErasureBlocker.StorageUnavailable)));
+            progress.Add(new CovenantArtifactErasureProgress(0, 0, 0, blocker)));
     }
+
+    /// <summary>
+    /// The blocker a mid-walk failure's own code names, so a route answers it with that failure's status.
+    /// </summary>
+    /// <remarks>
+    /// A stale snapshot or a lost revision race is <see cref="CovenantErasureBlocker.AuthorityStale"/>,
+    /// which a deleting route answers <c>409 Covenant.StaleSnapshot</c>, the retry the failure asked for.
+    /// An integrity failure keeps its own blocker. A manual-erasure refusal or an authority that does not
+    /// cover the item is <see cref="CovenantErasureBlocker.ManualOwnershipMismatch"/>, the blocker the
+    /// managed-file kernel gives a coverage refusal of its own. Any other code, like a cancellation or an
+    /// unexpected exception, is <see cref="CovenantErasureBlocker.StorageUnavailable"/>, answered
+    /// <c>503 Covenant.Unavailable</c>.
+    /// </remarks>
+    private static CovenantErasureBlocker InterruptionBlocker(Error failure) =>
+        failure.Code switch
+        {
+            ErrorCodes.Covenant.StaleSnapshot or ErrorCodes.Covenant.RevisionConflict =>
+                CovenantErasureBlocker.AuthorityStale,
+
+            ErrorCodes.Covenant.IntegrityFailure => CovenantErasureBlocker.IntegrityFailure,
+
+            ErrorCodes.Covenant.ManualArtifactErasureRequired or ErrorCodes.Covenant.ForbiddenAuthority =>
+                CovenantErasureBlocker.ManualOwnershipMismatch,
+
+            _ => CovenantErasureBlocker.StorageUnavailable,
+        };
 
     /// <summary>
     /// What one dispatched item's own progress says happened to it.

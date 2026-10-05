@@ -95,4 +95,26 @@ internal static class CoreSchemaVersionThirteenFixture
     ];
 
     internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);
+
+    /// <summary>The Core chain as this binary shipped it at version 13, with the other tiers unchanged.</summary>
+    internal static GrimoireSchemaVersionChainSet ChainSet() =>
+        new(
+        [
+            new GrimoireSchemaVersionChain(
+                GrimoireSchemaManifestBuilder.Build(
+                    GrimoireSchemaFamily.Core,
+                    GrimoireSchemaTransactionTier.Core,
+                    version: 13,
+                    Fingerprint,
+                    Objects),
+                Objects,
+                [
+                    .. GrimoireSchemaVersionChains.Default
+                        .ForTier(GrimoireSchemaTransactionTier.Core)
+                        .Steps
+                        .Where(static step => step.ToVersion <= 13),
+                ]),
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        ]);
 }
