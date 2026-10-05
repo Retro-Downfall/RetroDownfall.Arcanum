@@ -34,14 +34,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                     WHERE EXISTS (
                         SELECT 1
                         FROM "UploadedFiles"
-                        WHERE lower(replace("Id", '-', '')) = @inputFileKey
+                        WHERE "Id" = @inputFileId
                     )
                       AND (
                           @outputFileId IS NULL
                           OR EXISTS (
                               SELECT 1
                               FROM "UploadedFiles"
-                              WHERE lower(replace("Id", '-', '')) = @outputFileKey
+                              WHERE "Id" = @outputFileId
                           )
                       )
                       AND (
@@ -49,16 +49,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                           OR EXISTS (
                               SELECT 1
                               FROM "UploadedFiles"
-                              WHERE lower(replace("Id", '-', '')) = @errorFileKey
+                              WHERE "Id" = @errorFileId
                           )
                       )
                     """;
 
                 AddParameter(cmd, "@id", record.Id.ToString("N"));
 
-                AddParameter(cmd, "@inputFileId", record.InputFileId.ToString());
-
-                AddParameter(cmd, "@inputFileKey", record.InputFileId.ToString("N"));
+                AddParameter(cmd, "@inputFileId", GrimoireEntitySql.Format(record.InputFileId));
 
                 AddParameter(cmd, "@endpoint", record.Endpoint);
 
@@ -68,13 +66,9 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@completedAt", (object?)UtcInstantText.Format(record.CompletedAt) ?? DBNull.Value);
 
-                AddParameter(cmd, "@outputFileId", (object?)record.OutputFileId?.ToString() ?? DBNull.Value);
+                AddParameter(cmd, "@outputFileId", FormatNullable(record.OutputFileId));
 
-                AddParameter(cmd, "@outputFileKey", (object?)record.OutputFileId?.ToString("N") ?? DBNull.Value);
-
-                AddParameter(cmd, "@errorFileId", (object?)record.ErrorFileId?.ToString() ?? DBNull.Value);
-
-                AddParameter(cmd, "@errorFileKey", (object?)record.ErrorFileId?.ToString("N") ?? DBNull.Value);
+                AddParameter(cmd, "@errorFileId", FormatNullable(record.ErrorFileId));
 
                 AddParameter(cmd, "@totalRequestCount", record.TotalRequestCount);
 
@@ -410,7 +404,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                           OR EXISTS (
                               SELECT 1
                               FROM "UploadedFiles"
-                              WHERE lower(replace("Id", '-', '')) = @outputFileKey
+                              WHERE "Id" = @outputFileId
                           )
                       )
                       AND (
@@ -418,7 +412,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                           OR EXISTS (
                               SELECT 1
                               FROM "UploadedFiles"
-                              WHERE lower(replace("Id", '-', '')) = @errorFileKey
+                              WHERE "Id" = @errorFileId
                           )
                       )
                     """;
@@ -429,13 +423,9 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@completedAt", (object?)UtcInstantText.Format(completedAt) ?? DBNull.Value);
 
-                AddParameter(cmd, "@outputFileId", (object?)outputFileId?.ToString() ?? DBNull.Value);
+                AddParameter(cmd, "@outputFileId", FormatNullable(outputFileId));
 
-                AddParameter(cmd, "@outputFileKey", (object?)outputFileId?.ToString("N") ?? DBNull.Value);
-
-                AddParameter(cmd, "@errorFileId", (object?)errorFileId?.ToString() ?? DBNull.Value);
-
-                AddParameter(cmd, "@errorFileKey", (object?)errorFileId?.ToString("N") ?? DBNull.Value);
+                AddParameter(cmd, "@errorFileId", FormatNullable(errorFileId));
 
                 int rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -496,7 +486,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                           OR EXISTS (
                               SELECT 1
                               FROM "UploadedFiles"
-                              WHERE lower(replace("Id", '-', '')) = @outputFileKey
+                              WHERE "Id" = @outputFileId
                           )
                       )
                       AND (
@@ -504,7 +494,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                           OR EXISTS (
                               SELECT 1
                               FROM "UploadedFiles"
-                              WHERE lower(replace("Id", '-', '')) = @errorFileKey
+                              WHERE "Id" = @errorFileId
                           )
                       )
                     """;
@@ -517,13 +507,9 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@completedAt", (object?)UtcInstantText.Format(completedAt) ?? DBNull.Value);
 
-                AddParameter(cmd, "@outputFileId", (object?)outputFileId?.ToString() ?? DBNull.Value);
+                AddParameter(cmd, "@outputFileId", FormatNullable(outputFileId));
 
-                AddParameter(cmd, "@outputFileKey", (object?)outputFileId?.ToString("N") ?? DBNull.Value);
-
-                AddParameter(cmd, "@errorFileId", (object?)errorFileId?.ToString() ?? DBNull.Value);
-
-                AddParameter(cmd, "@errorFileKey", (object?)errorFileId?.ToString("N") ?? DBNull.Value);
+                AddParameter(cmd, "@errorFileId", FormatNullable(errorFileId));
 
                 int rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1029,6 +1015,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
         return connection;
     }
+
+    /// <summary>The canonical stored text of an optional file identity, or <see cref="DBNull.Value"/>.</summary>
+    private static object FormatNullable(Guid? value) =>
+        value is Guid guid ? GrimoireEntitySql.Format(guid) : DBNull.Value;
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {

@@ -13,7 +13,9 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
+
     private string _dbPath = string.Empty;
+
     private ArcanumDbContext? _db;
 
     public IdempotencyClaimStoreTests(GrimoireFixture fixture)
@@ -541,18 +543,15 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
         string claimKey = fingerprintConflict ? "insert-race-conflict" : "insert-race-match";
         const string requestFingerprint = "request-fingerprint";
         string winnerFingerprint = fingerprintConflict ? "winner-fingerprint" : requestFingerprint;
-        await CreateInsertRaceTriggerAsync(claimKey, winnerFingerprint);
-        IdempotencyClaimStore store = new(_db!);
-        DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        IdempotencyClaimAcquireResult result = await store.TryAcquireAsync(
-            new IdempotencyClaimAcquireRequest(
-                claimKey,
-                requestFingerprint,
-                "request-owner",
-                now.AddMinutes(5),
-                now));
+        // A real unique-key violation: the winner commits between the loser's read and its insert.
+        (IdempotencyClaimAcquireResult? result, Exception? failure) = await RunInsertRaceAsync(
+            claimKey,
+            requestFingerprint,
+            winnerFingerprint);
 
+        Assert.Null(failure);
+        Assert.NotNull(result);
         Assert.Equal(fingerprintConflict, result.Conflict);
         Assert.False(result.Acquired);
         Assert.Equal(claimKey, result.Claim.ClaimKeyHash);
@@ -560,9 +559,42 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
         Assert.Equal("race-winner", result.Claim.OwnerId);
         Assert.Equal(IdempotencyClaimState.Running, result.Claim.State);
 
-        IdempotencyClaim? persisted = await store.TryGetAsync(claimKey);
+        IdempotencyClaim? persisted = await new IdempotencyClaimStore(_db!).TryGetAsync(claimKey);
         Assert.NotNull(persisted);
         Assert.Equal(result.Claim, persisted);
+    }
+
+    [SkippableFact]
+    public async Task TryAcquireAsync_WhenInsertFailsWithANonUniqueError_PropagatesInsteadOfReadingBack()
+    {
+        RequireSqlCipher();
+
+        const string claimKey = "insert-non-unique-failure";
+
+        // A live winner row for the same key exists when the loser's insert fails, so a catch that treats every
+        // database error as the expected duplicate would read it back and report a clean "someone else holds it".
+        // The trigger is installed after the race rebuilds the table, because dropping the old table drops its triggers.
+        (IdempotencyClaimAcquireResult? result, Exception? failure) = await RunInsertRaceAsync(
+            claimKey,
+            "request-fingerprint",
+            "request-fingerprint",
+            $"""
+            CREATE TRIGGER "FailClaimInsertForRequestOwner"
+            BEFORE INSERT ON "IdempotencyClaims"
+            WHEN NEW."ClaimKeyHash" = {SqlLiteral(claimKey)}
+                 AND NEW."OwnerId" = 'request-owner'
+            BEGIN
+                SELECT RAISE(FAIL, 'simulated non-unique constraint failure');
+            END;
+            """);
+
+        Assert.Null(result);
+        SqliteException exception = Assert.IsType<SqliteException>(failure);
+        Assert.Equal(19, exception.SqliteErrorCode);
+        Assert.Contains("simulated non-unique constraint failure", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            "race-winner",
+            (await new IdempotencyClaimStore(_db!).TryGetAsync(claimKey))?.OwnerId);
     }
 
     [SkippableFact]
@@ -779,27 +811,96 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
             """);
     }
 
-    private Task CreateInsertRaceTriggerAsync(string claimKey, string winnerFingerprint)
+    /// <summary>
+    /// Runs the loser's <c>TryAcquireAsync</c> with the winner committing between the loser's read of the claim key and
+    /// its insert, and returns the loser's outcome. The loser is parked inside its read by a collation on the key
+    /// index (the claims table needs one other row for the index lookup to compare anything).
+    /// </summary>
+    private async Task<(IdempotencyClaimAcquireResult? Result, Exception? Failure)> RunInsertRaceAsync(
+        string claimKey,
+        string requestFingerprint,
+        string winnerFingerprint,
+        string? setupAfterRebuildSql = null)
     {
-        return ExecuteNonQueryAsync(
-            $"""
-            CREATE TRIGGER "SimulateClaimInsertRace"
-            BEFORE INSERT ON "IdempotencyClaims"
-            WHEN NEW."ClaimKeyHash" = {SqlLiteral(claimKey)}
-                 AND NEW."OwnerId" <> 'race-winner'
-            BEGIN
-                INSERT INTO "IdempotencyClaims"
-                    ("Id", "ClaimKeyHash", "FingerprintHash", "State", "OwnerId",
-                     "LeaseExpiresAt", "HeartbeatAt", "RunId", "StatusCode", "ContentType",
-                     "ResponseBody", "TerminalStreamComplete", "CreatedAt", "UpdatedAt")
-                VALUES
-                    (lower(hex(randomblob(16))), NEW."ClaimKeyHash", {SqlLiteral(winnerFingerprint)},
-                     {(int)IdempotencyClaimState.Running}, 'race-winner',
-                     NEW."LeaseExpiresAt", NEW."HeartbeatAt", NULL, NULL, NULL,
-                     NULL, 0, NEW."CreatedAt", NEW."UpdatedAt");
-                SELECT RAISE(FAIL, 'simulated unique race');
-            END;
-            """);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        _ = await AcquireAsync(
+            new IdempotencyClaimStore(_db!),
+            "insert-race-unrelated-claim",
+            "fingerprint",
+            "seed-owner",
+            now.AddMinutes(5),
+            now);
+
+        SqliteConnection losingConnection = (SqliteConnection)_db!.Database.GetDbConnection();
+        losingConnection.CreateCollation(
+            "IDEMPOTENCY_RECLAIM_RACE",
+            static (left, right) => string.Compare(left, right, StringComparison.Ordinal));
+        await RebuildClaimsWithRaceCollationAsync();
+
+        if (setupAfterRebuildSql is not null)
+        {
+            await ExecuteNonQueryAsync(setupAfterRebuildSql);
+        }
+
+        await using ArcanumDbContext winningDb = _fixture.CreateContext(_dbPath);
+        ((SqliteConnection)winningDb.Database.GetDbConnection()).CreateCollation(
+            "IDEMPOTENCY_RECLAIM_RACE",
+            static (left, right) => string.Compare(left, right, StringComparison.Ordinal));
+
+        TaskCompletionSource losingReadEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource allowLosingRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int interceptNextComparison = 1;
+        losingConnection.CreateCollation(
+            "IDEMPOTENCY_RECLAIM_RACE",
+            (left, right) =>
+            {
+                if (Interlocked.Exchange(ref interceptNextComparison, 0) == 1)
+                {
+                    losingReadEntered.TrySetResult();
+                    allowLosingRead.Task.GetAwaiter().GetResult();
+                }
+
+                return string.Compare(left, right, StringComparison.Ordinal);
+            });
+
+        Task<IdempotencyClaimAcquireResult> losingAcquire = Task.Run(
+            () => new IdempotencyClaimStore(_db!).TryAcquireAsync(
+                new IdempotencyClaimAcquireRequest(
+                    claimKey,
+                    requestFingerprint,
+                    "request-owner",
+                    now.AddMinutes(5),
+                    now)));
+
+        try
+        {
+            // Generous orchestration budget: the collation callback can be delayed well past 5s on
+            // coverage-instrumented CI runners under parallel load.
+            await losingReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            IdempotencyClaimAcquireResult winner = await new IdempotencyClaimStore(winningDb).TryAcquireAsync(
+                new IdempotencyClaimAcquireRequest(
+                    claimKey,
+                    winnerFingerprint,
+                    "race-winner",
+                    now.AddMinutes(10),
+                    now));
+
+            Assert.True(winner.Acquired);
+        }
+        finally
+        {
+            allowLosingRead.TrySetResult();
+        }
+
+        try
+        {
+            return (await losingAcquire.WaitAsync(TimeSpan.FromSeconds(30)), null);
+        }
+        catch (Exception ex) when (ex is not TimeoutException)
+        {
+            return (null, ex);
+        }
     }
 
     private async Task ExecuteNonQueryAsync(

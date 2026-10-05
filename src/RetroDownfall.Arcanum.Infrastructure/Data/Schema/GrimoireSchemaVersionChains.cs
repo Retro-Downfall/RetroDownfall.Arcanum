@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 14 and declares thirteen steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 15 and declares fourteen steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -103,8 +103,21 @@ internal static class GrimoireSchemaVersionChains
     /// <c>saga_extraction_watermarks</c> and <c>SessionContextPins</c>, so those deletes and their
     /// post-commit counts search rather than scan. The step declares no sweep: an index is built inside
     /// the step's own transaction.</para>
+    ///
+    /// <para>Version 15 settles the file identities on the canonical uppercase dashed spelling the rest of the
+    /// schema holds. <c>UploadedFiles.Id</c> and the three file roles a batch names, <c>InputFileId</c>,
+    /// <c>OutputFileId</c> and <c>ErrorFileId</c>, were written in lowercase dashed form while every lookup
+    /// wrapped the column in <c>lower(replace(col, '-', ''))</c>, so deleting an uploaded file and checking
+    /// whether a batch still named it scanned both tables. The step rewrites any non-canonical value in
+    /// place, in the statement's own transaction, and indexes the three batch columns. It also adds
+    /// <c>IX_InferenceRuns_SessionId_Norm</c>, the expression index the retention sweep's
+    /// <c>lower(replace(SessionId, '-', ''))</c> comparisons against the run ledger need; that column keeps its
+    /// dash-free spelling, so no value is rewritten. It declares no sweep:
+    /// the two file tables are small relative to the Entries family, no trigger or foreign key names either file
+    /// column, the rewrite is one statement per column, and an index is built inside the step's own
+    /// transaction.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 14;
+    internal const int CoreSchemaVersion = 15;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -232,6 +245,12 @@ internal static class GrimoireSchemaVersionChains
             // and proves this literal still names version 13.
             [(GrimoireSchemaTransactionTier.Core, 14)] =
                 "E46E5902803F25CD43236A77882E5B057374A7B902840E0AC1308427513A8D84",
+
+            // Captured from the normalized Core version-14 head before any version-15 head edit.
+            // CoreSchemaVersionFourteenFixture freezes the table version 15 appends indexes to and proves
+            // this literal still names version 14.
+            [(GrimoireSchemaTransactionTier.Core, 15)] =
+                "F699757C9C5F2EDA486ECBF0CD1017762936D5730B8C01557FB33E5338347372",
 
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture

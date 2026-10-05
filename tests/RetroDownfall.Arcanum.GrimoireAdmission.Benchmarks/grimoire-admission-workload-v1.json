@@ -66,7 +66,7 @@
     "replicateCount": 10000,
     "lowerQuantile": 0.05
   },
-  "inputCatalogShapeDigest": "4f955c3207f43cde817e190f2e60fca625f0b84ee9881b468a95a2f789477caa",
+  "inputCatalogShapeDigest": "54db782a9b255ecdb5facb2e03417d50b64d5baaf8dadb7d5c24639ef0a9f57e",
   "sourceDifferenceAllowlist": [
     "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionGate.cs",
     "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionEpoch.cs"

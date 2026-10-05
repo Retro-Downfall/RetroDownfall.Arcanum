@@ -2595,6 +2595,139 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.False(File.Exists(abandoned), "the sweep left a genuinely unreferenced file behind.");
     }
 
+    [SkippableFact]
+    public async Task ReconcileAsync_spares_a_promoted_copy_whose_row_has_not_committed_yet()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "promote-versus-sweep");
+
+        string pendingTurnId = "promote-sweep-" + Guid.NewGuid().ToString("N");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("promoted-while-the-sweep-ran");
+
+        SessionAttachmentRecord pending = await _store!.PersistNewAsync(
+            sessionId: null,
+            pendingTurnId,
+            entryId: null,
+            "notes.txt",
+            "notes.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        await using ArcanumDbContext promoterDb = _fixture.CreateContext(_dbPath);
+
+        SessionAttachmentStore promoter = new(
+            promoterDb,
+            Options.Create(_settings),
+            _attachmentsRoot,
+            CreateEncryptedBlobStore());
+
+        TaskCompletionSource copyLanded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource releasePromotion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The copy is on disk and the row that will claim it is not yet committed. The copy is aged so the sweep's
+        // "written after my snapshot" guard cannot be what spares it: a promotion that stalled between its copy and
+        // its commit leaves exactly this file.
+        promoter.AfterBytesCommittedBeforeDbForTesting = async cancellationToken =>
+        {
+            foreach (string copy in Directory.EnumerateFiles(
+                         Path.Combine(_attachmentsRoot, sessionId.ToString("N")),
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                File.SetLastWriteTimeUtc(copy, DateTime.UtcNow - TimeSpan.FromHours(1));
+            }
+
+            copyLanded.TrySetResult();
+
+            await releasePromotion.Task.WaitAsync(cancellationToken);
+        };
+
+        Task promotion = Task.Run(() => promoter.PromotePendingAsync(pendingTurnId, sessionId, entryId: null));
+
+        try
+        {
+            await copyLanded.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await _store.ReconcileAsync(TimeSpan.FromDays(365));
+        }
+        finally
+        {
+            releasePromotion.TrySetResult();
+        }
+
+        await promotion.WaitAsync(TimeSpan.FromSeconds(30));
+
+        SessionAttachmentRecord? bound = await _store.GetByIdAsync(pending.Id);
+
+        Assert.NotNull(bound);
+
+        Assert.Equal(SessionAttachmentState.Bound, bound!.State);
+
+        Assert.True(
+            File.Exists(Path.Combine(_attachmentsRoot, bound.RelativePath)),
+            "the sweep unlinked the promoted copy before its row committed, and the promotion then deleted the original.");
+
+        Assert.Equal(bytes, (await _store.ReadBytesAsync(bound)).ToArray());
+    }
+
+    [SkippableFact]
+    public async Task PromotePendingAsync_refuses_to_commit_when_a_promoted_copy_is_gone_and_keeps_the_original()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "promote-lost-copy");
+
+        string pendingTurnId = "promote-lost-" + Guid.NewGuid().ToString("N");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("copy-removed-before-commit");
+
+        SessionAttachmentRecord pending = await _store!.PersistNewAsync(
+            sessionId: null,
+            pendingTurnId,
+            entryId: null,
+            "notes.txt",
+            "notes.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        _store.AfterBytesCommittedBeforeDbForTesting = _ =>
+        {
+            foreach (string copy in Directory.EnumerateFiles(
+                         Path.Combine(_attachmentsRoot, sessionId.ToString("N")),
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                File.Delete(copy);
+            }
+
+            return Task.CompletedTask;
+        };
+
+        _ = await Assert.ThrowsAsync<IOException>(
+            () => _store.PromotePendingAsync(pendingTurnId, sessionId, entryId: null));
+
+        _store.AfterBytesCommittedBeforeDbForTesting = null;
+
+        SessionAttachmentRecord? still = await _store.GetByIdAsync(pending.Id);
+
+        Assert.NotNull(still);
+
+        Assert.Equal(SessionAttachmentState.Pending, still!.State);
+
+        Assert.True(File.Exists(Path.Combine(_attachmentsRoot, still.RelativePath)));
+
+        Assert.Equal(bytes, (await _store.ReadBytesAsync(still)).ToArray());
+    }
+
     private sealed class TestWorkspaceContext(string workspacePath) : IHostWorkspaceContext
     {
         public string? WorkspacePath { get; } = workspacePath;

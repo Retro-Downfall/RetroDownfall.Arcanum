@@ -143,6 +143,14 @@ internal static class GrimoireEntitySql
     public static string Format(DateTime value) =>
         UtcInstantText.Format(value);
 
+    /// <summary>
+    /// The one stored spelling of a Guid identity: uppercase, dashed, 36 characters, which is what the
+    /// object-relational writer stores and what the schema's write-time guards require. Raw-SQL writers and the
+    /// parameters they compare against render through this, so a lookup is an exact equality a column index can
+    /// answer instead of <c>lower(replace(col, '-', ''))</c>. An identity deliberately kept in the dash-free
+    /// <c>"N"</c> form (a batch's own <c>Id</c>, the inference-run family) is the named exception, not a second
+    /// spelling of the same identifier.
+    /// </summary>
     public static string Format(Guid value) =>
         value.ToString("D").ToUpperInvariant();
 

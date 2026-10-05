@@ -15,7 +15,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 /// <remarks>
 /// Each case installs to the head this binary declares, so the version-12 installation crosses every
-/// later step as well; version 14 declares no sweep, so the one-step, no-sweep assertions still hold.
+/// later step as well; versions 14 and 15 declare no sweep, so the one-step, no-sweep assertions still hold.
 /// </remarks>
 public sealed class MemoryErasureSchemaEvolutionTests
 {

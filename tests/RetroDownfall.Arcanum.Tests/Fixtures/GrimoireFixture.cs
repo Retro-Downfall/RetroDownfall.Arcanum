@@ -514,7 +514,8 @@ public sealed class GrimoireFixture : IDisposable
                     new CovenantConnectionEnrolmentInterceptor(
                         sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
                         sp.GetRequiredService<ICovenantConnectionDrain>(),
-                        sp.GetRequiredService<ICovenantSqliteConnectionInitializer>())));
+                        sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                        SqliteNativeRuntime.Instance)));
 
         // Connection admission is the one production component a fixture copy cannot keep. The real
         // ordinary factory validates every connection against ArcanumPaths.GrimoireDatabaseFile and

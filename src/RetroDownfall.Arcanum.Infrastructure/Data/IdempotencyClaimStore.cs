@@ -189,9 +189,9 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
 
             return new IdempotencyClaimAcquireResult(Conflict: false, Acquired: true, Claim: created);
         }
-        catch (DbException)
+        catch (DbException ex) when (SqliteUniqueConstraintViolation.Is(ex))
         {
-            // Unique race — re-read.
+            // Unique race — re-read. Any other database failure is not a lost race and propagates.
             IdempotencyClaim? existing =
                 await TryGetAsync(request.ClaimKeyHash, cancellationToken).ConfigureAwait(false);
 

@@ -10,7 +10,9 @@ public interface IBudgetReservationService
 {
     /// <summary>
     /// Estimates and reserves cost for a turn. Fails with <c>Budget.Exceeded</c> when today's
-    /// committed spend + outstanding reservations + this estimate would exceed the daily limit.
+    /// committed spend + outstanding reservations + this estimate would exceed the daily limit. A negative
+    /// <see cref="BudgetReservationRequest.ReservedUsd"/> is a caller defect and throws
+    /// <see cref="ArgumentOutOfRangeException"/> instead of lowering the outstanding sum.
     /// </summary>
     Task<Result<BudgetReservation>> ReserveAsync(
         BudgetReservationRequest request,

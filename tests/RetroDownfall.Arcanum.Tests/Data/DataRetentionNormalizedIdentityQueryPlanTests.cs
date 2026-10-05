@@ -48,6 +48,8 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
 
     private const string SessionKeyPredicate = "lower(replace(SessionId, '-', '')) = @id";
 
+    private const string InferenceRunSessionPredicate = "lower(replace(run.SessionId, '-', '')) = @id";
+
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -143,6 +145,26 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     }
 
     /// <summary>
+    /// The inference-run lookups by Session are answered by an expression index, not by a scan of the run ledger.
+    /// </summary>
+    /// <remarks>
+    /// <c>InferenceRuns.SessionId</c> is written dash-free by <c>TurnRunWriter</c> while <c>Sessions.Id</c> is
+    /// the dashed spelling, so every retention comparison between them wraps both sides in
+    /// <c>lower(replace(col, '-', ''))</c>. Core schema version 15 declares the expression index in that exact
+    /// shape; the run ledger grows with every turn, so a scan per candidate Session is the expensive one.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task The_inference_run_session_lookup_is_answered_by_an_expression_index()
+    {
+        RequireSqlCipher();
+
+        Assert.Equal(
+            "SEARCH run USING INDEX IX_InferenceRuns_SessionId_Norm (<expr>=?)",
+            await ExplainAsync($"SELECT run.Id FROM \"InferenceRuns\" run WHERE {InferenceRunSessionPredicate}"));
+    }
+
+    /// <summary>
     /// The predicates pinned above are still the text the sweep executes.
     /// </summary>
     /// <remarks>
@@ -155,7 +177,7 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     public void The_explained_predicates_are_the_ones_the_sweep_executes()
     {
         foreach (string predicate in
-            (string[])[EntryEmbeddingsPredicate, EntriesPredicate, AttachmentSessionPredicate, AttachmentIdentityPredicate, SessionKeyPredicate])
+            (string[])[EntryEmbeddingsPredicate, EntriesPredicate, AttachmentSessionPredicate, AttachmentIdentityPredicate, SessionKeyPredicate, InferenceRunSessionPredicate])
         {
             string needle = predicate.Replace(" = @id", string.Empty, StringComparison.Ordinal);
 

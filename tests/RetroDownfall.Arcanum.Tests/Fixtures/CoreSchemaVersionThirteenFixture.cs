@@ -7,7 +7,9 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// Version 14 appends one expression index to each of <c>attachment_memory_consultations</c>,
 /// <c>saga_extraction_watermarks</c> and <c>SessionContextPins</c> and changes nothing else. Each of those
 /// files is frozen here byte for byte, because the version-12 reconstruction, and through it the raw
-/// version-1 to version-5 fixtures, inherit every object they do not freeze through this one.
+/// version-1 to version-5 fixtures, inherit every object they do not freeze through this one. It starts from
+/// <see cref="CoreSchemaVersionFourteenFixture"/> rather than the head, so the objects version 15 changed
+/// reach it, and every older fixture, as they were at version 14.
 /// </remarks>
 internal static class CoreSchemaVersionThirteenFixture
 {
@@ -79,7 +81,7 @@ internal static class CoreSchemaVersionThirteenFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionFourteenFixture.Objects
             .Select(static definition => definition.Name switch
             {
                 "attachment_memory_consultations" => definition with { Sql = AttachmentMemoryConsultationsSql.ReplaceLineEndings("\n") },

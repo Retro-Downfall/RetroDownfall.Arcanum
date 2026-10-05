@@ -11,10 +11,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 /// <remarks>
 /// The reconciliation itself already exists and is the same routine startup and the periodic sweep
 /// use: stale pending rows are collected, bound orphans whose session or file is gone are removed,
-/// and unreferenced temp/final files are deleted, all serialized behind the per-session and pending
-/// gates so it cannot race a live promote or fork. That makes it safe to call repeatedly, which is
-/// exactly what a recovery handler needs — this handler adds the durable-ledger entry point, not a
-/// second implementation that could disagree with the first.
+/// and unreferenced temp/final files are deleted. The pending and missing-session passes take the
+/// per-session and pending gates; the orphan-file sweep takes none per file, and stays safe beside a
+/// live promote or fork by sparing files newer than its snapshot, re-reading the live table before
+/// each unlink, skipping promotions that are still in flight, and by the promote and fork commits
+/// revalidating their blobs. That makes it safe to call repeatedly, which is exactly what a recovery
+/// handler needs — this handler adds the durable-ledger entry point, not a second implementation that
+/// could disagree with the first.
 ///
 /// <c>pendingOlderThan</c> is zero here on purpose: an operation only reaches recovery once its
 /// lease has already expired, so its pending rows are stale by definition and waiting longer would

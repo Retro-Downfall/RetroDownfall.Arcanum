@@ -31,7 +31,7 @@ internal static class SqliteBusyRetry
     /// reason. A deadline set to that same 30 second per-attempt bound would let a single SQLITE_BUSY
     /// exhaust it before this loop ever retries, so the default has to clear several multiples of it:
     /// long enough that an ordinary exclusive-maintenance hold still resolves normally on every one of
-    /// the 155 production call sites this default reaches, short enough that a caller with no
+    /// the 192 production call sites this default reaches, short enough that a caller with no
     /// cancellation of its own — an HTTP request the host never put a server-side timeout on — fails
     /// closed instead of hanging the process forever behind a handle that will not let go.
     /// </remarks>

@@ -1104,6 +1104,14 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/070_lexic
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V14/010_attachment_memory_consultations_SessionId_norm_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V14/020_saga_extraction_watermarks_SessionId_norm_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V14/030_SessionContextPins_SessionId_norm_index.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V15/010_UploadedFiles_Id_canonical_spelling.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V15/020_Batches_InputFileId_canonical_spelling.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V15/030_Batches_OutputFileId_canonical_spelling.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V15/040_Batches_ErrorFileId_canonical_spelling.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V15/100_Batches_InputFileId_index.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V15/110_Batches_OutputFileId_index.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V15/120_Batches_ErrorFileId_index.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V15/130_InferenceRuns_SessionId_norm_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/010_saga_memories_scope_kind.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/020_saga_memories_campaign_id.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/030_saga_memories_scope_index.sql
@@ -1357,6 +1365,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/SqliteNativeRuntimeValidator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SqlitePragmaConnectionInterceptor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SqlitePragmaStatementFactory.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SqliteScratchDatabase.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/SqliteUniqueConstraintViolation.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/TurnRunWriter.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/UnseenServantWatermarkStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/UploadedFileRepository.cs

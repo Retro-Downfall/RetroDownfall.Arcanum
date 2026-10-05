@@ -111,7 +111,8 @@ public sealed class CovenantConnectionDrainTests
                     new CovenantConnectionEnrolmentInterceptor(
                         new GrimoireOrdinaryConnectionLifecycle(admission, drain),
                         drain,
-                        CovenantSqliteConnectionInitializer.Instance))
+                        CovenantSqliteConnectionInitializer.Instance,
+                        SqliteNativeRuntime.Instance))
                 .Options;
 
         await using DrainProbeDbContext context = new(options);
