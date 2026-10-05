@@ -102,6 +102,14 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     internal Func<CancellationToken, Task>? AfterOrphanPathSnapshotForTesting { get; set; }
 
     /// <summary>
+    /// Test seam: runs inside <see cref="DeleteCreatedAttachmentAsync"/>, after the row is deleted and
+    /// before its blob is unlinked. Used to observe whether the unlink still holds the attachment gate,
+    /// since a concurrent persist of the same logical key can reuse the freed version and path the
+    /// moment the gate is released.
+    /// </summary>
+    internal Func<CancellationToken, Task>? AfterCreatedRowDeletedForTesting { get; set; }
+
+    /// <summary>
     /// Test seam: stands in for every last-write time the orphan-file sweep reads, its own clock probe
     /// included. Used to simulate a host that stamps files from a clock running behind the process clock,
     /// which is the shape of the race the sweep's threshold has to survive.

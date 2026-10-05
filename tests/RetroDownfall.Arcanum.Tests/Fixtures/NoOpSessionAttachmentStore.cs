@@ -63,6 +63,34 @@ internal sealed class NoOpSessionAttachmentStore(
             DateTimeOffset.UtcNow));
     }
 
+    public async Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+        Guid? sessionId,
+        string? pendingTurnId,
+        Guid? entryId,
+        string logicalNameHint,
+        string originalFileName,
+        ReadOnlyMemory<byte> bytes,
+        string mimeType,
+        SessionAttachmentKind kind,
+        CancellationToken cancellationToken = default) =>
+        new(
+            await PersistNewAsync(
+                sessionId,
+                pendingTurnId,
+                entryId,
+                logicalNameHint,
+                originalFileName,
+                bytes,
+                mimeType,
+                kind,
+                cancellationToken),
+            NewVersionCreated: false);
+
+    public Task<bool> DeleteCreatedAttachmentAsync(
+        SessionAttachmentRecord created,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
+
     public Task PromotePendingAsync(
         string pendingTurnId,
         Guid sessionId,

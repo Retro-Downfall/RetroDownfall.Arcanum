@@ -252,6 +252,63 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.False(await _attachments.DeleteCreatedAttachmentAsync(created.Record));
     }
 
+    /// <summary>
+    /// The row is deleted under the attachment gate, but once the gate is released a concurrent persist of
+    /// the same logical key can reuse the freed version number and so the same blob path. Unlinking the
+    /// blob after the release could then remove the other persist's fresh bytes and leave its row pointing
+    /// at nothing, so the unlink has to happen while the gate is still held.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteCreatedAttachmentAsync_UnlinksTheBlobWhileStillHoldingTheAttachmentGate(bool pending)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        string pendingTurn = Guid.NewGuid().ToString("N");
+
+        SessionAttachmentPersistence created = await _attachments!.PersistNewWithOutcomeAsync(
+            pending ? null : sessionId,
+            pending ? pendingTurn : null,
+            null,
+            "gated",
+            "gated.txt",
+            Encoding.UTF8.GetBytes("gated content"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        Assert.True(created.NewVersionCreated);
+
+        string blobPath = Path.Combine(_attachmentsRoot, created.Record.RelativePath);
+
+        string gateKey = pending
+            ? SessionAttachmentStore.PendingTurnGateKey(pendingTurn)
+            : SessionAttachmentStore.SessionGateKey(sessionId);
+
+        bool? gateHeldBeforeUnlink = null;
+
+        bool? blobPresentBeforeUnlink = null;
+
+        _attachments.AfterCreatedRowDeletedForTesting = _ =>
+        {
+            gateHeldBeforeUnlink = SessionAttachmentStore.AttachmentGates.IsHeld(gateKey);
+
+            blobPresentBeforeUnlink = File.Exists(blobPath);
+
+            return Task.CompletedTask;
+        };
+
+        Assert.True(await _attachments.DeleteCreatedAttachmentAsync(created.Record));
+
+        Assert.True(blobPresentBeforeUnlink);
+
+        Assert.True(gateHeldBeforeUnlink, "the blob was unlinked after the attachment gate was released.");
+
+        Assert.False(File.Exists(blobPath));
+    }
+
     [SkippableFact]
 
     public async Task DeleteCreatedAttachmentAsync_LeavesARowThatWasPromotedSinceItWasCreated()
@@ -1391,6 +1448,23 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             ReadOnlyMemory<byte> bytes,
             string mimeType,
             SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteCreatedAttachmentAsync(
+            SessionAttachmentRecord created,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

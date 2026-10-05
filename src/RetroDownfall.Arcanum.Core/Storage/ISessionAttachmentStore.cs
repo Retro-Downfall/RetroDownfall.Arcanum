@@ -169,10 +169,11 @@ public interface ISessionAttachmentStore
 
     /// <summary>
     /// Persists exactly as <see cref="PersistNewAsync"/> and also reports whether this call created the
-    /// row. The default reports <see langword="false"/> because a store that cannot tell must never
-    /// have a caller delete rows on its behalf.
+    /// row. Required of every store: a store that cannot tell must report
+    /// <see cref="SessionAttachmentPersistence.NewVersionCreated"/> as <see langword="false"/>, so a
+    /// caller never deletes rows on its behalf.
     /// </summary>
-    async Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+    Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
         Guid? sessionId,
         string? pendingTurnId,
         Guid? entryId,
@@ -181,31 +182,17 @@ public interface ISessionAttachmentStore
         ReadOnlyMemory<byte> bytes,
         string mimeType,
         SessionAttachmentKind kind,
-        CancellationToken cancellationToken = default) =>
-        new(
-            await PersistNewAsync(
-                    sessionId,
-                    pendingTurnId,
-                    entryId,
-                    logicalNameHint,
-                    originalFileName,
-                    bytes,
-                    mimeType,
-                    kind,
-                    cancellationToken)
-                .ConfigureAwait(false),
-            NewVersionCreated: false);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Removes a row (and its blob) that <see cref="PersistNewWithOutcomeAsync"/> reported as created,
     /// so a turn that fails after persisting leaves nothing behind. Returns <see langword="true"/> only
-    /// when the row was removed; a row that has since been promoted or rewritten is left alone. The
-    /// default removes nothing.
+    /// when the row was removed; a row that has since been promoted or rewritten is left alone. Required
+    /// of every store, so an implementer cannot silently opt out of the rollback.
     /// </summary>
     Task<bool> DeleteCreatedAttachmentAsync(
         SessionAttachmentRecord created,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(false);
+        CancellationToken cancellationToken = default);
 
     Task<SessionAttachmentRecord> PersistNewFromSourceAsync(
         Guid? sessionId,
