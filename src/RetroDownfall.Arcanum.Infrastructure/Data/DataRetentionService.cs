@@ -1098,11 +1098,14 @@ internal sealed partial class DataRetentionService(
     /// </summary>
     /// <remarks>
     /// Effects may exist when a pass finished having removed something, or when the durable row carries
-    /// a checkpoint — the same evidence <see cref="FailUnexpectedCovenantResetAsync"/> reads. Such a row is
-    /// left <c>ReconciliationRequired</c> under the retention recovery code, which recovery adopts and
+    /// a checkpoint — read through <see cref="ReadEffectEvidenceAsync"/>, the one reading
+    /// <see cref="FailUnexpectedCovenantResetAsync"/> shares. Such a row is left
+    /// <c>ReconciliationRequired</c> under the retention recovery code, which recovery adopts and
     /// restarts idempotently; marking it terminally <c>Failed</c> would leave nothing to reconcile what
-    /// did happen, and its message would claim nothing had. A row whose evidence cannot be read is
-    /// treated as one with effects. Only a row with neither is <c>Failed</c>, with the caller's wording.
+    /// did happen, and its message would claim nothing had. A pass saves its first checkpoint before it
+    /// reaches any candidate, so only a failure before that save can be terminal. A row whose evidence
+    /// cannot be read is treated as one with effects. Only a row with neither is <c>Failed</c>, with the
+    /// caller's wording.
     /// </remarks>
     private async Task<Result<DataRetentionApplyResult>> SettleUnexpectedHostedPruneFailureAsync(
         LongRunningOperation? operation,
@@ -1116,14 +1119,7 @@ internal sealed partial class DataRetentionService(
         {
             try
             {
-                LongRunningOperation current = await operations
-                    .GetAsync(operation.Id, CancellationToken.None)
-                    .ConfigureAwait(false)
-                    ?? operation;
-
-                effectsMayExist = current.CheckpointVersion != 0
-                    || current.CheckpointPayload is not null
-                    || current.CheckpointReference is not null;
+                effectsMayExist = (await ReadEffectEvidenceAsync(operation).ConfigureAwait(false)).EffectsMayExist;
             }
             catch (Exception ex)
             {
@@ -2146,6 +2142,32 @@ internal sealed partial class DataRetentionService(
         return current is not null && current.State == state;
     }
 
+    /// <summary>
+    /// The durable row as it stands now, and whether it carries the checkpoint that says a candidate
+    /// effect may already exist.
+    /// </summary>
+    /// <remarks>
+    /// The one reading of that evidence, shared by the two arms that settle an unexpected failure, so
+    /// they cannot drift apart on what counts. Read on <see cref="CancellationToken.None"/>, because it
+    /// decides how a failure that has already happened is recorded. A row that is gone answers with the
+    /// row the caller held. A read that throws is left to the caller, because the two arms answer it
+    /// differently: the hosted prune assumes effects, and the Covenant reset records nothing.
+    /// </remarks>
+    private async Task<(LongRunningOperation Current, bool EffectsMayExist)> ReadEffectEvidenceAsync(
+        LongRunningOperation operation)
+    {
+        LongRunningOperation current = await operations
+            .GetAsync(operation.Id, CancellationToken.None)
+            .ConfigureAwait(false)
+            ?? operation;
+
+        return (
+            current,
+            current.CheckpointVersion != 0
+                || current.CheckpointPayload is not null
+                || current.CheckpointReference is not null);
+    }
+
     private async Task<Result<DataRetentionApplyResult>> FailUnexpectedCovenantResetAsync(
         LongRunningOperation operation,
         string ownerId)
@@ -2154,14 +2176,8 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-            LongRunningOperation current = await operations
-                .GetAsync(operation.Id, CancellationToken.None)
-                .ConfigureAwait(false)
-                ?? operation;
-
-            bool effectsMayExist = current.CheckpointVersion != 0
-                || current.CheckpointPayload is not null
-                || current.CheckpointReference is not null;
+            (LongRunningOperation current, bool effectsMayExist) =
+                await ReadEffectEvidenceAsync(operation).ConfigureAwait(false);
 
             return await FailCovenantResetAsync(
                 current,

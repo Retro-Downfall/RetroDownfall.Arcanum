@@ -2,7 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
 
@@ -25,7 +25,7 @@ public sealed class DataRetentionOrdinaryApplyStructureTests
     [Fact]
     public void The_ordinary_apply_path_never_references_the_factory_reset_operation()
     {
-        string path = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), ServicePath);
+        string path = Path.Combine(TestRepositoryPaths.RepositoryRoot(), ServicePath);
 
         SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(path)).GetRoot();
 
