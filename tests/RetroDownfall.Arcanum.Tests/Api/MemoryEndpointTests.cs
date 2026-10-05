@@ -989,6 +989,99 @@ public sealed class MemoryEndpointTests
         Assert.Contains("morale notes", summaryMatch.Content, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A search that matches many large entries answers within an aggregate byte budget, not just a row count.
+    /// </summary>
+    /// <remarks>
+    /// Ten thousand rows of full text is the row bound; with entries of a megabyte each it is ten gigabytes
+    /// held in one list and written as one response. The byte budget stops reading once the content already
+    /// returned reaches it, and says so with <c>hasMore</c> both on the scope and on the response.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Search_response_is_bounded_in_bytes_with_many_large_entries()
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int entryCount = 14;
+
+        const int entryBytes = 1024 * 1024;
+
+        Guid sessionId;
+
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            Session session = new()
+            {
+                Id = Guid.NewGuid(),
+
+                Status = "active",
+
+                CreatedAt = DateTimeOffset.UtcNow,
+
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+
+            db.Sessions.Add(session);
+
+            sessionId = session.Id;
+
+            for (int i = 0; i < entryCount; i++)
+            {
+                db.Entries.Add(new Entry
+                {
+                    Id = Guid.NewGuid(),
+
+                    SessionId = sessionId,
+
+                    Role = MessageRole.User,
+
+                    Content = "bulkbudgetword " + new string('a', entryBytes),
+
+                    ModelUsed = "gpt-oracle",
+
+                    CreatedAt = DateTimeOffset.UtcNow.AddSeconds(i),
+
+                    Sequence = i + 1,
+                });
+            }
+
+            _ = await db.SaveChangesAsync();
+        }
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("bulkbudgetword", MemorySearchScope.Session, sessionId),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        MemorySearchResponse data = envelope!.Data!;
+
+        long returnedBytes = data.Results.Sum(static hit => (long)System.Text.Encoding.UTF8.GetByteCount(hit.Content));
+
+        // The budget is checked after each row, so the answer may overshoot it by at most the one row that
+        // crossed it.
+        Assert.True(returnedBytes <= MemoryEndpoints.SearchResultByteBudget + entryBytes + 64);
+
+        Assert.True(data.Results.Length < entryCount);
+
+        Assert.True(data.Results.Length > 0);
+
+        Assert.True(data.HasMore);
+
+        Assert.True(Assert.Single(data.Scopes!).HasMore);
+    }
+
     [SkippableFact]
 
     public async Task Search_requires_query_but_not_an_embedding_feature_gate()

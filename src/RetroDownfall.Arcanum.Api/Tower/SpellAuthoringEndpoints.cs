@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class SpellAuthoringEndpoints
 {
-
     public static RouteGroupBuilder MapSpellAuthoringEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapGet(
@@ -177,14 +176,19 @@ internal static class SpellAuthoringEndpoints
 
                 Result<SpellSummary> result = await repo.ImportAsync(resolved, ctx.RequestAborted).ConfigureAwait(false);
 
+                // Through the shared mapper, as create, update and delete are: a refused bundle still answers
+                // 400 (those codes are unmapped, which DefaultBadRequest keeps as 400), while
+                // Spell.WriteFailed reaches the caller as the 500 §8.23 gives it.
                 return result.IsSuccess
                     ? Results.Ok(ApiResponse<SpellSummary>.FromResult(result, traceId))
-                    : Results.BadRequest(ApiResponse<SpellSummary>.FromResult(result, traceId));
+                    : SpellApiResults.MapFailure(
+                        result.Error,
+                        traceId,
+                        ArcanumJsonContext.Default.ApiResponseSpellSummary);
             })
         .WithName("ImportSpell")
         .WithLargeRequestBody();
 
         return apiGroup;
     }
-
 }

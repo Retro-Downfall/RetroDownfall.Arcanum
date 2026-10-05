@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -13,11 +15,19 @@ public sealed class PromptRepository : IPromptRepository
 {
     private const int DefaultListLimit = 100;
 
+    private const int SqliteConstraintErrorCode = 19;
+
+    private const int SqliteConstraintUniqueExtendedCode = 2067;
+
+    private const int SqliteConstraintForeignKeyExtendedCode = 787;
+
     private readonly ArcanumDbContext _db;
 
     private readonly ILogger<PromptRepository> _logger;
 
     internal Func<int, Exception, CancellationToken, ValueTask>? RetryingForTesting { get; set; }
+
+    internal Func<CancellationToken, Task>? AfterReplaceDeleteForTesting { get; set; }
 
     public PromptRepository(ArcanumDbContext db, ILogger<PromptRepository> logger)
     {
@@ -145,26 +155,48 @@ public sealed class PromptRepository : IPromptRepository
         return new ListPageResult<Prompt>(page, hasMore, nextOffset);
     }
 
-    public async Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default)
+    public async Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default)
     {
         _db.Prompts.Add(prompt);
 
-        _ = await EfSaveChangesRetry
-            .ExecuteAsync(_db, cancellationToken, RetryingForTesting)
-            .ConfigureAwait(false);
-
-        return prompt;
+        return await SaveAsync(prompt, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<Prompt> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default)
+    public async Task<Result<Prompt>> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default)
     {
         _db.Prompts.Update(prompt);
 
-        _ = await EfSaveChangesRetry
-            .ExecuteAsync(_db, cancellationToken, RetryingForTesting)
-            .ConfigureAwait(false);
+        return await SaveAsync(prompt, cancellationToken).ConfigureAwait(false);
+    }
 
-        return prompt;
+    /// <summary>
+    /// Saves the pending write for <paramref name="prompt"/>. The unique indexes on (name, version) and the
+    /// Campaign foreign key are the authority: the endpoints' pre-checks are check-then-act, so the loser of
+    /// a concurrent write lands here. That is an ordinary domain outcome and must not surface as a 500.
+    /// </summary>
+    private async Task<Result<Prompt>> SaveAsync(Prompt prompt, CancellationToken cancellationToken)
+    {
+        try
+        {
+            _ = await EfSaveChangesRetry
+                .ExecuteAsync(_db, cancellationToken, RetryingForTesting)
+                .ConfigureAwait(false);
+
+            return Result<Prompt>.Success(prompt);
+        }
+        catch (Exception exception)
+        {
+            if (ClassifyConstraintViolation(exception) is not { } error)
+            {
+                throw;
+            }
+
+            // EF keeps the failed entity in its pending state; leaving it tracked would make the next
+            // SaveChanges on this scope try the same write again.
+            DetachAll([prompt]);
+
+            return Result<Prompt>.Failure(error);
+        }
     }
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
@@ -178,6 +210,121 @@ public sealed class PromptRepository : IPromptRepository
         int deleted = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return deleted > 0;
+    }
+
+    public async Task<Result<int>> ReplaceCampaignPromptsAsync(
+        Guid campaignId,
+        IReadOnlyList<Prompt> prompts,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(prompts);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await using IDbContextTransaction transaction =
+            await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            await using (SqliteCommand delete = await GrimoireSqlCommandFactory.CreateAsync(
+                _db,
+                "DELETE FROM \"Prompts\" WHERE \"CampaignId\" = $campaignId;",
+                cancellationToken).ConfigureAwait(false))
+            {
+                GrimoireEntitySql.AddParameter(delete, "$campaignId", GrimoireEntitySql.Format(campaignId));
+                _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            // The first delete has run inside the transaction. Stopping now would still roll back cleanly,
+            // but the caller's token only says the caller went away, so the adds and the commit finish on
+            // None and the swap is never abandoned midway.
+            if (AfterReplaceDeleteForTesting is { } afterDelete)
+            {
+                await afterDelete(cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (Prompt prompt in prompts)
+            {
+                prompt.CampaignId = campaignId;
+
+                _db.Prompts.Add(prompt);
+            }
+
+            _ = await EfSaveChangesRetry
+                .ExecuteAsync(_db, CancellationToken.None, RetryingForTesting)
+                .ConfigureAwait(false);
+
+            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+
+            return Result<int>.Success(prompts.Count);
+        }
+        catch (Exception exception)
+        {
+            await TryRollbackAsync(transaction).ConfigureAwait(false);
+
+            DetachAll(prompts);
+
+            if (ClassifyConstraintViolation(exception) is { } error)
+            {
+                return Result<int>.Failure(error);
+            }
+
+            throw;
+        }
+    }
+
+    private void DetachAll(IReadOnlyList<Prompt> prompts)
+    {
+        foreach (Prompt prompt in prompts)
+        {
+            if (_db.Entry(prompt).State != EntityState.Detached)
+            {
+                _db.Entry(prompt).State = EntityState.Detached;
+            }
+        }
+    }
+
+    private static async Task TryRollbackAsync(IDbContextTransaction transaction)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception rollbackFailure) when (rollbackFailure is InvalidOperationException or DbUpdateException or SqliteException)
+        {
+            // The connection is unusable; the original failure is the one worth surfacing and SQLite
+            // discards an uncommitted transaction when the connection closes.
+        }
+    }
+
+    /// <summary>
+    /// Maps a SQLite constraint failure raised by a prompt write to the domain error the endpoint's
+    /// pre-check would have produced had it won the race, or null for any other failure.
+    /// </summary>
+    /// <remarks>
+    /// Only the two outcomes a caller can act on are mapped: the (name, version, campaign) unique index and
+    /// the Campaign foreign key. A primary-key or other constraint is a bug and keeps surfacing as one.
+    /// </remarks>
+    internal static Error? ClassifyConstraintViolation(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SqliteException { SqliteErrorCode: SqliteConstraintErrorCode } sqlite)
+            {
+                return sqlite.SqliteExtendedErrorCode switch
+                {
+                    SqliteConstraintUniqueExtendedCode => new Error(
+                        ErrorCodes.Prompt.DuplicateVersion,
+                        "A prompt with this name and version already exists in the target scope."),
+                    SqliteConstraintForeignKeyExtendedCode => new Error(
+                        ErrorCodes.Campaign.NotFound,
+                        "No campaign exists with that identifier."),
+                    _ => null,
+                };
+            }
+        }
+
+        return null;
     }
 
     private async Task<Prompt?> ReadSingleAsync(

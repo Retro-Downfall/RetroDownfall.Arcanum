@@ -677,6 +677,9 @@ public sealed class CovenantPlaintextExportTests
         public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
             throw new NotSupportedException();
 
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
+            throw new NotSupportedException();
+
         public Task ArchiveAsync(Guid id, CancellationToken ct) =>
             throw new NotSupportedException();
     }
@@ -757,13 +760,19 @@ public sealed class CovenantPlaintextExportTests
             Guid? campaignId,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+        public Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Prompt> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+        public Task<Result<Prompt>> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<int>> ReplaceCampaignPromptsAsync(
+            Guid campaignId,
+            IReadOnlyList<Prompt> prompts,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 

@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.ProvingGrounds;
 
 public sealed class ProvingGroundsRunnerTests
 {
-
     [Fact]
     public async Task RunAsync_NullTrial_FailsValidation()
     {
@@ -128,21 +127,16 @@ public sealed class ProvingGroundsRunnerTests
 
     private sealed class FakeHostWorkspaceContext : IHostWorkspaceContext
     {
-
         public FakeHostWorkspaceContext(string? path)
         {
-
             WorkspacePath = path;
-
         }
 
         public string? WorkspacePath { get; }
-
     }
 
     private sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
     {
-
         public string NextText { get; init; } = "YES";
 
         public Error? NextFailure { get; init; }
@@ -176,12 +170,10 @@ public sealed class ProvingGroundsRunnerTests
 
             yield break;
         }
-
     }
 
     private sealed class FakeSpellRepository : ISpellRepository
     {
-
         public Task<SpellDetail?> GetAsync(string name, string? workingDirectory, CancellationToken ct) =>
             Task.FromResult<SpellDetail?>(null);
 
@@ -223,12 +215,10 @@ public sealed class ProvingGroundsRunnerTests
 
         public Task<Result<SpellVersionDetailDto>> GetVersionDetailAsync(string name, string version, string? workingDirectory, CancellationToken ct) =>
             Task.FromResult(Result<SpellVersionDetailDto>.Failure(new Error("Spell.NotFound", "missing")));
-
     }
 
     private sealed class FakePromptRepository : IPromptRepository
     {
-
         public Task<Prompt?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Prompt?>(null);
 
@@ -249,22 +239,24 @@ public sealed class ProvingGroundsRunnerTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new ListPageResult<Prompt>([], false));
 
-        public Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
-            Task.FromResult(prompt);
+        public Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Prompt>.Success(prompt));
 
-        public Task<Prompt> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
-            Task.FromResult(prompt);
+        public Task<Result<Prompt>> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Prompt>.Success(prompt));
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
 
+        public Task<Result<int>> ReplaceCampaignPromptsAsync(
+            Guid campaignId,
+            IReadOnlyList<Prompt> prompts,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class FakeTokenCounter : IManaMeter
     {
-
         public int CountTokens(string text) => text.Length;
-
     }
-
 }

@@ -7,7 +7,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class PromptMapping
 {
-
     public static PromptSummaryDto ToSummaryDto(Prompt prompt) =>
         new(
             prompt.Id,
@@ -65,67 +64,56 @@ internal static class PromptMapping
 
     public static string? SerializeJsonDocument(JsonDocument? doc) =>
         doc is null ? null : doc.RootElement.GetRawText();
-
 }
 
 internal static class PromptImportHelper
 {
-
     /// <remarks>
     /// Every shape check below returns a <see cref="Result{T}"/> failure rather than throwing.
     /// System.Text.Json does not enforce constructor-parameter nullability, so <c>{}</c> on
     /// <c>POST /api/prompts/import</c> binds a non-null <see cref="PromptImportRequest"/> whose
     /// <c>Payload</c> is null, and a truncated export file binds a payload with a null name,
     /// version or template. Throwing would turn one bad element of a campaign bundle into a
-    /// whole-request 500 instead of the per-prompt warning the campaign-import loop expects.
+    /// whole-request 500 instead of the refusal the campaign-import route reports before it writes.
     /// </remarks>
-    public static async Task<Result<PromptSummaryDto>> ImportAsync(
-        IPromptRepository repo,
-        PromptImportRequest request,
-        CancellationToken ct)
+    public static Result<PromptExportDto> Validate(PromptExportDto? payload)
     {
-        PromptExportDto? payload = request.Payload;
-
         if (payload is null)
         {
-            return Result<PromptSummaryDto>.Failure(
+            return Result<PromptExportDto>.Failure(
                 new Error(ErrorCodes.Prompt.InvalidRequest, "Import payload is required."));
         }
 
         if (string.IsNullOrWhiteSpace(payload.Name))
         {
-            return Result<PromptSummaryDto>.Failure(
+            return Result<PromptExportDto>.Failure(
                 new Error(ErrorCodes.Prompt.InvalidName, "Import payload must include a prompt name."));
         }
 
         if (string.IsNullOrWhiteSpace(payload.Version))
         {
-            return Result<PromptSummaryDto>.Failure(
+            return Result<PromptExportDto>.Failure(
                 new Error(ErrorCodes.Prompt.InvalidVersion, "Import payload must include a prompt version."));
         }
 
         if (payload.Template is null)
         {
-            return Result<PromptSummaryDto>.Failure(
+            return Result<PromptExportDto>.Failure(
                 new Error(ErrorCodes.Prompt.InvalidRequest, "Import payload must include a prompt template."));
         }
 
-        Prompt? existing = await repo
-            .GetByNameAndVersionAsync(payload.Name, payload.Version, request.CampaignId, ct)
-            .ConfigureAwait(false);
+        return Result<PromptExportDto>.Success(payload);
+    }
 
-        if (existing is not null)
-        {
-            return Result<PromptSummaryDto>.Failure(
-                new Error(ErrorCodes.Prompt.DuplicateVersion, "A prompt with this name and version already exists in the target scope."));
-        }
-
+    /// <summary>Builds the persisted prompt for a payload <see cref="Validate"/> has already accepted.</summary>
+    public static Prompt BuildPrompt(PromptExportDto payload, Guid? campaignId)
+    {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        Prompt prompt = new()
+        return new Prompt
         {
             Id = Guid.NewGuid(),
-            CampaignId = request.CampaignId,
+            CampaignId = campaignId,
             Name = payload.Name.Trim(),
             Version = payload.Version.Trim(),
             Description = payload.Description,
@@ -141,10 +129,41 @@ internal static class PromptImportHelper
             CreatedAt = now,
             UpdatedAt = now,
         };
+    }
 
-        await repo.AddAsync(prompt, ct).ConfigureAwait(false);
+    public static async Task<Result<PromptSummaryDto>> ImportAsync(
+        IPromptRepository repo,
+        PromptImportRequest request,
+        CancellationToken ct)
+    {
+        Result<PromptExportDto> validated = Validate(request.Payload);
+
+        if (validated.IsFailure)
+        {
+            return Result<PromptSummaryDto>.Failure(validated.Error);
+        }
+
+        PromptExportDto payload = validated.Value;
+
+        Prompt? existing = await repo
+            .GetByNameAndVersionAsync(payload.Name, payload.Version, request.CampaignId, ct)
+            .ConfigureAwait(false);
+
+        if (existing is not null)
+        {
+            return Result<PromptSummaryDto>.Failure(
+                new Error(ErrorCodes.Prompt.DuplicateVersion, "A prompt with this name and version already exists in the target scope."));
+        }
+
+        Prompt prompt = BuildPrompt(payload, request.CampaignId);
+
+        Result<Prompt> added = await repo.AddAsync(prompt, ct).ConfigureAwait(false);
+
+        if (added.IsFailure)
+        {
+            return Result<PromptSummaryDto>.Failure(added.Error);
+        }
 
         return Result<PromptSummaryDto>.Success(PromptMapping.ToSummaryDto(prompt));
     }
-
 }

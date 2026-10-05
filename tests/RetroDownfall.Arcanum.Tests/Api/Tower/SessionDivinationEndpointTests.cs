@@ -29,20 +29,16 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ApiHost")]
 public sealed class SessionDivinationEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public SessionDivinationEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task Divine_WhenDisabled_Returns503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -54,13 +50,11 @@ public sealed class SessionDivinationEndpointTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
         await AssertErrorCodeAsync(response, "Embeddings.FeatureDisabled");
-
     }
 
     [SkippableFact]
     public async Task Divine_EmptyQuery_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService());
@@ -72,13 +66,11 @@ public sealed class SessionDivinationEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         await AssertErrorCodeAsync(response, "Validation.InvalidBody");
-
     }
 
     [SkippableFact]
     public async Task Divine_InvalidStatus_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService());
@@ -92,13 +84,11 @@ public sealed class SessionDivinationEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         await AssertErrorCodeAsync(response, "Validation.InvalidBody");
-
     }
 
     [SkippableFact]
     public async Task Divine_ProviderUnavailable_Returns503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService { Available = false });
@@ -110,13 +100,11 @@ public sealed class SessionDivinationEndpointTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
         await AssertErrorCodeAsync(response, "Embeddings.ProviderUnavailable");
-
     }
 
     [SkippableFact]
     public async Task Divine_HappyPath_ReturnsJoinedSessionAndEntryMetadata()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeWeaveService weave = new();
@@ -142,7 +130,6 @@ public sealed class SessionDivinationEndpointTests
 
         try
         {
-
             await pause.WaitUntilEnteredAsync();
 
             Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
@@ -150,15 +137,12 @@ public sealed class SessionDivinationEndpointTests
             Assert.Equal(1, pause.FinalUse.Observation);
 
             Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
-
         }
         finally
         {
-
             pause.Release();
 
             _ = await searching.WaitAsync(TimeSpan.FromSeconds(10));
-
         }
 
         HttpResponseMessage response = await searching;
@@ -184,13 +168,11 @@ public sealed class SessionDivinationEndpointTests
         Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
 
         Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
-
     }
 
     [SkippableFact]
     public async Task Divine_FiltersByCampaignAndStatus()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeWeaveService weave = new();
@@ -239,13 +221,144 @@ public sealed class SessionDivinationEndpointTests
         Assert.NotEqual(otherCampaignSessionId, hit.SessionId);
 
         Assert.NotEqual(archivedSessionId, hit.SessionId);
+    }
 
+    [SkippableFact]
+    public async Task Divine_FilteredByCampaign_returns_matches_ranked_below_the_global_cutoff()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = enabled.CreateAuthenticatedClient();
+
+        Guid targetCampaignId = await SeedCampaignAsync(enabled);
+
+        Guid otherCampaignId = await SeedCampaignAsync(enabled);
+
+        const int limit = 3;
+
+        // limit + 1 entries of another Campaign rank closer than the one entry of the target, so the
+        // global nearest-`limit` cut never reaches it: filtering after that cut returned nothing.
+        for (int i = 0; i < limit + 1; i++)
+        {
+            await SeedEmbeddedEntryAsync(
+                enabled,
+                content: $"closer entry of another campaign {i}",
+                vector: [1f, 0f, 0f],
+                campaignId: otherCampaignId,
+                status: "active");
+        }
+
+        (Guid targetSessionId, _, _) = await SeedEmbeddedEntryAsync(
+            enabled,
+            content: "farther entry of the target campaign",
+            vector: [0.9f, 0.1f, 0f],
+            campaignId: targetCampaignId,
+            status: "active");
+
+        HttpResponseMessage response = await PostDivineAsync(
+            client,
+            new SemanticSearchRequest("entry", CampaignId: targetCampaignId, Limit: limit));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        SemanticSearchResult result = await ReadResultAsync(response);
+
+        SemanticSessionSearchResult hit = Assert.Single(result.Results);
+
+        Assert.Equal(targetSessionId, hit.SessionId);
+
+        Assert.False(result.HasMore);
+    }
+
+    [SkippableFact]
+    public async Task Divine_over_fetch_keeps_the_similarity_threshold()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = enabled.CreateAuthenticatedClient();
+
+        Guid targetCampaignId = await SeedCampaignAsync(enabled);
+
+        Guid otherCampaignId = await SeedCampaignAsync(enabled);
+
+        for (int i = 0; i < 4; i++)
+        {
+            await SeedEmbeddedEntryAsync(
+                enabled,
+                content: $"closer entry of another campaign {i}",
+                vector: [1f, 0f, 0f],
+                campaignId: otherCampaignId,
+                status: "active");
+        }
+
+        (Guid aboveThresholdSessionId, _, _) = await SeedEmbeddedEntryAsync(
+            enabled,
+            content: "above the threshold",
+            vector: [0.9f, 0.1f, 0f],
+            campaignId: targetCampaignId,
+            status: "active");
+
+        // Orthogonal to the query: similarity 0, far under the 0.70 default threshold. Widening the
+        // candidate window must not let it back in.
+        await SeedEmbeddedEntryAsync(
+            enabled,
+            content: "below the threshold",
+            vector: [0f, 1f, 0f],
+            campaignId: targetCampaignId,
+            status: "active");
+
+        HttpResponseMessage response = await PostDivineAsync(
+            client,
+            new SemanticSearchRequest("entry", CampaignId: targetCampaignId, Limit: 3));
+
+        SemanticSearchResult result = await ReadResultAsync(response);
+
+        Assert.Equal(aboveThresholdSessionId, Assert.Single(result.Results).SessionId);
+    }
+
+    [SkippableFact]
+    public async Task Divine_HasMore_is_true_only_when_more_matching_hits_exist_than_the_limit()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = enabled.CreateAuthenticatedClient();
+
+        Guid campaignId = await SeedCampaignAsync(enabled);
+
+        for (int i = 0; i < 3; i++)
+        {
+            await SeedEmbeddedEntryAsync(
+                enabled,
+                content: $"matching entry {i}",
+                vector: [1f, 0f, 0f],
+                campaignId: campaignId,
+                status: "active");
+        }
+
+        SemanticSearchResult truncated = await ReadResultAsync(
+            await PostDivineAsync(client, new SemanticSearchRequest("entry", CampaignId: campaignId, Limit: 2)));
+
+        Assert.Equal(2, truncated.Results.Length);
+
+        Assert.True(truncated.HasMore);
+
+        SemanticSearchResult complete = await ReadResultAsync(
+            await PostDivineAsync(client, new SemanticSearchRequest("entry", CampaignId: campaignId, Limit: 3)));
+
+        Assert.Equal(3, complete.Results.Length);
+
+        Assert.False(complete.HasMore);
     }
 
     [SkippableFact]
     public async Task Divine_LimitIsClampedToConfiguredMaximum()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeWeaveService weave = new();
@@ -256,14 +369,12 @@ public sealed class SessionDivinationEndpointTests
 
         for (int i = 0; i < 3; i++)
         {
-
             await SeedEmbeddedEntryAsync(
                 enabled,
                 content: $"clamp test entry {i}",
                 vector: [1f, 0f, 0f],
                 campaignId: null,
                 status: "active");
-
         }
 
         // 0 is below the 1-50 clamp range and is coerced up to 1.
@@ -274,7 +385,6 @@ public sealed class SessionDivinationEndpointTests
         SemanticSearchResult result = await ReadResultAsync(response);
 
         Assert.Single(result.Results);
-
     }
 
     private static ArcanumWebApplicationFactory CreateEnabledFactory(
@@ -306,28 +416,22 @@ public sealed class SessionDivinationEndpointTests
 
                 if (connections is not null)
                 {
-
                     // Appended rather than substituted: the last registration is what
                     // GetRequiredService returns, so the production descriptor stays composed.
                     services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
-
                 }
-
             },
         };
 
     private static async Task<HttpResponseMessage> PostDivineAsync(HttpClient client, SemanticSearchRequest request)
     {
-
         string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.SemanticSearchRequest);
 
         return await client.PostAsync("/api/sessions/divine", new StringContent(payload, Encoding.UTF8, "application/json"));
-
     }
 
     private static async Task<SemanticSearchResult> ReadResultAsync(HttpResponseMessage response)
     {
-
         string json = await response.Content.ReadAsStringAsync();
 
         ApiResponse<SemanticSearchResult>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSemanticSearchResult);
@@ -339,12 +443,10 @@ public sealed class SessionDivinationEndpointTests
         Assert.NotNull(body.Data);
 
         return body.Data!;
-
     }
 
     private static async Task AssertErrorCodeAsync(HttpResponseMessage response, string expectedCode)
     {
-
         string json = await response.Content.ReadAsStringAsync();
 
         ApiResponse<SemanticSearchResult>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSemanticSearchResult);
@@ -354,12 +456,10 @@ public sealed class SessionDivinationEndpointTests
         Assert.False(body.IsSuccess);
 
         Assert.Equal(expectedCode, body.Error?.Code);
-
     }
 
     private static async Task<Guid> SeedCampaignAsync(ArcanumWebApplicationFactory factory)
     {
-
         using IServiceScope scope = factory.Services.CreateScope();
 
         ICampaignRepository repository = scope.ServiceProvider.GetRequiredService<ICampaignRepository>();
@@ -386,7 +486,6 @@ public sealed class SessionDivinationEndpointTests
             .AddAsync(campaign, CancellationToken.None)).Value;
 
         return saved.Id;
-
     }
 
     /// <summary>
@@ -401,7 +500,6 @@ public sealed class SessionDivinationEndpointTests
         Guid? campaignId,
         string status)
     {
-
         using IServiceScope scope = factory.Services.CreateScope();
 
         ISessionRepository sessionRepository = scope.ServiceProvider.GetRequiredService<ISessionRepository>();
@@ -426,11 +524,9 @@ public sealed class SessionDivinationEndpointTests
 
         if (!string.Equals(status, "active", StringComparison.OrdinalIgnoreCase))
         {
-
             session.Status = status;
 
             await sessionRepository.UpdateSessionAsync(session, CancellationToken.None);
-
         }
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
@@ -438,19 +534,15 @@ public sealed class SessionDivinationEndpointTests
         await InsertEntryEmbeddingAsync(db, added.Value.Id, vector);
 
         return (session.Id, added.Value.Id, title);
-
     }
 
     private static async Task InsertEntryEmbeddingAsync(ArcanumDbContext db, Guid entryId, float[] vector)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -488,12 +580,10 @@ public sealed class SessionDivinationEndpointTests
         cmd.Parameters.Add(dimParam);
 
         _ = await cmd.ExecuteNonQueryAsync();
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         public bool Available { get; set; } = true;
 
         public float[] QueryVector { get; set; } = [1f, 0f, 0f];
@@ -508,7 +598,5 @@ public sealed class SessionDivinationEndpointTests
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by the session divination endpoint.");
-
     }
-
 }

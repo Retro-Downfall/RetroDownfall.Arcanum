@@ -1622,6 +1622,45 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task PersistNewAsync_over_the_session_byte_limit_throws_AttachmentLimitExceededException()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentStore store = CreateStore(new ArcanumSettings());
+
+        store.SessionByteLimitForTesting = 10;
+
+        Guid sessionId = Guid.NewGuid();
+
+        _ = await store.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "first.txt",
+            "first.txt",
+            Encoding.UTF8.GetBytes("123456"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        // The typed refusal is what the HTTP routes report as Attachment.LimitExceeded; it still is an
+        // InvalidOperationException for every caller that predates the type.
+        AttachmentLimitExceededException refused = await Assert.ThrowsAsync<AttachmentLimitExceededException>(() =>
+            store.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                "second.txt",
+                "second.txt",
+                Encoding.UTF8.GetBytes("123456"),
+                "text/plain",
+                SessionAttachmentKind.Text));
+
+        Assert.IsAssignableFrom<InvalidOperationException>(refused);
+
+        Assert.Null(await store.GetByLogicalAsync(sessionId, "second.txt", version: null));
+    }
+
+    [SkippableFact]
     public async Task PersistNewAsync_accepts_versions_beyond_the_former_count_ceiling()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);

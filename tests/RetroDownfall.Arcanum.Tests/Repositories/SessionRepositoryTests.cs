@@ -816,6 +816,63 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task PatchSessionAsync_writes_only_the_supplied_fields()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
+
+        Session session = await repository.CreateAsync(campaignId: null, title: "Original", CancellationToken.None);
+
+        // A status change lands first, as a concurrent request's would.
+        await repository.ArchiveAsync(session.Id, CancellationToken.None);
+
+        Session? titled = await repository.PatchSessionAsync(
+            session.Id,
+            new SessionHeaderPatch(SetTitle: true, Title: "Renamed", Status: null),
+            CancellationToken.None);
+
+        Assert.NotNull(titled);
+
+        Assert.Equal("Renamed", titled!.Title);
+
+        Assert.Equal("archived", titled.Status);
+
+        Session? reactivated = await repository.PatchSessionAsync(
+            session.Id,
+            new SessionHeaderPatch(SetTitle: false, Title: null, Status: "active"),
+            CancellationToken.None);
+
+        Assert.Equal("Renamed", reactivated!.Title);
+
+        Assert.Equal("active", reactivated.Status);
+
+        Session? cleared = await repository.PatchSessionAsync(
+            session.Id,
+            new SessionHeaderPatch(SetTitle: true, Title: null, Status: null),
+            CancellationToken.None);
+
+        Assert.Null(cleared!.Title);
+
+        Assert.Equal("active", cleared.Status);
+
+        Assert.True(cleared.UpdatedAt >= session.UpdatedAt);
+    }
+
+    [SkippableFact]
+    public async Task PatchSessionAsync_for_a_missing_session_answers_null()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
+
+        Assert.Null(await repository.PatchSessionAsync(
+            Guid.NewGuid(),
+            new SessionHeaderPatch(SetTitle: true, Title: "ghost", Status: null),
+            CancellationToken.None));
+    }
+
+    [SkippableFact]
     public async Task GetEntriesAscendingAsync_returns_entries_in_created_at_order()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
