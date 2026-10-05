@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Configuration;
 public sealed class ModelCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     /// <summary>
     /// List configured models across all providers (GET /api/models).
@@ -59,12 +59,6 @@ public sealed class ModelCommands(
 
     public async Task<int> Get(string? identifier, CancellationToken cancellationToken)
     {
-        if (resourceCatalog is null)
-        {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("A model name is required.")));
-            return 1;
-        }
-
         ResourceSelectionResult<ModelInfoDto> selection = await resourceCatalog
             .SelectModelAsync(identifier, cancellationToken)
             .ConfigureAwait(false);
@@ -93,7 +87,7 @@ public sealed class ModelCommands(
 public sealed class ProviderCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     /// <summary>
     /// List configured providers with redacted secrets (GET /api/providers).
@@ -143,12 +137,6 @@ public sealed class ProviderCommands(
 
     public async Task<int> Get(string? identifier, CancellationToken cancellationToken)
     {
-        if (resourceCatalog is null)
-        {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("A provider name is required.")));
-            return 1;
-        }
-
         ResourceSelectionResult<ProviderInfoDto> selection = await resourceCatalog
             .SelectProviderAsync(identifier, cancellationToken)
             .ConfigureAwait(false);

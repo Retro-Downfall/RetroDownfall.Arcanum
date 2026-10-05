@@ -201,7 +201,8 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
             provider.GetRequiredService<IThemePalette>(),
             dispatcher,
             new RefusingConfirmation(),
-            provider.GetRequiredService<IOptions<ArcanumSettings>>());
+            provider.GetRequiredService<IOptions<ArcanumSettings>>(),
+            provider.GetRequiredService<ICliResourceCatalog>());
 
         Assert.Equal(0, await commands.Status(sessionIdentifier: null, Token));
 

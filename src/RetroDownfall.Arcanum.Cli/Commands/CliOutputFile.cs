@@ -14,9 +14,16 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// it through a temporary sibling so a failed or interrupted write never leaves a truncated file.
 /// </summary>
 /// <remarks>
-/// The overwrite question goes through <see cref="IConfirmationPrompt"/>, so <c>--yes</c> approves it
-/// and a non-interactive run (<c>--json</c>, redirected stdin or stdout) is refused with exit 2 rather
-/// than overwriting silently; a script that rewrites the same file on every run passes <c>--yes</c>.
+/// <para>The overwrite question goes through <see cref="IConfirmationPrompt"/>, so <c>--yes</c> approves
+/// it and a non-interactive run (<c>--json</c>, <c>--print</c>, redirected stdin or redirected stdout) is
+/// refused with exit 2 rather than overwriting silently; a script that rewrites the same file on every
+/// run passes <c>--yes</c>.</para>
+/// <para>Replacing through a sibling must not change what the destination already was. A symbolic link
+/// is written through to its target rather than replaced by a regular file, and the permission bits of
+/// an existing file are carried onto the replacement on Unix (an export the operator made owner-only
+/// stays owner-only); on Windows <see cref="File.Replace(string, string, string?)"/> keeps the replaced
+/// file's attributes and access-control list. Ownership and extended attributes are not carried over: they
+/// belong to the new file.</para>
 /// </remarks>
 internal static class CliOutputFile
 {
@@ -100,25 +107,67 @@ internal static class CliOutputFile
     }
 
     /// <summary>
-    /// Delivers an export document: to stdout when no <paramref name="output"/> is named, otherwise to
-    /// that file after the overwrite question and through a temporary sibling.
+    /// Settles an export verb's <c>--output</c> before the export is fetched: the destination is vetted
+    /// and an existing file is asked about, so a refusal costs no request, like <c>--save</c> on the web
+    /// verbs.
     /// </summary>
-    /// <param name="json">The serialized export.</param>
     /// <param name="output">The operator's <c>--output</c> value, or blank for stdout.</param>
-    /// <param name="exportedLabel">The label for the confirmation line, such as "Spell exported to:".</param>
     /// <param name="confirmationPrompt">Asked before an existing file is replaced.</param>
-    /// <param name="themePalette">Themes the confirmation and failure lines.</param>
-    /// <param name="cancellationToken">Cancels the prompt and the write.</param>
-    /// <returns>0 when written or declined, 1 when the file could not be written.</returns>
-    internal static async Task<int> WriteExportAsync(
-        string json,
+    /// <param name="themePalette">Themes the cancellation and failure lines.</param>
+    /// <param name="cancellationToken">Cancels the prompt.</param>
+    internal static async Task<ExportDestination> PlanExportAsync(
         string? output,
-        string exportedLabel,
         IConfirmationPrompt confirmationPrompt,
         IThemePalette themePalette,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(output))
+        {
+            return ExportDestination.Stdout;
+        }
+
+        string? problem = TryResolve(output, out string fullPath);
+
+        if (problem is not null)
+        {
+            CliErrorOutput.WriteMarkupLine(
+                themePalette.ErrorMarkup(
+                    Markup.Escape($"Could not write '{output}': {problem}.")));
+
+            return new ExportDestination(false, 1, null, output);
+        }
+
+        if (!await ConfirmOverwriteAsync(confirmationPrompt, fullPath, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(
+                themePalette.MutedMarkup(
+                    Markup.Escape("Export cancelled; the existing file was not changed.")));
+
+            return new ExportDestination(false, 0, null, output);
+        }
+
+        return new ExportDestination(true, 0, fullPath, output);
+    }
+
+    /// <summary>
+    /// Delivers an export document to the destination <see cref="PlanExportAsync"/> settled: to stdout when
+    /// none was named, otherwise to that file through a temporary sibling.
+    /// </summary>
+    /// <param name="json">The serialized export.</param>
+    /// <param name="destination">The settled destination.</param>
+    /// <param name="exportedLabel">The label for the confirmation line, such as "Spell exported to:".</param>
+    /// <param name="themePalette">Themes the confirmation and failure lines.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>0 when written, 1 when the file could not be written.</returns>
+    internal static async Task<int> WriteExportAsync(
+        string json,
+        ExportDestination destination,
+        string exportedLabel,
+        IThemePalette themePalette,
+        CancellationToken cancellationToken)
+    {
+        if (destination.FullPath is not string fullPath)
         {
             await Console.Out.WriteLineAsync(json).ConfigureAwait(false);
 
@@ -127,18 +176,6 @@ internal static class CliOutputFile
 
         try
         {
-            string fullPath = Path.GetFullPath(output);
-
-            if (!await ConfirmOverwriteAsync(confirmationPrompt, fullPath, cancellationToken)
-                    .ConfigureAwait(false))
-            {
-                CliErrorOutput.WriteMarkupLine(
-                    themePalette.MutedMarkup(
-                        Markup.Escape("Export cancelled; the existing file was not changed.")));
-
-                return 0;
-            }
-
             await WriteAllTextAsync(fullPath, json, null, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -150,7 +187,7 @@ internal static class CliOutputFile
         {
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
-                    Markup.Escape($"Could not write '{output}': {exception.Message}")));
+                    Markup.Escape($"Could not write '{destination.Display}': {exception.Message}")));
 
             return 1;
         }
@@ -158,7 +195,7 @@ internal static class CliOutputFile
         AnsiConsole.MarkupLine(
             themePalette.HighlightLabelMarkup(
                 Markup.Escape(exportedLabel),
-                Markup.Escape(output)));
+                Markup.Escape(destination.Display ?? fullPath)));
 
         return 0;
     }
@@ -171,17 +208,33 @@ internal static class CliOutputFile
     /// <param name="content">The text to write.</param>
     /// <param name="encoding">The encoding each verb already used; UTF-8 without a byte-order mark by default.</param>
     /// <param name="cancellationToken">Cancels the write; the temporary sibling is removed either way.</param>
+    internal static Task WriteAllTextAsync(
+        string fullPath,
+        string content,
+        Encoding? encoding,
+        CancellationToken cancellationToken) =>
+        WriteAllTextAsync(fullPath, content, encoding, File.Delete, cancellationToken);
+
+    /// <summary>
+    /// <see cref="WriteAllTextAsync(string, string, Encoding?, CancellationToken)"/> with the removal of the
+    /// temporary sibling supplied, so a test can make that removal fail.
+    /// </summary>
     internal static async Task WriteAllTextAsync(
         string fullPath,
         string content,
         Encoding? encoding,
+        Action<string> removeTemporary,
         CancellationToken cancellationToken)
     {
-        string directory = Path.GetDirectoryName(fullPath) ?? ".";
+        // A symbolic link is the operator's name for its target, so the target is what gets replaced.
+        // Replacing the link would leave an unrelated regular file where the link was.
+        string destination = ResolveWriteTarget(fullPath);
+
+        string directory = Path.GetDirectoryName(destination) ?? ".";
 
         string temporaryPath = Path.Combine(
             directory,
-            $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
+            $".{Path.GetFileName(destination)}.{Guid.NewGuid():N}.tmp");
 
         try
         {
@@ -191,14 +244,91 @@ internal static class CliOutputFile
                 encoding ?? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 cancellationToken).ConfigureAwait(false);
 
-            File.Move(temporaryPath, fullPath, overwrite: true);
+            ReplaceFile(temporaryPath, destination);
         }
         finally
         {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
+            RemoveTemporary(temporaryPath, removeTemporary);
         }
     }
+
+    /// <summary>
+    /// The path a write to <paramref name="fullPath"/> must replace: the final target when it is a symbolic
+    /// link (existing or dangling), otherwise the path itself.
+    /// </summary>
+    private static string ResolveWriteTarget(string fullPath)
+    {
+        FileInfo file = new(fullPath);
+
+        // LinkTarget is null for a path that is not a link, including one that does not exist yet; asking a
+        // path that does not exist to resolve itself throws instead.
+        if (file.LinkTarget is null)
+        {
+            return fullPath;
+        }
+
+        return file.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? fullPath;
+    }
+
+    /// <summary>
+    /// Moves the completed temporary file over the destination, keeping what the destination already had:
+    /// its permission bits on Unix, its attributes and access-control list on Windows.
+    /// </summary>
+    private static void ReplaceFile(string temporaryPath, string destination)
+    {
+        if (!File.Exists(destination))
+        {
+            File.Move(temporaryPath, destination);
+
+            return;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            File.Replace(temporaryPath, destination, destinationBackupFileName: null);
+
+            return;
+        }
+
+        File.SetUnixFileMode(temporaryPath, File.GetUnixFileMode(destination));
+
+        File.Move(temporaryPath, destination, overwrite: true);
+    }
+
+    /// <summary>
+    /// Removes the temporary sibling without letting a failure to do so replace the outcome of the write.
+    /// </summary>
+    private static void RemoveTemporary(string temporaryPath, Action<string> removeTemporary)
+    {
+        try
+        {
+            if (File.Exists(temporaryPath))
+            {
+                removeTemporary(temporaryPath);
+            }
+        }
+        catch (Exception exception)
+            when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Best effort: a stray dot-file is a lesser harm than hiding why the write failed, and this
+            // runs while the write's own exception, if any, is still unwinding.
+        }
+    }
+}
+
+/// <summary>
+/// Where an export verb's output goes, settled before the export is fetched.
+/// </summary>
+/// <param name="Proceed">False when the destination was refused or the overwrite declined and the verb must stop.</param>
+/// <param name="ExitCode">The exit code to stop with when <paramref name="Proceed"/> is false.</param>
+/// <param name="FullPath">The resolved file, or <see langword="null"/> for stdout.</param>
+/// <param name="Display">The operator's own spelling of the destination, for messages.</param>
+internal readonly record struct ExportDestination(
+    bool Proceed,
+    int ExitCode,
+    string? FullPath,
+    string? Display)
+{
+    /// <summary>No <c>--output</c>: the export goes to stdout.</summary>
+    internal static ExportDestination Stdout { get; } = new(true, 0, null, null);
 }

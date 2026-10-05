@@ -16,19 +16,13 @@ internal static class CampaignCommandSupport
 {
     public static async Task<(bool Resolved, bool Cancelled, Guid Id, int ExitCode)> ResolveCampaignIdAsync(
         string? identifier,
-        ICliResourceCatalog? resourceCatalog,
+        ICliResourceCatalog resourceCatalog,
         IThemePalette themePalette,
         CancellationToken cancellationToken)
     {
         if (CliArgReader.TryParseGuid(identifier, out Guid id))
         {
             return (true, false, id, 0);
-        }
-
-        if (resourceCatalog is null)
-        {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-            return (false, false, default, (int)CliExitCode.GenericError);
         }
 
         ResourceSelectionResult<CampaignDto> selection = await resourceCatalog
@@ -126,7 +120,7 @@ public sealed class CampaignCommands(
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
@@ -212,12 +206,6 @@ public sealed class CampaignCommands(
         Guid campaignId;
         if (!CliArgReader.TryParseGuid(id, out campaignId))
         {
-            if (resourceCatalog is null)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-                return 1;
-            }
-
             ResourceSelectionResult<CampaignDto> selection = await resourceCatalog
                 .SelectCampaignAsync(id, cancellationToken)
                 .ConfigureAwait(false);
@@ -382,6 +370,15 @@ public sealed class CampaignCommands(
         (bool resolved, bool cancelled, Guid campaignId, int resolveExitCode) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : resolveExitCode;
 
+        ExportDestination destination = await CliOutputFile
+            .PlanExportAsync(output, confirmationPrompt, themePalette, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!destination.Proceed)
+        {
+            return destination.ExitCode;
+        }
+
         Result<CampaignExportDto> result = await apiClient.ExportCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -398,9 +395,8 @@ public sealed class CampaignCommands(
         return await CliOutputFile
             .WriteExportAsync(
                 json,
-                output,
+                destination,
                 "Campaign exported to:",
-                confirmationPrompt,
                 themePalette,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -730,7 +726,7 @@ public sealed class CampaignCodexCommands(
     IThemePalette themePalette,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(

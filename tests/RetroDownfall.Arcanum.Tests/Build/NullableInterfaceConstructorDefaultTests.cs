@@ -102,6 +102,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:ToolExecutionPipeline:toolResultMaterializer"] = "every use of the IToolResultMaterializer is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumBrowseWebTool.cs:ArcanumBrowseWebTool:dnsResolver"] = "the null coalesces to a constructed default at the use site (`_dnsResolver = dnsResolver ?? new SystemDnsResolver()`), so no host runs without a IDnsResolver; the parameter exists so browse_web tests can resolve names without live DNS",
+
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumReadUrlTool.cs:ArcanumReadUrlTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
@@ -131,26 +133,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:turnRunWriter"] = "owner is container-activated and ITurnRunWriter is registered; the container supplies it in a composed host",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:webResearchProviderCatalog"] = "every use of the IWebResearchProviderCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Conclave/ApprenticeCommands.cs:ApprenticeCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Configuration/ModelProviderCommands.cs:ModelCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Configuration/ModelProviderCommands.cs:ProviderCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/CampaignCommands.cs:CampaignCodexCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/CampaignCommands.cs:CampaignCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/MemoryCommands.cs:MemoryCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/PromptCommands.cs:PromptCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/SessionCommands.cs:SessionCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/Tower/SpellCommands.cs:SpellCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Cli/Commands/WatchCommands.cs:WatchCommands:resourceCatalog"] = "every use of the ICliResourceCatalog is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:CliSessionManager:contextStore"] = "every use of the ICliContextStore is null-safe; absence disables an observation, not a refusal",
 

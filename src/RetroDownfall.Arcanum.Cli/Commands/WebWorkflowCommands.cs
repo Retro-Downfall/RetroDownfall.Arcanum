@@ -79,7 +79,7 @@ public sealed class WebWorkflowCommands(
             response.Value.Answer,
             response.Value.Citations);
 
-        int saveExitCode = await SaveAsync(savePlan, markdown, cancellationToken)
+        int saveExitCode = await SaveAsync(savePlan, markdown)
             .ConfigureAwait(false);
 
         if (CliInvocationContext.Current.Json)
@@ -144,8 +144,7 @@ public sealed class WebWorkflowCommands(
 
         int saveExitCode = await SaveAsync(
                 savePlan,
-                response.Value.Markdown,
-                cancellationToken)
+                response.Value.Markdown)
             .ConfigureAwait(false);
 
         if (CliInvocationContext.Current.Json)
@@ -184,6 +183,20 @@ public sealed class WebWorkflowCommands(
         bool unattendedMode,
         CancellationToken cancellationToken)
     {
+        // A pure check of the command line comes before anything that asks the operator a question, so a
+        // typo in --format never costs an answer to the overwrite prompt.
+        string format = CliInvocationContext.Current.Json
+            ? "json"
+            : (outputFormat ?? "terminal").Trim().ToLowerInvariant();
+
+        if (format is not ("terminal" or "markdown" or "json"))
+        {
+            dispatcher.WriteDiagnostic(
+                "--format must be terminal, markdown, or json.");
+
+            return (int)CliExitCode.ConfigurationError;
+        }
+
         SavePlan savePlan = await PlanSaveAsync(save, cancellationToken)
             .ConfigureAwait(false);
 
@@ -208,18 +221,6 @@ public sealed class WebWorkflowCommands(
         if (!attachment.Success)
         {
             return attachment.Cancelled ? 0 : attachment.FailureExitCode;
-        }
-
-        string format = CliInvocationContext.Current.Json
-            ? "json"
-            : (outputFormat ?? "terminal").Trim().ToLowerInvariant();
-
-        if (format is not ("terminal" or "markdown" or "json"))
-        {
-            dispatcher.WriteDiagnostic(
-                "--format must be terminal, markdown, or json.");
-
-            return (int)CliExitCode.ConfigurationError;
         }
 
         WebResearchWorkflowResult? result = null;
@@ -325,7 +326,7 @@ public sealed class WebWorkflowCommands(
 
         string markdown = FormatAnswer(result.Answer, result.Citations);
 
-        int saveExitCode = await SaveAsync(savePlan, markdown, cancellationToken)
+        int saveExitCode = await SaveAsync(savePlan, markdown)
             .ConfigureAwait(false);
 
         if (format == "json")
@@ -431,10 +432,14 @@ public sealed class WebWorkflowCommands(
     /// Writes the planned save. A failure here arrives after the answer was paid for, so it is reported
     /// and returned as the exit code while the caller still prints the result.
     /// </summary>
+    /// <remarks>
+    /// The write takes no cancellation token. The answer has been paid for and exists only in memory, so a
+    /// Ctrl+C that lands now must not discard it: the local write is small and bounded, and the caller
+    /// goes on to print the result whatever happens here.
+    /// </remarks>
     private async Task<int> SaveAsync(
         SavePlan plan,
-        string content,
-        CancellationToken cancellationToken)
+        string content)
     {
         if (plan.FullPath is not string fullPath)
         {
@@ -444,16 +449,12 @@ public sealed class WebWorkflowCommands(
         try
         {
             await CliOutputFile
-                .WriteAllTextAsync(fullPath, content, Encoding.UTF8, cancellationToken)
+                .WriteAllTextAsync(fullPath, content, Encoding.UTF8, CancellationToken.None)
                 .ConfigureAwait(false);
 
             dispatcher.WriteDiagnostic($"Saved {fullPath}");
 
             return 0;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
         }
         catch (Exception exception)
             when (exception is IOException

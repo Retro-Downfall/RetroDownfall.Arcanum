@@ -366,12 +366,17 @@ public sealed class CampaignCommandTests
         {
             RecordingPrompt prompt = new(answer: false);
 
+            RecordingHandler handler = new(_ => CampaignExportResponse());
+
             CliTestResult result = RunCommand(
-                new RecordingHandler(_ => CampaignExportResponse()),
+                handler,
                 ["campaign", "export", SampleId.ToString(), "--output", output],
                 configureServices: services => UsePrompt(services, prompt));
 
             Assert.Equal(0, result.ExitCode);
+
+            // The overwrite question is settled before the export is fetched, so a refusal costs no request.
+            Assert.Empty(handler.Requests);
 
             Assert.Equal("original", File.ReadAllText(output));
 
@@ -416,6 +421,31 @@ public sealed class CampaignCommandTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// R-327: an <c>--output</c> that cannot be written is found before the export is fetched, with the same
+    /// exit code and wording as a write that fails afterwards.
+    /// </summary>
+    [Fact]
+    public void Export_to_an_unwritable_destination_fails_before_the_export_is_fetched()
+    {
+        string output = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-campaign-export-missing-{Guid.NewGuid():N}",
+            "campaign.json");
+
+        RecordingHandler handler = new(_ => CampaignExportResponse());
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["campaign", "export", SampleId.ToString(), "--output", output]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("Could not write", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]

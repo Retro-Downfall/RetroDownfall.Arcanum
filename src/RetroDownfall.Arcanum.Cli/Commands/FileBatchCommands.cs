@@ -129,11 +129,8 @@ public sealed class FileBatchCommands(
 
         bool overwrite = File.Exists(destination);
 
-        if (overwrite
-            && !await confirmationPrompt
-                .PromptForConfirmationAsync(
-                    $"Overwrite existing file {destination}?",
-                    cancellationToken)
+        if (!await CliOutputFile
+                .ConfirmOverwriteAsync(confirmationPrompt, destination, cancellationToken)
                 .ConfigureAwait(false))
         {
             dispatcher.WriteDiagnostic("Download cancelled; the existing file was not changed.");
@@ -461,11 +458,8 @@ public sealed class FileBatchCommands(
 
         bool overwrite = File.Exists(destination);
 
-        if (overwrite
-            && !await confirmationPrompt
-                .PromptForConfirmationAsync(
-                    $"Overwrite existing file {destination}?",
-                    cancellationToken)
+        if (!await CliOutputFile
+                .ConfirmOverwriteAsync(confirmationPrompt, destination, cancellationToken)
                 .ConfigureAwait(false))
         {
             dispatcher.WriteDiagnostic("Download cancelled; the existing file was not changed.");
@@ -609,7 +603,7 @@ public sealed class FileBatchCommands(
 
                 lineNumber++;
 
-                BoundedLine read = ReadBoundedLine(reader, maxRecordBytes);
+                BoundedLine read = ReadBoundedLine(reader, maxRecordBytes, cancellationToken);
 
                 if (read.EndOfInput)
                 {
@@ -670,7 +664,7 @@ public sealed class FileBatchCommands(
 
                     string? method = RequiredString(root, "method");
 
-                    if (!string.Equals(method, BatchJsonlRules.RequiredMethod, StringComparison.Ordinal))
+                    if (!BatchJsonlRules.IsRequiredMethod(method))
                     {
                         return BatchPreflightResult.Invalid(
                             $"Batch preflight failed at line {lineNumber}: method must be POST.");
@@ -722,16 +716,28 @@ public sealed class FileBatchCommands(
     /// One physical line read without ever holding more than the limit: a record over it is reported, not
     /// buffered, so a file whose "line" never ends cannot exhaust memory before the preflight judges it.
     /// </summary>
-    private static BoundedLine ReadBoundedLine(StreamReader reader, long maxRecordBytes)
+    internal static BoundedLine ReadBoundedLine(
+        StreamReader reader,
+        long maxRecordBytes,
+        CancellationToken cancellationToken)
     {
         StringBuilder buffer = new();
 
         long bytes = 0;
 
+        long scanned = 0;
+
         int next;
 
         while ((next = reader.Read()) >= 0)
         {
+            // The scan is a synchronous per-character loop and one record may be 64 MiB, so Ctrl+C is
+            // honoured every few thousand characters rather than only when the line ends.
+            if ((++scanned & CancellationCheckMask) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             char character = (char)next;
 
             if (character == '\n')
@@ -739,9 +745,13 @@ public sealed class FileBatchCommands(
                 return new BoundedLine(StripCarriageReturn(buffer), TooLarge: false, EndOfInput: false);
             }
 
-            // An upper bound on the UTF-8 length of this UTF-16 unit; a surrogate pair counts as two
-            // three-byte units, which only ever over-counts.
-            bytes += character < 0x80 ? 1 : character < 0x800 ? 2 : 3;
+            // The UTF-8 length of this UTF-16 unit. A surrogate pair is two units that encode as four
+            // bytes together, so each counts as two; counting a lone unit as three bytes (which is what
+            // an astral character's two halves cost) refused a record at two thirds of the limit.
+            bytes += character < 0x80 ? 1
+                : character < 0x800 ? 2
+                : char.IsSurrogate(character) ? 2
+                : 3;
 
             if (bytes > maxRecordBytes)
             {
@@ -766,7 +776,10 @@ public sealed class FileBatchCommands(
         return buffer.ToString();
     }
 
-    private readonly record struct BoundedLine(string? Text, bool TooLarge, bool EndOfInput);
+    /// <summary>How often, in characters, a scan looks at its cancellation token; a power of two minus one.</summary>
+    private const long CancellationCheckMask = 4095;
+
+    internal readonly record struct BoundedLine(string? Text, bool TooLarge, bool EndOfInput);
 
     internal sealed record BatchPreflightResult(
         bool Success,
