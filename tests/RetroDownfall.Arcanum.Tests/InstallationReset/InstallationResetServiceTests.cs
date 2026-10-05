@@ -1774,6 +1774,254 @@ public sealed partial class InstallationResetServiceTests
     }
 
     [Fact]
+    public async Task Cancellation_after_daemon_uninstall_marks_point_of_no_return()
+    {
+        // The uninstall cannot be taken back, and the cancellation lands as it completes, before
+        // anything has recorded that it did. A checkpoint that still said "no point of no return"
+        // would tell the operator a retry was a fresh start on an installation that has lost its daemon.
+        using CancellationTokenSource cancellation = new();
+
+        FakeActiveStore active = new();
+
+        FakePreDataMutation preData = new()
+        {
+            CancelDuringExecute = cancellation,
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            preDataMutation: preData);
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.True(result.Value.PointOfNoReturn);
+
+        Assert.Equal(InstallationResetPhase.Prepared, result.Value.Phase);
+
+        Assert.NotNull(active.Record);
+
+        Assert.True(active.Record.PointOfNoReturn);
+    }
+
+    [Fact]
+    public async Task Daemon_uninstall_is_recorded_as_point_of_no_return_when_there_is_no_data_plan()
+    {
+        // With no canonical data plan there is no point-of-no-return checkpoint of its own, so the
+        // first record written after the uninstall is the one that has to carry the fact.
+        FakeActiveStore active = new();
+
+        FakePreDataMutation preData = new();
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data"))
+            {
+                PlanFailure = new Error(
+                    ErrorCodes.Data.InventoryUnavailable,
+                    "The data inventory is unavailable."),
+            },
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            preDataMutation: preData);
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        Assert.Empty(plan.AcceptedBinding.DataPlanIds);
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(preData.Executed);
+
+        InstallationResetActiveRecord firstAfterUninstall = active.Writes
+            .Skip(1)
+            .First();
+
+        Assert.Equal(InstallationResetPhase.DataResetComplete, firstAfterUninstall.Phase);
+
+        Assert.True(firstAfterUninstall.PointOfNoReturn);
+    }
+
+    [Fact]
+    public async Task Daemon_failure_leaves_the_point_of_no_return_unset_even_if_cancellation_follows()
+    {
+        // A mutation that reports failure may have done nothing, so it is the one case where the
+        // operator is still told a retry is a fresh start.
+        using CancellationTokenSource cancellation = new();
+
+        FakeActiveStore active = new();
+
+        FakePreDataMutation preData = new()
+        {
+            Result = Result.Failure(new Error(
+                "Daemon.UninstallFailed",
+                "daemon uninstall failed")),
+        };
+
+        active.WriteOverride = _ =>
+        {
+            if (preData.Executed)
+            {
+                cancellation.Cancel();
+            }
+
+            return Result.Success();
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            preDataMutation: preData);
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.False(result.Value.PointOfNoReturn);
+
+        Assert.NotNull(active.Record);
+
+        Assert.False(active.Record.PointOfNoReturn);
+    }
+
+    [Fact]
+    public async Task Completed_phase_records_credential_results_before_retiring()
+    {
+        // The accepted credentials are deleted by the call that finishes a completed record. That
+        // deletion is not undoable, so the durable record has to say it happened before retirement is
+        // even attempted; otherwise a crash or a refused retirement leaves credentials gone under a
+        // record that says it never touched them.
+        FakeCredentialInventory credentials = new(
+            [
+                new InstallationResetCredentialSummary(
+                    "accepted-account",
+                    InstallationResetItemStatus.Pending),
+            ]);
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            credentials,
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        active.Seed(CreateActive(plan, InstallationResetPhase.Completed));
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(result.Value.ResumeRequired);
+
+        InstallationResetActiveRecord atRetirement = Assert.IsType<InstallationResetActiveRecord>(
+            active.RecordAtRetirement);
+
+        InstallationResetCredentialResult recorded = Assert.Single(
+            atRetirement.CredentialResults);
+
+        Assert.Equal("accepted-account", recorded.Account);
+
+        Assert.Equal(InstallationResetItemStatus.Deleted, recorded.Status);
+    }
+
+    [Fact]
+    public async Task Completed_record_keeps_the_credential_deletion_when_retirement_fails()
+    {
+        FakeActiveStore active = new()
+        {
+            RetireResult = Result.Failure(new Error(
+                ErrorCodes.Data.RecoveryRequired,
+                "retirement failed")),
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory(
+                [
+                    new InstallationResetCredentialSummary(
+                        "accepted-account",
+                        InstallationResetItemStatus.Pending),
+                ]),
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        active.Seed(CreateActive(plan, InstallationResetPhase.Completed));
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.NotNull(active.Record);
+
+        Assert.Equal(
+            InstallationResetItemStatus.Deleted,
+            Assert.Single(active.Record.CredentialResults).Status);
+    }
+
+    [Fact]
     public async Task Cancellation_after_canonical_data_call_is_checkpointed_conservatively()
     {
         using CancellationTokenSource cancellation = new();
@@ -4233,11 +4481,19 @@ public sealed partial class InstallationResetServiceTests
         /// <summary>Cancelled from inside the apply; see <see cref="FakePreDataMutation"/>.</summary>
         public CancellationTokenSource? CancelDuringApply { get; set; }
 
+        /// <summary>Makes planning fail, so a plan is built with no canonical data plan in it.</summary>
+        public Error? PlanFailure { get; set; }
+
         public Task<Result<DataRetentionPlan>> PlanAsync(
             InstallationResetDataPlanRequest request,
             CancellationToken cancellationToken = default)
         {
             PlanRequests.Add(request);
+
+            if (PlanFailure is { } planFailure)
+            {
+                return Task.FromResult(Result<DataRetentionPlan>.Failure(planFailure));
+            }
 
             DataRetentionPlan plan = plans[Math.Min(_planIndex, plans.Length - 1)];
 
@@ -4395,6 +4651,9 @@ public sealed partial class InstallationResetServiceTests
 
         public List<Guid> RetiredOperationIds { get; } = [];
 
+        /// <summary>What the durable record said at the instant retirement was requested.</summary>
+        public InstallationResetActiveRecord? RecordAtRetirement { get; private set; }
+
         public Result RetireResult { get; set; } = Result.Success();
 
         /// <summary>A legacy V1 file the next recovery will report instead of an authenticated record.</summary>
@@ -4540,6 +4799,8 @@ public sealed partial class InstallationResetServiceTests
             CancellationToken cancellationToken)
         {
             Retired = true;
+
+            RecordAtRetirement = Record;
 
             RetiredOperationIds.Add(operationId);
 

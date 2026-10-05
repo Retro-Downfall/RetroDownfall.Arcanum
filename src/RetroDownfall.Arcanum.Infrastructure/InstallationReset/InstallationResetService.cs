@@ -1671,14 +1671,30 @@ internal sealed class InstallationResetService(
                 }
             }
 
-            Result preData = active.Scope is InstallationResetScope.Workspace
-                ? Result.Success()
-                : await _preDataMutation
+            Result preData;
+
+            if (active.Scope is InstallationResetScope.Workspace)
+            {
+                preData = Result.Success();
+            }
+            else
+            {
+                // The daemon uninstall cannot be taken back, and a cancellation can land after it has
+                // happened but before anything records that it did. So the in-memory record is marked
+                // past the point of no return before the call, and a cancellation from here on
+                // checkpoints it that way. Nothing durable says so yet: a mutation that reports failure
+                // may have done nothing, and the operator can simply retry it.
+                progress.Active = active with { PointOfNoReturn = true };
+
+                preData = await _preDataMutation
                     .ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             if (preData.IsFailure)
             {
                 active = active with { LastErrorCode = preData.Error.Code };
+
+                progress.Active = active;
 
                 Result preDataCheckpoint = await writer.WriteAsync(
                     active,
@@ -1687,6 +1703,15 @@ internal sealed class InstallationResetService(
                 return preDataCheckpoint.IsFailure
                     ? Resumable(active, preDataCheckpoint.Error)
                     : Resumable(active, preData.Error);
+            }
+
+            if (active.Scope is not InstallationResetScope.Workspace)
+            {
+                // Reported success, so the uninstall happened and every checkpoint from here carries it,
+                // including the ones written when there is no canonical data plan to apply.
+                active = active with { PointOfNoReturn = true };
+
+                progress.Active = active;
             }
 
             if (active.AcceptedBinding.DataPlanIds.Length > 0)
@@ -2277,6 +2302,8 @@ internal sealed class InstallationResetService(
                     resumeRequired: true));
         }
 
+        InstallationResetActiveRecord beforeCleanup = active;
+
         InstallationResetCredentialResult[] credentialResults =
             credentialService.DeleteAndVerify(
                 active.AcceptedBinding.CredentialAccounts);
@@ -2291,6 +2318,24 @@ internal sealed class InstallationResetService(
                 credentialResults,
                 active.AcceptedBinding.CredentialAccounts),
         };
+
+        // What was just deleted is recorded before anything else is decided about it. The deletion is
+        // not undoable, so the durable record has to say it happened before verification can refuse
+        // and before retirement can remove the record, or a crash in between leaves credentials gone
+        // under a record that says they were never touched. It is written only when something changed,
+        // so a replay that finds nothing left to do does not spend an envelope revision, and on an
+        // uncancelled token because the effect it records is already done.
+        if (RecordsProgress(beforeCleanup, active))
+        {
+            Result recorded = await writer.WriteAsync(
+                active,
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (recorded.IsFailure)
+            {
+                return Resumable(active, recorded.Error);
+            }
+        }
 
         InstallationResetVerification verification = VerifyCompleted(active);
 
@@ -2455,6 +2500,14 @@ internal sealed class InstallationResetService(
             false,
             [.. credentialVerification.RemainingIssues, lastError]);
     }
+
+    private static bool RecordsProgress(
+        InstallationResetActiveRecord before,
+        InstallationResetActiveRecord after) =>
+        before.PointOfNoReturn != after.PointOfNoReturn
+        || before.FilesDeleted != after.FilesDeleted
+        || before.EstimatedBytesDeleted != after.EstimatedBytesDeleted
+        || !before.CredentialResults.SequenceEqual(after.CredentialResults);
 
     private static bool CredentialIsRemoved(
         InstallationResetCredentialResult result) =>
