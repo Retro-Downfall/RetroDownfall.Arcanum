@@ -150,7 +150,12 @@ internal static class SandboxedFileIo
             }
             catch (IOException)
             {
-                return (false, ToolError("An I/O error occurred creating directory. See server logs."));
+                return (
+                    false,
+                    ToolError(
+                        WorkspacePathPolicy.HasEntryBlockingDirectoryCreation(workspaceRoot, parentDir)
+                            ? BlockedParentDirectoryMessage
+                            : "An I/O error occurred creating directory. See server logs."));
             }
         }
 
@@ -428,6 +433,9 @@ internal static class SandboxedFileIo
 
     private const string ProtectedPathMessage =
         "That path is protected workspace metadata (.git or .arcanum) and cannot be written through the file tools, so the operation was not performed.";
+
+    private const string BlockedParentDirectoryMessage =
+        "A folder on that path is an existing file or a symbolic link that does not lead to a directory (for example, a link whose target does not exist), so the folder cannot be created and nothing was written. Write through the real directory path instead.";
 
     private const string HardLinkAliasingMessage =
         "This file has more than one hard link and cannot be read or written through the sandbox.";

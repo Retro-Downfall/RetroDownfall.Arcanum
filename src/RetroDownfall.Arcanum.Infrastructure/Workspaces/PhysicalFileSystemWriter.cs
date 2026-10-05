@@ -413,7 +413,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         catch (IOException)
         {
             return Task.FromResult<Result<DirectoryCreateResult>>(
-                new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage));
+                DirectoryCreationFailure(workspaceRoot, resolvedPath));
         }
 
         string entryRelativePath = Path.GetRelativePath(workspaceRoot, resolvedPath);
@@ -421,6 +421,16 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         return Task.FromResult<Result<DirectoryCreateResult>>(
             new DirectoryCreateResult(entryRelativePath, DateTimeOffset.UtcNow));
     }
+
+    /// <summary>
+    /// The error for a directory that could not be created. An existing file, or a symbolic link that does not
+    /// lead to a directory (a dangling in-workspace link passes containment), is named as
+    /// <c>Workspace.PathIsFile</c>, the caller's own mistake; anything else stays the generic I/O failure.
+    /// </summary>
+    private static Error DirectoryCreationFailure(string workspaceRoot, string directoryPath) =>
+        WorkspacePathPolicy.HasEntryBlockingDirectoryCreation(workspaceRoot, directoryPath)
+            ? new Error(ErrorCodes.Workspace.PathIsFile, BlockedDirectoryMessage)
+            : new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage);
 
     private bool IsFileWriteEnabled()
     {
@@ -516,7 +526,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             }
             catch (IOException)
             {
-                return new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage);
+                return DirectoryCreationFailure(workspaceRoot, parentDir);
             }
         }
 
@@ -907,6 +917,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     private const string PathIsDirectoryMessage = "The target path is an existing directory; file content cannot be written to it.";
 
     private const string PathIsFileMessage = "The target path is an existing file; a directory cannot be created there.";
+
+    private const string BlockedDirectoryMessage = "A directory on the path is an existing file or a symbolic link that does not lead to a directory (for example, a link whose target does not exist); a directory cannot be created there.";
 
     private const string InvalidUtf8Message = "The file is not valid UTF-8 text. This endpoint edits UTF-8 text files only.";
 
