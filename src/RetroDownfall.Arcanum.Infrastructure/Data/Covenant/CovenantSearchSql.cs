@@ -85,6 +85,8 @@ internal static class CovenantSearchSql
         // Each term is the same prefix of a token the full-text index matches. LIKE is the cheap in-place
         // prefilter that finds a substring; the token-start function then refuses an occurrence in the
         // middle of a word, so only rows the prefilter passed are marshalled out of SQLite to be checked.
+        // LIKE folds ASCII case only, so a term with any other scalar arrives as a pattern that passes
+        // every row and the function alone decides (see CovenantSearchQueryCompiler).
         string matches = string.Join(
             "\n              AND ",
             Enumerable.Range(0, termCount).Select(static index => $"""

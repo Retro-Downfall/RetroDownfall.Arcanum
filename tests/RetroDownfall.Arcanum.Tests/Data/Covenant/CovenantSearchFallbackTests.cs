@@ -127,6 +127,11 @@ public sealed class CovenantSearchFallbackTests
     [InlineData("ab\u0903sport", "sport", 1)]
     [InlineData("ab\u0308sport", "sport", 0)]
     [InlineData("naive \u0301sport", "sport", 1)]
+    [InlineData("Привет мир", "привет", 1)]
+    [InlineData("привет мир", "ПРИВЕТ", 1)]
+    [InlineData("Σοφία είναι", "σοφ", 1)]
+    [InlineData("Ünder the bridge", "ünder", 1)]
+    [InlineData("Ünder the bridge", "nder", 0)]
     public async Task Fts_and_fallback_return_the_same_hits_for_a_mid_word_term(string text, string term, int expectedHits)
     {
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
@@ -157,6 +162,37 @@ public sealed class CovenantSearchFallbackTests
         Assert.Equal(
             indexed.Hits.Select(static hit => hit.EntryId).OrderBy(static id => id),
             fallback.Hits.Select(static hit => hit.EntryId).OrderBy(static id => id));
+    }
+
+    [Fact]
+    public async Task Only_the_full_text_index_removes_diacritics_as_the_API_contract_states()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "athletics",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Émile writes poems.",
+            Token);
+
+        // The fallback folds case but keeps diacritics: `emile` is not `Émile` to it, while `émile` is.
+        Assert.Empty((await SearchAsync(fixture, "emile")).Hits);
+
+        _ = Assert.Single((await SearchAsync(fixture, "émile")).Hits);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        // The index removes diacritics, which is the first of the documented differences between modes.
+        CovenantSearchPage indexed = await SearchAsync(fixture, "emile");
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, indexed.ExecutionMode);
+
+        _ = Assert.Single(indexed.Hits);
+
+        _ = Assert.Single((await SearchAsync(fixture, "émile")).Hits);
     }
 
     [Fact]
