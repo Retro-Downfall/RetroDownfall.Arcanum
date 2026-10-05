@@ -15,6 +15,7 @@ internal enum WorkspaceMutationRejection
     MetadataUnavailable,
     HardLinkedFile,
     ConcurrentModification,
+    ProtectedPath,
 }
 
 internal sealed class WorkspaceMutationRejectedException(
@@ -23,9 +24,7 @@ internal sealed class WorkspaceMutationRejectedException(
     Exception? innerException = null)
     : IOException(message, innerException)
 {
-
     internal WorkspaceMutationRejection Rejection { get; } = rejection;
-
 }
 
 /// <summary>
@@ -43,7 +42,6 @@ internal readonly record struct WorkspaceFileFingerprint(
     string? MissingParentRelativePath,
     FileHandleIdentity? MissingParentIdentity)
 {
-
     internal static WorkspaceFileFingerprint Missing { get; } =
         new(
             Exists: false,
@@ -55,7 +53,6 @@ internal readonly record struct WorkspaceFileFingerprint(
             UnixMode: null,
             MissingParentRelativePath: null,
             MissingParentIdentity: null);
-
 }
 
 internal readonly record struct WorkspaceMutationRead(
@@ -75,13 +72,11 @@ internal sealed class WorkspaceMutationReadLimitExceededException(
 
 internal static class WorkspaceFileFingerprintService
 {
-
     internal static async Task<WorkspaceFileFingerprint> CaptureForMutationAsync(
         string workspaceRoot,
         string relativePath,
         CancellationToken cancellationToken)
     {
-
         (string root, string absolutePath, _) = Resolve(workspaceRoot, relativePath);
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
@@ -89,11 +84,9 @@ internal static class WorkspaceFileFingerprintService
                 absolutePath,
                 out string? resolvedFinalPath))
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.PathEscapesWorkspace,
                 "The mutation path leaves the workspace.");
-
         }
 
         if (resolvedFinalPath is not null
@@ -102,47 +95,37 @@ internal static class WorkspaceFileFingerprintService
                 Path.GetFullPath(resolvedFinalPath),
                 WorkspaceRelativePath.Comparison))
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.SymbolicLink,
                 "Existing symbolic-link mutation targets are not supported.");
-
         }
 
         RejectSymlinkComponents(root, absolutePath);
 
         if (Directory.Exists(absolutePath))
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.NotRegularFile,
                 "The mutation target is a directory, not a regular file.");
-
         }
 
         if (!File.Exists(absolutePath))
         {
-
             if (!WorkspacePathPolicy.RevalidatePathBeforeIo(root, absolutePath))
             {
-
                 throw Rejected(
                     WorkspaceMutationRejection.PathEscapesWorkspace,
                     "The mutation path failed containment revalidation.");
-
             }
 
             if (File.Exists(absolutePath) || Directory.Exists(absolutePath))
             {
-
                 throw Rejected(
                     WorkspaceMutationRejection.ConcurrentModification,
                     "The mutation target appeared while its missing state was being captured.");
-
             }
 
             return CaptureMissingFingerprint(root, absolutePath);
-
         }
 
         if (!FileHandleIdentityInterop.TryGetPathMetadata(
@@ -151,11 +134,9 @@ internal static class WorkspaceFileFingerprintService
             || pathMetadata.HardLinkCount == 0
             || pathMetadata.Kind != FileSystemObjectKind.RegularFile)
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.MetadataUnavailable,
                 "File identity and hard-link metadata could not be obtained.");
-
         }
 
         RejectMultipleLinks(pathMetadata);
@@ -166,25 +147,21 @@ internal static class WorkspaceFileFingerprintService
 
         try
         {
-
             beforeMtime = File.GetLastWriteTimeUtc(absolutePath);
 
             unixMode = OperatingSystem.IsWindows()
                 ? null
                 : File.GetUnixFileMode(absolutePath);
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or PlatformNotSupportedException)
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.MetadataUnavailable,
                 "Promised file metadata could not be captured.",
                 exception);
-
         }
 
         await using FileStream stream = OpenForFingerprint(absolutePath);
@@ -195,11 +172,9 @@ internal static class WorkspaceFileFingerprintService
             || openedMetadata.HardLinkCount == 0
             || openedMetadata.Kind != FileSystemObjectKind.RegularFile)
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.MetadataUnavailable,
                 "Opened file identity and hard-link metadata could not be obtained.");
-
         }
 
         RejectMultipleLinks(openedMetadata);
@@ -208,11 +183,9 @@ internal static class WorkspaceFileFingerprintService
                 pathMetadata.Identity,
                 openedMetadata.Identity))
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.ConcurrentModification,
                 "The file identity changed while opening it.");
-
         }
 
         long length = stream.Length;
@@ -226,11 +199,9 @@ internal static class WorkspaceFileFingerprintService
                 absolutePath,
                 out FileHandleMetadata finalPathMetadata))
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.MetadataUnavailable,
                 "File metadata could not be revalidated after hashing.");
-
         }
 
         DateTime afterMtime = File.GetLastWriteTimeUtc(absolutePath);
@@ -251,11 +222,9 @@ internal static class WorkspaceFileFingerprintService
 
         if (changed)
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.ConcurrentModification,
                 "The file changed while its mutation fingerprint was being captured.");
-
         }
 
         return new WorkspaceFileFingerprint(
@@ -268,7 +237,6 @@ internal static class WorkspaceFileFingerprintService
             UnixMode: unixMode,
             MissingParentRelativePath: null,
             MissingParentIdentity: null);
-
     }
 
     internal static async Task<bool> MatchesCurrentAsync(
@@ -277,7 +245,6 @@ internal static class WorkspaceFileFingerprintService
         WorkspaceFileFingerprint expected,
         CancellationToken cancellationToken)
     {
-
         WorkspaceFileFingerprint current = await CaptureForMutationAsync(
             workspaceRoot,
             relativePath,
@@ -285,13 +252,10 @@ internal static class WorkspaceFileFingerprintService
 
         if (expected.Exists || current.Exists)
         {
-
             return current == expected;
-
         }
 
         return MatchesMissingParent(workspaceRoot, expected);
-
     }
 
     internal static async Task<WorkspaceMutationRead> ReadForMutationAsync(
@@ -301,7 +265,6 @@ internal static class WorkspaceFileFingerprintService
         Action? afterHandleOpened = null,
         long maxBytes = long.MaxValue)
     {
-
         (string root, string absolutePath, _) = Resolve(
             workspaceRoot,
             relativePath);
@@ -408,11 +371,9 @@ internal static class WorkspaceFileFingerprintService
 
         if (streamLength > maxBytes)
         {
-
             throw new WorkspaceMutationReadLimitExceededException(
                 streamLength,
                 maxBytes);
-
         }
 
         if (streamLength > int.MaxValue)
@@ -485,14 +446,12 @@ internal static class WorkspaceFileFingerprintService
                 UnixMode: unixMode,
                 MissingParentRelativePath: null,
                 MissingParentIdentity: null));
-
     }
 
     internal static bool TryGetDirectoryIdentity(
         string absolutePath,
         out FileHandleIdentity identity)
     {
-
         identity = default;
 
         return Directory.Exists(absolutePath)
@@ -501,20 +460,16 @@ internal static class WorkspaceFileFingerprintService
                 out FileHandleMetadata metadata)
             && metadata.Kind == FileSystemObjectKind.Directory
             && AssignIdentity(metadata.Identity, out identity);
-
     }
 
     internal static bool MatchesMissingParent(
         string workspaceRoot,
         WorkspaceFileFingerprint expected)
     {
-
         if (expected.MissingParentRelativePath is null
             || expected.MissingParentIdentity is not FileHandleIdentity parentIdentity)
         {
-
             return true;
-
         }
 
         string root = Path.GetFullPath(workspaceRoot);
@@ -531,22 +486,18 @@ internal static class WorkspaceFileFingerprintService
         return WorkspacePathPolicy.RevalidatePathBeforeIo(root, parentPath)
             && TryGetDirectoryIdentity(parentPath, out FileHandleIdentity currentParent)
             && FileHandleIdentity.IdentitiesMatch(parentIdentity, currentParent);
-
     }
 
     private static WorkspaceFileFingerprint CaptureMissingFingerprint(
         string workspaceRoot,
         string absolutePath)
     {
-
         string? parent = Path.GetDirectoryName(absolutePath);
 
         while (!string.IsNullOrEmpty(parent))
         {
-
             if (Directory.Exists(parent))
             {
-
                 if (!WorkspacePathPolicy.RevalidatePathBeforeIo(
                         workspaceRoot,
                         parent)
@@ -554,11 +505,9 @@ internal static class WorkspaceFileFingerprintService
                         parent,
                         out FileHandleIdentity identity))
                 {
-
                     throw Rejected(
                         WorkspaceMutationRejection.MetadataUnavailable,
                         "The nearest existing parent identity could not be captured.");
-
                 }
 
                 string relative = string.Equals(
@@ -575,7 +524,6 @@ internal static class WorkspaceFileFingerprintService
                     MissingParentRelativePath = relative,
                     MissingParentIdentity = identity,
                 };
-
             }
 
             if (File.Exists(parent)
@@ -584,28 +532,23 @@ internal static class WorkspaceFileFingerprintService
                     workspaceRoot,
                     WorkspaceRelativePath.Comparison))
             {
-
                 throw Rejected(
                     WorkspaceMutationRejection.NotRegularFile,
                     "A missing mutation target has a non-directory parent.");
-
             }
 
             parent = Path.GetDirectoryName(parent);
-
         }
 
         throw Rejected(
             WorkspaceMutationRejection.MetadataUnavailable,
             "A missing mutation target has no verifiable existing parent.");
-
     }
 
     internal static (string Root, string AbsolutePath, string RelativePath) Resolve(
         string workspaceRoot,
         string relativePath)
     {
-
         string root = Path.GetFullPath(workspaceRoot);
 
         if (!WorkspaceRelativePath.TryResolve(
@@ -614,23 +557,25 @@ internal static class WorkspaceFileFingerprintService
                 out string? absolutePath,
                 out string? normalized))
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.InvalidRelativePath,
                 "The mutation path must be a normalized workspace-relative path.");
+        }
 
+        if (WorkspaceProtectedPaths.IsProtectedRelativePath(normalized))
+        {
+            throw Rejected(
+                WorkspaceMutationRejection.ProtectedPath,
+                "The mutation path is protected workspace metadata (.git or .arcanum).");
         }
 
         return (root, absolutePath, normalized);
-
     }
 
     private static FileStream OpenForFingerprint(string absolutePath)
     {
-
         try
         {
-
             return new FileStream(
                 absolutePath,
                 FileMode.Open,
@@ -638,7 +583,6 @@ internal static class WorkspaceFileFingerprintService
                 FileShare.ReadWrite | FileShare.Delete,
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-
         }
         catch (Exception exception) when (
             exception is FileNotFoundException
@@ -646,35 +590,27 @@ internal static class WorkspaceFileFingerprintService
                 or UnauthorizedAccessException
                 or IOException)
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.ConcurrentModification,
                 "The file could not be opened after its path metadata was captured.",
                 exception);
-
         }
-
     }
 
     private static void RejectMultipleLinks(FileHandleMetadata metadata)
     {
-
         if (metadata.HardLinkCount > 1)
         {
-
             throw Rejected(
                 WorkspaceMutationRejection.HardLinkedFile,
                 "Mutation of files with multiple hard links is rejected.");
-
         }
-
     }
 
     private static void RejectSymlinkComponents(
         string workspaceRoot,
         string absolutePath)
     {
-
         string relative = Path.GetRelativePath(workspaceRoot, absolutePath);
 
         string current = workspaceRoot;
@@ -683,61 +619,46 @@ internal static class WorkspaceFileFingerprintService
             Path.DirectorySeparatorChar,
             StringSplitOptions.RemoveEmptyEntries))
         {
-
             current = Path.Combine(current, segment);
 
             if (!File.Exists(current) && !Directory.Exists(current))
             {
-
                 continue;
-
             }
 
             try
             {
-
                 if (File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint))
                 {
-
                     throw Rejected(
                         WorkspaceMutationRejection.SymbolicLink,
                         "Mutation through symbolic-link path components is rejected.");
-
                 }
-
             }
             catch (WorkspaceMutationRejectedException)
             {
-
                 throw;
-
             }
             catch (Exception exception) when (
                 exception is IOException
                     or UnauthorizedAccessException
                     or ArgumentException)
             {
-
                 throw Rejected(
                     WorkspaceMutationRejection.MetadataUnavailable,
                     "A mutation path component could not be revalidated.",
                     exception);
-
             }
-
         }
-
     }
 
     private static bool AssignIdentity(
         FileHandleIdentity value,
         out FileHandleIdentity identity)
     {
-
         identity = value;
 
         return true;
-
     }
 
     private static WorkspaceMutationRejectedException Rejected(
@@ -745,5 +666,4 @@ internal static class WorkspaceFileFingerprintService
         string message,
         Exception? exception = null) =>
         new(rejection, message, exception);
-
 }

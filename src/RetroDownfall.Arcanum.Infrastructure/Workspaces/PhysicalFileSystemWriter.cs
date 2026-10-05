@@ -41,6 +41,11 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
 
+        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath))
+        {
+            return new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage);
+        }
+
         if (Directory.Exists(resolvedPath))
         {
             return new Error(ErrorCodes.Workspace.PathIsDirectory, PathIsDirectoryMessage);
@@ -102,6 +107,11 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string resolvedPath = resolvedResult.Value;
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
+
+        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath))
+        {
+            return new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage);
+        }
 
         if (!File.Exists(resolvedPath))
         {
@@ -255,6 +265,12 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                     "The workspace root cannot be deleted. Name a path inside the workspace."));
         }
 
+        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath))
+        {
+            return Task.FromResult<Result<FileDeleteResult>>(
+                new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage));
+        }
+
         bool isDirectory = Directory.Exists(resolvedPath);
 
         bool isFile = !isDirectory && File.Exists(resolvedPath);
@@ -332,6 +348,12 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string resolvedPath = resolvedResult.Value;
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
+
+        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath))
+        {
+            return Task.FromResult<Result<DirectoryCreateResult>>(
+                new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage));
+        }
 
         if (File.Exists(resolvedPath))
         {
@@ -759,6 +781,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     private const string ReplacementNotFoundMessage = "The specified text was not found in the file.";
 
     private const string ReplacementAmbiguousMessage = "The specified text was found a different number of times than expectedReplacements. Provide an expectedReplacements value matching the exact occurrence count.";
+
+    private const string ProtectedPathMessage = "The path is protected workspace metadata (.git or .arcanum) and cannot be created, modified or deleted through the file API.";
 
     private const string PathIsDirectoryMessage = "The target path is an existing directory; file content cannot be written to it.";
 

@@ -166,6 +166,108 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    [InlineData(".git/hooks/pre-commit")]
+    [InlineData(".git/config")]
+    [InlineData(".GIT/hooks/pre-push")]
+    [InlineData("nested/checkout/.git/config")]
+    [InlineData(".arcanum/campaign.json")]
+    public async Task WriteFileAsync_rejects_dot_git_paths(string relativePath)
+    {
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileWriteResult> result = await writer.WriteFileAsync(
+            workspace,
+            relativePath,
+            "#!/bin/sh\necho planted\n",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.Contains("protected", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(Path.Combine(_workspace.Root, relativePath)));
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, relativePath.Split('/')[0])));
+    }
+
+    [Theory]
+    [InlineData(".git/config")]
+    [InlineData(".arcanum/campaign.json")]
+    public async Task ReplaceTextBlockAsync_rejects_dot_git_paths_and_leaves_the_file_untouched(
+        string relativePath)
+    {
+        string absolute = _workspace.WriteFile(relativePath, "[core]\nbare = false\n");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+            MakeWorkspace(),
+            relativePath,
+            "bare = false",
+            "fsmonitor = /tmp/payload",
+            expectedReplacements: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.Equal("[core]\nbare = false\n", await File.ReadAllTextAsync(absolute));
+    }
+
+    [Theory]
+    [InlineData(".git/hooks/pre-commit", false)]
+    [InlineData(".git", true)]
+    [InlineData(".arcanum", true)]
+    public async Task DeleteAsync_rejects_dot_git_paths_and_removes_nothing(
+        string relativePath,
+        bool recursive)
+    {
+        string absolute = _workspace.WriteFile(
+            relativePath == ".git" || relativePath == ".arcanum"
+                ? Path.Combine(relativePath, "marker.txt")
+                : relativePath,
+            "keep");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        Result<FileDeleteResult> result = await writer.DeleteAsync(
+            MakeWorkspace(),
+            relativePath,
+            recursive,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.True(File.Exists(absolute));
+    }
+
+    [Theory]
+    [InlineData(".git/hooks")]
+    [InlineData(".arcanum/state")]
+    public async Task CreateDirectoryAsync_rejects_dot_git_paths(string relativePath)
+    {
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        Result<DirectoryCreateResult> result = await writer.CreateDirectoryAsync(
+            MakeWorkspace(),
+            relativePath,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, relativePath.Split('/')[0])));
+    }
+
     [Fact]
     public async Task WriteFileAsync_rejects_content_exceeding_MaxFileWriteSizeBytes()
     {

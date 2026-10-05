@@ -172,6 +172,55 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.Equal("atomic content", await File.ReadAllTextAsync(target));
     }
 
+    [Theory]
+    [InlineData(".git/hooks/pre-commit")]
+    [InlineData(".git/config")]
+    [InlineData(".GIT/hooks/pre-push")]
+    [InlineData(".arcanum/campaign.json")]
+    public async Task Write_under_dot_git_is_rejected(string relativePath)
+    {
+        string target = Path.Combine(
+            _workspace.Root,
+            relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+        (bool success, McpToolsCallResultWire? error) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            target,
+            "#!/bin/sh\necho planted\n",
+            CancellationToken.None);
+
+        Assert.False(success);
+
+        Assert.NotNull(error);
+
+        Assert.True(error!.IsError);
+
+        Assert.Contains(
+            "protected",
+            Assert.IsType<McpToolContentTextWire>(Assert.Single(error.Content!)).Text!,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(target));
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, relativePath.Split('/')[0])));
+    }
+
+    [Fact]
+    public async Task Write_to_an_existing_dot_git_file_leaves_its_content_untouched()
+    {
+        string config = _workspace.WriteFile(".git/config", "[core]\n");
+
+        (bool success, _) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            config,
+            "[core]\n\tfsmonitor = /tmp/payload\n",
+            CancellationToken.None);
+
+        Assert.False(success);
+
+        Assert.Equal("[core]\n", await File.ReadAllTextAsync(config));
+    }
+
     /// <summary>
     /// An overwrite carries the destination's UTF-8 BOM across, as the other write paths do.
     /// </summary>

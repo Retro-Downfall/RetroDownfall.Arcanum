@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
@@ -109,6 +111,14 @@ internal static class SandboxedFileIo
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
             return (false, ToolError(PathEscapesSandboxMessage));
+        }
+
+        // Git metadata and the .arcanum marker directory are never writable through a model-driven
+        // tool: a planted .git/hooks entry runs with the operator's full identity on their next git
+        // command. Checked before any directory is created so a refusal leaves nothing behind.
+        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, absolutePath))
+        {
+            return (false, ToolError(ProtectedPathMessage));
         }
 
         string? parentDir = Path.GetDirectoryName(absolutePath);
@@ -369,6 +379,9 @@ internal static class SandboxedFileIo
 
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
+
+    private const string ProtectedPathMessage =
+        "That path is protected workspace metadata (.git or .arcanum) and cannot be written through the file tools, so the operation was not performed.";
 
     private const string HardLinkAliasingMessage =
         "This file has more than one hard link and cannot be read or written through the sandbox.";
