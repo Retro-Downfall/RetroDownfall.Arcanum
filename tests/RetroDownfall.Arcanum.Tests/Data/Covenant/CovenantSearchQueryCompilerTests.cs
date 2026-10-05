@@ -89,6 +89,23 @@ public sealed class CovenantSearchQueryCompilerTests
         Assert.Equal(["%", "%Sport%", "%"], (string[])[.. compiled.LikePatterns]);
     }
 
+    [Theory]
+    [InlineData("build root", "build%")]
+    [InlineData("Sport", "Sport%")]
+    [InlineData("100%_x\\y", "100\\%\\_x\\\\y%")]
+    [InlineData("привет Sport", "привет%")]
+    [InlineData("ünder", "ünder%")]
+    public void The_key_prefix_pattern_is_the_first_term_alone_and_never_admits_every_key(string query, string expected)
+    {
+        // The prefilter of a non-ASCII term admits every candidate, so the key-prefix class cannot be
+        // derived from it: that would class every hit of such a query as a key prefix.
+        CovenantCompiledSearchTerms compiled = Compile(query);
+
+        Assert.Equal(expected, compiled.KeyPrefixPattern);
+
+        Assert.NotEqual("%", compiled.KeyPrefixPattern);
+    }
+
     [Fact]
     public void Policy_whitespace_collapses_and_splits_terms_identically()
     {

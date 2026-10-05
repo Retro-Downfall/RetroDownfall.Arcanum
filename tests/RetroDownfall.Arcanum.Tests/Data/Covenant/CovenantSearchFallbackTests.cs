@@ -164,6 +164,71 @@ public sealed class CovenantSearchFallbackTests
             fallback.Hits.Select(static hit => hit.EntryId).OrderBy(static id => id));
     }
 
+    [Theory]
+    [InlineData("Привет мир", "привет")]
+    [InlineData("Привет мир", "привет мир")]
+    [InlineData("Ünder the bridge", "ünder")]
+    public async Task A_non_ASCII_first_term_ranks_a_hit_instead_of_classing_it_as_a_key_prefix_in_both_modes(
+        string text,
+        string query)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "athletics",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            text,
+            Token);
+
+        CovenantSearchPage fallback = await SearchAsync(fixture, query);
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, fallback.ExecutionMode);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        CovenantSearchPage indexed = await SearchAsync(fixture, query);
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, indexed.ExecutionMode);
+
+        // A key is lower-case ASCII, so a term holding any other scalar can never begin one. The hit is
+        // found by its body and is ranked; a prefilter that admits every row must not leak into the class.
+        Assert.Equal(CovenantSearchMatchClass.Ranked, Assert.Single(fallback.Hits).MatchClass);
+
+        Assert.Equal(CovenantSearchMatchClass.Ranked, Assert.Single(indexed.Hits).MatchClass);
+    }
+
+    [Fact]
+    public async Task An_ASCII_first_term_still_classes_a_key_prefix_beside_a_non_ASCII_later_term()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "athletics",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Привет, athletics.",
+            Token);
+
+        CovenantSearchPage fallback = await SearchAsync(fixture, "athl привет");
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, fallback.ExecutionMode);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        CovenantSearchPage indexed = await SearchAsync(fixture, "athl привет");
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, indexed.ExecutionMode);
+
+        Assert.Equal(CovenantSearchMatchClass.KeyPrefix, Assert.Single(fallback.Hits).MatchClass);
+
+        Assert.Equal(CovenantSearchMatchClass.KeyPrefix, Assert.Single(indexed.Hits).MatchClass);
+    }
+
     [Fact]
     public async Task Only_the_full_text_index_removes_diacritics_as_the_API_contract_states()
     {

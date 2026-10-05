@@ -100,7 +100,11 @@ internal sealed class CovenantSearchQueryCompiler
             patterns.Add(LikePatternFor(term));
         }
 
-        return new CovenantCompiledSearchTerms(match.ToString(), terms, patterns.MoveToImmutable());
+        return new CovenantCompiledSearchTerms(
+            match.ToString(),
+            terms,
+            patterns.MoveToImmutable(),
+            KeyPrefixPatternFor(terms[0]));
     }
 
     private static Result ValidateScalars(string query)
@@ -202,6 +206,18 @@ internal sealed class CovenantSearchQueryCompiler
     /// </remarks>
     private static string LikePatternFor(string term) =>
         Ascii.IsValid(term) ? $"%{EscapeLike(term)}%" : "%";
+
+    /// <summary>
+    /// The starts-with pattern the key-prefix match class compares a normalized key against, built from the
+    /// first term exactly as typed and independent of the prefilter.
+    /// </summary>
+    /// <remarks>
+    /// A key is lower-case ASCII, so a term holding any other scalar can never begin one and its pattern
+    /// matches no key. Deriving this from <see cref="LikePatternFor"/> would turn the admit-everything
+    /// prefilter of such a term into a pattern that matches every key and mislabel its hits.
+    /// </remarks>
+    private static string KeyPrefixPatternFor(string term) =>
+        EscapeLike(term) + "%";
 
     /// <summary>
     /// Escapes the three characters <c>LIKE</c> treats specially, under the explicit
