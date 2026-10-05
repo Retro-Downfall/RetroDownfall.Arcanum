@@ -76,6 +76,12 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     }
 
     /// <summary>
+    /// Runs inside the gate's lock after a close has drained and before it builds its registration, or
+    /// <see langword="null"/>. A seam so a test can fault that window, which nothing else can reach.
+    /// </summary>
+    internal Action? AfterDrainForTesting { get; init; }
+
+    /// <summary>
     /// Live ordinary registrations. Exclusive registrations are tracked on their closure instead, so
     /// this is exactly the set a close has to drain.
     /// </summary>
@@ -685,19 +691,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             return drainFailure;
         }
 
-        lock (_sync)
-        {
-            ExclusiveRegistration registration = new(
-                this,
-                closure,
-                BuildExclusiveSnapshot(closure, facts.Value));
-
-            closure.LiveRegistration = registration;
-
-            closure.AcquisitionInProgress = false;
-
-            return create(registration);
-        }
+        return InstallExclusiveRegistration(closure, facts.Value, create);
     }
 
     private Result<TLease> Resume<TLease>(
@@ -827,18 +821,51 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             return drainFailure;
         }
 
+        return InstallExclusiveRegistration(
+            acquiredClosure,
+            acquisitionFacts.Value,
+            static registration => new CovenantExclusiveLease(registration));
+    }
+
+    /// <summary>
+    /// Turns a drained closure into the live exclusive registration and its lease, and removes the closure
+    /// if anything in that window throws.
+    /// </summary>
+    /// <remarks>
+    /// The drain's own cleanup does not cover this lock block, and a closure that outlives its acquisition
+    /// only by completing it would otherwise stay installed for good. No consumer callback runs here
+    /// (revocation finished before the drain), so, unlike the revocation path, the removal can happen
+    /// inside the lock without a callback having to re-enter it.
+    /// </remarks>
+    private TLease InstallExclusiveRegistration<TLease>(
+        Closure closure,
+        GateFacts facts,
+        Func<ICovenantExclusiveLeaseRegistration, TLease> create)
+        where TLease : CovenantExclusiveOperationLease
+    {
         lock (_sync)
         {
-            ExclusiveRegistration registration = new(
-                this,
-                acquiredClosure,
-                BuildExclusiveSnapshot(acquiredClosure, acquisitionFacts.Value));
+            try
+            {
+                AfterDrainForTesting?.Invoke();
 
-            acquiredClosure.LiveRegistration = registration;
+                ExclusiveRegistration registration = new(
+                    this,
+                    closure,
+                    BuildExclusiveSnapshot(closure, facts));
 
-            acquiredClosure.AcquisitionInProgress = false;
+                closure.LiveRegistration = registration;
 
-            return new CovenantExclusiveLease(registration);
+                closure.AcquisitionInProgress = false;
+
+                return create(registration);
+            }
+            catch
+            {
+                RemoveClosure(closure);
+
+                throw;
+            }
         }
     }
 

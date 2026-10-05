@@ -13,31 +13,30 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// </remarks>
 internal enum BackupRestorePhysicalRecoveryOutcome : byte
 {
-
     NoActiveJournal = 1,
 
     TopologyReady = 2,
 
     KeptClosed = 3,
-
 }
 
 /// <summary>
 /// How the authority half of startup recovery left this installation.
 /// </summary>
 /// <remarks>
-/// <see cref="KeptClosed"/> is not a failure code. It is the honest report that a restore journal is
-/// still active, admission is still shut, and neither the host nor the CLI may publish readiness.
+/// <see cref="KeptClosed"/> is not a failure code. It is startup's verdict that a restore journal is
+/// still active and neither the host nor the CLI may publish readiness. Admission is shut in every case
+/// but one: when only the one-shot post-disposition finalizer failed after the gate had already
+/// reopened, the gate is open in this process, which stops at this verdict and never serves it, and the
+/// next start resumes the same journal.
 /// </remarks>
 internal enum BackupRestoreStartupRecoveryOutcome : byte
 {
-
     NoActiveJournal = 1,
 
     RecoveredReady = 2,
 
     KeptClosed = 3,
-
 }
 
 /// <summary>
@@ -55,7 +54,6 @@ internal enum BackupRestoreStartupRecoveryOutcome : byte
 /// </remarks>
 internal interface IBackupRestoreStartupRecovery
 {
-
     /// <summary>
     /// Converges the filesystem to exactly one journal-selected live root, before any database opens.
     /// </summary>
@@ -69,5 +67,4 @@ internal interface IBackupRestoreStartupRecovery
     Task<Result<BackupRestoreStartupRecoveryOutcome>> RecoverAuthorityBeforeReadinessAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken);
-
 }

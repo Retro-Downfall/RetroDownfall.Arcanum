@@ -898,6 +898,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         bool durablyDisplaced = false;
 
+        // What the restore had already read and reconciled, kept outside the try so a failure after the
+        // disposition is spent still reports it instead of dropping it with the failure.
+        BackupManifest? readManifest = null;
+
+        BackupRestoreReconciliation? reconciled = null;
+
         try
         {
             _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Stage);
@@ -945,6 +951,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             {
                 return Rejected(operationId, effectivePlan, phases, extraction.Issues);
             }
+
+            readManifest = extraction.Manifest;
 
             // Before the staged generation is composed, and before any owner is acquired. The archive
             // has to be readable to be inventoried at all, but a refusal here has closed no admission,
@@ -1246,6 +1254,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     : null,
                 cancellationToken).ConfigureAwait(false);
 
+            reconciled = reconciliation;
+
             Record(
                 phases,
                 BackupRestorePhase.Reconcile,
@@ -1415,6 +1425,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     effectivePlan,
                     phases,
                     safetyBackupPath,
+                    readManifest,
+                    reconciled,
                     exception);
             }
 
@@ -2830,6 +2842,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         BackupRestorePlan plan,
         List<BackupRestorePhaseRecord> phases,
         string? safetyBackupPath,
+        BackupManifest? manifest,
+        BackupRestoreReconciliation? reconciliation,
         Exception exception) =>
         new(
             BackupRestoreStatus.ReconciliationRequired,
@@ -2839,8 +2853,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             plan.DestinationRoot,
             safetyBackupPath,
             plan,
-            Manifest: null,
-            Reconciliation: null,
+            manifest,
+            reconciliation,
             [.. phases],
             [
                 new BackupVerifyIssue(

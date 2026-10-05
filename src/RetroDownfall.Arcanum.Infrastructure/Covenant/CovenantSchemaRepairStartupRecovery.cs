@@ -5,15 +5,19 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using Serilog;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 /// <summary>
 /// How a pre-readiness schema-repair pass left the installation.
 /// </summary>
 /// <remarks>
-/// <see cref="KeptClosed"/> is not a failure code. It is the honest report that admission is still
-/// shut and the journal is still active, which is the only safe state when a repair's durable outcome
-/// cannot be established.
+/// <see cref="KeptClosed"/> is not a failure code. It is startup's verdict that the journal is still
+/// active and readiness must not be published, which is the only safe state when a repair's durable
+/// outcome cannot be established. Admission is shut in every case but one: when only the one-shot
+/// post-disposition finalizer failed after the gate had already reopened, the gate is open in this
+/// process, which stops at this verdict and never serves it, and the next start resumes the journal.
 /// </remarks>
 internal enum CovenantSchemaRepairStartupRecoveryOutcome : byte
 {
@@ -166,7 +170,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (resumed.IsFailure)
         {
-            return Kept();
+            return Kept("resume", resumed.Error);
         }
 
         await using CovenantExclusiveLease lease = resumed.Value;
@@ -177,7 +181,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (inspected.IsFailure)
         {
-            return Kept();
+            return Kept("inspect", inspected.Error);
         }
 
         CovenantSchemaRepairIntent current = intent;
@@ -191,7 +195,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
             // reality.
             if (inspected.Value.CatalogDigest != current.InspectedCatalogDigest)
             {
-                return Kept();
+                return Kept("catalog-moved");
             }
 
             Result<bool> repaired = await _executor
@@ -200,7 +204,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (repaired.IsFailure)
             {
-                return Kept();
+                return Kept("repair", repaired.Error);
             }
 
             durablyMutated = repaired.Value;
@@ -218,7 +222,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
                 if (verified.IsFailure)
                 {
-                    return Kept();
+                    return Kept("reinspect", verified.Error);
                 }
 
                 inspected = verified;
@@ -234,7 +238,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (advanced.IsFailure || advanced.Value is not { } afterRepair)
             {
-                return Kept();
+                return Kept("advance-after-repair", advanced.IsFailure ? advanced.Error : null);
             }
 
             current = afterRepair;
@@ -244,7 +248,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         {
             if (!inspected.Value.CanonicalValid)
             {
-                return Kept();
+                return Kept("canonical-invalid");
             }
 
             Result<CovenantSchemaRepairIntent?> verified = await AdvanceAsync(
@@ -255,7 +259,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (verified.IsFailure || verified.Value is not { } afterHealth)
             {
-                return Kept();
+                return Kept("advance-after-health", verified.IsFailure ? verified.Error : null);
             }
 
             current = afterHealth;
@@ -271,7 +275,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (pending.IsFailure || pending.Value is not { } afterPending)
             {
-                return Kept();
+                return Kept("advance-to-reopen", pending.IsFailure ? pending.Error : null);
             }
 
             current = afterPending;
@@ -292,8 +296,16 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         // The repair is over and its evidence selected this disposition, so completing it takes no token.
         Result closed = await lease.CompleteAsync(disposition, finalizer, CancellationToken.None).ConfigureAwait(false);
 
-        return closed.IsFailure || disposition == CovenantExclusiveLeaseDisposition.KeepClosed
-            ? Kept()
+        // A failed completion is either the gate refusing the disposition or, after the gate had already
+        // acted, the finalizer failing; the lease reports either as the same failure and names only the
+        // exception type, so the code is the one record of why startup stops here.
+        if (closed.IsFailure)
+        {
+            return Kept("complete", closed.Error);
+        }
+
+        return disposition == CovenantExclusiveLeaseDisposition.KeepClosed
+            ? Kept("evidence-selected-keep-closed")
             : Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
                 CovenantSchemaRepairStartupRecoveryOutcome.RecoveredReady);
     }
@@ -375,9 +387,20 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
             : Result.Success();
     }
 
-    private static Result<CovenantSchemaRepairStartupRecoveryOutcome> Kept() =>
-        Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
+    /// <summary>
+    /// Reports the closed verdict and says where and why, by stage and error code only: a driver message
+    /// can carry paths or content.
+    /// </summary>
+    private static Result<CovenantSchemaRepairStartupRecoveryOutcome> Kept(string stage, Error? error = null)
+    {
+        Log.Warning(
+            "An interrupted Covenant schema repair did not finish at {Stage}, so startup stays closed: {ErrorCode}",
+            stage,
+            error?.Code ?? "none");
+
+        return Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
             CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed);
+    }
 
     /// <summary>
     /// <paramref name="refusedInvariant"/> is the message of the ArgumentException the durable owner

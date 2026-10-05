@@ -796,6 +796,38 @@ public sealed class CovenantMutationServiceTests
         Assert.Equal(ErrorCodes.Validation.InvalidBody, committed.Error.Code);
     }
 
+    /// <summary>
+    /// R-174: the wire validation refuses every malformed rendered hash before the service is reached, so
+    /// the service's own refusal is a second line that no request through the validated entry points can
+    /// exercise, and reverting it left the test above green. It is pinned directly: the same body-field
+    /// code for every value that is not a 64-character hexadecimal digest, and a digest for one that is.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("not-a-digest")]
+    [InlineData("abcd")]
+    [InlineData("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")]
+    public void A_rendered_hash_that_reaches_the_service_unvalidated_is_still_an_invalid_body(string renderedHash)
+    {
+        Result<CovenantDigest> parsed = CovenantMutationService.ParseDigest(renderedHash);
+
+        Assert.True(parsed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, parsed.Error.Code);
+    }
+
+    [Fact]
+    public void A_well_formed_rendered_hash_parses_to_its_digest()
+    {
+        string hex = string.Concat(Enumerable.Repeat("ab", 32));
+
+        Result<CovenantDigest> parsed = CovenantMutationService.ParseDigest(hex);
+
+        Assert.True(parsed.IsSuccess);
+
+        Assert.Equal(Convert.FromHexString(hex), parsed.Value.Bytes.ToArray());
+    }
+
     private static CovenantMutationService Service(CovenantCanonicalFixture fixture) =>
         new(
             fixture.Store,

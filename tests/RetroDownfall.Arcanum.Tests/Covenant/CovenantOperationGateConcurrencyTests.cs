@@ -9,7 +9,10 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </summary>
 /// <remarks>
 /// The schedules use a fixed seed. A concurrency bug that only reproduces one run in fifty is worth
-/// nothing as a regression test, so the interleaving is randomized but reproducible.
+/// nothing as a regression test, so the interleaving is randomized but reproducible. The shared fake
+/// clock has no timers, so the stress schedule is counted in scheduler yields, and which interleavings it
+/// reaches still depends on the thread pool. It therefore searches rather than proves: the orderings that
+/// matter are each pinned exactly, with no scheduler in the outcome, by the event-driven test beside it.
 /// </remarks>
 public sealed class CovenantOperationGateConcurrencyTests
 {
@@ -148,6 +151,62 @@ public sealed class CovenantOperationGateConcurrencyTests
         {
             await Task.Yield();
         }
+    }
+
+    /// <summary>
+    /// R-170: the same invariant as the stress test, with every step ordered by an event rather than by the
+    /// scheduler. The close installs its closure and revokes the live reader before it drains, so a reader
+    /// arriving then is refused and the close stays pending until the live one releases; the close is only
+    /// granted once nothing is registered; admission stays shut while it is held and reopens at its
+    /// disposition. A gate that granted the close without draining, or admitted a reader behind it, fails
+    /// here every time rather than on some schedules.
+    /// </summary>
+    [Fact]
+    public async Task A_close_drains_the_live_reader_refuses_a_late_one_and_reopens_at_its_disposition()
+    {
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
+            drainTimeout: TimeSpan.FromSeconds(30));
+
+        CovenantReadLease reader = (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        TaskCompletionSource revoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using CancellationTokenRegistration signal = reader.Revocation.Register(
+            static state => ((TaskCompletionSource)state!).TrySetResult(),
+            revoked);
+
+        Task<Result<CovenantExclusiveLease>> close = gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            Token).AsTask();
+
+        // The closure is installed before any holder is revoked, so this event means the close is draining.
+        await revoked.Task;
+
+        Assert.False(close.IsCompleted, "The close was granted while a reader still held a lease.");
+
+        Result<CovenantReadLease> late = await gate.AcquireReadAsync(CovenantOperationScope.Global, Token);
+
+        Assert.True(late.IsFailure, "A reader was admitted behind a close that was still draining.");
+
+        await reader.DisposeAsync();
+
+        Result<CovenantExclusiveLease> exclusive = await close;
+
+        Assert.True(exclusive.IsSuccess, exclusive.IsFailure ? exclusive.Error.Message : string.Empty);
+
+        Assert.Equal(0, gate.LiveRegistrationCount);
+
+        Assert.True(
+            (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).IsFailure,
+            "A reader was admitted while the close was held.");
+
+        Assert.True((await exclusive.Value.CompleteAsync(CovenantExclusiveLeaseDisposition.CommitAndReopen, Token)).IsSuccess);
+
+        await exclusive.Value.DisposeAsync();
+
+        await using CovenantReadLease next = (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Assert.Equal(1, gate.LiveRegistrationCount);
     }
 
     [Fact]

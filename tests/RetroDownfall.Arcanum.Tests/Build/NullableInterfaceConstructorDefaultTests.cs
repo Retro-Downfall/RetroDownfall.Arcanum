@@ -260,12 +260,100 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/InferenceTraceViewModel.cs:InferenceTraceViewModel:store"] = "every use of the IInferenceTraceStore is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/MarkdownDocumentViewModel.cs:MarkdownDocumentViewModel:contentStore"] = "every use of the IMarkdownDocumentContentStore is null-safe; absence disables an observation, not a refusal",
+
+        // The generic-interface sites the source inventory could not see before its pattern read
+        // generic arguments: the optional loggers, and one comparer. Each is the same claim its non-generic
+        // neighbours above make, checked the same way - the nullable analysis (warnings are errors) is why
+        // every use of an optional logger is null-safe.
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Familiars/CodexCliChatClient.cs:CodexCliChatClient:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/BuiltInToolRegistry.cs:BuiltInToolRegistry:browseWebLogger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/TurnEngine/TurnEngine.cs:TurnEngine:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Api/Mcp/DiagnosticMcpInvocationService.cs:DiagnosticMcpInvocationService:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:CliSessionManager:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Core/Configuration/ConfigurationValidator.cs:ConfigurationValidator:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Caching/KeyedLock.cs:KeyedLock:comparer"] = "the null coalesces to EqualityComparer<TKey>.Default at the use site, so every instance has a comparer",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/CommLink/CommLinkMultiplexer.cs:CommLinkMultiplexer:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/GrimoireSchemaTransitionCoordinator.cs:GrimoireSchemaTransitionCoordinator:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaInstaller.cs:GrimoireSchemaInstaller:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Familiars/FamiliarProcessRunner.cs:FamiliarProcessRunner:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/LocalHttpWebProvider.cs:LocalHttpWebProvider:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/PerplexityWebProvider.cs:PerplexityWebProvider:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs:ArcanumInternalToolServer:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Platform/ProcessResourceLimiter.cs:ProcessResourceLimiter:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs:OsKeychainSecretStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/ProviderCredentialStore.cs:ProviderCredentialStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/WebResearchCredentialStore.cs:WebResearchCredentialStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/ComparisonRunStore.cs:ComparisonRunStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/DiagnosticMcpFixtureStore.cs:DiagnosticMcpFixtureStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/InferenceTraceStore.cs:InferenceTraceStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/TheForgeSettingsStore.cs:TheForgeSettingsStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/TrialSuiteStore.cs:TrialSuiteStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/Docking/DockLayoutViewModel.cs:DockLayoutViewModel:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/FoundryFloor/FoundryFloorViewModel.cs:FoundryFloorViewModel:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/MainViewModel.cs:MainViewModel:logger"] = "diagnostic sink; absence degrades logging, not a guard",
     };
 
+    /// <summary>
+    /// An interface type, generic or not, followed by <c>?</c> and a parameter that defaults to null.
+    /// </summary>
+    /// <remarks>
+    /// The pattern used to need an identifier directly before the question mark, so <c>ILogger&lt;T&gt;?</c>
+    /// - which has a <c>&gt;</c> there - was invisible to it, and about two dozen optional loggers sat outside
+    /// the inventory while the non-generic spelling of the same dependency was inside it. One level of nested
+    /// generic arguments is read (<c>IOptions&lt;List&lt;T&gt;&gt;?</c>), which covers every spelling in
+    /// this tree.
+    /// </remarks>
     private static readonly Regex NullableInterfaceDefault = new(
-        @"\b(I[A-Z]\w+)\?\s+(\w+)\s*=\s*null\b",
+        @"\b(I[A-Z]\w*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\?\s+(\w+)\s*=\s*null\b",
         RegexOptions.Compiled,
         TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// The generic collection interfaces. A parameter of one of these that defaults to null is an optional
+    /// <em>value</em> (an absent list), not an optional collaborator whose absence disables a guard, so it
+    /// is not what this inventory is about.
+    /// </summary>
+    private static readonly HashSet<string> DataInterfaces = new(StringComparer.Ordinal)
+    {
+        "IAsyncEnumerable",
+        "ICollection",
+        "IDictionary",
+        "IEnumerable",
+        "IList",
+        "IReadOnlyCollection",
+        "IReadOnlyDictionary",
+        "IReadOnlyList",
+        "IReadOnlySet",
+        "ISet",
+    };
 
     [Fact]
     public void Every_nullable_interface_constructor_default_is_removed_or_allowed_with_a_reason()
@@ -278,6 +366,11 @@ public sealed class NullableInterfaceConstructorDefaultTests
             {
                 foreach (Match match in NullableInterfaceDefault.Matches(constructor.ParameterList))
                 {
+                    if (DataInterfaces.Contains(GenericTypeName(match.Groups[1].Value)))
+                    {
+                        continue;
+                    }
+
                     string key = $"{source.RelativePath}:{constructor.DeclaringType}:{match.Groups[2].Value}";
 
                     if (!Allowed.ContainsKey(key))
@@ -294,6 +387,13 @@ public sealed class NullableInterfaceConstructorDefaultTests
         Assert.True(
             offenders.Count == 0,
             string.Join("\n", offenders.Order(StringComparer.Ordinal)));
+    }
+
+    private static string GenericTypeName(string typeText)
+    {
+        int open = typeText.IndexOf('<', StringComparison.Ordinal);
+
+        return open < 0 ? typeText : typeText[..open];
     }
 
     /// <summary>

@@ -188,7 +188,15 @@ internal sealed partial class CovenantMutationService
         return Result<CovenantDigest>.Success(live);
     }
 
-    private static Result<CovenantDigest> ParseDigest(string value)
+    /// <summary>
+    /// Reads a target rendered hash as a digest, or refuses it as a malformed body.
+    /// </summary>
+    /// <remarks>
+    /// Wire validation has already refused every malformed value before a request reaches this service, so
+    /// the refusal here is the second line rather than the first: a caller that reaches the service without
+    /// that validation still gets the same body-field code, not an exception or a scope code.
+    /// </remarks>
+    internal static Result<CovenantDigest> ParseDigest(string value)
     {
         try
         {

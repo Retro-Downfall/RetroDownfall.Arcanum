@@ -625,6 +625,50 @@ public sealed class CovenantOperationGateTests
     }
 
     /// <summary>
+    /// R-166: the closure was removed on a revocation or drain failure, but the lock block that builds the
+    /// registration after a successful drain was outside that cleanup, so a fault there left the closure
+    /// installed for good. DESIGN says a close that fails for any reason after installing its closure
+    /// removes it before it answers, which is now true of that window too, for both acquisition paths.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_close_that_faults_after_draining_removes_its_closure_before_it_answers(bool resumeOrAcquire)
+    {
+        int faults = 0;
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
+            afterDrain: () =>
+            {
+                if (faults++ == 0)
+                {
+                    throw new InvalidOperationException("faulted after the drain");
+                }
+            });
+
+        CovenantExclusiveRecoveryOwner owner = CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => (resumeOrAcquire
+                ? gate.ResumeOrAcquireExclusiveAsync(owner, Token)
+                : gate.AcquireExclusiveAsync(owner, Token)).AsTask());
+
+        // Nothing stayed installed: admission is open, and the same close is not refused as owned.
+        CovenantReadLease reopened =
+            (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Assert.Equal(CovenantScope.Global, reopened.Snapshot.Scope!.Value.Kind);
+
+        await reopened.DisposeAsync();
+
+        Result<CovenantExclusiveLease> next = await gate.AcquireExclusiveAsync(owner, Token);
+
+        Assert.True(next.IsSuccess, next.IsFailure ? next.Error.Message : string.Empty);
+
+        await next.Value.DisposeAsync();
+    }
+
+    /// <summary>
     /// R-169: the caller giving up while a close drains is cancellation, not a maintenance failure. It used
     /// to be folded into the timeout arm and reported as <c>MaintenanceFailed</c>.
     /// </summary>

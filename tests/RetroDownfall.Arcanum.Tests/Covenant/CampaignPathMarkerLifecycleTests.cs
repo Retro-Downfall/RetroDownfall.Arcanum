@@ -502,6 +502,85 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.True(await IsDisposedAsync(first.Seed), "Releasing the owner did not release the retained root.");
     }
 
+    /// <summary>
+    /// R-175: the inventory opens one root authority per registered Campaign and hands them all to the caller
+    /// at the end. A fault or cancellation part-way used to strand every seed already built, because the
+    /// caller never receives an inventory to release. The inventory releases the seeds it built before the
+    /// failure and rethrows.
+    /// </summary>
+    [Fact]
+    public async Task An_inventory_that_fails_part_way_releases_the_seeds_it_already_built()
+    {
+        await using (SqliteCommand create = _database.Connection.CreateCommand())
+        {
+            create.CommandText =
+                """
+                CREATE TABLE campaign_path_identities (
+                    CampaignId TEXT NOT NULL PRIMARY KEY,
+                    Revision INTEGER NOT NULL,
+                    DisplayPath TEXT NOT NULL,
+                    PhysicalIdentityDigest BLOB NOT NULL);
+                """;
+
+            _ = await create.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        // Read in Campaign order, so the first two are built before the third is reached.
+        Guid[] campaigns =
+        [
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+            Guid.Parse("00000000-0000-0000-0000-000000000003"),
+        ];
+
+        for (int index = 0; index < campaigns.Length; index++)
+        {
+            string directory = Directory.CreateDirectory(Path.Combine(_parent, $"inventory-{index}")).FullName;
+
+            await using SqliteCommand insert = _database.Connection.CreateCommand();
+
+            insert.CommandText =
+                "INSERT INTO campaign_path_identities VALUES ($campaign, 2, $path, $digest);";
+
+            _ = insert.Parameters.AddWithValue("$campaign", campaigns[index].ToString("D"));
+
+            _ = insert.Parameters.AddWithValue("$path", directory);
+
+            _ = insert.Parameters.AddWithValue("$digest", _opener.IdentifyExact(directory)!.Value.Bytes.ToArray());
+
+            _ = await insert.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        List<CampaignPathRestoreCleanupSeed> built = [];
+
+        CampaignPathMarkerLifecycle failing = new(
+            _codec,
+            _opener,
+            new FixedCovenantConnectionSource(_database.Connection),
+            CovenantSqliteConnectionInitializer.Instance,
+            TimeProvider.System)
+        {
+            AfterSeedObservedForTests = seed =>
+            {
+                built.Add(seed);
+
+                if (built.Count == 2)
+                {
+                    throw new IOException("the third root could not be observed");
+                }
+            },
+        };
+
+        _ = await Assert.ThrowsAsync<IOException>(() => failing.InventoryRestoreCleanupAsync(Owner(), CancellationToken.None));
+
+        Assert.Equal(2, built.Count);
+
+        foreach (CampaignPathRestoreCleanupSeed seed in built)
+        {
+            Assert.True(await IsDisposedAsync(seed), "An inventory that failed part-way leaked a root authority it had built.");
+        }
+    }
+
     /// <summary>Whether a seed's root authority has been released, observed through the authority itself.</summary>
     private static async Task<bool> IsDisposedAsync(CampaignPathRestoreCleanupSeed seed)
     {

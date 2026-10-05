@@ -68,7 +68,8 @@ internal static class CovenantOperationGateFixture
         FakeCovenantAvailability? availability = null,
         FakeCovenantAuthorityProvider? authority = null,
         FakeCovenantCampaignScopeProbe? campaigns = null,
-        TimeSpan? drainTimeout = null)
+        TimeSpan? drainTimeout = null,
+        Action? afterDrain = null)
     {
         FakeCovenantAvailability resolvedAvailability = availability ?? new FakeCovenantAvailability();
 
@@ -88,7 +89,10 @@ internal static class CovenantOperationGateFixture
                 runtime,
                 campaigns ?? new FakeCovenantCampaignScopeProbe(),
                 NullLogger<CovenantOperationGate>.Instance,
-                drainTimeout ?? TimeSpan.FromSeconds(5));
+                drainTimeout ?? TimeSpan.FromSeconds(5))
+            {
+                AfterDrainForTesting = afterDrain,
+            };
         }
 
         CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -133,7 +137,10 @@ internal static class CovenantOperationGateFixture
             runtime,
             campaigns ?? new FakeCovenantCampaignScopeProbe(),
             NullLogger<CovenantOperationGate>.Instance,
-            drainTimeout ?? TimeSpan.FromSeconds(5));
+            drainTimeout ?? TimeSpan.FromSeconds(5))
+        {
+            AfterDrainForTesting = afterDrain,
+        };
     }
 }
 
