@@ -1,7 +1,10 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -10,20 +13,16 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class MetaEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public MetaEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task GetMeta_WithValidApiKey_ReturnsInstanceMetadataEnvelope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -63,13 +62,57 @@ public sealed class MetaEndpointTests
         Assert.DoesNotContain("llamaCppEnabled", json, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("LlamaCppEnabled", json, StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// Every flag <c>/api/meta</c> reports is read from the configuration the host resolved, so it moves with
+    /// it, and none is a constant that no setting can change.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Meta_fields_reflect_configuration(bool archiveSearch)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Features = settings.Features with { ArchiveSearch = archiveSearch },
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/meta");
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<InstanceMetadataDto>? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.ApiResponseInstanceMetadataDto);
+
+        Assert.NotNull(body?.Data);
+
+        IntelligenceSettings resolved = factory.Services
+            .GetRequiredService<IOptions<ArcanumSettings>>()
+            .Value
+            .ResolveIntelligence();
+
+        Assert.Equal(archiveSearch, body.Data.ArchiveSearchEnabled);
+
+        Assert.Equal(resolved.EnableContextCompression, body.Data.ContextCompressionEnabled);
+
+        Assert.Equal(resolved.EnableTokenTracking, body.Data.TokenTrackingEnabled);
+
+        // The retired Lore system had no setting left to report, so the flag that said so, always false, is gone.
+        Assert.DoesNotContain("loreSystemEnabled", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [SkippableFact]
     public async Task GetMeta_ReportsConclaveA2AStateAndSurfaces()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -94,7 +137,5 @@ public sealed class MetaEndpointTests
         Assert.False(body.Data.A2AClientEnabled);
 
         Assert.Null(body.Data.A2AServerPath);
-
     }
-
 }

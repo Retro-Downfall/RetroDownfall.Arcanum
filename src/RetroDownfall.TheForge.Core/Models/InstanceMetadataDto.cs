@@ -16,7 +16,6 @@ public sealed record InstanceMetadataDto(
     string ConfigPath,
     int Port,
     bool ListenAny,
-    bool LoreSystemEnabled,
     bool ArchiveSearchEnabled,
     bool ContextCompressionEnabled,
     bool TokenTrackingEnabled,
