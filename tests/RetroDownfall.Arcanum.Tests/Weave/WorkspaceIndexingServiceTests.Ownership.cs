@@ -305,6 +305,131 @@ public sealed partial class WorkspaceIndexingServiceTests
         }
     }
 
+    /// <summary>
+    /// A watcher factory that keeps failing (an exhausted inotify budget, say) delivered no events, so it
+    /// must neither be retried on every scheduler cycle nor force a full re-read of the workspace each
+    /// time: the periodic reconciliation already covers a workspace nothing watches.
+    /// </summary>
+    [SkippableFact]
+    public async Task Persistent_watcher_creation_failure_backs_off_and_does_not_force_full_reindex()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("one.cs", "class One {}");
+
+        FakeWorkspaceFileWatcherFactory watchers = new()
+        {
+            BeforeReturn = static () => throw new InvalidOperationException("The inotify watch budget is exhausted."),
+        };
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers, scopeFactory: scopes);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            // The one scheduled reconciliation walks the workspace once and settles.
+            await WaitForWorkspaceConditionAsync(() => scopes.ScopeCount == 1 && service.GetScheduledSweepSnapshot().Outstanding == 0);
+
+            await Task.Delay(TimeSpan.FromSeconds(2.5));
+
+            // A retry at once, then one second, then two: never one attempt per debounce cycle.
+            Assert.InRange(watchers.Created.Count, 1, 4);
+
+            // No creation failure forced another reconciliation.
+            Assert.Equal(1, scopes.ScopeCount);
+
+            Assert.Equal(0, service.ActiveWatcherCount);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// A backed-off watcher is re-created when its deadline arrives even though nothing else wakes the
+    /// scheduler: the loop otherwise sleeps until the next reconciliation, an hour away.
+    /// </summary>
+    [SkippableFact]
+    public async Task Watcher_creation_is_retried_when_its_backoff_elapses_without_another_signal()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        int attempts = 0;
+
+        FakeWorkspaceFileWatcherFactory watchers = new()
+        {
+            BeforeReturn = () =>
+            {
+                if (Interlocked.Increment(ref attempts) <= 2)
+                {
+                    throw new InvalidOperationException("The inotify watch budget is exhausted.");
+                }
+            },
+        };
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers);
+
+        service.RetryBackoffBaseDelay = TimeSpan.FromMilliseconds(700);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitForWorkspaceConditionAsync(() => service.ActiveWatcherCount == 1);
+
+            Assert.Equal(3, watchers.Created.Count);
+
+            Assert.True(service.GetRuntimeStatus(_workspace.Root).Watching);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// The watcher that ran and then failed may have lost events, so unlike a creation failure it still
+    /// forces the reconciliation of what it covered.
+    /// </summary>
+    [SkippableFact]
+    public async Task Runtime_watcher_error_still_forces_a_full_reconciliation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("one.cs", "class One {}");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        RecordingGrimoireWorkAdmissionGate gate = new(new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers, workAdmission: gate);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
+
+        await DrainWorkspaceSchedulerAsync(service);
+
+        Assert.Equal(1, gate.EffectGroupAttempts);
+
+        watchers.Single.TriggerError(new IOException("Watcher lost events."));
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        // The forced reconciliation re-reads the unchanged file, one effect group per visit.
+        Assert.Equal(2, gate.EffectGroupAttempts);
+
+        await service.DisposeAsync();
+    }
+
     [SkippableFact]
     public async Task Dispatch_failure_returns_unavailable_and_settles_the_published_handle_without_admission()
     {

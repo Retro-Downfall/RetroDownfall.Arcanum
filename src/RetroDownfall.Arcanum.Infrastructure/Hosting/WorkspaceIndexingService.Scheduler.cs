@@ -84,6 +84,28 @@ internal sealed partial class WorkspaceIndexingService
         return scaled >= ceiling.Ticks ? ceiling : TimeSpan.FromTicks((long)scaled);
     }
 
+    /// <summary>
+    /// When the scheduler loop next has work of its own: the next sweep, or the next future retry of
+    /// an entry whose watcher is not running. A retry already past is not a deadline: the loop has
+    /// just attempted it, or capacity or admission refused it, and waking at once would only spin.
+    /// </summary>
+    private DateTimeOffset NextWakeLocked()
+    {
+        DateTimeOffset due = NextSweepDueLocked();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        foreach (WorkspaceEntry entry in _entries.Values)
+        {
+            if (entry.Watcher is null && entry.WatcherRetryAt is { } retryAt && retryAt > now && retryAt < due)
+            {
+                due = retryAt;
+            }
+        }
+
+        return due;
+    }
+
     private DateTimeOffset NextSweepDueLocked()
     {
         DateTimeOffset due = _nextReconciliation;
@@ -770,6 +792,19 @@ internal sealed partial class WorkspaceIndexingService
             ConsecutiveRootFailures = 0;
 
             RetryAt = null;
+        }
+
+        /// <summary>Watcher failures since the watcher last delivered an event; drives the re-creation backoff.</summary>
+        internal int WatcherFailures { get; set; }
+
+        /// <summary>When the watcher may next be created, or <see langword="null"/> when no backoff is running.</summary>
+        internal DateTimeOffset? WatcherRetryAt { get; set; }
+
+        internal void ClearWatcherFailureState()
+        {
+            WatcherFailures = 0;
+
+            WatcherRetryAt = null;
         }
     }
 
