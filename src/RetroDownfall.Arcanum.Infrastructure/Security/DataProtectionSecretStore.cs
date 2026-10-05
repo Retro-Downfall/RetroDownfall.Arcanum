@@ -143,6 +143,38 @@ public sealed class DataProtectionSecretStore(
         }
     }
 
+    public async Task DeleteApiKeyAsync()
+    {
+        await DeleteProtectedAsync(StorePath).ConfigureAwait(false);
+
+        apiKeyDigestCache.Invalidate();
+    }
+
+    public Task DeleteGrimoireEncryptionSecretAsync() => DeleteProtectedAsync(GrimoireStorePath);
+
+    public Task DeleteFileEncryptionSecretAsync() => DeleteProtectedAsync(FileEncryptionStorePath);
+
+    /// <summary>
+    /// Removes one protected credential file under the store's lock. An absent file, or an absent
+    /// store directory, is already the requested state.
+    /// </summary>
+    private async Task DeleteProtectedAsync(string path)
+    {
+        await _fileLock.WaitAsync().ConfigureAwait(false);
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
+    }
+
     private async Task<SecretStoreReadResult> ReadProtectedResultAsync(
         string path,
         IDataProtector protector,

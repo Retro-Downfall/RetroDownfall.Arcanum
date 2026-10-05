@@ -700,6 +700,60 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Null(retiredDigest);
     }
 
+    /// <summary>
+    /// Removing the three secrets a restore can write leaves neither an OS copy nor an encrypted mirror
+    /// of any of them, so a rolled-back restore returns a machine that had none to having none.
+    /// </summary>
+    [Fact]
+    public async Task Deleting_each_restorable_secret_leaves_no_copy_behind()
+    {
+        InMemoryOsCredentialStore os = new();
+
+        ApiKeyDigestCache digestCache = new(new FakeTimeProvider());
+
+        using OsKeychainSecretStore store = CreateStore(os, apiKeyDigestCache: digestCache);
+
+        await store.SaveApiKeyAsync("archived-master-key");
+
+        await store.SaveFileEncryptionSecretAsync("archived-key-ring");
+
+        await store.SaveGrimoireEncryptionSecretAsync("archived-grimoire-secret");
+
+        digestCache.StoreDigest([1, 2, 3, 4], ttlSeconds: 600);
+
+        await store.DeleteApiKeyAsync();
+
+        await store.DeleteFileEncryptionSecretAsync();
+
+        await store.DeleteGrimoireEncryptionSecretAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Missing, (await store.GetApiKeyReadResultAsync()).Status);
+
+        Assert.Equal(
+            SecretStoreReadStatus.Missing,
+            (await store.GetFileEncryptionSecretReadResultAsync()).Status);
+
+        Assert.Equal(
+            SecretStoreReadStatus.Missing,
+            (await store.GetGrimoireEncryptionSecretReadResultAsync()).Status);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.NotFound,
+            os.TryGet(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MasterApiKeyAccount).Status);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.NotFound,
+            os.TryGet(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.FileEncryptionKeyAccount).Status);
+
+        Assert.False(File.Exists(ArcanumPaths.ApiKeyStoreFile));
+
+        Assert.False(File.Exists(ArcanumPaths.FileEncryptionKeyStoreFile));
+
+        Assert.False(File.Exists(ArcanumPaths.GrimoireKeyStoreFile));
+
+        Assert.False(digestCache.TryGetDigest(out _));
+    }
+
     private OsKeychainSecretStore CreateStore(
         IOsCredentialStore os,
         DataProtectionSecretStore? legacy = null,

@@ -59,4 +59,27 @@ public interface ISecretStore
     Task SaveFileEncryptionSecretAsync(string encryptionSecret) =>
         throw new NotSupportedException(
             "This secret store does not support the dedicated file-encryption secret.");
+
+    /// <summary>
+    /// Removes the master API key. A rolled-back restore is the only caller: it returns a machine
+    /// that had no key before the restore to having none. A store that cannot remove one throws
+    /// rather than leaving the restored key authenticating callers.
+    /// </summary>
+    Task DeleteApiKeyAsync() =>
+        throw new NotSupportedException("This secret store cannot remove the master API key.");
+
+    /// <summary>
+    /// Removes the Grimoire encryption secret, for the same rollback and on the same terms as
+    /// <see cref="DeleteApiKeyAsync"/>.
+    /// </summary>
+    Task DeleteGrimoireEncryptionSecretAsync() =>
+        throw new NotSupportedException("This secret store cannot remove the Grimoire encryption secret.");
+
+    /// <summary>
+    /// Removes the dedicated file-encryption secret, for the same rollback and on the same terms as
+    /// <see cref="DeleteApiKeyAsync"/>.
+    /// </summary>
+    Task DeleteFileEncryptionSecretAsync() =>
+        throw new NotSupportedException(
+            "This secret store cannot remove the dedicated file-encryption secret.");
 }

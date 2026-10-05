@@ -407,8 +407,9 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
 
     /// <summary>A secret store that serves one Grimoire secret, or none when it is null, and nothing else.</summary>
     /// <remarks>
-    /// Every write is accepted and dropped, the file-encryption key ring included, so a restore that
-    /// commits can rebuild local secret protection without this store ever serving anything new.
+    /// Every write and every removal is accepted and dropped, the file-encryption key ring included, so
+    /// a restore that commits can rebuild local secret protection, and one that rolls back can return
+    /// it, without this store ever serving anything new.
     /// </remarks>
     internal sealed class FixedGrimoireSecretStore(string? grimoireSecret) : ISecretStore
     {
@@ -424,6 +425,12 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
 
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
+
+        public Task DeleteApiKeyAsync() => Task.CompletedTask;
+
+        public Task DeleteGrimoireEncryptionSecretAsync() => Task.CompletedTask;
+
+        public Task DeleteFileEncryptionSecretAsync() => Task.CompletedTask;
     }
 
     /// <summary>Serves the archive the Grimoire secret the live database is keyed from.</summary>

@@ -137,8 +137,9 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     /// <summary>
     /// R-167: the same invariant as the cancellation arm, for any other failure. Once the disposition is
     /// spent, admission has reopened over the replacement and the marker children are complete, so a fault
-    /// in what is left (here the journal's Cleanup record, which fails with an IOException on a full disk)
-    /// must not put the prior installation back under a system that has begun to use the restored one.
+    /// in what is left (here one just before the journal's Cleanup record, which that record's own
+    /// bookkeeping does not absorb) must not put the prior installation back under a system that has begun
+    /// to use the restored one.
     /// </summary>
     [Fact]
     public async Task A_failure_after_the_disposition_is_spent_does_not_reverse_the_restore()
@@ -1105,6 +1106,27 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
         {
             _fileKeys = encryptionSecret;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteApiKeyAsync()
+        {
+            _apiKey = null;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteGrimoireEncryptionSecretAsync()
+        {
+            _grimoire = null;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteFileEncryptionSecretAsync()
+        {
+            _fileKeys = null;
 
             return Task.CompletedTask;
         }

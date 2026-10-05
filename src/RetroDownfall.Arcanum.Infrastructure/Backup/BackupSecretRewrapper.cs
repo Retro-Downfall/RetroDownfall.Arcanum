@@ -6,6 +6,8 @@ using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -24,11 +26,66 @@ internal sealed record BackupSecretRewrapResult(
             [issue]);
 }
 
+/// <summary>
+/// One of the destination's secrets as it stood before the restore: its value, proof that it did not
+/// exist, or neither.
+/// </summary>
+/// <remarks>
+/// Absence is a value of its own because a rollback has to undo a write over nothing by deleting
+/// what the restore created. Only <see cref="SecretStoreReadStatus.Ok"/> and
+/// <see cref="SecretStoreReadStatus.Missing"/> are proof of anything; a corrupted or unreadable read
+/// says nothing about what is there, so it is neither reinstated nor deleted.
+/// </remarks>
+/// <param name="Description">Names the secret in messages, e.g. "the master API key".</param>
+internal sealed record BackupCapturedSecret(
+    string Description,
+    SecretStoreReadStatus Status,
+    string? Value)
+{
+    public bool IsPresent => Status == SecretStoreReadStatus.Ok && Value is not null;
+
+    public bool IsAbsent => Status == SecretStoreReadStatus.Missing;
+
+    /// <summary>True when a rollback can return this secret to its prior state, one way or the other.</summary>
+    public bool IsReinstatable => IsPresent || IsAbsent;
+
+    public static BackupCapturedSecret From(string description, SecretStoreReadResult read) =>
+        new(
+            description,
+            read.Status,
+            read.Status == SecretStoreReadStatus.Ok ? read.Value : null);
+}
+
 /// <summary>The destination's own secret material, captured so a rollback can reinstate it.</summary>
 internal sealed record BackupSecretSnapshot(
-    string? GrimoireSecret,
-    string? FileEncryptionSecret,
-    string? MasterApiKey);
+    BackupCapturedSecret GrimoireSecret,
+    BackupCapturedSecret FileEncryptionSecret,
+    BackupCapturedSecret MasterApiKey)
+{
+    /// <summary>
+    /// The first secret a replacement restore may overwrite whose prior state a rollback could not
+    /// reinstate, or <see langword="null"/> when every one of them can be.
+    /// </summary>
+    /// <remarks>
+    /// The master API key is only overwritten on explicit request, so its prior state only matters
+    /// then. The Grimoire secret is always written, and the key ring is written whenever the archive
+    /// carries keys, which is not known until after the capture.
+    /// </remarks>
+    public BackupCapturedSecret? FirstUnreinstatable(bool restoreMasterApiKey)
+    {
+        if (!GrimoireSecret.IsReinstatable)
+        {
+            return GrimoireSecret;
+        }
+
+        if (!FileEncryptionSecret.IsReinstatable)
+        {
+            return FileEncryptionSecret;
+        }
+
+        return restoreMasterApiKey && !MasterApiKey.IsReinstatable ? MasterApiKey : null;
+    }
+}
 
 /// <summary>
 /// Rebuilds machine-local secret protection from a backup's portable recovery payload.
@@ -46,6 +103,20 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
     private const string KeyRingHeader = "ARCANUM-KEYRING-1";
 
     private const long MaximumRecoveryBytes = 8L * 1024 * 1024;
+
+    private const string GrimoireSecretDescription = "the Grimoire encryption secret";
+
+    private const string FileEncryptionSecretDescription = "the file-encryption key ring";
+
+    private const string MasterApiKeyDescription = "the master API key";
+
+    // What this instance has written, or tried to: a write that threw may still have landed in part,
+    // so the flag is raised before the call. A rollback reinstates exactly these and nothing else.
+    private bool _grimoireSecretWritten;
+
+    private bool _fileEncryptionSecretWritten;
+
+    private bool _masterApiKeyWritten;
 
     public async Task<BackupSecretRewrapResult> RewrapAsync(
         string portableRecoveryPath,
@@ -107,10 +178,14 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
             string grimoireSecret = Encoding.UTF8.GetString(recovery.GrimoireEncryptionSecretUtf8);
 
+            _grimoireSecretWritten = true;
+
             await secretStore.SaveGrimoireEncryptionSecretAsync(grimoireSecret).ConfigureAwait(false);
 
             if (keyRing is not null)
             {
+                _fileEncryptionSecretWritten = true;
+
                 await secretStore.SaveFileEncryptionSecretAsync(keyRing).ConfigureAwait(false);
             }
 
@@ -122,6 +197,8 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
             {
                 if (recovery.MasterApiKeyUtf8 is { Length: > 0 } masterBytes)
                 {
+                    _masterApiKeyWritten = true;
+
                     await secretStore
                         .SaveApiKeyAsync(Encoding.UTF8.GetString(masterBytes))
                         .ConfigureAwait(false);
@@ -295,6 +372,8 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                 return InvalidMaterial();
             }
 
+            _fileEncryptionSecretWritten = true;
+
             await secretStore.SaveFileEncryptionSecretAsync(merged).ConfigureAwait(false);
 
             return new BackupSecretRewrapResult(
@@ -453,43 +532,95 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
             .ConfigureAwait(false);
 
         return new BackupSecretSnapshot(
-            grimoire.Status == SecretStoreReadStatus.Ok ? grimoire.Value : null,
-            fileKeys.Status == SecretStoreReadStatus.Ok ? fileKeys.Value : null,
-            apiKey.Status == SecretStoreReadStatus.Ok ? apiKey.Value : null);
+            BackupCapturedSecret.From(GrimoireSecretDescription, grimoire),
+            BackupCapturedSecret.From(FileEncryptionSecretDescription, fileKeys),
+            BackupCapturedSecret.From(MasterApiKeyDescription, apiKey));
     }
 
-    /// <summary>Best-effort reinstatement of a captured snapshot during rollback.</summary>
-    public async Task RestoreAsync(BackupSecretSnapshot snapshot)
+    /// <summary>
+    /// Returns every secret this instance wrote to its captured state: the prior value where there
+    /// was one, and no secret at all where the capture proved there was none.
+    /// </summary>
+    /// <remarks>
+    /// Every secret is attempted even after one fails, so a single failure costs only that secret,
+    /// and the failure names each secret that was not reinstated. A secret whose prior state the
+    /// capture could not read is reported rather than guessed at: it is never deleted, because an
+    /// unreadable credential may still exist.
+    /// </remarks>
+    public async Task<Result> RestoreAsync(BackupSecretSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
+        List<string> failures = [];
+
+        if (_grimoireSecretWritten)
+        {
+            await ReinstateAsync(
+                    snapshot.GrimoireSecret,
+                    secretStore.SaveGrimoireEncryptionSecretAsync,
+                    secretStore.DeleteGrimoireEncryptionSecretAsync,
+                    failures)
+                .ConfigureAwait(false);
+        }
+
+        if (_fileEncryptionSecretWritten)
+        {
+            await ReinstateAsync(
+                    snapshot.FileEncryptionSecret,
+                    secretStore.SaveFileEncryptionSecretAsync,
+                    secretStore.DeleteFileEncryptionSecretAsync,
+                    failures)
+                .ConfigureAwait(false);
+        }
+
+        if (_masterApiKeyWritten)
+        {
+            await ReinstateAsync(
+                    snapshot.MasterApiKey,
+                    secretStore.SaveApiKeyAsync,
+                    secretStore.DeleteApiKeyAsync,
+                    failures)
+                .ConfigureAwait(false);
+        }
+
+        return failures.Count == 0
+            ? Result.Success()
+            : Result.Failure(new Error(
+                "backup.restore_secret_reinstatement_failed",
+                "The prior installation's local secrets could not all be reinstated: "
+                + string.Join("; ", failures)
+                + "."));
+    }
+
+    private static async Task ReinstateAsync(
+        BackupCapturedSecret prior,
+        Func<string, Task> save,
+        Func<Task> delete,
+        List<string> failures)
+    {
         try
         {
-            if (snapshot.GrimoireSecret is not null)
+            if (prior.IsPresent)
             {
-                await secretStore
-                    .SaveGrimoireEncryptionSecretAsync(snapshot.GrimoireSecret)
-                    .ConfigureAwait(false);
+                await save(prior.Value!).ConfigureAwait(false);
             }
-
-            if (snapshot.FileEncryptionSecret is not null)
+            else if (prior.IsAbsent)
             {
-                await secretStore
-                    .SaveFileEncryptionSecretAsync(snapshot.FileEncryptionSecret)
-                    .ConfigureAwait(false);
+                await delete().ConfigureAwait(false);
             }
-
-            if (snapshot.MasterApiKey is not null)
+            else
             {
-                await secretStore.SaveApiKeyAsync(snapshot.MasterApiKey).ConfigureAwait(false);
+                failures.Add($"{prior.Description} (its prior state could not be read: {prior.Status})");
             }
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or NotSupportedException
+                or InvalidOperationException
                 or CryptographicException)
         {
+            failures.Add($"{prior.Description} ({exception.GetType().Name})");
         }
     }
 
