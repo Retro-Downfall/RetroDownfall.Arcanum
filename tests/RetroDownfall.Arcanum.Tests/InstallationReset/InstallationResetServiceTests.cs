@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Secrets.Security;
+
 using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
@@ -1282,6 +1284,206 @@ public sealed partial class InstallationResetServiceTests
         Assert.NotNull(active.Record);
 
         Assert.Empty(data.ApplyRequests);
+    }
+
+    [Theory]
+    [InlineData("widened-root")]
+    [InlineData("retained-account")]
+    [InlineData("binding-id")]
+    public async Task Legacy_record_with_widened_roots_or_retained_accounts_is_refused_on_migration(
+        string tampering)
+    {
+        // A legacy V1 file is the one active record nothing seals, so whatever it names is only as
+        // trustworthy as the checks made before it is migrated and acted on. The widened and retained
+        // shapes are built by a service that really did plan them, so each carries a binding id that
+        // matches its own contents and only the comparison with this installation can refuse it.
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        string retainedAccount = ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount(
+            new string('a', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength));
+
+        FakeActiveStore active = new();
+
+        InstallationResetService planner = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory(
+                tampering is "retained-account"
+                    ?
+                    [
+                        new InstallationResetCredentialSummary(
+                            "accepted-account",
+                            InstallationResetItemStatus.Pending),
+                        new InstallationResetCredentialSummary(
+                            retainedAccount,
+                            InstallationResetItemStatus.Pending),
+                    ]
+                    :
+                    [
+                        new InstallationResetCredentialSummary(
+                            "accepted-account",
+                            InstallationResetItemStatus.Pending),
+                    ]),
+            active,
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(
+                tampering is "widened-root"
+                    ? ["/state", "/home/someone/documents"]
+                    : ["/state"]));
+
+        InstallationResetPlan tamperedPlan = (await planner.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        InstallationResetActiveRecord legacy = CreateActive(
+            tamperedPlan,
+            InstallationResetPhase.Prepared,
+            pointOfNoReturn: false);
+
+        if (tampering is "binding-id")
+        {
+            legacy = legacy with
+            {
+                AcceptedBinding = legacy.AcceptedBinding with
+                {
+                    BindingId = new string('0', 64),
+                },
+            };
+        }
+
+        FakeDataService data = new(CreateDataPlan("global-data"));
+
+        FakeCredentialInventory credentials = new(
+            [
+                new InstallationResetCredentialSummary(
+                    "accepted-account",
+                    InstallationResetItemStatus.Pending),
+            ]);
+
+        InstallationResetService service = CreateService(
+            data,
+            credentials,
+            active,
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]));
+
+        active.LegacyRecord = legacy;
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(request, legacy.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.Error.Code);
+
+        Assert.Equal(0, active.MigrationCount);
+
+        Assert.Empty(active.Writes);
+
+        Assert.Empty(data.ApplyRequests);
+
+        Assert.Empty(credentials.DeleteRequests);
+    }
+
+    [Fact]
+    public async Task Legacy_record_that_matches_what_this_installation_would_plan_is_migrated()
+    {
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        FakeActiveStore active = new();
+
+        FakeCredentialInventory credentials = new(
+            [
+                new InstallationResetCredentialSummary(
+                    "accepted-account",
+                    InstallationResetItemStatus.Pending),
+            ]);
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            credentials,
+            active,
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]));
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        active.LegacyRecord = CreateActive(
+            plan,
+            InstallationResetPhase.Prepared,
+            pointOfNoReturn: false);
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(1, active.MigrationCount);
+    }
+
+    [Fact]
+    public async Task Legacy_record_with_a_delimiter_era_binding_id_is_still_migrated()
+    {
+        // Binding ids written before the injective preimage were joined text. Refusing them would
+        // refuse every record that era produced, so the old id is accepted for a legacy file only.
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]));
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        InstallationResetAcceptedBinding binding = plan.AcceptedBinding;
+
+        string delimiterEraBindingId = Convert.ToHexStringLower(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(string.Join(
+                    '|',
+                    plan.Scope,
+                    string.Join(',', binding.SelectedRoots),
+                    string.Join(',', binding.ExcludedRoots),
+                    string.Join(',', binding.PreservedBackups.Select(
+                        static backup => $"{backup.CanonicalPath}:{backup.Identity.Value}:{backup.Identity.Length}:{backup.Identity.HardLinkCount}")),
+                    string.Join(',', binding.CredentialAccounts),
+                    string.Join(',', binding.DataPlanIds)))));
+
+        Assert.NotEqual(binding.BindingId, delimiterEraBindingId);
+
+        active.LegacyRecord = CreateActive(
+            plan,
+            InstallationResetPhase.Prepared,
+            pointOfNoReturn: false) with
+        {
+            AcceptedBinding = binding with { BindingId = delimiterEraBindingId },
+        };
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(1, active.MigrationCount);
     }
 
     [Fact]
@@ -4195,6 +4397,11 @@ public sealed partial class InstallationResetServiceTests
 
         public Result RetireResult { get; set; } = Result.Success();
 
+        /// <summary>A legacy V1 file the next recovery will report instead of an authenticated record.</summary>
+        public InstallationResetActiveRecord? LegacyRecord { get; set; }
+
+        public int MigrationCount { get; private set; }
+
         public Task<Result<InstallationResetActiveRecoveryState>> RecoverAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
@@ -4247,8 +4454,19 @@ public sealed partial class InstallationResetServiceTests
             Guid installationId,
             InstallationResetActiveRecord expectedRecord,
             FileHandleIdentity expectedIdentity,
-            CancellationToken cancellationToken = default) =>
-            AuthenticatedSurfaceNotUsed<Result<InstallationResetActivePublication>>();
+            CancellationToken cancellationToken = default)
+        {
+            heldInstallationLock.AssertHeldFor(GuardedRoot);
+
+            MigrationCount++;
+
+            LegacyRecord = null;
+
+            Record = expectedRecord;
+
+            return Task.FromResult(
+                Result<InstallationResetActivePublication>.Success(Publication(expectedRecord)));
+        }
 
         public Task<Result> RetireAsync(
             ArcanumMaintenanceLock heldInstallationLock,
@@ -4355,7 +4573,13 @@ public sealed partial class InstallationResetServiceTests
 
         private Result<InstallationResetActiveRecoveryState> RecoveryState() =>
             Result<InstallationResetActiveRecoveryState>.Success(
-                Record is null
+                LegacyRecord is not null
+                    ? new InstallationResetActiveRecoveryState(
+                        InstallationResetActiveRecoveryOutcome.LegacyV1,
+                        Publication: null,
+                        LegacyRecord,
+                        new FileHandleIdentity(VolumeId: 1, FileId: 2))
+                    : Record is null
                     ? new InstallationResetActiveRecoveryState(
                         InstallationResetActiveRecoveryOutcome.NoActiveRecord,
                         Publication: null,
