@@ -70,14 +70,18 @@ public sealed class SessionContextPinStoreTests(GrimoireFixture fixture) : IAsyn
     public async Task UpsertAsync_RetriesWhenTheDatabaseIsBusyThenSucceeds()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
         Session session = await AddSessionAsync();
+
         SessionContextPinStore store = new(_db!, TimeProvider.System);
 
         SessionContextPinRecord pinned = await RunWhileAnotherConnectionHoldsTheWriteLockAsync(
             () => store.UpsertAsync(session.Id, SessionContextPinKind.File, "docs/busy.md", "Busy", "v1"));
 
         SessionContextPinRecord listed = Assert.Single(await store.ListAsync(session.Id));
+
         Assert.Equal(pinned.Id, listed.Id);
+
         Assert.Equal("v1", listed.ContentVersion);
     }
 
@@ -85,8 +89,11 @@ public sealed class SessionContextPinStoreTests(GrimoireFixture fixture) : IAsyn
     public async Task DeleteAsync_RetriesWhenTheDatabaseIsBusyThenSucceeds()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
         Session session = await AddSessionAsync();
+
         SessionContextPinStore store = new(_db!, TimeProvider.System);
+
         SessionContextPinRecord pinned = await store.UpsertAsync(
             session.Id, SessionContextPinKind.File, "docs/busy-delete.md", "Busy delete", "v1");
 
@@ -94,6 +101,7 @@ public sealed class SessionContextPinStoreTests(GrimoireFixture fixture) : IAsyn
             () => store.DeleteAsync(session.Id, pinned.Id));
 
         Assert.True(deleted);
+
         Assert.Empty(await store.ListAsync(session.Id));
     }
 
@@ -107,7 +115,9 @@ public sealed class SessionContextPinStoreTests(GrimoireFixture fixture) : IAsyn
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         };
+
         _db!.Sessions.Add(session);
+
         await _db.SaveChangesAsync();
 
         return session;
@@ -121,6 +131,7 @@ public sealed class SessionContextPinStoreTests(GrimoireFixture fixture) : IAsyn
     private async Task<T> RunWhileAnotherConnectionHoldsTheWriteLockAsync<T>(Func<Task<T>> operation)
     {
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
         if (connection.State != ConnectionState.Open)
         {
             await connection.OpenAsync();
@@ -129,17 +140,24 @@ public sealed class SessionContextPinStoreTests(GrimoireFixture fixture) : IAsyn
         // One second is the shortest bounded wait the driver offers (0 means wait forever), so a busy statement is
         // refused after one second instead of waiting the lock out.
         connection.DefaultTimeout = 1;
+
         await using (SqliteCommand timeout = connection.CreateCommand())
         {
             timeout.CommandText = "PRAGMA busy_timeout = 0";
+
             _ = await timeout.ExecuteNonQueryAsync();
         }
 
         await using ArcanumDbContext holderDb = fixture.CreateContext(_dbPath);
+
         SqliteConnection holder = (SqliteConnection)holderDb.Database.GetDbConnection();
+
         await holder.OpenAsync();
+
         SqliteTransaction writeLock = holder.BeginTransaction(deferred: false);
+
         Task<T> running;
+
         try
         {
             running = Task.Run(operation);
@@ -151,6 +169,7 @@ public sealed class SessionContextPinStoreTests(GrimoireFixture fixture) : IAsyn
         finally
         {
             await writeLock.RollbackAsync();
+
             await writeLock.DisposeAsync();
         }
 

@@ -4,6 +4,8 @@ using System.Diagnostics.CodeAnalysis;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -666,6 +668,61 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
         await using IGrimoireExclusiveClosedLease lease = closed.Value;
     }
 
+    /// <summary>
+    /// A refused open whose ticket then cannot be resolved still throws the refusal's own failure, and says so.
+    /// </summary>
+    /// <remarks>
+    /// Resolving the ticket is compensating work, so it must never replace the failure the caller is owed. It
+    /// also must not vanish: an unresolved ticket is what makes a later stage-two close wait out its opening
+    /// timeout, and without a trace the operator has nothing connecting that timeout to this open.
+    /// </remarks>
+    [Fact]
+    public async Task OpenFreshAsync_WhenTheTicketCannotBeResolvedAfterAFailedRefusal_LogsItAndStillThrowsTheRefusalFailure()
+    {
+        await CreateCanonicalDatabaseAsync();
+
+        FailingClearDrain drain = new();
+
+        InvalidOperationException resolutionFailure = new("the ticket could not be resolved");
+
+        RecordingLifecycle lifecycle = new()
+        {
+            RegistrationFactory = connection => new RecordingRegistration(connection)
+            {
+                RefusalFailure = resolutionFailure,
+            },
+        };
+
+        RecordingInitializer initializer = new()
+        {
+            Failure = new InvalidOperationException("initializer failed"),
+        };
+
+        CapturingLogger logger = new();
+
+        GrimoireOrdinaryConnectionFactory factory = CreateFactory(
+            lifecycle,
+            new RecordingRuntime(initializeProvider: true),
+            drain,
+            initializer: initializer,
+            logger: logger);
+
+        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => factory.OpenFreshAsync(
+                GrimoireOrdinaryFreshConnectionKind.ReadWrite,
+                CancellationToken.None));
+
+        Assert.Equal(FailingClearDrain.FailureMessage, refused.Message);
+
+        CapturedLog logged = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, logged.Level);
+
+        Assert.Same(resolutionFailure, logged.Exception);
+
+        Assert.Contains("admission ticket", logged.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Successful_open_enrolls_before_ticket_terminal_and_can_be_borrowed()
     {
@@ -888,14 +945,16 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
         ISqliteNativeRuntime runtime,
         ICovenantConnectionDrain? drain = null,
         IGrimoireOrdinaryConnectionFactoryTestSeam? seam = null,
-        ICovenantSqliteConnectionInitializer? initializer = null) =>
+        ICovenantSqliteConnectionInitializer? initializer = null,
+        ILogger<GrimoireOrdinaryConnectionFactory>? logger = null) =>
         new(
             lifecycle,
             drain ?? new RecordingDrain(),
             new FixedPassphraseSource(),
             initializer ?? new RecordingInitializer(),
             runtime,
-            seam ?? new RecordingTestSeam());
+            seam ?? new RecordingTestSeam(),
+            logger ?? NullLogger<GrimoireOrdinaryConnectionFactory>.Instance);
 
     private static ServiceProvider CreateProvider(ICovenantConnectionDrain drain)
     {
@@ -1020,6 +1079,8 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         internal Result OpenedResult { get; init; } = Result.Success();
 
+        internal Exception? RefusalFailure { get; init; }
+
         internal int DisposeCount { get; private set; }
 
         internal ConnectionState? StateAtDispose { get; private set; }
@@ -1045,7 +1106,15 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         public void MarkFailed() => _events.Add("failed");
 
-        public void MarkRefusedAfterOpen() => _events.Add("refused");
+        public void MarkRefusedAfterOpen()
+        {
+            if (RefusalFailure is not null)
+            {
+                throw RefusalFailure;
+            }
+
+            _events.Add("refused");
+        }
 
         public void Dispose()
         {
@@ -1103,6 +1172,26 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
+    }
+
+    private sealed record CapturedLog(LogLevel Level, string Message, Exception? Exception);
+
+    private sealed class CapturingLogger : ILogger<GrimoireOrdinaryConnectionFactory>
+    {
+        internal List<CapturedLog> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add(new CapturedLog(logLevel, formatter(state, exception), exception));
     }
 
     private sealed class FailingClearDrain : ICovenantConnectionDrain

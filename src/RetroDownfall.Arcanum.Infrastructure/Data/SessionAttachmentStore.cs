@@ -1752,7 +1752,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         CancellationToken cancellationToken)
     {
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
         await using DbCommand cmd = connection.CreateCommand();
+
         cmd.CommandText =
             """
             UPDATE "SessionAttachments"
@@ -1768,8 +1770,11 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 "SourceDiagnosticReason" = @sourceDiagnosticReason
             WHERE "Id" = @id
             """;
+
         AddParameter(cmd, "@id", GrimoireEntitySql.Format(id));
+
         AddSourceParameters(cmd, source);
+
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

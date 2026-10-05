@@ -109,7 +109,9 @@ internal static class GrimoireSchemaVersionChains
     /// <c>OutputFileId</c> and <c>ErrorFileId</c>, were written in lowercase dashed form while every lookup
     /// wrapped the column in <c>lower(replace(col, '-', ''))</c>, so deleting an uploaded file and checking
     /// whether a batch still named it scanned both tables. The step rewrites any non-canonical value in
-    /// place, in the statement's own transaction, and indexes the three batch columns. It also adds
+    /// place, in the statement's own transaction, and indexes the three batch columns twice: once on the canonical
+    /// text the repositories compare, and once on the <c>lower(replace(col, '-', ''))</c> expression the retention
+    /// sweep compares so it can stay correct for any spelling without scanning every batch. It also adds
     /// <c>IX_InferenceRuns_SessionId_Norm</c>, the expression index the retention sweep's
     /// <c>lower(replace(SessionId, '-', ''))</c> comparisons against the run ledger need; that column keeps its
     /// dash-free spelling, so no value is rewritten. Last, it adds <c>ux_tapestry_generations_complete_scope</c>, the

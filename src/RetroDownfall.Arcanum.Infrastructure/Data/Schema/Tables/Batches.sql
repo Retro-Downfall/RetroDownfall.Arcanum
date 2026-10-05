@@ -34,3 +34,19 @@ CREATE INDEX IF NOT EXISTS "IX_Batches_InputFileId" ON "Batches" ("InputFileId")
 CREATE INDEX IF NOT EXISTS "IX_Batches_OutputFileId" ON "Batches" ("OutputFileId");
 
 CREATE INDEX IF NOT EXISTS "IX_Batches_ErrorFileId" ON "Batches" ("ErrorFileId");
+
+-- The retention sweep names the same three roles normalized - lower(replace(col, '-', '')) - because it has to
+-- stay correct for whatever spelling a file identity was ever written in, and it asks the file's question from
+-- two sides: whether a batch still names an aged upload, and which batches name it. SQLite cannot answer a
+-- function-wrapped column from the plain indexes above, so without an index on each wrapped expression every
+-- one of those asks is a scan of every batch the installation ever held, once per candidate file. Each
+-- expression here has to stay character for character the shape the predicate has, because that is how SQLite
+-- decides the index applies.
+CREATE INDEX IF NOT EXISTS "IX_Batches_InputFileId_Norm"
+  ON "Batches" (lower(replace("InputFileId", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_Batches_OutputFileId_Norm"
+  ON "Batches" (lower(replace("OutputFileId", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_Batches_ErrorFileId_Norm"
+  ON "Batches" (lower(replace("ErrorFileId", '-', '')));

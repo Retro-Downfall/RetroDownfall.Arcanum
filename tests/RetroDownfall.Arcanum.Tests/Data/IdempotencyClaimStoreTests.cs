@@ -360,6 +360,7 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
                         0) == 1)
                 {
                     losingReadEntered.TrySetResult();
+
                     allowLosingRead.Task.GetAwaiter().GetResult();
                 }
 
@@ -541,7 +542,9 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
         RequireSqlCipher();
 
         string claimKey = fingerprintConflict ? "insert-race-conflict" : "insert-race-match";
+
         const string requestFingerprint = "request-fingerprint";
+
         string winnerFingerprint = fingerprintConflict ? "winner-fingerprint" : requestFingerprint;
 
         // A real unique-key violation: the winner commits between the loser's read and its insert.
@@ -551,16 +554,25 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
             winnerFingerprint);
 
         Assert.Null(failure);
+
         Assert.NotNull(result);
+
         Assert.Equal(fingerprintConflict, result.Conflict);
+
         Assert.False(result.Acquired);
+
         Assert.Equal(claimKey, result.Claim.ClaimKeyHash);
+
         Assert.Equal(winnerFingerprint, result.Claim.FingerprintHash);
+
         Assert.Equal("race-winner", result.Claim.OwnerId);
+
         Assert.Equal(IdempotencyClaimState.Running, result.Claim.State);
 
         IdempotencyClaim? persisted = await new IdempotencyClaimStore(_db!).TryGetAsync(claimKey);
+
         Assert.NotNull(persisted);
+
         Assert.Equal(result.Claim, persisted);
     }
 
@@ -589,9 +601,13 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
             """);
 
         Assert.Null(result);
+
         SqliteException exception = Assert.IsType<SqliteException>(failure);
+
         Assert.Equal(19, exception.SqliteErrorCode);
+
         Assert.Contains("simulated non-unique constraint failure", exception.Message, StringComparison.Ordinal);
+
         Assert.Equal(
             "race-winner",
             (await new IdempotencyClaimStore(_db!).TryGetAsync(claimKey))?.OwnerId);
@@ -823,6 +839,7 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
         string? setupAfterRebuildSql = null)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
+
         _ = await AcquireAsync(
             new IdempotencyClaimStore(_db!),
             "insert-race-unrelated-claim",
@@ -832,9 +849,11 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
             now);
 
         SqliteConnection losingConnection = (SqliteConnection)_db!.Database.GetDbConnection();
+
         losingConnection.CreateCollation(
             "IDEMPOTENCY_RECLAIM_RACE",
             static (left, right) => string.Compare(left, right, StringComparison.Ordinal));
+
         await RebuildClaimsWithRaceCollationAsync();
 
         if (setupAfterRebuildSql is not null)
@@ -843,13 +862,17 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
         }
 
         await using ArcanumDbContext winningDb = _fixture.CreateContext(_dbPath);
+
         ((SqliteConnection)winningDb.Database.GetDbConnection()).CreateCollation(
             "IDEMPOTENCY_RECLAIM_RACE",
             static (left, right) => string.Compare(left, right, StringComparison.Ordinal));
 
         TaskCompletionSource losingReadEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         TaskCompletionSource allowLosingRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         int interceptNextComparison = 1;
+
         losingConnection.CreateCollation(
             "IDEMPOTENCY_RECLAIM_RACE",
             (left, right) =>
@@ -857,6 +880,7 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
                 if (Interlocked.Exchange(ref interceptNextComparison, 0) == 1)
                 {
                     losingReadEntered.TrySetResult();
+
                     allowLosingRead.Task.GetAwaiter().GetResult();
                 }
 

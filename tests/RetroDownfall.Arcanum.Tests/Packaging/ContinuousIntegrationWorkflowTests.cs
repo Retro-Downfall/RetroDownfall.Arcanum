@@ -209,6 +209,7 @@ public sealed class ContinuousIntegrationWorkflowTests
             "Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing",
             "Cli.CliOutputFileTests.Replacing_an_existing_file_keeps_its_attributes_on_Windows",
             "Cli.ConfigCommandTests.Cancelling_the_edit_terminates_the_spawned_editor_on_Windows",
+            "Data.GrimoireMaintenanceConnectionFactoryTests.OpenJournalCandidateReopenAsync_OpensAWindowsPathContainingSpacePercentHashAndDriveColon",
         ];
 
         string expected = string.Join('|', classes.Select(static name => "FullyQualifiedName~RetroDownfall.Arcanum.Tests." + name)

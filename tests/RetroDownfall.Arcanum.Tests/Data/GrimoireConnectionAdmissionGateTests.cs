@@ -885,7 +885,7 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
     /// </summary>
     /// <remarks>
     /// The generation bump, the move to Closed and the refusal stamped on every unresolved open are
-    /// one commitment. A caller that is told its call was cancelled before it has been told nothing
+    /// one commitment. A caller that is told its call was cancelled has been told nothing
     /// happened, so nothing may have happened: the generation must be untouched, the gate must still
     /// be Closing, and an open that was in flight must still be able to revalidate and complete.
     /// Cancellation observed after the commitment is a different outcome, pinned by

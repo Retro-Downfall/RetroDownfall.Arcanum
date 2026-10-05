@@ -2207,6 +2207,79 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// A fork's copy that is unlinked after it was made is refused when its row is inserted, and the source is left
+    /// exactly as it was.
+    /// </summary>
+    /// <remarks>
+    /// A fork's copies are not in the promotion in-flight set the orphan sweep consults, so a sweep that races a
+    /// fork can unlink a copy that predates its snapshot. What keeps that from publishing a row for missing bytes
+    /// is the revalidation of the captured blob identity inside the insert, which this pins: the fork fails, no
+    /// row is written for it, and the source attachment still reads back.
+    /// </remarks>
+    [SkippableFact]
+    public async Task InsertForkRowsInAmbientTransactionAsync_refuses_a_copy_unlinked_after_it_was_made_and_leaves_the_source_intact()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sourceSessionId = Guid.NewGuid();
+
+        Guid forkSessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sourceSessionId, "fork-lost-source");
+
+        await EnsureSessionAsync(forkSessionId, "fork-lost-destination");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("fork lost copy bytes");
+
+        SessionAttachmentRecord source = await _store!.PersistNewAsync(
+            sourceSessionId,
+            pendingTurnId: null,
+            entryId: null,
+            "lost-copy.txt",
+            "lost-copy.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        SessionAttachmentForkCopyPlan plan = new(source, Guid.NewGuid(), NewEntryId: null);
+
+        await _store.CopyBytesForForkAsync(forkSessionId, [plan]);
+
+        string copy = Assert.Single(
+            Directory.EnumerateFiles(
+                Path.Combine(_attachmentsRoot, forkSessionId.ToString("N")),
+                "*",
+                SearchOption.AllDirectories));
+
+        // What the orphan sweep does to a copy it takes for unreferenced.
+        File.Delete(copy);
+
+        try
+        {
+            using IDisposable gate = await _store.AcquireSessionGateAsync(forkSessionId);
+
+            await using IDbContextTransaction transaction = await _db!.Database.BeginTransactionAsync();
+
+            IOException refused = await Assert.ThrowsAsync<IOException>(
+                () => _store.InsertForkRowsInAmbientTransactionAsync(forkSessionId, [plan]));
+
+            Assert.Contains("missing or replaced bytes", refused.Message, StringComparison.Ordinal);
+
+            await transaction.RollbackAsync();
+
+            Assert.Empty(await _store.ListBoundAsync(forkSessionId));
+
+            SessionAttachmentRecord intact = Assert.Single(await _store.ListBoundAsync(sourceSessionId));
+
+            Assert.Equal(bytes, (await _store.ReadBytesAsync(intact)).ToArray());
+        }
+        finally
+        {
+            _ = _store.TryDeleteSessionDirectory(forkSessionId);
+        }
+    }
+
     [SkippableFact]
 
     public async Task InsertForkRowsInAmbientTransactionAsync_AcquiresWriterBeforeBlobValidation()
