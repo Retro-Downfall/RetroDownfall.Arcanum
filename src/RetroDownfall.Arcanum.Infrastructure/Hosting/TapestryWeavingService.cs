@@ -57,7 +57,20 @@ internal sealed class TapestryWeavingService(
                         ArcanumSettingClamps.EmbeddingsTapestryRebuildIntervalMinutes(
                             embeddings.Tapestry.RebuildIntervalMinutes));
 
-                    await RunSweepAsync(embeddings, stoppingToken).ConfigureAwait(false);
+                    // Read before the lease is requested, so a refusal waits on the right generation.
+                    long observedGeneration = admission.CurrentGeneration;
+
+                    TapestrySweepOutcome outcome = await RunSweepAsync(embeddings, stoppingToken).ConfigureAwait(false);
+
+                    if (outcome.Status == TapestrySweepStatus.DeferredForMaintenance)
+                    {
+                        // The sweep is owed, not skipped: wait for the gate to reopen and run it at once
+                        // instead of sleeping the whole rebuild interval after a window that may have
+                        // lasted seconds.
+                        await WaitForReopenAsync(observedGeneration, stoppingToken).ConfigureAwait(false);
+
+                        continue;
+                    }
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -81,6 +94,17 @@ internal sealed class TapestryWeavingService(
             }
         }
     }
+
+    /// <summary>
+    /// Waits after the predecessor of <paramref name="observedGeneration"/>: closing increments the
+    /// generation and reopening reports that same value, and the gate's ordinary-state check keeps the
+    /// wait from returning early, so the wake-up is neither lost when the reopen wins the race to the
+    /// waiter nor taken before it. The same shape as <c>Loremaster</c>'s wait.
+    /// </summary>
+    private Task WaitForReopenAsync(long observedGeneration, CancellationToken cancellationToken) =>
+        admission.WaitForNextOpenGenerationAsync(
+            observedGeneration > 0 ? observedGeneration - 1 : 0,
+            cancellationToken);
 
     /// <summary>
     /// One complete sweep. <c>internal</c> rather than <c>private</c> so tests can drive it directly
