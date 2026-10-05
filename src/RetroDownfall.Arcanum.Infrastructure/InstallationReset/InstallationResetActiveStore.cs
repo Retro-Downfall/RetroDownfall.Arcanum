@@ -403,12 +403,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
     /// still fails the proof and leaves the opening in place. The opening's own shape (active,
     /// revision zero, no envelope, this location) is not re-checked: both callers are in Begin and
     /// pass the anchor it built a few lines earlier, so the shape holds by construction and a guard
-    /// for it could not be reached. The anchor codec admits no <c>Closed</c> revision-zero
-    /// tombstone, so it mirrors the closed suffix instead: compare-remove the anchor, then remove
-    /// the key last. A crash between the two leaves the key-only suffix that startup cleanup
-    /// already finishes. Nothing here observes the caller's token, and any failure is swallowed:
-    /// the caller is already returning or rethrowing the original failure, and a surviving opening
-    /// is the fail-closed outcome.</para>
+    /// for it could not be reached.</para>
+    ///
+    /// <para>The anchor codec admits no <c>Closed</c> revision-zero tombstone, so retirement mirrors
+    /// the closed suffix instead: compare-remove the anchor, then remove the key last. A crash between
+    /// the two leaves the key-only suffix that startup cleanup already finishes. Nothing here observes
+    /// the caller's token, and any failure is swallowed: the caller is already returning or rethrowing
+    /// the original failure, and a surviving opening is the fail-closed outcome.</para>
     /// </remarks>
     private void RetireUnpublishedOpening(
         ArcanumMaintenanceLock heldInstallationLock,

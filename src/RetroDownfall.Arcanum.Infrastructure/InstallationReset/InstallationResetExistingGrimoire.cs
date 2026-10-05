@@ -31,8 +31,13 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+/// <param name="secretStore">
+/// Lazy on purpose. Creating the secret store creates the Data Protection key ring, and the planning
+/// and lockless-refusal paths have to work on an installation that has no Grimoire without leaving
+/// a directory behind; the store is only needed once an existing database is about to be opened.
+/// </param>
 internal sealed class InstallationResetExistingGrimoire(
-    DataProtectionSecretStore secretStore,
+    Lazy<DataProtectionSecretStore> secretStore,
     ArcanumSettings settings,
     TimeProvider timeProvider,
     ILoggerFactory loggerFactory,
@@ -342,7 +347,7 @@ internal sealed class InstallationResetExistingGrimoire(
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(
                 databasePath);
 
-            SecretStoreReadResult secret = await secretStore
+            SecretStoreReadResult secret = await secretStore.Value
                 .GetGrimoireEncryptionSecretReadResultAsync()
                 .ConfigureAwait(false);
 
@@ -391,7 +396,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
             await using ArcanumDbContext context = new(
                 options,
-                secretStore,
+                secretStore.Value,
                 passphraseSource);
 
             LongRunningOperationStore operations = new(

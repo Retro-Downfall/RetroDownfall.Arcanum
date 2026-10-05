@@ -364,6 +364,164 @@ public sealed partial class InstallationResetServiceTests
             active.Record?.HostToolsMarkerPairReset?.RestoreCredentialCleanup);
     }
 
+    [Fact]
+    public async Task Full_arm_cancelled_while_reading_back_the_marker_pair_checkpoint_returns_resumable()
+    {
+        // The claim is durable and the marker pair has already been handled when the caller's token
+        // trips, so the first thing the continuation does - reading the record back - is the call that
+        // observes it. That read ran outside the arm's cancellation handling, so the caller got a raw
+        // exception from an operation whose claim was already on disk.
+        Guid operationId = Guid.Parse("5f5f5f5f-5f5f-4f5f-8f5f-5f5f5f5f5f5f");
+
+        using CancellationTokenSource cancellation = new();
+
+        FakeActiveStore active = new();
+
+        FakeOfflineCleanup cleanup = new();
+
+        RecordingTerminalContinuation terminal = new() { Store = active };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            cleanup,
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: new FakePairReader(JoinResult(
+                HostProcessToolsMarkerPairDisposition.TaintedMatched)),
+            remediationVerifier: new FakeRemediationVerifier(Authorization(operationId)),
+            markerPairReset: () => PassThroughMarkerPairResetCoordinator.Instance,
+            terminalContinuation: () => terminal);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        active.OnWrite = record =>
+        {
+            active.Record = record with
+            {
+                HostToolsMarkerPairReset = record.HostToolsMarkerPairReset
+                    ?? TerminalMarkerCheckpoint(record),
+            };
+
+            cancellation.Cancel();
+        };
+
+        Result<InstallationResetResult> applied = await ApplyFullUnderTestLockAsync(
+            service,
+            FullRequest(operationId, plan.PlanId, planRequest),
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        Assert.True(applied.Value.ResumeRequired);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Value.ErrorCode);
+
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(applied.Value.Verification.RemainingIssues).Code);
+
+        Assert.False(cleanup.Executed);
+
+        Assert.Equal(0, terminal.Calls);
+
+        Assert.Empty(active.RetiredOperationIds);
+
+        Assert.NotNull(active.Record?.FullInstallationResetRemediationClaim);
+    }
+
+    [Fact]
+    public async Task Full_arm_data_apply_refused_by_the_issuer_free_service_keeps_the_record_while_its_claim_is_outstanding()
+    {
+        // The attested arm reaches its canonical data apply through the issuer-free service, which the
+        // composition root registers as one that always answers inventory unavailable. That code is
+        // one of the pre-effect refusals that retires an ordinary record, but the arm has already
+        // published a nested transition claim that has not reported, and retiring the record would
+        // delete the one piece of evidence that claim needs. So the arm stays recovery required: it
+        // is the fail-closed ending, and routing this arm through the stopped-host authority instead
+        // is an open owner decision, not something this test or the arm assumes.
+        //
+        // The store here is a double with no payload rule. Against the real store the arm does not get
+        // this far - see InstallationResetActiveStoreTests.Advance_refuses_to_move_a_record_carrying_
+        // the_remediation_claim_out_of_its_pre_effect_shape - so every test in this partial that runs
+        // the arm past its claim is exercising the service's own decisions, not the store's agreement.
+        Guid operationId = Guid.Parse("6a6a6a6a-6a6a-4a6a-8a6a-6a6a6a6a6a6a");
+
+        FakeDataService data = new(CreateDataPlan("global-data"))
+        {
+            ApplyResult = Result<DataRetentionApplyResult>.Failure(new Error(
+                ErrorCodes.Data.InventoryUnavailable,
+                "The issuer-free data service is unavailable.")),
+        };
+
+        FakeActiveStore active = new();
+
+        FakeOfflineCleanup cleanup = new();
+
+        RecordingTerminalContinuation terminal = new() { Store = active };
+
+        InstallationResetService service = CreateService(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            cleanup,
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: new FakePairReader(JoinResult(
+                HostProcessToolsMarkerPairDisposition.TaintedMatched)),
+            remediationVerifier: new FakeRemediationVerifier(Authorization(operationId)),
+            markerPairReset: () => PassThroughMarkerPairResetCoordinator.Instance,
+            terminalContinuation: () => terminal);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        active.OnWrite = record => active.Record = record with
+        {
+            HostToolsMarkerPairReset = record.HostToolsMarkerPairReset
+                ?? TerminalMarkerCheckpoint(record),
+        };
+
+        Result<InstallationResetResult> applied = await ApplyFullUnderTestLockAsync(
+            service,
+            FullRequest(operationId, plan.PlanId, planRequest),
+            CancellationToken.None);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        Assert.Single(data.ApplyRequests);
+
+        Assert.True(applied.Value.ResumeRequired);
+
+        Assert.True(applied.Value.PointOfNoReturn);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Value.ErrorCode);
+
+        Assert.Empty(active.RetiredOperationIds);
+
+        Assert.Equal(
+            InstallationResetNestedTransitionPhase.Claimed,
+            active.Record?.NestedTransitionReceipt?.Phase);
+
+        Assert.False(cleanup.Executed);
+
+        Assert.Equal(0, terminal.Calls);
+    }
+
     /// <summary>
     /// The marker-pair checkpoint an attested reset carries once its managed files are accounted for.
     /// </summary>

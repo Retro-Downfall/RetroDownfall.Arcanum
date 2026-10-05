@@ -975,8 +975,22 @@ internal sealed class InstallationResetService(
             return FullAdmissionAccepted(admitted);
         }
 
-        Result<InstallationResetActiveRecoveryState> recovered = await activeStore
-            .RecoverAsync(heldInstallationLock, cancellationToken).ConfigureAwait(false);
+        Result<InstallationResetActiveRecoveryState> recovered;
+
+        try
+        {
+            recovered = await activeStore
+                .RecoverAsync(heldInstallationLock, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // This read is the first thing the continuation does, so it can be the call that observes
+            // a cancellation raised while the marker pair was being handled. Nothing of the arm's own
+            // is in flight yet: the claim and whatever the coordinator checkpointed are already
+            // durable and there is no progress to carry, so the resumable cancellation answer is built
+            // from the record the arm was admitted with, and nothing is written.
+            return ResumableAfterCancellation(admitted);
+        }
 
         if (recovered.IsFailure
             || recovered.Value.Outcome
@@ -1040,45 +1054,9 @@ internal sealed class InstallationResetService(
         {
             // The same answer the ordinary arms give: this arm reaches the credential sweep and the
             // terminal step, so a cancellation here is routinely past the point of no return, and the
-            // operator is owed a resumable result rather than a raw exception.
-            InstallationResetActiveRecord current = progress.Active;
-
-            // The terminal step publishes straight through the store, so a cancellation that reached it
-            // after one of those publications leaves this writer holding an envelope the store has moved
-            // past, and progress holding a record without the step's evidence. Reread what is durable and
-            // carry only the fields this method owns onto it - the same overlay the step's own outcome
-            // gets - because checkpointing the older record would write that evidence out of existence.
-            Result<InstallationResetActiveRecord?> durable = await writer
-                .RereadAsync(CancellationToken.None).ConfigureAwait(false);
-
-            if (durable.IsSuccess && durable.Value is { } published)
-            {
-                current = published with
-                {
-                    Phase = current.Phase,
-                    PointOfNoReturn = current.PointOfNoReturn,
-                    RowsDeleted = current.RowsDeleted,
-                    FilesDeleted = current.FilesDeleted,
-                    EstimatedBytesDeleted = current.EstimatedBytesDeleted,
-                    CredentialResults = current.CredentialResults,
-                    LastErrorCode = current.LastErrorCode,
-                };
-            }
-
-            InstallationResetActiveRecord cancelled = current with
-            {
-                PointOfNoReturn = current.PointOfNoReturn
-                    || current.Phase is not InstallationResetPhase.Prepared,
-                LastErrorCode = ErrorCodes.Data.RecoveryRequired,
-            };
-
-            Result checkpoint = await writer.WriteAsync(
-                cancelled,
-                CancellationToken.None).ConfigureAwait(false);
-
-            return checkpoint.IsFailure
-                ? Resumable(cancelled, checkpoint.Error)
-                : ResumableAfterCancellation(cancelled);
+            // operator is owed a resumable result rather than a raw exception. The terminal step
+            // publishes straight through the store, which is why the checkpoint reads the record back.
+            return await CheckpointAfterCancellationAsync(writer, progress).ConfigureAwait(false);
         }
     }
 
@@ -1303,22 +1281,7 @@ internal sealed class InstallationResetService(
         }
         catch (OperationCanceledException)
         {
-            InstallationResetActiveRecord current = progress.Active;
-
-            InstallationResetActiveRecord cancelled = current with
-            {
-                PointOfNoReturn = current.PointOfNoReturn
-                    || current.Phase is not InstallationResetPhase.Prepared,
-                LastErrorCode = ErrorCodes.Data.RecoveryRequired,
-            };
-
-            Result checkpoint = await writer.WriteAsync(
-                cancelled,
-                CancellationToken.None).ConfigureAwait(false);
-
-            return checkpoint.IsFailure
-                ? Resumable(cancelled, checkpoint.Error)
-                : ResumableAfterCancellation(cancelled);
+            return await CheckpointAfterCancellationAsync(writer, progress).ConfigureAwait(false);
         }
     }
 
@@ -1533,24 +1496,81 @@ internal sealed class InstallationResetService(
         }
         catch (OperationCanceledException)
         {
-            InstallationResetActiveRecord current = progress.Active;
-
-            InstallationResetActiveRecord cancelled = current with
-            {
-                PointOfNoReturn = current.PointOfNoReturn
-                    || current.Phase is not InstallationResetPhase.Prepared,
-                LastErrorCode = ErrorCodes.Data.RecoveryRequired,
-            };
-
-            Result checkpoint = await writer.WriteAsync(
-                cancelled,
-                CancellationToken.None).ConfigureAwait(false);
-
-            return checkpoint.IsFailure
-                ? Resumable(cancelled, checkpoint.Error)
-                : ResumableAfterCancellation(cancelled);
+            return await CheckpointAfterCancellationAsync(writer, progress).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Writes down what a cancelled apply had already done, and answers with the resumable result.
+    /// </summary>
+    /// <remarks>
+    /// Runs on <see cref="CancellationToken.None"/> throughout. The token that cancelled the apply is
+    /// the one the checkpoint would otherwise carry, and a checkpoint written on it throws, so the
+    /// operator would get a raw exception from an installation that is already past its point of no
+    /// return. What is written is the progress the apply last recorded in memory, so every step that
+    /// takes an irreversible action updates that progress before the next call that could be cancelled.
+    ///
+    /// <para>The durable record is read back first, in every arm. Each hands part of its work to a
+    /// collaborator that publishes straight through the store - the nested database transition writes
+    /// its own receipt into this record, and the attested arm's terminal step records each credential
+    /// removal - so a cancellation that reaches either after it has published finds the writer holding
+    /// an envelope the store has moved past, and the progress holding a record without the
+    /// collaborator's evidence. Checkpointing the progress alone would be refused as a revision conflict
+    /// and, were it accepted, would write that evidence out of existence. Only the fields this service
+    /// owns are carried onto what is durable.</para>
+    /// </remarks>
+    private static async Task<Result<InstallationResetResult>> CheckpointAfterCancellationAsync(
+        IInstallationResetActiveWriter writer,
+        InstallationResetApplyProgress progress)
+    {
+        InstallationResetActiveRecord current = progress.Active;
+
+        Result<InstallationResetActiveRecord?> durable = await writer
+            .RereadAsync(CancellationToken.None).ConfigureAwait(false);
+
+        if (durable.IsSuccess && durable.Value is { } published)
+        {
+            current = WithServiceOwnedProgress(published, current);
+        }
+
+        InstallationResetActiveRecord cancelled = current with
+        {
+            PointOfNoReturn = current.PointOfNoReturn
+                || current.Phase is not InstallationResetPhase.Prepared,
+            LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+        };
+
+        Result checkpoint = await writer.WriteAsync(
+            cancelled,
+            CancellationToken.None).ConfigureAwait(false);
+
+        return checkpoint.IsFailure
+            ? Resumable(cancelled, checkpoint.Error)
+            : ResumableAfterCancellation(cancelled);
+    }
+
+    /// <summary>
+    /// Carries the fields this service owns onto a record a collaborator has published.
+    /// </summary>
+    /// <remarks>
+    /// Everything the collaborator published and the service does not own - the marker-pair checkpoint
+    /// and its restore-credential cleanup evidence, the nested receipt - comes from the published
+    /// record, because continuing from the service's older copy would write that evidence straight back
+    /// out of existence on the next checkpoint.
+    /// </remarks>
+    private static InstallationResetActiveRecord WithServiceOwnedProgress(
+        InstallationResetActiveRecord published,
+        InstallationResetActiveRecord owned) =>
+        published with
+        {
+            Phase = owned.Phase,
+            PointOfNoReturn = owned.PointOfNoReturn,
+            RowsDeleted = owned.RowsDeleted,
+            FilesDeleted = owned.FilesDeleted,
+            EstimatedBytesDeleted = owned.EstimatedBytesDeleted,
+            CredentialResults = owned.CredentialResults,
+            LastErrorCode = owned.LastErrorCode,
+        };
 
     /// <summary>
     /// The closed set of data-service refusals that are made before the service has changed anything.
@@ -1564,13 +1584,25 @@ internal sealed class InstallationResetService(
     /// answers that code only for failures before its canonical action has started. A failure raised by
     /// the action, or by releasing the lease after it, reports recovery required, which is not in the
     /// set.</para>
+    ///
+    /// <para>The rest are the refusals the data service documents as having mutated nothing. Blocked and
+    /// conflict come from the plan it rebuilds before it opens a transaction, or from a check made
+    /// inside the transaction that would delete, ahead of its first write, so the transaction rolls back
+    /// untouched. The one place the service raises a blocker after an operation row exists is the
+    /// session and attachment deletion revalidation, which a reset request never reaches. Not found and
+    /// the labelled-artifact refusal are the same kind of answer for the deletes that can raise them;
+    /// they are listed so that a refusal which would repeat identically on every resume retires the
+    /// record and reports its own code instead of being masked as recovery required.</para>
     /// </remarks>
     private static bool IsProvenPreEffectRefusal(Error error) =>
         error.Code is ErrorCodes.Data.InvalidRequest
             or ErrorCodes.Data.PlanChanged
             or ErrorCodes.Data.Blocked
+            or ErrorCodes.Data.Conflict
+            or ErrorCodes.Data.NotFound
             or ErrorCodes.Data.ConfirmationRequired
-            or ErrorCodes.Data.InventoryUnavailable;
+            or ErrorCodes.Data.InventoryUnavailable
+            or ErrorCodes.Covenant.ForbiddenAuthority;
 
     private StoppedHostGrimoireAuthorityIssuer
         CreateInstallationResetStoppedHostIssuer(
@@ -1608,7 +1640,7 @@ internal sealed class InstallationResetService(
         {
             return await ReturnCompletedAsync(
                 writer,
-                active,
+                progress,
                 plan,
                 cancellationToken)
                 .ConfigureAwait(false);
@@ -1644,6 +1676,12 @@ internal sealed class InstallationResetService(
                 // past the point of no return before the call, and a cancellation from here on
                 // checkpoints it that way. Nothing durable says so yet: a mutation that reports failure
                 // may have done nothing, and the operator can simply retry it.
+                //
+                // A token that is already cancelled here cannot have uninstalled anything, so that is
+                // checked first: the store keeps the flag forever, and marking a record that nothing has
+                // touched would tell the operator an irreversible step may have happened when none could.
+                cancellationToken.ThrowIfCancellationRequested();
+
                 progress.Active = active with { PointOfNoReturn = true };
 
                 preData = await _preDataMutation
@@ -1998,16 +2036,7 @@ internal sealed class InstallationResetService(
                 // records each irreversible credential removal durably, and carrying the older record
                 // forward would erase that record on the next checkpoint — leaving an installation
                 // whose credentials are gone and whose evidence says they never were.
-                active = terminal.Value with
-                {
-                    Phase = active.Phase,
-                    PointOfNoReturn = active.PointOfNoReturn,
-                    RowsDeleted = active.RowsDeleted,
-                    FilesDeleted = active.FilesDeleted,
-                    EstimatedBytesDeleted = active.EstimatedBytesDeleted,
-                    CredentialResults = active.CredentialResults,
-                    LastErrorCode = active.LastErrorCode,
-                };
+                active = WithServiceOwnedProgress(terminal.Value, active);
 
                 progress.Active = active;
             }
@@ -2048,7 +2077,7 @@ internal sealed class InstallationResetService(
 
         return await ReturnCompletedAsync(
             writer,
-            active,
+            progress,
             plan,
             cancellationToken)
             .ConfigureAwait(false);
@@ -2218,12 +2247,31 @@ internal sealed class InstallationResetService(
         return Result.Success();
     }
 
+    /// <summary>
+    /// Finishes a completed record: one more cleanup and credential removal, then retirement.
+    /// </summary>
+    /// <remarks>
+    /// Every irreversible step it takes is written into <paramref name="progress"/> as it happens, so a
+    /// cancellation that lands at the final retirement is checkpointed from what this call actually did
+    /// rather than from the record it was handed, which the store would refuse as taking back a
+    /// recorded credential removal.
+    ///
+    /// <para>The error code a completed record carries was left by an earlier attempt that did not
+    /// finish - a final cleanup that failed verification, or the checkpoint written for a cancellation.
+    /// This call re-checks exactly what that code describes, so once the cleanup verifies it is stale and
+    /// is cleared; keeping it would make a record that now verifies clean report recovery required on
+    /// every run and never retire.</para>
+    /// </remarks>
     private async Task<Result<InstallationResetResult>> ReturnCompletedAsync(
         IInstallationResetActiveWriter writer,
-        InstallationResetActiveRecord active,
+        InstallationResetApplyProgress progress,
         InstallationResetPlan plan,
         CancellationToken cancellationToken)
     {
+        InstallationResetActiveRecord entered = progress.Active;
+
+        InstallationResetActiveRecord active = entered;
+
         Result<InstallationResetOfflineCleanupResult> finalCleanup = await offlineCleanup
             .ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
 
@@ -2241,6 +2289,8 @@ internal sealed class InstallationResetService(
             EstimatedBytesDeleted = active.EstimatedBytesDeleted
                 + cleanup.EstimatedBytesDeleted,
         };
+
+        progress.Active = active;
 
         if (!cleanup.Verification.Succeeded)
         {
@@ -2262,8 +2312,6 @@ internal sealed class InstallationResetService(
                     resumeRequired: true));
         }
 
-        InstallationResetActiveRecord beforeCleanup = active;
-
         InstallationResetCredentialResult[] credentialResults =
             credentialService.DeleteAndVerify(
                 active.AcceptedBinding.CredentialAccounts);
@@ -2277,7 +2325,10 @@ internal sealed class InstallationResetService(
                 active.CredentialResults,
                 credentialResults,
                 active.AcceptedBinding.CredentialAccounts),
+            LastErrorCode = null,
         };
+
+        progress.Active = active;
 
         // What was just deleted is recorded before anything else is decided about it. The deletion is
         // not undoable, so the durable record has to say it happened before verification can refuse
@@ -2285,7 +2336,7 @@ internal sealed class InstallationResetService(
         // under a record that says they were never touched. It is written only when something changed,
         // so a replay that finds nothing left to do does not spend an envelope revision, and on an
         // uncancelled token because the effect it records is already done.
-        if (RecordsProgress(beforeCleanup, active))
+        if (RecordsProgress(entered, active))
         {
             Result recorded = await writer.WriteAsync(
                 active,
@@ -2297,7 +2348,7 @@ internal sealed class InstallationResetService(
             }
         }
 
-        InstallationResetVerification verification = VerifyCompleted(active);
+        InstallationResetVerification verification = VerifyCredentials(active.CredentialResults);
 
         if (!verification.Succeeded)
         {
@@ -2439,26 +2490,6 @@ internal sealed class InstallationResetService(
         ];
 
         return new InstallationResetVerification(issues.Length == 0, issues);
-    }
-
-    private static InstallationResetVerification VerifyCompleted(
-        InstallationResetActiveRecord active)
-    {
-        InstallationResetVerification credentialVerification = VerifyCredentials(
-            active.CredentialResults);
-
-        if (active.LastErrorCode is null)
-        {
-            return credentialVerification;
-        }
-
-        InstallationResetIssueSummary lastError = new(
-            active.LastErrorCode,
-            "The installation reset requires recovery before completion.");
-
-        return new InstallationResetVerification(
-            false,
-            [.. credentialVerification.RemainingIssues, lastError]);
     }
 
     private static bool RecordsProgress(
