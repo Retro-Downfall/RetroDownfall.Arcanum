@@ -31,6 +31,12 @@ internal sealed class WorkspacePatchPlannerOptions
     internal Action? ExactMatchCheckpoint { get; init; }
 
     internal Action? FuzzyMatchCheckpoint { get; init; }
+
+    /// <summary>
+    /// The operator's <c>Arcanum:Workspaces:AllowProtectedPathWrites</c> opt-out. Default <c>false</c>:
+    /// a manifest path under <c>.git</c> or <c>.arcanum</c> fails planning with <c>protected_path</c>.
+    /// </summary>
+    internal bool AllowProtectedPathWrites { get; init; }
 }
 
 /// <summary>
@@ -91,6 +97,8 @@ internal sealed class WorkspacePatchPlanner
             foreach (UnifiedDiffFile file in manifest.Files)
             {
                 Checkpoint(budget, cancellationToken);
+
+                RejectProtectedPaths(file);
 
                 switch (file.Operation)
                 {
@@ -202,6 +210,29 @@ internal sealed class WorkspacePatchPlanner
             return Failure(
                 "workspace_read_failed",
                 "A patch target could not be safely read and fingerprinted.");
+        }
+    }
+
+    /// <summary>
+    /// Refuses a create, modify, rename (source or destination) or delete under <c>.git</c> or
+    /// <c>.arcanum</c> before anything is captured or staged, unless the operator opted out through
+    /// <c>Arcanum:Workspaces:AllowProtectedPathWrites</c>.
+    /// </summary>
+    private void RejectProtectedPaths(UnifiedDiffFile file)
+    {
+        if (_options.AllowProtectedPathWrites)
+        {
+            return;
+        }
+
+        if (file.SourcePath is not null)
+        {
+            WorkspaceFileFingerprintService.RejectProtectedPath(file.SourcePath);
+        }
+
+        if (file.DestinationPath is not null)
+        {
+            WorkspaceFileFingerprintService.RejectProtectedPath(file.DestinationPath);
         }
     }
 

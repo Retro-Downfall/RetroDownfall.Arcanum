@@ -270,6 +270,198 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Every_write_route_accepts_protected_paths_when_the_operator_allows_them()
+    {
+        PhysicalFileSystemWriter writer = CreateWriter(
+            new ArcanumSettings
+            {
+                Workspaces = new WorkspaceSettings
+                {
+                    EnableFileWrite = true,
+                    AllowProtectedPathWrites = true,
+                },
+            });
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileWriteResult> put = await writer.WriteFileAsync(
+            workspace,
+            ".git/hooks/pre-commit",
+            "#!/bin/sh\necho operator-approved\n",
+            CancellationToken.None);
+
+        Assert.True(put.IsSuccess, put.IsFailure ? put.Error.Message : null);
+
+        Assert.Equal(
+            "#!/bin/sh\necho operator-approved\n",
+            await File.ReadAllTextAsync(Path.Combine(_workspace.Root, ".git", "hooks", "pre-commit")));
+
+        Result<TextBlockReplaceResult> patch = await writer.ReplaceTextBlockAsync(
+            workspace,
+            ".git/hooks/pre-commit",
+            "operator-approved",
+            "still-approved",
+            expectedReplacements: null,
+            CancellationToken.None);
+
+        Assert.True(patch.IsSuccess, patch.IsFailure ? patch.Error.Message : null);
+
+        Result<DirectoryCreateResult> mkdir = await writer.CreateDirectoryAsync(
+            workspace,
+            ".arcanum/state",
+            CancellationToken.None);
+
+        Assert.True(mkdir.IsSuccess, mkdir.IsFailure ? mkdir.Error.Message : null);
+
+        Assert.True(Directory.Exists(Path.Combine(_workspace.Root, ".arcanum", "state")));
+
+        Result<FileDeleteResult> delete = await writer.DeleteAsync(
+            workspace,
+            ".git/hooks/pre-commit",
+            recursive: false,
+            CancellationToken.None);
+
+        Assert.True(delete.IsSuccess, delete.IsFailure ? delete.Error.Message : null);
+
+        Assert.False(File.Exists(Path.Combine(_workspace.Root, ".git", "hooks", "pre-commit")));
+    }
+
+    [Fact]
+    public async Task Allowing_protected_paths_does_not_replace_the_file_write_toggle()
+    {
+        PhysicalFileSystemWriter writer = CreateWriter(
+            new ArcanumSettings
+            {
+                Workspaces = new WorkspaceSettings
+                {
+                    EnableFileWrite = false,
+                    AllowProtectedPathWrites = true,
+                },
+            });
+
+        Result<FileWriteResult> result = await writer.WriteFileAsync(
+            MakeWorkspace(),
+            ".git/hooks/pre-commit",
+            "#!/bin/sh\n",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.FileWriteDisabled", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
+    }
+
+    /// <summary>
+    /// A committed in-workspace link such as <c>docs/hooks -> ../.git/hooks</c> contains no protected
+    /// segment in the spelling the caller supplies and stays inside the workspace, so only the
+    /// canonical-location branch of <c>WorkspaceProtectedPaths.IsProtectedPath</c> refuses it.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(".git/hooks")]
+    [InlineData(".arcanum/state")]
+    public async Task WriteFileAsync_through_an_in_workspace_link_into_protected_metadata_is_rejected(
+        string protectedDirectory)
+    {
+        string protectedPath = CreateLinkIntoProtectedDirectory(protectedDirectory, out string linkedDirectory);
+
+        string existing = Path.Combine(protectedPath, "existing");
+
+        await File.WriteAllTextAsync(existing, "keep");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        Result<FileWriteResult> created = await writer.WriteFileAsync(
+            MakeWorkspace(),
+            $"docs/{Path.GetFileName(linkedDirectory)}/pre-commit",
+            "#!/bin/sh\necho planted\n",
+            CancellationToken.None);
+
+        Assert.True(created.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", created.Error.Code);
+
+        Assert.Contains("protected", created.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(Path.Combine(protectedPath, "pre-commit")));
+
+        Result<FileWriteResult> overwritten = await writer.WriteFileAsync(
+            MakeWorkspace(),
+            $"docs/{Path.GetFileName(linkedDirectory)}/existing",
+            "overwritten",
+            CancellationToken.None);
+
+        Assert.True(overwritten.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", overwritten.Error.Code);
+
+        Assert.Equal("keep", await File.ReadAllTextAsync(existing));
+    }
+
+    [SkippableFact]
+    public async Task ReplaceTextBlockAsync_through_an_in_workspace_link_into_dot_git_is_rejected()
+    {
+        string hooks = CreateLinkIntoProtectedDirectory(".git/hooks", out string linkedDirectory);
+
+        string existing = Path.Combine(hooks, "pre-commit");
+
+        await File.WriteAllTextAsync(existing, "echo before\n");
+
+        Result<TextBlockReplaceResult> result = await CreateWriter().ReplaceTextBlockAsync(
+            MakeWorkspace(),
+            $"docs/{Path.GetFileName(linkedDirectory)}/pre-commit",
+            "before",
+            "planted",
+            expectedReplacements: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.Equal("echo before\n", await File.ReadAllTextAsync(existing));
+    }
+
+    [SkippableFact]
+    public async Task DeleteAsync_through_an_in_workspace_link_into_dot_git_is_rejected()
+    {
+        string hooks = CreateLinkIntoProtectedDirectory(".git/hooks", out string linkedDirectory);
+
+        string existing = Path.Combine(hooks, "pre-commit");
+
+        await File.WriteAllTextAsync(existing, "keep");
+
+        Result<FileDeleteResult> result = await CreateWriter().DeleteAsync(
+            MakeWorkspace(),
+            $"docs/{Path.GetFileName(linkedDirectory)}/pre-commit",
+            recursive: false,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.True(File.Exists(existing));
+    }
+
+    [SkippableFact]
+    public async Task CreateDirectoryAsync_through_an_in_workspace_link_into_dot_git_is_rejected()
+    {
+        string hooks = CreateLinkIntoProtectedDirectory(".git/hooks", out string linkedDirectory);
+
+        Result<DirectoryCreateResult> result = await CreateWriter().CreateDirectoryAsync(
+            MakeWorkspace(),
+            $"docs/{Path.GetFileName(linkedDirectory)}/planted",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(hooks, "planted")));
+    }
+
+    [Fact]
     public async Task WriteFileAsync_rejects_content_exceeding_MaxFileWriteSizeBytes()
     {
         ArcanumSettings settings = new()
@@ -1240,6 +1432,34 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     }
 
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
+
+    /// <summary>
+    /// Creates the protected directory and a committed-style relative link <c>docs/linked</c> that points at
+    /// it, and returns the protected directory's absolute path. Skips on hosts where an unprivileged
+    /// symbolic link cannot be created.
+    /// </summary>
+    private string CreateLinkIntoProtectedDirectory(
+        string protectedDirectory,
+        out string linkedDirectory)
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX symbolic-link behaviour and runs on macOS and Linux only.");
+
+        string protectedPath = Path.Combine(
+            _workspace.Root,
+            protectedDirectory.Replace('/', Path.DirectorySeparatorChar));
+
+        Directory.CreateDirectory(protectedPath);
+
+        linkedDirectory = Path.Combine(_workspace.CreateSubdir("docs"), "linked");
+
+        Directory.CreateSymbolicLink(
+            linkedDirectory,
+            Path.Combine("..", protectedDirectory.Replace('/', Path.DirectorySeparatorChar)));
+
+        return protectedPath;
+    }
 
     private static PhysicalFileSystemWriter CreateWriter() =>
         CreateWriter(new ArcanumSettings { Workspaces = new WorkspaceSettings { EnableFileWrite = true } });

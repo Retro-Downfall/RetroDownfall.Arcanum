@@ -450,7 +450,13 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
-            .TryWriteAllTextAtomicallyAsync(_workspaceRoot!, absolutePath, updated, cancellationToken, readBaseline)
+            .TryWriteAllTextAtomicallyAsync(
+                _workspaceRoot!,
+                absolutePath,
+                updated,
+                cancellationToken,
+                readBaseline,
+                _allowProtectedPathWrites)
             .ConfigureAwait(false);
 
         if (!writeSuccess)
@@ -534,7 +540,13 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
-            .TryWriteAllTextAtomicallyAsync(_workspaceRoot!, absolutePath, args.Content, cancellationToken)
+            .TryWriteAllTextAtomicallyAsync(
+                _workspaceRoot!,
+                absolutePath,
+                args.Content,
+                cancellationToken,
+                expectedExistingContent: null,
+                _allowProtectedPathWrites)
             .ConfigureAwait(false);
 
         if (!writeSuccess)

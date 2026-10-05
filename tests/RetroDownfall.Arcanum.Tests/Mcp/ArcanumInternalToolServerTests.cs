@@ -1309,6 +1309,131 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToolsCall_write_file_refuses_dot_git_hooks_by_default()
+    {
+        await using TestMcpSession session = await CreateSessionAsync();
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new WriteFileParams(".git/hooks/pre-commit", "#!/bin/sh\necho planted\n"),
+            McpJsonSerializerContext.Default.WriteFileParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("write_file", arguments);
+
+        Assert.True(result.IsError);
+
+        Assert.Contains("protected", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
+    }
+
+    [Fact]
+    public async Task ToolsCall_write_and_replace_text_block_reach_dot_git_when_the_operator_allows_protected_path_writes()
+    {
+        CodingToolsSettings allowProtected = ArcanumRuntimeDefaults.CodingTools with
+        {
+            AllowProtectedPathWrites = true,
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            codingToolsSettings: allowProtected);
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        McpToolsCallResultWire written = await session.CallToolAsync(
+            "write_file",
+            JsonSerializer.SerializeToElement(
+                new WriteFileParams(".git/hooks/pre-commit", "#!/bin/sh\necho approved\n"),
+                McpJsonSerializerContext.Default.WriteFileParams));
+
+        Assert.False(written.IsError, written.Content?[0].Text);
+
+        string hook = Path.Combine(_workspace.Root, ".git", "hooks", "pre-commit");
+
+        Assert.Equal("#!/bin/sh\necho approved\n", await File.ReadAllTextAsync(hook));
+
+        McpToolsCallResultWire replaced = await session.CallToolAsync(
+            "replace_text_block",
+            JsonSerializer.SerializeToElement(
+                new ReplaceTextBlockParams
+                {
+                    RelativePath = ".git/hooks/pre-commit",
+                    ExactSearchText = "approved",
+                    ReplacementText = "still approved",
+                },
+                McpJsonSerializerContext.Default.ReplaceTextBlockParams));
+
+        Assert.False(replaced.IsError, replaced.Content?[0].Text);
+
+        Assert.Equal("#!/bin/sh\necho still approved\n", await File.ReadAllTextAsync(hook));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ToolsCall_apply_patch_honours_the_protected_path_opt_out(bool allowProtectedPathWrites)
+    {
+        CodingToolsSettings codingTools = ArcanumRuntimeDefaults.CodingTools with
+        {
+            AllowProtectedPathWrites = allowProtectedPathWrites,
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            codingToolsSettings: codingTools);
+        RecordingPatchReceiptSink sink = new();
+        ApplyPatchParams request = new(
+            """
+            --- /dev/null
+            +++ b/.git/hooks/pre-commit
+            @@ -0,0 +1,2 @@
+            +#!/bin/sh
+            +echo patched
+            """);
+        JsonElement exactArguments = JsonSerializer.SerializeToElement(
+            request,
+            McpJsonSerializerContext.Default.ApplyPatchParams);
+        ApplyPatchInvocationContext context = new(
+            SessionId: Guid.Parse("7f2a3c0e-5d0b-4b5e-9a41-0d7c2f1b6e11"),
+            AssistantEntryId: Guid.Parse("3c9d1e52-8a76-4f0b-b2c4-6e5a9d0f7a23"),
+            Identity: new ToolInvocationIdentity(
+                "turn-protected-path-patch",
+                "provider-call",
+                ToolRoundOrdinal: 0,
+                CallOrdinal: 0,
+                ToolRiskClassifier.ApplyPatchToolName),
+            SerializedArguments: exactArguments.GetRawText(),
+            ModelUsed: "test-model",
+            CreatedAt: DateTimeOffset.Parse(
+                "2026-10-04T12:00:00Z",
+                System.Globalization.CultureInfo.InvariantCulture),
+            Sink: sink);
+
+        using IDisposable binding = ApplyPatchInvocationAmbient.Begin(context);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            ToolRiskClassifier.ApplyPatchToolName,
+            exactArguments);
+
+        string hook = Path.Combine(_workspace.Root, ".git", "hooks", "pre-commit");
+
+        using JsonDocument payload = JsonDocument.Parse(Assert.Single(result.Content).Text);
+
+        if (allowProtectedPathWrites)
+        {
+            Assert.False(payload.RootElement.TryGetProperty("code", out _), payload.RootElement.GetRawText());
+
+            Assert.Equal("#!/bin/sh\necho patched\n", await File.ReadAllTextAsync(hook));
+        }
+        else
+        {
+            Assert.Equal("protected_path", payload.RootElement.GetProperty("code").GetString());
+
+            Assert.False(File.Exists(hook));
+
+            Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
+        }
+    }
+
+    [Fact]
     public async Task ToolsCall_write_file_without_content_returns_a_tool_error_not_a_protocol_error()
     {
         await using TestMcpSession session = await CreateSessionAsync();

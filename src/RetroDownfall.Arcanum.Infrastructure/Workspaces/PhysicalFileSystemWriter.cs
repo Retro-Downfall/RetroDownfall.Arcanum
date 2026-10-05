@@ -54,7 +54,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
 
-        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath))
+        if (IsProtectedWriteRefused(workspaceRoot, resolvedPath))
         {
             return new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage);
         }
@@ -121,7 +121,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
 
-        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath))
+        if (IsProtectedWriteRefused(workspaceRoot, resolvedPath))
         {
             return new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage);
         }
@@ -286,7 +286,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                     "The workspace root cannot be deleted. Name a path inside the workspace."));
         }
 
-        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath))
+        if (IsProtectedWriteRefused(workspaceRoot, resolvedPath))
         {
             return Task.FromResult<Result<FileDeleteResult>>(
                 new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage));
@@ -383,7 +383,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
 
-        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath))
+        if (IsProtectedWriteRefused(workspaceRoot, resolvedPath))
         {
             return Task.FromResult<Result<DirectoryCreateResult>>(
                 new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage));
@@ -427,6 +427,22 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         ArcanumSettings settings = options.Value;
 
         return settings.Workspaces?.EnableFileWrite ?? new WorkspaceSettings().EnableFileWrite;
+    }
+
+    /// <summary>
+    /// Whether a write to <paramref name="resolvedPath"/> is refused as protected workspace metadata
+    /// (<c>.git</c> at any depth or the first-level <c>.arcanum</c>, by spelling or canonical location).
+    /// The operator opt-out <c>Arcanum:Workspaces:AllowProtectedPathWrites</c> is read from the request's
+    /// settings snapshot, so a change applies to the next request without a restart.
+    /// </summary>
+    private bool IsProtectedWriteRefused(string workspaceRoot, string resolvedPath)
+    {
+        bool allowProtectedPathWrites =
+            options.Value.Workspaces?.AllowProtectedPathWrites
+            ?? new WorkspaceSettings().AllowProtectedPathWrites;
+
+        return !allowProtectedPathWrites
+            && WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath);
     }
 
     private long GetMaxFileWriteSizeBytes()
@@ -886,7 +902,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private const string ReplacementAmbiguousMessage = "The specified text was found a different number of times than expectedReplacements. Provide an expectedReplacements value matching the exact occurrence count.";
 
-    private const string ProtectedPathMessage = "The path is protected workspace metadata (.git or .arcanum) and cannot be created, modified or deleted through the file API.";
+    private const string ProtectedPathMessage = "The path is protected workspace metadata (.git or .arcanum) and cannot be created, modified or deleted through the file API. An operator can lift this by setting Arcanum:Workspaces:AllowProtectedPathWrites to true.";
 
     private const string PathIsDirectoryMessage = "The target path is an existing directory; file content cannot be written to it.";
 

@@ -296,6 +296,124 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.Equal("[core]\n", await File.ReadAllTextAsync(config));
     }
 
+    [Theory]
+    [InlineData(".git/hooks/pre-commit")]
+    [InlineData(".GIT/config")]
+    [InlineData(".arcanum/campaign.json")]
+    public async Task Write_under_a_protected_path_succeeds_when_the_operator_allows_protected_path_writes(
+        string relativePath)
+    {
+        string target = Path.Combine(
+            _workspace.Root,
+            relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+        (bool success, McpToolsCallResultWire? error) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            target,
+            "operator-approved\n",
+            CancellationToken.None,
+            allowProtectedPathWrites: true);
+
+        Assert.True(success);
+
+        Assert.Null(error);
+
+        Assert.Equal("operator-approved\n", await File.ReadAllTextAsync(target));
+    }
+
+    /// <summary>
+    /// A committed in-workspace link such as <c>docs/hooks -> ../.git/hooks</c> is the realistic way past a
+    /// lexical-only check: the spelling the model supplies contains no protected segment, and the link
+    /// stays inside the workspace so containment alone accepts it. Only the canonical-location branch of
+    /// <c>WorkspaceProtectedPaths.IsProtectedPath</c> stops the write.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(".git/hooks")]
+    [InlineData(".arcanum/state")]
+    public async Task Write_through_an_in_workspace_link_into_protected_metadata_is_rejected(
+        string protectedDirectory)
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX symbolic-link behaviour and runs on macOS and Linux only.");
+
+        string protectedPath = Path.Combine(
+            _workspace.Root,
+            protectedDirectory.Replace('/', Path.DirectorySeparatorChar));
+
+        Directory.CreateDirectory(protectedPath);
+
+        string existing = Path.Combine(protectedPath, "existing");
+
+        await File.WriteAllTextAsync(existing, "keep");
+
+        string linkedDirectory = Path.Combine(_workspace.CreateSubdir("docs"), "linked");
+
+        Directory.CreateSymbolicLink(
+            linkedDirectory,
+            Path.Combine("..", protectedDirectory.Replace('/', Path.DirectorySeparatorChar)));
+
+        string planted = Path.Combine(linkedDirectory, "pre-commit");
+
+        (bool createdSuccess, McpToolsCallResultWire? createdError) =
+            await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                planted,
+                "#!/bin/sh\necho planted\n",
+                CancellationToken.None);
+
+        Assert.False(createdSuccess);
+
+        Assert.Contains(
+            "protected",
+            Assert.IsType<McpToolContentTextWire>(Assert.Single(createdError!.Content!)).Text!,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(Path.Combine(protectedPath, "pre-commit")));
+
+        (bool overwriteSuccess, McpToolsCallResultWire? overwriteError) =
+            await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                Path.Combine(linkedDirectory, "existing"),
+                "overwritten",
+                CancellationToken.None);
+
+        Assert.False(overwriteSuccess);
+
+        Assert.Contains(
+            "protected",
+            Assert.IsType<McpToolContentTextWire>(Assert.Single(overwriteError!.Content!)).Text!,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal("keep", await File.ReadAllTextAsync(existing));
+    }
+
+    [SkippableFact]
+    public async Task Write_through_an_in_workspace_link_to_dot_git_config_is_rejected()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX symbolic-link behaviour and runs on macOS and Linux only.");
+
+        string config = _workspace.WriteFile(".git/config", "[core]\n");
+
+        string link = Path.Combine(_workspace.CreateSubdir("docs"), "gitconfig");
+
+        File.CreateSymbolicLink(link, Path.Combine("..", ".git", "config"));
+
+        (bool success, McpToolsCallResultWire? error) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            link,
+            "[core]\n\tfsmonitor = /tmp/payload\n",
+            CancellationToken.None);
+
+        Assert.False(success);
+
+        Assert.NotNull(error);
+
+        Assert.Equal("[core]\n", await File.ReadAllTextAsync(config));
+    }
+
     /// <summary>
     /// An overwrite carries the destination's UTF-8 BOM across, as the other write paths do.
     /// </summary>

@@ -1291,6 +1291,142 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.False(File.Exists(Path.Combine(_workspace.Root, "moved-out.txt")));
     }
 
+    /// <summary>
+    /// Unlike <c>write_file</c> and the file API, apply_patch never accepts a symbolic-link path
+    /// component, so a committed <c>docs/hooks -> ../.git/hooks</c> cannot be the way into <c>.git</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task Create_through_an_in_workspace_link_into_dot_git_hooks_is_rejected_and_nothing_is_written()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX symbolic-link behaviour and runs on macOS and Linux only.");
+
+        Directory.CreateDirectory(Path.Combine(_workspace.Root, ".git", "hooks"));
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(_workspace.CreateSubdir("docs"), "linked"),
+            Path.Combine("..", ".git", "hooks"));
+
+        WorkspacePatchPlanResult result = await new WorkspacePatchPlanner(DefaultPatchSettings())
+            .PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    """
+                    --- /dev/null
+                    +++ b/docs/linked/pre-commit
+                    @@ -0,0 +1,2 @@
+                    +#!/bin/sh
+                    +echo planted
+                    """),
+                CancellationToken.None);
+
+        Assert.False(result.Success);
+
+        Assert.Contains(result.Code, new[] { "symlink", "protected_path" });
+
+        Assert.False(File.Exists(Path.Combine(_workspace.Root, ".git", "hooks", "pre-commit")));
+    }
+
+    [Fact]
+    public async Task Create_under_dot_git_hooks_is_applied_when_the_operator_allows_protected_path_writes()
+    {
+        OutcomePendingReceiptSink sink = new(
+            MandatoryToolInteractionAppendOutcome.NewlyCommitted);
+
+        ApplyPatchParams request = new(
+            """
+            --- /dev/null
+            +++ b/.git/hooks/pre-commit
+            @@ -0,0 +1,2 @@
+            +#!/bin/sh
+            +echo operator-approved
+            """,
+            DryRun: false);
+
+        ApplyPatchToolExecutionResponse response = await CreateExecutor(allowProtectedPathWrites: true)
+            .ExecuteAsync(
+                request,
+                InvocationContext(
+                    sink,
+                    serializedArguments: JsonSerializer.Serialize(
+                        request,
+                        McpJsonSerializerContext.Default.ApplyPatchParams)),
+                CancellationToken.None);
+
+        using JsonDocument payload = JsonDocument.Parse(response.SerializedResult);
+
+        Assert.False(payload.RootElement.TryGetProperty("code", out _), response.SerializedResult);
+
+        Assert.Equal(
+            "#!/bin/sh\necho operator-approved\n",
+            await ReadTextAsync(".git/hooks/pre-commit"));
+    }
+
+    [Theory]
+    [InlineData(".git/config")]
+    [InlineData(".GIT/hooks/post-checkout")]
+    [InlineData(".arcanum/campaign.json")]
+    [InlineData("vendored/checkout/.git/hooks/pre-push")]
+    public async Task Planner_admits_modify_delete_and_rename_of_protected_paths_when_the_operator_allows_them(
+        string protectedPath)
+    {
+        _workspace.WriteFile(protectedPath, "before\n");
+        _workspace.WriteFile("plain.txt", "plain\n");
+
+        WorkspacePatchPlannerOptions allow = new() { AllowProtectedPathWrites = true };
+
+        WorkspacePatchPlanResult[] results =
+        [
+            await new WorkspacePatchPlanner(DefaultPatchSettings(), allow).PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     --- a/{protectedPath}
+                     +++ b/{protectedPath}
+                     @@ -1 +1 @@
+                     -before
+                     +after
+                     """),
+                CancellationToken.None),
+            await new WorkspacePatchPlanner(DefaultPatchSettings(), allow).PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     --- a/{protectedPath}
+                     +++ /dev/null
+                     @@ -1 +0,0 @@
+                     -before
+                     """),
+                CancellationToken.None),
+            await new WorkspacePatchPlanner(DefaultPatchSettings(), allow).PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     diff --git a/plain.txt b/{protectedPath}-moved
+                     similarity index 100%
+                     rename from plain.txt
+                     rename to {protectedPath}-moved
+                     """),
+                CancellationToken.None),
+            await new WorkspacePatchPlanner(DefaultPatchSettings(), allow).PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     diff --git a/{protectedPath} b/moved-out.txt
+                     similarity index 100%
+                     rename from {protectedPath}
+                     rename to moved-out.txt
+                     """),
+                CancellationToken.None),
+        ];
+
+        foreach (WorkspacePatchPlanResult result in results)
+        {
+            Assert.True(result.Success, result.Message);
+        }
+    }
+
     [Fact]
     public async Task Executor_applies_create_modify_delete_rename_and_new_file_mode_end_to_end()
     {
@@ -2062,14 +2198,16 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         long outputBudgetBytes = 1024 * 1024,
         Func<string, MultiFileCommitCoordinator>? coordinatorFactory = null,
         WorkspacePatchSettings? settings = null,
-        TimeProvider? timeProvider = null) =>
+        TimeProvider? timeProvider = null,
+        bool allowProtectedPathWrites = false) =>
         new(
             _workspace.Root,
             settings ?? DefaultPatchSettings(),
             outputBudgetBytes,
             McpJsonSerializerContext.Default,
             coordinatorFactory,
-            timeProvider);
+            timeProvider,
+            allowProtectedPathWrites);
 
     private static ApplyPatchInvocationContext InvocationContext(
         IApplyPatchPendingReceiptSink sink,

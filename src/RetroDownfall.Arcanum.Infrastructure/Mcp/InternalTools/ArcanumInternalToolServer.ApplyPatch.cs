@@ -13,7 +13,6 @@ internal sealed partial class ArcanumInternalToolServer
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         if (ApplyPatchInvocationAmbient.Current
             is not ApplyPatchInvocationContext invocation)
         {
@@ -68,7 +67,8 @@ internal sealed partial class ArcanumInternalToolServer
             _workspaceRoot!,
             _workspacePatchSettings,
             budget,
-            _json);
+            _json,
+            allowProtectedPathWrites: _allowProtectedPathWrites);
 
         ApplyPatchToolExecutionResponse response =
             await executor.ExecuteAsync(
@@ -79,13 +79,11 @@ internal sealed partial class ArcanumInternalToolServer
         return StructuredTextResult(
             response.SerializedResult,
             isError: false);
-
     }
 
     private McpToolsCallResultWire BuildSmallStructuredPatchResult(
         WorkspacePatchToolResultEnvelope result)
     {
-
         long budget =
             ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
                 _settings.ToolOutputCapBytes,
@@ -103,6 +101,5 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         return StructuredTextResult(serialized, isError: false);
-
     }
 }

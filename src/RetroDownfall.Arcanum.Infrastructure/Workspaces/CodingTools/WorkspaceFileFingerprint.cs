@@ -562,14 +562,28 @@ internal static class WorkspaceFileFingerprintService
                 "The mutation path must be a normalized workspace-relative path.");
         }
 
-        if (WorkspaceProtectedPaths.IsProtectedRelativePath(normalized))
+        return (root, absolutePath, normalized);
+    }
+
+    /// <summary>
+    /// Refuses a mutation path under protected workspace metadata (<c>.git</c>, <c>.arcanum</c>). This is
+    /// the apply_patch admission check: <c>WorkspacePatchPlanner</c> runs it for every manifest path
+    /// before any capture, and the planner is the only producer of the commit operations the coordinator
+    /// later re-captures, so one planning-time check covers create, modify, rename (both sides) and
+    /// delete without a setting having to reach every <see cref="Resolve"/> caller. The operator opt-out
+    /// (<c>Arcanum:Workspaces:AllowProtectedPathWrites</c>) is applied by the caller skipping this check.
+    /// A path that is not a normalized workspace-relative path is left for <see cref="Resolve"/> to
+    /// reject as <see cref="WorkspaceMutationRejection.InvalidRelativePath"/>.
+    /// </summary>
+    internal static void RejectProtectedPath(string relativePath)
+    {
+        if (WorkspaceRelativePath.TryNormalize(relativePath, out string? normalized)
+            && WorkspaceProtectedPaths.IsProtectedRelativePath(normalized))
         {
             throw Rejected(
                 WorkspaceMutationRejection.ProtectedPath,
                 "The mutation path is protected workspace metadata (.git or .arcanum).");
         }
-
-        return (root, absolutePath, normalized);
     }
 
     private static FileStream OpenForFingerprint(string absolutePath)

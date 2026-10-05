@@ -101,6 +101,12 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly WorkspacePatchSettings _workspacePatchSettings;
 
+    /// <summary>
+    /// The operator's <c>Arcanum:Workspaces:AllowProtectedPathWrites</c> opt-out as projected into
+    /// <see cref="CodingToolsSettings"/>; default <c>false</c>.
+    /// </summary>
+    private readonly bool _allowProtectedPathWrites;
+
     private readonly WorkspaceCheckSettings _workspaceCheckSettings;
 
     private readonly WorkspaceCheckProfileCatalog _workspaceCheckProfiles;
@@ -286,6 +292,9 @@ internal sealed partial class ArcanumInternalToolServer
         _workspacePatchSettings =
             ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
                 configuredPatch);
+
+        _allowProtectedPathWrites =
+            codingToolsSettings?.AllowProtectedPathWrites ?? false;
 
         _workspaceCheckSettings =
             codingToolsSettings?.WorkspaceCheck

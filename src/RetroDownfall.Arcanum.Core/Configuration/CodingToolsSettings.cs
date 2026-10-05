@@ -15,6 +15,13 @@ public sealed record CodingToolsSettings
     public WorkspacePatchSettings Patch { get; set; } = new();
 
     public WorkspaceCheckSettings WorkspaceCheck { get; set; } = new();
+
+    /// <summary>
+    /// Runtime projection of <c>Arcanum:Workspaces:AllowProtectedPathWrites</c>: when <c>true</c>, the
+    /// in-process write tools and <c>apply_patch</c> may touch <c>.git</c> and <c>.arcanum</c>. Default
+    /// <c>false</c>.
+    /// </summary>
+    public bool AllowProtectedPathWrites { get; set; }
 }
 
 /// <summary>
@@ -49,7 +56,6 @@ public sealed record WorkspacePatchSettings
     public int RecoveryTimeoutMilliseconds { get; set; } = 5_000;
 
     public int FuzzyMatchWindowLines { get; set; } = 100;
-
 }
 
 /// <summary>

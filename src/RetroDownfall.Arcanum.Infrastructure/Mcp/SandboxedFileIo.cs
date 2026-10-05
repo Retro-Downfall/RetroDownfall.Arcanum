@@ -107,22 +107,29 @@ internal static class SandboxedFileIo
     /// write is refused, leaving the destination untouched, when the destination is no longer exactly those
     /// bytes. The preamble probe below is a separate re-read and never supplies this baseline.
     /// </param>
+    /// <param name="allowProtectedPathWrites">
+    /// The operator's <c>Arcanum:Workspaces:AllowProtectedPathWrites</c> opt-out. Default <c>false</c>: a write
+    /// whose spelling or canonical location is under <c>.git</c> or <c>.arcanum</c> is refused.
+    /// </param>
     internal static async Task<(bool Success, McpToolsCallResultWire? Error)> TryWriteAllTextAtomicallyAsync(
         string workspaceRoot,
         string absolutePath,
         string content,
         CancellationToken cancellationToken,
-        FileContentBaseline? expectedExistingContent = null)
+        FileContentBaseline? expectedExistingContent = null,
+        bool allowProtectedPathWrites = false)
     {
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
             return (false, ToolError(PathEscapesSandboxMessage));
         }
 
-        // Git metadata and the .arcanum marker directory are never writable through a model-driven
-        // tool: a planted .git/hooks entry runs with the operator's full identity on their next git
-        // command. Checked before any directory is created so a refusal leaves nothing behind.
-        if (WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, absolutePath))
+        // Git metadata and the .arcanum marker directory are not writable through a model-driven
+        // tool unless the operator opted out (Arcanum:Workspaces:AllowProtectedPathWrites): a planted
+        // .git/hooks entry runs with the operator's full identity on their next git command. Checked
+        // before any directory is created so a refusal leaves nothing behind.
+        if (!allowProtectedPathWrites
+            && WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, absolutePath))
         {
             return (false, ToolError(ProtectedPathMessage));
         }
