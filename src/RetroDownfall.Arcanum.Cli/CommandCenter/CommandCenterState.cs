@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -482,8 +483,11 @@ internal sealed class CommandCenterState
     {
         SessionId = id;
         SelectedSessionId = id;
-        SessionTitle = string.IsNullOrWhiteSpace(title) ? "Untitled" : title.Trim();
-        SessionStatus = string.IsNullOrWhiteSpace(status) ? "Active" : status.Trim();
+        // Host text, stored from a conversation: stripped here so no pane has to remember to.
+        string safeTitle = TerminalTextSanitizer.SanitizeLine(title).Trim();
+        string safeStatus = TerminalTextSanitizer.SanitizeLine(status).Trim();
+        SessionTitle = safeTitle.Length == 0 ? "Untitled" : safeTitle;
+        SessionStatus = safeStatus.Length == 0 ? "Active" : safeStatus;
         SessionEntryCount = entryCount;
         ForkedFromSessionId = forkedFromSessionId;
     }
@@ -534,14 +538,24 @@ internal sealed record SessionListItem(
         }
     }
 
-    public static SessionListItem FromSummary(SessionSummaryDto dto) =>
-        new(
+    /// <summary>
+    /// A row for a host Session summary. The title and status are text the host stored from a
+    /// conversation, so they are stripped of anything a terminal would act on before they can reach the
+    /// sidebar or the session picker.
+    /// </summary>
+    public static SessionListItem FromSummary(SessionSummaryDto dto)
+    {
+        string title = TerminalTextSanitizer.SanitizeLine(dto.Title).Trim();
+        string status = TerminalTextSanitizer.SanitizeLine(dto.Status).Trim();
+
+        return new SessionListItem(
             dto.Id,
-            string.IsNullOrWhiteSpace(dto.Title) ? "Untitled" : dto.Title!,
-            string.IsNullOrWhiteSpace(dto.Status) ? "Active" : dto.Status,
+            title.Length == 0 ? "Untitled" : title,
+            status.Length == 0 ? "Active" : status,
             dto.UpdatedAt,
             dto.EntryCount,
             dto.ForkedFromSessionId);
+    }
 }
 
 internal enum CommandCenterOverlayKind

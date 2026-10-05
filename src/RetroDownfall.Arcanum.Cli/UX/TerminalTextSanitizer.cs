@@ -88,6 +88,64 @@ internal static class TerminalTextSanitizer
     }
 
     /// <summary>
+    /// Sanitizes text for a single-line sink (a list row, a header, a prompt): the block rules, with
+    /// every line break flattened to a space because the sink cannot take one. Text that needs none of
+    /// this keeps its string instance.
+    /// </summary>
+    public static string SanitizeLine(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        if (!ContainsDroppedControl(text))
+        {
+            return text;
+        }
+
+        string withoutSequences = StripEscapeSequences(text);
+        StringBuilder sanitized = new(withoutSequences.Length);
+        int column = 0;
+        foreach (Rune rune in withoutSequences.EnumerateRunes())
+        {
+            int value = rune.Value;
+            if (value == '\t')
+            {
+                int pad = TerminalCellMetrics.TabStop - (column % TerminalCellMetrics.TabStop);
+                _ = sanitized.Append(' ', pad);
+                column += pad;
+                continue;
+            }
+
+            if (value is '\r' or '\n')
+            {
+                _ = sanitized.Append(' ');
+                column++;
+                continue;
+            }
+
+            if (IsDroppedControl(value))
+            {
+                continue;
+            }
+
+            if (rune.IsAscii)
+            {
+                _ = sanitized.Append((char)value);
+                column++;
+                continue;
+            }
+
+            string glyph = rune.ToString();
+            _ = sanitized.Append(glyph);
+            column += TerminalCellMetrics.MeasureGraphemeWidth(glyph, column);
+        }
+
+        return sanitized.ToString();
+    }
+
+    /// <summary>
     /// Removes every complete ESC-introduced sequence (CSI, OSC and the other string sequences, and
     /// two-character escapes) and leaves everything else, including other control characters, for the
     /// caller. Returns <paramref name="text"/> itself when it contains no ESC.
@@ -124,6 +182,19 @@ internal static class TerminalTextSanitizer
     /// <summary>True for a character that is dropped outright: C0 controls, DEL and the 8-bit C1 range.</summary>
     public static bool IsDroppedControl(int value) =>
         value < 0x20 || value == 0x7F || value is >= 0x80 and <= 0x9F;
+
+    private static bool ContainsDroppedControl(string text)
+    {
+        foreach (char c in text)
+        {
+            if (IsDroppedControl(c))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool NeedsBlockSanitizing(string text)
     {

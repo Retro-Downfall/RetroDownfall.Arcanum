@@ -237,7 +237,7 @@ public sealed class AskCommand(
                         CliStreamDiagnostic.WriteMarkupLine(
                             stderrConsole,
                             streamContent,
-                            palette.MutedMarkup(Markup.Escape(evt.Message)));
+                            palette.MutedMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(evt.Message))));
 
                         break;
 
@@ -295,7 +295,9 @@ public sealed class AskCommand(
                         CliStreamDiagnostic.WriteMarkupLine(
                             stderrConsole,
                             streamContent,
-                            palette.ErrorMarkup(Markup.Escape($"⚠ Tool {evt.Message} failed (tolerated)")));
+                            palette.ErrorMarkup(
+                                Markup.Escape(
+                                    $"⚠ Tool {TerminalTextSanitizer.SanitizeLine(evt.Message)} failed (tolerated)")));
 
                         break;
 
@@ -304,7 +306,7 @@ public sealed class AskCommand(
                         CliStreamDiagnostic.WriteMarkupLine(
                             stderrConsole,
                             streamContent,
-                            palette.MutedMarkup(Markup.Escape(evt.Data ?? evt.Message)));
+                            palette.MutedMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(evt.Data ?? evt.Message))));
 
                         break;
 
@@ -345,7 +347,7 @@ public sealed class AskCommand(
                             streamContent,
                             palette.ErrorLabelMarkup(
                                 Markup.Escape("Error:"),
-                                Markup.Escape(FormatStreamTransportError(evt.Message))));
+                                Markup.Escape(TerminalTextSanitizer.SanitizeLine(FormatStreamTransportError(evt.Message)))));
 
                         return 1;
                 }
