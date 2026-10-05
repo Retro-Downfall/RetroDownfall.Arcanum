@@ -211,6 +211,43 @@ public sealed class WorkspaceProtectedPathsTests
     }
 
     [SkippableFact]
+    public void Windows_lane_stream_suffix_and_numbered_short_name_aliases_are_protected_on_the_host_platform()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "NTFS stream suffixes and 8.3 short names are Windows filesystem behaviours; the platform-seam theories above pin the logic on every host.");
+
+        foreach (string relativePath in new[]
+                 {
+                     ".git::$INDEX_ALLOCATION/hooks/pre-commit",
+                     "GIT~1/hooks/pre-commit",
+                     "GIT~2/config",
+                     "ARCANU~1/campaign.json",
+                     ".arcanum::$INDEX_ALLOCATION/campaign.json",
+                 })
+        {
+            Assert.True(
+                WorkspaceProtectedPaths.IsProtectedRelativePath(
+                    relativePath,
+                    WorkspaceRelativePath.CurrentPlatform),
+                $"{relativePath} should be protected on the Windows host.");
+        }
+    }
+
+    [SkippableFact]
+    public void Macos_lane_ignorable_code_point_alias_is_protected_on_the_host_platform()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS(),
+            "The HFS+ ignorable code-point alias is applied on macOS hosts; the platform-seam theory above pins the logic on every host.");
+
+        Assert.True(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                ".g‌it/hooks/pre-commit",
+                WorkspaceRelativePath.CurrentPlatform));
+    }
+
+    [SkippableFact]
     public void Windows_lane_trailing_dot_git_alias_is_protected_on_the_host_platform()
     {
         Skip.IfNot(

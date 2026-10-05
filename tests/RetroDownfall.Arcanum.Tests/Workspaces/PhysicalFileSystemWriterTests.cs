@@ -251,6 +251,36 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// On a Windows host the NTFS stream suffix and the 8.3 short name reach <c>.git</c> through the real
+    /// filesystem. The platform-seam theories in <c>WorkspaceProtectedPathsTests</c> pin the matching logic
+    /// on every host; this lane exercises it end to end where the aliases actually resolve, and it is not
+    /// run on macOS or Linux. Whatever code the request is refused with, nothing may be planted.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(".git::$INDEX_ALLOCATION/hooks/pre-commit")]
+    [InlineData("GIT~1/hooks/pre-commit")]
+    [InlineData("ARCANU~1/campaign.json")]
+    public async Task Windows_lane_alias_spellings_of_protected_metadata_are_refused_and_plant_nothing(
+        string relativePath)
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "NTFS stream suffixes and 8.3 short names are Windows filesystem behaviours.");
+
+        Result<FileWriteResult> result = await CreateWriter().WriteFileAsync(
+            MakeWorkspace(),
+            relativePath,
+            "#!/bin/sh\necho planted\n",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".arcanum")));
+    }
+
+    /// <summary>
     /// A recursive delete whose own path is not protected still removes everything under it, so a nested
     /// checkout's <c>.git</c> (protected at any depth) must stop it before anything is deleted, not be
     /// removed as a side effect of deleting a parent.
