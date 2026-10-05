@@ -43,8 +43,14 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
     /// <summary>Runs after each authoritative read, standing in for work that races the transition.</summary>
     internal Action? AfterRead { get; set; }
 
+    /// <summary>Runs once the pending row has been committed, as a caller's Ctrl+C would land.</summary>
+    internal Action? AfterPendingCommit { get; set; }
+
     public Task<Result<HostProcessToolsAuthorityRow>> ReadAsync(CancellationToken cancellationToken)
     {
+        // The real read is a database command that throws when its token is cancelled.
+        cancellationToken.ThrowIfCancellationRequested();
+
         HostProcessToolsAuthorityRow row = Row;
 
         AfterRead?.Invoke();
@@ -82,6 +88,8 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
 
             TaintFingerprint = Row.CurrentMasterKeyFingerprint,
         };
+
+        AfterPendingCommit?.Invoke();
 
         return Task.FromResult(Result.Success());
     }
@@ -182,6 +190,9 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
     /// <summary>Runs once the write has been accepted, standing in for work that races it.</summary>
     internal Action? AfterWrite { get; set; }
 
+    /// <summary>Runs as each write is attempted, whatever its outcome, as a caller's Ctrl+C would land.</summary>
+    internal Action? OnWriteAttempt { get; set; }
+
     internal int WriteCount { get; private set; }
 
     internal int CompareDeleteCount { get; private set; }
@@ -228,6 +239,8 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
         CovenantDigest taintFingerprint)
     {
         WriteCount++;
+
+        OnWriteAttempt?.Invoke();
 
         if (WriteStatus is HostProcessToolsMarkerWriteStatus.Refused)
         {

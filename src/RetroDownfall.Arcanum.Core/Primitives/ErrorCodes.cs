@@ -171,6 +171,23 @@ public static class ErrorCodes
         /// (§10.12).
         /// </remarks>
         public const string PathIdentityRequired = "Campaign.PathIdentityRequired";
+
+        /// <summary>
+        /// Campaign roots are registered, but the installation's root-identity key is missing from the OS
+        /// credential store, so no replacement is created.
+        /// </summary>
+        /// <remarks>
+        /// A fresh key would re-derive every registered root's identity under a different secret and
+        /// orphan all of them while the installation kept looking healthy, so the loss is reported and
+        /// never repaired by minting (§10.12).
+        /// </remarks>
+        public const string RootIdentityKeyLost = "Campaign.RootIdentityKeyLost";
+
+        /// <summary>
+        /// The root-identity key could not be read, or could not be created and read back, in the OS
+        /// credential store right now. Retryable.
+        /// </summary>
+        public const string RootIdentityKeyUnavailable = "Campaign.RootIdentityKeyUnavailable";
     }
 
     /// <summary>Session — grimoire conversation persistence.</summary>

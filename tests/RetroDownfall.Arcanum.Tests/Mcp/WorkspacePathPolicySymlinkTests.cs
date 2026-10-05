@@ -590,6 +590,7 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
     }
 
     [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
     public void IsPathUnderWorkspaceWithSymlinkCheck_UnreadableIntermediateDirectory_Rejects()
     {
         Skip.If(
@@ -599,11 +600,6 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
         Skip.If(
             string.Equals(System.Environment.UserName, "root", StringComparison.Ordinal),
             "root bypasses directory search permission.");
-
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
 
         string locked = Path.Combine(_root, "locked");
 

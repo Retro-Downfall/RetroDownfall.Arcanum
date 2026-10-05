@@ -350,6 +350,67 @@ public sealed class OutboundUrlGuardTests
         Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("2001:0:808:808::f7f7:f7f7"), allowPrivateAndLoopback: false));
     }
 
+    /// <summary>
+    /// The RFC 8215 local-use NAT64 prefix is a translator inside the local network, the IPv6 spelling
+    /// of reaching the IPv4 hosts behind it, so untrusted egress refuses the whole prefix as it refuses
+    /// RFC1918. Where the operator put the IPv4 address in it depends on the prefix length they chose.
+    /// </summary>
+    [Theory]
+    [InlineData("64:ff9b:1::808:808")]
+    [InlineData("64:ff9b:1::a00:1")]
+    [InlineData("64:ff9b:1:7f00:0:100::")]
+    public void IsBlockedAddress_LocalUseNat64_BlockedWhenUntrusted(string literal)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: false));
+    }
+
+    /// <summary>
+    /// Trusted egress keeps the local-use prefix, as it keeps RFC1918, but an IPv4 address embedded at any
+    /// of the RFC 6052 positions a local-use prefix can use still meets the IPv4 policy that trusted egress
+    /// never relaxes: link-local, CGNAT, multicast and reserved space.
+    /// </summary>
+    [Theory]
+    [InlineData("64:ff9b:1::a9fe:a9fe")]
+    [InlineData("64:ff9b:1:0:64:4000:100:0")]
+    [InlineData("64:ff9b:1:64:40:1::")]
+    [InlineData("64:ff9b:1:6440:0:100::")]
+    public void IsBlockedAddress_LocalUseNat64EmbeddedLinkLocalOrCgnat_BlockedWhenTrusted(string literal)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: true));
+    }
+
+    [Theory]
+    [InlineData("64:ff9b:1::808:808")]
+    [InlineData("64:ff9b:1::a00:1")]
+    public void IsBlockedAddress_LocalUseNat64_AllowedWhenTrusted(string literal)
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: true));
+    }
+
+    /// <summary>
+    /// The deprecated IPv4-compatible form (<c>::a.b.c.d</c>) and the SIIT IPv4-translated form
+    /// (<c>::ffff:0:a.b.c.d</c>) both carry an IPv4 destination in their last 32 bits.
+    /// </summary>
+    [Theory]
+    [InlineData("::7f00:1", false)]
+    [InlineData("::a00:1", false)]
+    [InlineData("::a9fe:a9fe", true)]
+    [InlineData("::ffff:0:7f00:1", false)]
+    [InlineData("::ffff:0:c0a8:101", false)]
+    [InlineData("::ffff:0:6440:1", true)]
+    public void IsBlockedAddress_Ipv4CompatibleAndTranslatedEmbeddedPrivate_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Theory]
+    [InlineData("::808:808")]
+    [InlineData("::ffff:0:808:808")]
+    public void IsBlockedAddress_Ipv4CompatibleAndTranslatedEmbeddedPublic_NotBlocked(string literal)
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: false));
+    }
+
     [Fact]
     public void IsBlockedAddress_DocumentationIpv6PrefixIsNotTreatedAsTeredo()
     {

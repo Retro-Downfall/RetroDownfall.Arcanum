@@ -303,6 +303,55 @@ public sealed class CovenantAuthorityStartupReconcilerTests
         Assert.Null(runtime.Current.Keys);
     }
 
+    /// <summary>
+    /// The observer is a test seam that runs while the copy holds the master key, so a throw from it is
+    /// one more way out of the derivation step, and the copy is zeroed on that way out too.
+    /// </summary>
+    [Fact]
+    public async Task A_throwing_material_observer_still_zeroes_the_master_key_copy()
+    {
+        await using CovenantSchemaScratchDatabase database = await CreateAsync();
+
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
+
+        CovenantAvailabilitySnapshot availability = runtime.PublishAvailability(_ => Unavailable());
+
+        byte[]? captured = null;
+
+        CovenantAuthorityStartupReconciler.MasterKeyMaterialObserverForTests = material =>
+        {
+            captured = material;
+
+            throw new InvalidOperationException("test: the observer failed while holding the copy");
+        };
+
+        try
+        {
+            bool reconciled = await CovenantAuthorityStartupReconciler.ReconcileAsync(
+                database.Connection,
+                runtime,
+                keys,
+                availability,
+                Permitted(),
+                "master-key",
+                CancellationToken.None);
+
+            Assert.False(reconciled);
+        }
+        finally
+        {
+            CovenantAuthorityStartupReconciler.MasterKeyMaterialObserverForTests = null;
+        }
+
+        Assert.NotNull(captured);
+
+        Assert.Equal(new byte[captured.Length], captured);
+
+        Assert.Null(runtime.Current.Keys);
+    }
+
     [Fact]
     public async Task A_tainted_process_publishes_no_authority_at_all()
     {

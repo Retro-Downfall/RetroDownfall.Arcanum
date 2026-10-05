@@ -165,6 +165,9 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
                 });
 
             Assert.True(result.IsSuccess);
+
+            // The default key set holds the rehydrated key in the user profile until disposal.
+            result.Certificate!.Dispose();
         }
         finally
         {
@@ -234,6 +237,27 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
     }
 
     /// <summary>
+    /// Schannel cannot use a key that lives only in an ephemeral key set, so a PFX bundle on Windows is
+    /// loaded into the default key set, as a PEM pair is rehydrated there. macOS keychain import refuses the
+    /// ephemeral set too; only the remaining platforms keep the key out of every store.
+    /// </summary>
+    [Fact]
+    public void PfxKeyStorageFlags_request_an_ephemeral_key_set_only_where_the_server_can_bind_it()
+    {
+        Assert.Equal(
+            X509KeyStorageFlags.DefaultKeySet,
+            HttpsCertificateLoader.PfxKeyStorageFlagsFor(isMacOS: false, isWindows: true));
+
+        Assert.Equal(
+            X509KeyStorageFlags.DefaultKeySet,
+            HttpsCertificateLoader.PfxKeyStorageFlagsFor(isMacOS: true, isWindows: false));
+
+        Assert.Equal(
+            X509KeyStorageFlags.EphemeralKeySet,
+            HttpsCertificateLoader.PfxKeyStorageFlagsFor(isMacOS: false, isWindows: false));
+    }
+
+    /// <summary>
     /// The Windows lane of R-253: a PEM-loaded certificate must be usable by Schannel for server
     /// authentication, which an ephemeral key set is not. Only meaningful on Windows (not run on the
     /// macOS development host); it skips everywhere else.
@@ -256,6 +280,43 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
         Assert.True(result.IsSuccess);
 
+        // The default key set keeps the imported key in the user profile until the certificate is
+        // disposed, so the test releases it rather than leaving a key container behind.
+        using X509Certificate2 certificate = result.Certificate!;
+
+        await AssertSchannelServerAuthenticationAsync(certificate);
+    }
+
+    /// <summary>
+    /// The PFX half of the same Windows lane. Not run on the macOS development host.
+    /// </summary>
+    [SkippableFact]
+    public async Task LoadPfx_OnWindows_ProducesSchannelBindableCertificate()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "Schannel server authentication is Windows-only.");
+
+        (string path, string password) = CreatePfx(password: "schannel");
+
+        System.Environment.SetEnvironmentVariable(PasswordVariable, password);
+
+        HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
+            new HttpsSettings
+            {
+                CertificatePath = path,
+                CertificatePasswordEnvironmentVariable = PasswordVariable,
+            });
+
+        Assert.True(result.IsSuccess);
+
+        using X509Certificate2 certificate = result.Certificate!;
+
+        await AssertSchannelServerAuthenticationAsync(certificate);
+    }
+
+    private static async Task AssertSchannelServerAuthenticationAsync(X509Certificate2 certificate)
+    {
         using System.Net.Sockets.TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
 
         listener.Start();
@@ -268,7 +329,7 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
             using System.Net.Security.SslStream server = new(accepted.GetStream());
 
-            await server.AuthenticateAsServerAsync(result.Certificate!);
+            await server.AuthenticateAsServerAsync(certificate);
         });
 
         using System.Net.Sockets.TcpClient client = new();

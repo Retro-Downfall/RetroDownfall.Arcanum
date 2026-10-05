@@ -244,7 +244,10 @@ internal sealed class HostProcessToolsTransitionService(
             return Refused(request, HostProcessToolsTransitionBlocker.AuthorityCommitFailed);
         }
 
-        Result<HostProcessToolsAuthorityRow> reread = await authority.ReadAsync(cancellationToken)
+        // The pending row is durable from here. A caller who cancels now would leave a pending installation
+        // with no marker, resumable only under this transition id, so the rest runs to its marker and taint
+        // (or to its compensation) on its own token.
+        Result<HostProcessToolsAuthorityRow> reread = await authority.ReadAsync(CancellationToken.None)
             .ConfigureAwait(false);
 
         if (reread.IsFailure)
@@ -256,7 +259,7 @@ internal sealed class HostProcessToolsTransitionService(
             request,
             reread.Value,
             compensationPermitted: true,
-            cancellationToken).ConfigureAwait(false);
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>

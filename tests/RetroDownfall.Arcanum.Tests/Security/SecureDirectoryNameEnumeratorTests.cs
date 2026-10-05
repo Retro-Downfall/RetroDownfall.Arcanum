@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -26,6 +27,45 @@ public sealed class SecureDirectoryNameEnumeratorTests : IDisposable
         {
             Directory.Delete(_root, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// The name offsets read are those of the 64-bit-inode macOS dirent and the 64-bit Linux dirent. The
+    /// plain <c>readdir</c> symbol on macOS x64 returns the legacy 32-bit-inode struct, whose name length
+    /// and name sit elsewhere, so reading it through the arm64 offsets would invent names from the wrong
+    /// bytes; macOS x64 is not a shipping RID and fails closed, like its <c>stat</c> layout.
+    /// </summary>
+    [Fact]
+    public void Macos_x64_dirent_layout_is_rejected()
+    {
+        Assert.False(
+            SecureDirectoryNameEnumerator.TryGetUnixDirentLayout(
+                isMacOS: true,
+                Architecture.X64,
+                out _,
+                out _));
+    }
+
+    [Theory]
+    [InlineData(true, Architecture.Arm64, 21, 18)]
+    [InlineData(false, Architecture.X64, 19, -1)]
+    [InlineData(false, Architecture.Arm64, 19, -1)]
+    public void The_verified_dirent_layouts_are_read(
+        bool isMacOS,
+        Architecture architecture,
+        int expectedNameOffset,
+        int expectedNameLengthOffset)
+    {
+        Assert.True(
+            SecureDirectoryNameEnumerator.TryGetUnixDirentLayout(
+                isMacOS,
+                architecture,
+                out int nameOffset,
+                out int nameLengthOffset));
+
+        Assert.Equal(expectedNameOffset, nameOffset);
+
+        Assert.Equal(expectedNameLengthOffset, nameLengthOffset);
     }
 
     [SkippableFact]

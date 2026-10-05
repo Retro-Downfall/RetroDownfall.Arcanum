@@ -141,6 +141,44 @@ public static partial class SecureFilePermissions
             OwnerOnlyDirectoryMode);
     }
 
+    /// <summary>
+    /// Creates every missing directory on <paramref name="directoryPath"/>, from the topmost missing
+    /// ancestor down to the leaf, each owner-only at the moment it is created, and leaves every directory
+    /// that already exists exactly as it is.
+    /// </summary>
+    /// <remarks>
+    /// For a writer that owns only what it creates. <c>Directory.CreateDirectory</c> followed by a chmod
+    /// leaves every created parent at the umask default and the leaf briefly open, and chmods a
+    /// directory another process created in between; creating each component with its final posture
+    /// has neither gap. A component that appears concurrently is left alone, because creating an existing
+    /// directory changes nothing on either platform.
+    /// </remarks>
+    internal static void CreateMissingOwnerOnlyDirectories(string directoryPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+
+        Stack<string> missing = new();
+
+        for (string? cursor = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
+            !string.IsNullOrEmpty(cursor) && !Directory.Exists(cursor);
+            cursor = Path.GetDirectoryName(cursor))
+        {
+            missing.Push(cursor);
+        }
+
+        while (missing.TryPop(out string? next))
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                CreateWindowsOwnerOnlyDirectoryAtPath(next);
+            }
+            else
+            {
+                _ = Directory.CreateDirectory(next, OwnerOnlyDirectoryMode);
+            }
+        }
+    }
+
     [SupportedOSPlatform("windows")]
     private static void CreateWindowsOwnerOnlyDirectoryAtPath(
         string path)

@@ -345,6 +345,62 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.NotNull(harness.Markers.Stored);
     }
 
+    /// <summary>
+    /// The pending row is durable once it commits, and a caller who cancels at that instant would leave
+    /// a pending installation with no marker, resumable only under the same transition id. From the
+    /// commit on, the transition runs to its marker and taint (or its compensation) on its own token.
+    /// </summary>
+    [Fact]
+    public async Task Cancellation_after_the_pending_commit_still_writes_the_marker_and_commits_taint()
+    {
+        Harness harness = Harness.Create();
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.Authority.AfterPendingCommit = cancellation.Cancel;
+
+        Result<HostProcessToolsTransitionResult> result = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.Equal(HostProcessToolsTransitionOutcome.Completed, result.Value.Outcome);
+
+        Assert.Equal(CovenantHostToolsState.HostToolsTainted, harness.Authority.Row.State);
+
+        Assert.NotNull(harness.Markers.Stored);
+    }
+
+    /// <summary>
+    /// A proven-refused write is followed by compensation that returns the row to clean. That
+    /// compensation is bookkeeping for a write already attempted, so a cancellation landing on the write
+    /// must not leave the row pending for a marker that was never written.
+    /// </summary>
+    [Fact]
+    public async Task Cancellation_on_a_refused_write_still_compensates_the_pending_row()
+    {
+        Harness harness = Harness.Create();
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.Markers.WriteStatus = HostProcessToolsMarkerWriteStatus.Refused;
+
+        harness.Markers.OnWriteAttempt = cancellation.Cancel;
+
+        Result<HostProcessToolsTransitionResult> result = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.Equal(HostProcessToolsTransitionOutcome.Refused, result.Value.Outcome);
+
+        Assert.Equal(HostProcessToolsTransitionBlocker.MarkerWriteRefused, result.Value.Blocker);
+
+        Assert.Equal(CovenantHostToolsState.Clean, harness.Authority.Row.State);
+    }
+
     [Fact]
     public async Task Cancellation_while_resuming_a_pending_row_with_a_written_marker_still_commits_taint()
     {
@@ -451,6 +507,34 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.DoesNotContain(
             Enum.GetValues<HostProcessToolsTransitionOutcome>(),
             static value => (byte)value == 0);
+
+        Assert.Equal(0, (byte)HostProcessToolsTransitionBlocker.None);
+
+        Assert.Equal(1, (byte)HostProcessToolsTransitionBlocker.EditionOrOptInMissing);
+
+        Assert.Equal(2, (byte)HostProcessToolsTransitionBlocker.HostRunning);
+
+        Assert.Equal(3, (byte)HostProcessToolsTransitionBlocker.CovenantAlreadyOpened);
+
+        Assert.Equal(4, (byte)HostProcessToolsTransitionBlocker.ProtectedStatePresent);
+
+        Assert.Equal(5, (byte)HostProcessToolsTransitionBlocker.AuthorityUnreadable);
+
+        Assert.Equal(6, (byte)HostProcessToolsTransitionBlocker.ForeignTransitionIdentity);
+
+        Assert.Equal(7, (byte)HostProcessToolsTransitionBlocker.MarkerPairMismatch);
+
+        Assert.Equal(8, (byte)HostProcessToolsTransitionBlocker.MarkerWriteRefused);
+
+        Assert.Equal(9, (byte)HostProcessToolsTransitionBlocker.MarkerWriteUncertain);
+
+        Assert.Equal(10, (byte)HostProcessToolsTransitionBlocker.MarkerReadbackMismatch);
+
+        Assert.Equal(11, (byte)HostProcessToolsTransitionBlocker.AuthorityCommitFailed);
+
+        Assert.Equal(12, (byte)HostProcessToolsTransitionBlocker.MarkerUnreadable);
+
+        Assert.Equal(13, Enum.GetValues<HostProcessToolsTransitionBlocker>().Length);
     }
 
     private sealed class Harness

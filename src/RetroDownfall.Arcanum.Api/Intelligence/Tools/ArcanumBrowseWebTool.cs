@@ -79,9 +79,25 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         IHttpClientFactory httpClientFactory,
         IOptionsSnapshot<ArcanumSettings> options,
         ILogger? logger,
-        TimeProvider? timeProvider = null,
-        IDnsResolver? dnsResolver = null)
+        TimeProvider? timeProvider = null)
+        : this(httpClientFactory, options, logger, timeProvider, new SystemDnsResolver())
     {
+    }
+
+    /// <summary>
+    /// The resolver is required here rather than a nullable default: the public constructor supplies the
+    /// system resolver, and a test supplies its own, so no instance validates a URL against a resolver
+    /// nobody chose.
+    /// </summary>
+    internal ArcanumBrowseWebTool(
+        IHttpClientFactory httpClientFactory,
+        IOptionsSnapshot<ArcanumSettings> options,
+        ILogger? logger,
+        TimeProvider? timeProvider,
+        IDnsResolver dnsResolver)
+    {
+        ArgumentNullException.ThrowIfNull(dnsResolver);
+
         _httpClientFactory = httpClientFactory;
 
         _options = options;
@@ -90,7 +106,7 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
         _timeProvider = timeProvider ?? TimeProvider.System;
 
-        _dnsResolver = dnsResolver ?? new SystemDnsResolver();
+        _dnsResolver = dnsResolver;
 
         // Tools are built per turn from the live snapshot, so the advertised bound is the enforced one.
         _schema = BuildSchema(options.Value.ResolveWebBrowsing());

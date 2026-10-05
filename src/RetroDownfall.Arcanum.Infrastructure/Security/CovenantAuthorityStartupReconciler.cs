@@ -111,12 +111,14 @@ internal static class CovenantAuthorityStartupReconciler
 
             byte[] material = Encoding.UTF8.GetBytes(masterApiKey);
 
-            MasterKeyMaterialObserverForTests?.Invoke(material);
-
             Result<CovenantPreparedEnvelopeKeyGeneration> prepared;
 
+            // The try starts as soon as the copy holds the key: the observer seam is not exception-free,
+            // and a throw from it must still zero the copy.
             try
             {
+                MasterKeyMaterialObserverForTests?.Invoke(material);
+
                 // The input is validated while it is built, so a corrupt authority row throws here,
                 // before PrepareInitial could take ownership of the buffer. PrepareInitial zeroes it on
                 // its own paths; this finally covers the ones that never reach it.
