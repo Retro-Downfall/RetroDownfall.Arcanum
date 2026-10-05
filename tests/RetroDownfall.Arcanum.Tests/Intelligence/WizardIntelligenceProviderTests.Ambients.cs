@@ -301,6 +301,44 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.Null(globalEntry.Value);
     }
 
+    /// <summary>
+    /// The refusal is for a call bound to no Session at all. A call that carries a Session id with no
+    /// Campaign binding is not refused: it resolves to the installation scope, which for the Lexicon is
+    /// the global tier (DESIGN §10.6).
+    /// </summary>
+    [Fact]
+    public async Task ScribeLexicon_WithCampaignScopingOnAndASessionWithNoCampaignBinding_WritesTheGlobalTier()
+    {
+        Guid unboundSessionId = Guid.NewGuid();
+
+        SessionBoundMemoryScopeResolver resolver = new(Guid.NewGuid(), Guid.NewGuid());
+
+        FakeLexiconService lexicon = new();
+
+        await using LexiconToolServer server = await LexiconToolServer.CreateAsync(resolver, lexicon);
+
+        Guid? previous = SessionAttachmentToolAmbient.CurrentSessionId;
+
+        SessionAttachmentToolAmbient.CurrentSessionId = unboundSessionId;
+
+        try
+        {
+            McpToolsCallResultWire result = await server.ScribeAsync("Ada", "Person", ["Installation-scoped fact."]);
+
+            Assert.False(result.IsError, result.Content?.FirstOrDefault()?.Text);
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = previous;
+        }
+
+        Assert.Equal([unboundSessionId], resolver.Requests);
+
+        Result<LexiconEntryDto?> globalEntry = await lexicon.GetByNameInScopeAsync("Ada", LexiconScope.Global);
+
+        Assert.NotNull(globalEntry.Value);
+    }
+
     /// <summary>Campaign scoping on; one known Session bound to one Campaign.</summary>
     private sealed class SessionBoundMemoryScopeResolver(Guid sessionId, Guid campaignId) : IMemoryScopeResolver
     {
