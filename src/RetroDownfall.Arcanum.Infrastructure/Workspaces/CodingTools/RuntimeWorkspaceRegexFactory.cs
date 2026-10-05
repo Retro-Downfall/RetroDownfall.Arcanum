@@ -95,8 +95,9 @@ internal static class RuntimeWorkspaceRegexFactory
                     ErrorCode: null,
                     FallbackAttempted: true);
             }
-            catch (ArgumentException)
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
             {
+                // Neither engine takes the pattern: it is reported as invalid, never thrown to the caller.
                 return InvalidPattern(fallbackAttempted: true);
             }
         }

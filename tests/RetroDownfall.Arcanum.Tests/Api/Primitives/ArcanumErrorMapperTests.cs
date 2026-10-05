@@ -58,6 +58,9 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Workspace.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Workspace.NameEmpty, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Workspace.PathNotAllowed, StatusCodes.Status403Forbidden)]
+    // A PATCH whose target changed after the read is the caller's to re-read and retry, not a server fault.
+    [InlineData(ErrorCodes.Workspace.FileChanged, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Workspace.WriteFailed, StatusCodes.Status500InternalServerError)]
     [InlineData(ErrorCodes.Spell.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Spell.PathNotAllowed, StatusCodes.Status403Forbidden)]
     [InlineData(ErrorCodes.Spell.NoWorkspace, StatusCodes.Status400BadRequest)]

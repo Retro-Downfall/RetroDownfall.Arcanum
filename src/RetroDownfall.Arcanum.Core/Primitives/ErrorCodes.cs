@@ -344,6 +344,12 @@ public static class ErrorCodes
 
         public const string WriteFailed = "Workspace.WriteFailed";
 
+        /// <summary>
+        /// A read-modify-write edit (PATCH) found its target no longer holds the bytes the edit was computed
+        /// from, so nothing was written. Not a server fault: the caller re-reads and retries.
+        /// </summary>
+        public const string FileChanged = "Workspace.FileChanged";
+
         public const string DeleteFailed = "Workspace.DeleteFailed";
 
         public const string DirectoryNotEmpty = "Workspace.DirectoryNotEmpty";

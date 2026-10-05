@@ -8,38 +8,9 @@ internal static class CodexReader
     /// <summary>Most codex bodies kept at once; the least recently used is evicted beyond this.</summary>
     internal const int CacheCapacity = 64;
 
-    /// <summary>
-    /// A cached body is only valid for the exact read that produced it: the same path <b>and</b> the same
-    /// size limit, so lowering the limit can never be answered from a body that the lower limit rejects.
-    /// </summary>
-    private readonly record struct CodexCacheKey(string Path, long MaxSizeBytes);
+    private static readonly CodexReadCache Cache = new(CacheCapacity);
 
-    /// <summary>
-    /// What the file looked like when it was read. Identity and length join the modification time, so a
-    /// replacement that restores the old mtime (or a different object swapped in under the same name)
-    /// still misses.
-    /// </summary>
-    private readonly record struct CodexFileStamp(FileHandleIdentity Identity, long Length, long MtimeUtcTicks);
-
-    private sealed record CodexCacheEntry(CodexFileStamp Stamp, string Content);
-
-    private static readonly Lock CacheGate = new();
-
-    private static readonly Dictionary<CodexCacheKey, LinkedListNode<(CodexCacheKey Key, CodexCacheEntry Entry)>> CacheIndex = [];
-
-    // Most recently used first.
-    private static readonly LinkedList<(CodexCacheKey Key, CodexCacheEntry Entry)> CacheOrder = new();
-
-    internal static int CachedEntryCountForTests
-    {
-        get
-        {
-            lock (CacheGate)
-            {
-                return CacheIndex.Count;
-            }
-        }
-    }
+    internal static int CachedEntryCountForTests => Cache.Count;
 
     internal static async Task<string?> ReadCodexAsync(string? workingDirectory, long maxSizeBytes, CancellationToken ct)
     {
@@ -90,7 +61,7 @@ internal static class CodexReader
             return null;
         }
 
-        if (TryGetCached(key, stamp.Value) is { } cached)
+        if (Cache.TryGet(key, stamp.Value) is { } cached)
         {
             return cached;
         }
@@ -99,7 +70,7 @@ internal static class CodexReader
 
         if (content is not null)
         {
-            Store(key, new CodexCacheEntry(stamp.Value, content));
+            Cache.Store(key, stamp.Value, content);
         }
 
         return content;
@@ -122,52 +93,6 @@ internal static class CodexReader
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return null;
-        }
-    }
-
-    private static string? TryGetCached(CodexCacheKey key, CodexFileStamp stamp)
-    {
-        lock (CacheGate)
-        {
-            if (!CacheIndex.TryGetValue(key, out LinkedListNode<(CodexCacheKey Key, CodexCacheEntry Entry)>? node))
-            {
-                return null;
-            }
-
-            if (node.Value.Entry.Stamp != stamp)
-            {
-                CacheOrder.Remove(node);
-
-                CacheIndex.Remove(key);
-
-                return null;
-            }
-
-            CacheOrder.Remove(node);
-
-            CacheOrder.AddFirst(node);
-
-            return node.Value.Entry.Content;
-        }
-    }
-
-    private static void Store(CodexCacheKey key, CodexCacheEntry entry)
-    {
-        lock (CacheGate)
-        {
-            if (CacheIndex.Remove(key, out LinkedListNode<(CodexCacheKey Key, CodexCacheEntry Entry)>? existing))
-            {
-                CacheOrder.Remove(existing);
-            }
-
-            CacheIndex[key] = CacheOrder.AddFirst((key, entry));
-
-            while (CacheIndex.Count > CacheCapacity && CacheOrder.Last is { } oldest)
-            {
-                CacheOrder.RemoveLast();
-
-                CacheIndex.Remove(oldest.Value.Key);
-            }
         }
     }
 

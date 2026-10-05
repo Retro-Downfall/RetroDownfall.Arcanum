@@ -237,7 +237,7 @@ internal static class SandboxedFileIo
                 false,
                 ToolError(
                     replaceStatus == AtomicReplaceStatus.Aborted && expectedExistingContent is not null
-                        ? FileChangedDuringEditMessage
+                        ? FileContentBaseline.ChangedAfterReadMessage
                         : PathEscapesSandboxMessage));
         }
         catch (UnauthorizedAccessException)
@@ -427,9 +427,6 @@ internal static class SandboxedFileIo
 
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
-
-    private const string FileChangedDuringEditMessage =
-        "The file changed after it was read, or its state could not be verified, so nothing was written. Re-read the file and retry.";
 
     private const string ProtectedPathMessage =
         "That path is protected workspace metadata (.git or .arcanum) and cannot be written through the file tools, so the operation was not performed.";

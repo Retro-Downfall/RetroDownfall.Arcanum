@@ -160,7 +160,38 @@ public sealed class CodexReaderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Cache_is_bounded_and_evicts_the_least_recently_used_entry()
+    public async Task Cached_content_is_not_returned_when_a_new_file_with_the_same_length_and_mtime_replaces_it()
+    {
+        string path = _workspace.WriteFile("same-length/CODEX.md", "first body");
+
+        DateTime pinned = File.GetLastWriteTimeUtc(path);
+
+        string? first = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+
+        // Another file of the same length, its mtime set to the original's, renamed over the name: only the
+        // file identity differs, so a length-and-mtime validation would serve the stale body.
+        string replacement = _workspace.WriteFile("same-length/replacement.tmp", "other text");
+
+        Assert.Equal("first body".Length, "other text".Length);
+
+        File.SetLastWriteTimeUtc(replacement, pinned);
+
+        File.Move(replacement, path, overwrite: true);
+
+        string? second = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+
+        Assert.Equal("first body", first);
+
+        Assert.Equal("other text", second);
+    }
+
+    /// <summary>
+    /// The shared process-wide cache never exceeds its capacity however many codexes are read. The eviction
+    /// order itself is pinned deterministically in <c>CodexReadCacheTests</c> on a private cache, because
+    /// other tests insert into this shared one concurrently.
+    /// </summary>
+    [Fact]
+    public async Task Shared_cache_never_exceeds_its_capacity()
     {
         Assert.True(CodexReader.CacheCapacity > 1);
 

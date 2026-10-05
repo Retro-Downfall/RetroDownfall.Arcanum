@@ -17,6 +17,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 /// protected name is protected too. <c>.git</c> is protected at any depth (nested checkouts and
 /// submodule working trees carry hooks as well, and a <c>.git</c> file is a worktree pointer);
 /// <c>.arcanum</c> is the workspace marker directory and is protected only as the first segment.
+/// On Windows the numbered 8.3 short names (<c>GIT~n</c>, <c>ARCANU~n</c>) and an NTFS stream suffix
+/// (<c>.git::$INDEX_ALLOCATION</c>) name the same entries; on macOS the code points HFS+ ignores do not
+/// change which entry a spelling names. Both widen the protection and never narrow it.
 /// </remarks>
 internal static class WorkspaceProtectedPaths
 {
@@ -24,8 +27,12 @@ internal static class WorkspaceProtectedPaths
 
     private const string ArcanumSegment = ".arcanum";
 
-    // The 8.3 short name NTFS may assign to .git; git itself treats it as an alias of .git.
-    private const string GitWindowsShortNameSegment = "GIT~1";
+    // The 8.3 short names NTFS may assign: a leading period is dropped and the base is cut to six
+    // characters before "~n", so .git becomes GIT~1 (git itself treats it as an alias of .git) and
+    // .arcanum becomes ARCANU~1. The numeric tail grows when another entry already owns the name.
+    private const string GitWindowsShortNameBase = "GIT";
+
+    private const string ArcanumWindowsShortNameBase = "ARCANU";
 
     internal static bool IsProtectedRelativePath(string relativePath) =>
         IsProtectedRelativePath(relativePath, WorkspaceRelativePath.CurrentPlatform);
@@ -51,17 +58,19 @@ internal static class WorkspaceProtectedPaths
                 continue;
             }
 
-            string alias = WorkspaceRelativePath.GetCanonicalAlias(segment, platform);
+            string alias = GetProtectionAlias(segment, platform);
 
             if (string.Equals(alias, gitAlias, StringComparison.Ordinal)
                 || (platform == WorkspacePathAliasPlatform.Windows
-                    && string.Equals(alias, GitWindowsShortNameSegment, StringComparison.Ordinal)))
+                    && IsWindowsShortName(alias, GitWindowsShortNameBase)))
             {
                 return true;
             }
 
             if (isFirstSegment
-                && string.Equals(alias, arcanumAlias, StringComparison.Ordinal))
+                && (string.Equals(alias, arcanumAlias, StringComparison.Ordinal)
+                    || (platform == WorkspacePathAliasPlatform.Windows
+                        && IsWindowsShortName(alias, ArcanumWindowsShortNameBase))))
             {
                 return true;
             }
@@ -70,6 +79,75 @@ internal static class WorkspaceProtectedPaths
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The comparison form of one path segment: what the host filesystem would resolve the spelling to,
+    /// beyond the case, Unicode and trailing-dot folding <see cref="WorkspaceRelativePath"/> already
+    /// applies. On Windows an NTFS stream suffix (<c>.git::$INDEX_ALLOCATION</c>, <c>.git:stream</c>) names
+    /// the entry itself, so everything from the first colon is dropped. On macOS the HFS+ ignorable code
+    /// points (U+200C-U+200F, U+202A-U+202E, U+206A-U+206F, U+FEFF) are dropped, because that filesystem
+    /// does not distinguish <c>.g&#x200C;it</c> from <c>.git</c>; APFS keeps them, so this only widens the
+    /// protection. A colon or an ignorable code point is an ordinary character elsewhere.
+    /// </summary>
+    private static string GetProtectionAlias(
+        string segment,
+        WorkspacePathAliasPlatform platform)
+    {
+        string spelling = segment;
+
+        if (platform == WorkspacePathAliasPlatform.Windows)
+        {
+            int streamSeparator = spelling.IndexOf(':', StringComparison.Ordinal);
+
+            if (streamSeparator >= 0)
+            {
+                spelling = spelling[..streamSeparator];
+            }
+        }
+        else if (platform == WorkspacePathAliasPlatform.MacOS)
+        {
+            spelling = RemoveHfsIgnorableCodePoints(spelling);
+        }
+
+        return WorkspaceRelativePath.GetCanonicalAlias(spelling, platform);
+    }
+
+    private static string RemoveHfsIgnorableCodePoints(string segment)
+    {
+        if (!segment.Any(IsHfsIgnorableCodePoint))
+        {
+            return segment;
+        }
+
+        return string.Concat(segment.Where(static character => !IsHfsIgnorableCodePoint(character)));
+    }
+
+    private static bool IsHfsIgnorableCodePoint(char character) =>
+        character is (>= '‌' and <= '‏')
+            or (>= '‪' and <= '‮')
+            or (>= '⁪' and <= '⁯')
+            or '﻿';
+
+    /// <summary>
+    /// Whether <paramref name="alias"/> (already upper-cased with trailing dots and spaces trimmed) is
+    /// <c>BASE~n</c> for a positive decimal <c>n</c>. Every tail is accepted, not only <c>~1</c>, because
+    /// the digit depends on which other short names already exist in the directory; a literal file named
+    /// <c>GIT~2</c> is refused on Windows as the price of failing closed.
+    /// </summary>
+    private static bool IsWindowsShortName(
+        string alias,
+        string shortNameBase)
+    {
+        if (!alias.StartsWith(shortNameBase + "~", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> tail = alias.AsSpan(shortNameBase.Length + 1);
+
+        return tail.Length > 0
+            && tail.IndexOfAnyExceptInRange('0', '9') < 0;
     }
 
     /// <summary>

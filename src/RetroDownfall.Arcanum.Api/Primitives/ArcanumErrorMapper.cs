@@ -264,6 +264,11 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Apprentice.AlreadyRunning or ErrorCodes.Apprentice.Running or ErrorCodes.Apprentice.NotPaused or ErrorCodes.Apprentice.CannotReweave or ErrorCodes.Apprentice.NotEscalated or ErrorCodes.Apprentice.MaxReached or ErrorCodes.Apprentice.ConclaveDisabled or ErrorCodes.Session.ForkDepthExceeded or ErrorCodes.Session.TooManyPinned or ErrorCodes.Security.IdempotencyConflict or ErrorCodes.Security.IdempotencyInProgress =>
                 StatusCodes.Status409Conflict,
 
+            // A read-modify-write PATCH whose target changed after the read. The caller re-reads and
+            // retries, so it is a conflict; Workspace.WriteFailed (500) would present it as a server fault.
+            ErrorCodes.Workspace.FileChanged =>
+                StatusCodes.Status409Conflict,
+
             ErrorCodes.Attachment.LimitExceeded =>
                 StatusCodes.Status409Conflict,
 

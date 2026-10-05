@@ -81,6 +81,101 @@ public sealed class WorkspaceProtectedPathsTests
                 WorkspacePathAliasPlatform.MacOS));
     }
 
+    [Theory]
+    [InlineData("GIT~2/config")]
+    [InlineData("git~9/hooks/pre-commit")]
+    [InlineData("nested/checkout/GIT~3/config")]
+    [InlineData("ARCANU~1/campaign.json")]
+    [InlineData("arcanu~1/campaign.json")]
+    [InlineData("ARCANU~2/state/x.json")]
+    [InlineData("ARCANU~1./campaign.json")]
+    public void Windows_numbered_short_names_of_protected_directories_are_protected(string relativePath)
+    {
+        Assert.True(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.Windows));
+
+        Assert.False(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.MacOS));
+
+        Assert.False(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.Linux));
+    }
+
+    [Theory]
+    [InlineData("src/ARCANU~1/notes.md")]
+    [InlineData("GIT~/config")]
+    [InlineData("GIT~x/config")]
+    [InlineData("GIT~1x/config")]
+    [InlineData("ARCANU~/campaign.json")]
+    [InlineData("ARCANUM~1/campaign.json")]
+    public void Windows_short_name_lookalikes_and_non_leading_arcanum_short_names_are_not_protected(
+        string relativePath) =>
+        Assert.False(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.Windows));
+
+    [Theory]
+    [InlineData(".git::$INDEX_ALLOCATION/hooks/pre-commit")]
+    [InlineData(".git::$DATA")]
+    [InlineData(".git:hidden-stream")]
+    [InlineData(".GIT::$INDEX_ALLOCATION/config")]
+    [InlineData("GIT~1::$INDEX_ALLOCATION/config")]
+    [InlineData("nested/checkout/.git::$INDEX_ALLOCATION/config")]
+    [InlineData(".arcanum::$INDEX_ALLOCATION/campaign.json")]
+    [InlineData("ARCANU~1::$INDEX_ALLOCATION/campaign.json")]
+    public void Windows_alternate_data_stream_suffixes_do_not_hide_a_protected_name(string relativePath)
+    {
+        Assert.True(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.Windows));
+
+        // Off Windows a colon is an ordinary filename character, so these are different names.
+        Assert.False(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.MacOS));
+
+        Assert.False(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.Linux));
+    }
+
+    [Theory]
+    [InlineData(".g‌it/hooks/pre-commit")]
+    [InlineData(".﻿git/config")]
+    [InlineData(".git‍/config")]
+    [InlineData(".GIT‮/config")]
+    [InlineData(".arc⁯anum/campaign.json")]
+    [InlineData("nested/checkout/.g‌it/config")]
+    public void Macos_ignorable_code_points_do_not_hide_a_protected_name(string relativePath)
+    {
+        // HFS+ ignores these code points when it compares names, so the spelling names the same
+        // directory there. Other platforms keep them as distinct characters.
+        Assert.True(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.MacOS));
+
+        Assert.False(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.Linux));
+
+        Assert.False(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                relativePath,
+                WorkspacePathAliasPlatform.Windows));
+    }
+
     [Fact]
     public void Non_ascii_segments_neither_throw_nor_over_match()
     {
@@ -113,6 +208,43 @@ public sealed class WorkspaceProtectedPathsTests
             WorkspaceProtectedPaths.IsProtectedAbsolutePath(
                 insideDotGit,
                 Path.Combine(insideDotGit, "src", "app.cs")));
+    }
+
+    [SkippableFact]
+    public void Windows_lane_stream_suffix_and_numbered_short_name_aliases_are_protected_on_the_host_platform()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "NTFS stream suffixes and 8.3 short names are Windows filesystem behaviours; the platform-seam theories above pin the logic on every host.");
+
+        foreach (string relativePath in new[]
+                 {
+                     ".git::$INDEX_ALLOCATION/hooks/pre-commit",
+                     "GIT~1/hooks/pre-commit",
+                     "GIT~2/config",
+                     "ARCANU~1/campaign.json",
+                     ".arcanum::$INDEX_ALLOCATION/campaign.json",
+                 })
+        {
+            Assert.True(
+                WorkspaceProtectedPaths.IsProtectedRelativePath(
+                    relativePath,
+                    WorkspaceRelativePath.CurrentPlatform),
+                $"{relativePath} should be protected on the Windows host.");
+        }
+    }
+
+    [SkippableFact]
+    public void Macos_lane_ignorable_code_point_alias_is_protected_on_the_host_platform()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS(),
+            "The HFS+ ignorable code-point alias is applied on macOS hosts; the platform-seam theory above pins the logic on every host.");
+
+        Assert.True(
+            WorkspaceProtectedPaths.IsProtectedRelativePath(
+                ".g‌it/hooks/pre-commit",
+                WorkspaceRelativePath.CurrentPlatform));
     }
 
     [SkippableFact]

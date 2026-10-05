@@ -1220,6 +1220,10 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         Assert.Equal("protected_path", ResultCode(response));
 
+        // DESIGN 11.6 states the envelope status of a protected-path refusal; pin it so a change to the
+        // planning-failure status cannot drift from the documentation unnoticed.
+        Assert.Equal("conflict", ResultStatus(response));
+
         Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
 
         Assert.False(File.Exists(Path.Combine(_workspace.Root, ".git", "hooks", "pre-commit")));
@@ -2250,6 +2254,14 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         using JsonDocument payload = JsonDocument.Parse(response.SerializedResult);
 
         return payload.RootElement.GetProperty("code").GetString()!;
+    }
+
+    private static string ResultStatus(
+        ApplyPatchToolExecutionResponse response)
+    {
+        using JsonDocument payload = JsonDocument.Parse(response.SerializedResult);
+
+        return payload.RootElement.GetProperty("status").GetString()!;
     }
 
     private string[] ArcanumArtifacts() =>

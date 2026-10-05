@@ -250,6 +250,117 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(File.Exists(absolute));
     }
 
+    /// <summary>
+    /// On a Windows host the NTFS stream suffix and the 8.3 short name reach <c>.git</c> through the real
+    /// filesystem. The platform-seam theories in <c>WorkspaceProtectedPathsTests</c> pin the matching logic
+    /// on every host; this lane exercises it end to end where the aliases actually resolve, and it is not
+    /// run on macOS or Linux. Whatever code the request is refused with, nothing may be planted.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(".git::$INDEX_ALLOCATION/hooks/pre-commit")]
+    [InlineData("GIT~1/hooks/pre-commit")]
+    [InlineData("ARCANU~1/campaign.json")]
+    public async Task Windows_lane_alias_spellings_of_protected_metadata_are_refused_and_plant_nothing(
+        string relativePath)
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "NTFS stream suffixes and 8.3 short names are Windows filesystem behaviours.");
+
+        Result<FileWriteResult> result = await CreateWriter().WriteFileAsync(
+            MakeWorkspace(),
+            relativePath,
+            "#!/bin/sh\necho planted\n",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".arcanum")));
+    }
+
+    /// <summary>
+    /// A recursive delete whose own path is not protected still removes everything under it, so a nested
+    /// checkout's <c>.git</c> (protected at any depth) must stop it before anything is deleted, not be
+    /// removed as a side effect of deleting a parent.
+    /// </summary>
+    [Theory]
+    [InlineData("vendored/checkout")]
+    [InlineData("vendored")]
+    public async Task DeleteAsync_recursive_over_a_nested_dot_git_removes_nothing(string relativePath)
+    {
+        string config = _workspace.WriteFile("vendored/checkout/.git/config", "[core]\n");
+
+        string source = _workspace.WriteFile("vendored/checkout/a.txt", "keep");
+
+        string sibling = _workspace.WriteFile("vendored/other/b.txt", "keep");
+
+        Result<FileDeleteResult> result = await CreateWriter().DeleteAsync(
+            MakeWorkspace(),
+            relativePath,
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.Contains(".git", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.True(File.Exists(config));
+
+        Assert.True(File.Exists(source));
+
+        Assert.True(File.Exists(sibling));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_recursive_over_a_nested_dot_git_proceeds_when_the_operator_allows_protected_paths()
+    {
+        string config = _workspace.WriteFile("vendored/checkout/.git/config", "[core]\n");
+
+        PhysicalFileSystemWriter writer = CreateWriter(
+            new ArcanumSettings
+            {
+                Workspaces = new WorkspaceSettings
+                {
+                    EnableFileWrite = true,
+                    AllowProtectedPathWrites = true,
+                },
+            });
+
+        Result<FileDeleteResult> result = await writer.DeleteAsync(
+            MakeWorkspace(),
+            "vendored",
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(File.Exists(config));
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "vendored")));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_recursive_over_an_ordinary_tree_still_removes_it()
+    {
+        _workspace.WriteFile("plain/deep/a.txt", "x");
+
+        _workspace.WriteFile("plain/.github/workflows/build.yml", "x");
+
+        Result<FileDeleteResult> result = await CreateWriter().DeleteAsync(
+            MakeWorkspace(),
+            "plain",
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "plain")));
+    }
+
     [Theory]
     [InlineData(".git/hooks")]
     [InlineData(".arcanum/state")]
@@ -710,9 +821,13 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
             Assert.True(result.IsFailure);
 
-            Assert.Equal("Workspace.WriteFailed", result.Error.Code);
+            // The edit is the caller's to re-read and retry, so it is a conflict (409), not a server
+            // fault (Workspace.WriteFailed, 500), and the message tells the caller what to do.
+            Assert.Equal("Workspace.FileChanged", result.Error.Code);
 
-            Assert.Contains("changed", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("changed after it was read", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.Contains("Re-read the file and retry", result.Error.Message, StringComparison.Ordinal);
 
             Assert.Equal("alpha OMGA gamma", await File.ReadAllTextAsync(target));
 
@@ -742,7 +857,14 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
             Assert.True(result.IsFailure);
 
+            Assert.Equal("Workspace.FileChanged", result.Error.Code);
+
+            Assert.Contains("changed after it was read", result.Error.Message, StringComparison.Ordinal);
+
+            // The destination stays deleted: the replace must not resurrect it from the stale read.
             Assert.False(File.Exists(target));
+
+            Assert.Empty(Directory.GetFiles(_workspace.Root, ".arcanum-*"));
         }
         finally
         {
