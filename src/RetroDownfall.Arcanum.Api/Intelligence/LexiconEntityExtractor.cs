@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 internal static class LexiconEntityExtractor
 {
-
     /// <summary>Low internal token cap for the extractor preflight (kept separate from the router).</summary>
     public const int MaxOutputTokens = 128;
 
@@ -32,7 +31,6 @@ internal static class LexiconEntityExtractor
         IModelCallExecutor? modelCallExecutor = null,
         ModelCallContext? modelCallContext = null)
     {
-
         if (string.IsNullOrWhiteSpace(userPrompt))
         {
             return ([], null);
@@ -131,16 +129,17 @@ internal static class LexiconEntityExtractor
         {
             parsed = JsonSerializer.Deserialize(cleaned, ArcanumJsonContext.Default.LexiconEntityExtractionResponse);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            string logSnippet = trimmed.Length > 200 ? trimmed[..200] : trimmed;
-
-            logger?.LogWarning("LexiconEntityExtractor failed to parse JSON response: {ResponseText}", logSnippet);
+            // Length and type only: the model's text echoes the prompt it was given.
+            logger?.LogWarning(
+                "LexiconEntityExtractor failed to parse JSON response (response length {ResponseLength}, exception type {ExceptionType}).",
+                trimmed.Length,
+                ex.GetType().Name);
 
             return ([], response.Usage);
         }
 
         return (SemanticRouter.NormalizeEntities(parsed?.Entities), response.Usage);
     }
-
 }

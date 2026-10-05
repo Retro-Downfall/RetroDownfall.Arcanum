@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class SemanticRouterTests
 {
-
     [Fact]
     public async Task DetermineActiveSpellAsync_EmptyCatalog_ReturnsNull()
     {
@@ -168,6 +167,47 @@ public sealed class SemanticRouterTests
         Assert.Empty(result.Entities);
     }
 
+    /// <summary>
+    /// A model response that is not valid JSON is the model's text, which echoes the user's prompt and
+    /// whatever context shaped it. The failure is logged by length and exception type, never by content.
+    /// </summary>
+    [Fact]
+    public async Task MalformedJson_DoesNotLogResponseText()
+    {
+        const string marker = "ECHOED-PROMPT-MARKER";
+
+        FakeChatClient client = new()
+        {
+            NextText = "{\"spell\": \"" + marker + " unterminated",
+        };
+
+        TestCapturingLogger<SemanticRouterTests> logger = new();
+
+        List<SpellMetadata> spells = [new SpellMetadata("Summoner", "desc", "/x/SPELL.md")];
+
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
+            client,
+            "summon",
+            spells,
+            TimeSpan.FromSeconds(5),
+            32,
+            0f,
+            CancellationToken.None,
+            logger);
+
+        Assert.NotNull(result);
+
+        TestLogEntry entry = Assert.Single(
+            logger.Entries,
+            e => e.Message.Contains("failed to parse JSON response", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(marker, entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains(nameof(System.Text.Json.JsonException), entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains(client.NextText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), entry.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task DetermineActiveSpellAsync_ClientThrows_ReturnsNull()
     {
@@ -316,7 +356,6 @@ public sealed class SemanticRouterTests
     [Fact]
     public async Task DetermineActiveSpellAsync_ResponseNamesSpellOutsideCandidates_ReturnsNullSpell()
     {
-
         // A hallucinated (or otherwise out-of-set) response naming a real spell that exists in the
         // full catalog but was never offered to the LLM (not in `candidates`) must not resolve —
         // otherwise the whole point of the top-K candidate filter would be silently defeated.
@@ -347,7 +386,6 @@ public sealed class SemanticRouterTests
         Assert.NotNull(result);
 
         Assert.Null(result!.Spell);
-
     }
 
     [Fact]
@@ -436,13 +474,15 @@ public sealed class SemanticRouterTests
     }
 
     [Fact]
-    public async Task LexiconEntityExtractor_InvalidJson_ClipsLoggedResponseSnippet()
+    public async Task LexiconEntityExtractor_InvalidJson_DoesNotLogResponseText()
     {
-        string oversized = new string('x', 250) + "TAIL-MARKER";
+        const string marker = "ECHOED-PROMPT-MARKER";
+
+        string malformed = new string('x', 250) + marker;
 
         FakeChatClient client = new()
         {
-            NextText = oversized,
+            NextText = malformed,
         };
 
         TestCapturingLogger<SemanticRouterTests> logger = new();
@@ -460,9 +500,13 @@ public sealed class SemanticRouterTests
             logger.Entries,
             e => e.Message.Contains("failed to parse JSON response", StringComparison.Ordinal));
 
-        Assert.DoesNotContain("TAIL-MARKER", entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(marker, entry.Message, StringComparison.Ordinal);
 
-        Assert.Contains(new string('x', 200), entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('x', 20), entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains(nameof(System.Text.Json.JsonException), entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains(malformed.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), entry.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -483,7 +527,6 @@ public sealed class SemanticRouterTests
 
     private sealed class FakeChatClient : IChatClient
     {
-
         public List<(IReadOnlyList<MeAiChatMessage> Messages, ChatOptions? Options)> Calls { get; } = [];
 
         public string NextText { get; init; } = string.Empty;
@@ -525,7 +568,5 @@ public sealed class SemanticRouterTests
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
-
 }

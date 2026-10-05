@@ -23,7 +23,6 @@ internal sealed record SemanticSpellRoutingResult(
 
 internal static class SemanticRouter
 {
-
     internal static async Task<SemanticSpellRoutingResult?> DetermineActiveSpellAsync(
         IChatClient client,
         string userPrompt,
@@ -167,11 +166,14 @@ internal static class SemanticRouter
         {
             parsed = JsonSerializer.Deserialize(cleaned, ArcanumJsonContext.Default.SemanticSpellResponse);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            string logSnippet = trimmed.Length > 200 ? trimmed[..200] : trimmed;
-
-            logger?.LogWarning("SemanticRouter failed to parse JSON response: {ResponseText}", logSnippet);
+            // Length and type only: the model's text echoes the user's prompt and whatever context
+            // shaped it, and a log line is the wrong place for either.
+            logger?.LogWarning(
+                "SemanticRouter failed to parse JSON response (response length {ResponseLength}, exception type {ExceptionType}).",
+                trimmed.Length,
+                ex.GetType().Name);
 
             return new SemanticSpellRoutingResult(null, [], response.Usage);
         }
