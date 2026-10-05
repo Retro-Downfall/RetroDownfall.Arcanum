@@ -1,6 +1,8 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 
@@ -19,28 +21,24 @@ internal sealed class SagaCurationService(
     ISagaMemoryStore store,
     IWeaveService weave,
     IAnnalsStore annals,
-    IMemoryScopeResolver scopes) : ISagaCurationService
+    IMemoryScopeResolver scopes,
+    IOptionsMonitor<ArcanumSettings> options) : ISagaCurationService
 {
-
     /// <summary><see cref="AnnalContentDigest.ForSagaMemory"/> is a SHA-256 binding: always 32 bytes.</summary>
     private const int ExpectedDigestLength = 32;
 
     public async Task<Result<SagaMemoryDetail>> ShowAsync(string id, CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         SagaMemoryCurationRow? row = await store.ReadCurationRowAsync(id, cancellationToken).ConfigureAwait(false);
 
         if (row is null)
         {
-
             return Result<SagaMemoryDetail>.Failure(NotFoundError());
-
         }
 
         return Result<SagaMemoryDetail>.Success(await ComposeDetailAsync(id, row, cancellationToken).ConfigureAwait(false));
-
     }
 
     /// <remarks>
@@ -55,7 +53,6 @@ internal sealed class SagaCurationService(
     public async Task<Result<SagaCurationResult>> CorrectAsync(
         string id, string expectedContentHash, string content, CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         ArgumentNullException.ThrowIfNull(content);
@@ -64,9 +61,7 @@ internal sealed class SagaCurationService(
 
         if (parsedHash.IsFailure)
         {
-
             return Result<SagaCurationResult>.Failure(parsedHash.Error);
-
         }
 
         // Embedded before the store is ever called: CorrectAsync's own content is already in hand, so
@@ -75,9 +70,7 @@ internal sealed class SagaCurationService(
 
         if (embedding.IsFailure)
         {
-
             return Result<SagaCurationResult>.Failure(embedding.Error);
-
         }
 
         SagaCurationOutcome outcome = await store.CorrectAsync(
@@ -85,22 +78,18 @@ internal sealed class SagaCurationService(
             .ConfigureAwait(false);
 
         return await FinishAsync(id, CurationVerb.Correct, outcome, cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<SagaCurationResult>> RetireAsync(
         string id, string expectedContentHash, CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         Result<byte[]> parsedHash = ParseExpectedContentHash(expectedContentHash);
 
         if (parsedHash.IsFailure)
         {
-
             return Result<SagaCurationResult>.Failure(parsedHash.Error);
-
         }
 
         // No embedding step, deliberately: retiring only ever removes a vector, it never writes one, and
@@ -110,22 +99,18 @@ internal sealed class SagaCurationService(
             .RetireAsync(id, parsedHash.Value, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
 
         return await FinishAsync(id, CurationVerb.Retire, outcome, cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<SagaCurationResult>> ReinstateAsync(
         string id, string expectedContentHash, CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         Result<byte[]> parsedHash = ParseExpectedContentHash(expectedContentHash);
 
         if (parsedHash.IsFailure)
         {
-
             return Result<SagaCurationResult>.Failure(parsedHash.Error);
-
         }
 
         // Unlike CorrectAsync, reinstating carries no new text of its own -- it restores the row's
@@ -134,18 +119,14 @@ internal sealed class SagaCurationService(
 
         if (row is null)
         {
-
             return Result<SagaCurationResult>.Failure(NotFoundError());
-
         }
 
         Result<float[]> embedding = await EmbedOrRefuseAsync(row.Memory.Content, cancellationToken).ConfigureAwait(false);
 
         if (embedding.IsFailure)
         {
-
             return Result<SagaCurationResult>.Failure(embedding.Error);
-
         }
 
         SagaCurationOutcome outcome = await store.ReinstateAsync(
@@ -153,12 +134,10 @@ internal sealed class SagaCurationService(
             .ConfigureAwait(false);
 
         return await FinishAsync(id, CurationVerb.Reinstate, outcome, cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<SagaCurationResult>> SetPinAsync(string id, bool pinned, CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         // Neither embeds nor takes a content hash, for the same reason RetireAsync does not embed: a
@@ -168,7 +147,6 @@ internal sealed class SagaCurationService(
             .SetPinAsync(id, pinned, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
 
         return await FinishAsync(id, CurationVerb.Pin, outcome, cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -182,36 +160,33 @@ internal sealed class SagaCurationService(
     private async Task<Result<SagaCurationResult>> FinishAsync(
         string id, CurationVerb verb, SagaCurationOutcome outcome, CancellationToken cancellationToken)
     {
-
         Error? failure = MapOutcome(verb, outcome.Kind);
 
         if (failure is { } error)
         {
-
             return Result<SagaCurationResult>.Failure(error);
-
         }
 
-        Result<SagaMemoryDetail> detail = await ShowAsync(id, cancellationToken).ConfigureAwait(false);
+        // The store call that produced this outcome has already committed, so the projection that reports it
+        // is composed on CancellationToken.None: a request that is cancelled in the gap between the commit
+        // and this read must not turn a change that is durable into a thrown cancellation that says it
+        // did not happen. The read is one row, a claim head and its versions.
+        Result<SagaMemoryDetail> detail = await ShowAsync(id, CancellationToken.None).ConfigureAwait(false);
 
         if (detail.IsFailure)
         {
-
             return Result<SagaCurationResult>.Failure(detail.Error);
-
         }
 
         // A correction that re-created erased content says what it did to that content's fingerprint;
         // every other verb and outcome carries the store's own false.
         return Result<SagaCurationResult>.Success(
             new SagaCurationResult(outcome.Kind, detail.Value, outcome.ReleasedErasureFingerprint));
-
     }
 
     private async Task<SagaMemoryDetail> ComposeDetailAsync(
         string id, SagaMemoryCurationRow row, CancellationToken cancellationToken)
     {
-
         // The gate retrieval itself reads, through the seam every memory surface resolves scope with:
         // whether unresolved ownership withholds a memory depends on whether Campaign scoping is on.
         SagaRetrievalEligibility eligibility = SagaRetrievalEligibilityClassifier.Classify(
@@ -229,7 +204,6 @@ internal sealed class SagaCurationService(
         string contentHash = Convert.ToHexString(AnnalContentDigest.ForSagaMemory(row.Memory.Content));
 
         return new SagaMemoryDetail(row.Memory, contentHash, row.Lifecycle, eligibility, claim, history);
-
     }
 
     /// <summary>Which verb a store outcome came back from.</summary>
@@ -240,7 +214,6 @@ internal sealed class SagaCurationService(
     /// </remarks>
     private enum CurationVerb
     {
-
         Correct,
 
         Retire,
@@ -248,7 +221,6 @@ internal sealed class SagaCurationService(
         Reinstate,
 
         Pin,
-
     }
 
     /// <summary>
@@ -275,7 +247,6 @@ internal sealed class SagaCurationService(
     private static Error? MapOutcome(CurationVerb verb, SagaCurationOutcomeKind kind) =>
         (verb, kind) switch
         {
-
             (_, SagaCurationOutcomeKind.Applied) => null,
 
             (CurationVerb.Correct, SagaCurationOutcomeKind.Unchanged) => null,
@@ -296,7 +267,6 @@ internal sealed class SagaCurationService(
 
             _ => throw new InvalidOperationException(
                 $"Unhandled {nameof(SagaCurationOutcomeKind)} for {verb}: {kind}."),
-
         };
 
     private static Error NotFoundError() =>
@@ -309,25 +279,37 @@ internal sealed class SagaCurationService(
     /// </summary>
     private async Task<Result<float[]>> EmbedOrRefuseAsync(string content, CancellationToken cancellationToken)
     {
-
         if (!weave.IsAvailable)
         {
-
             return Result<float[]>.Failure(EmbeddingUnavailableError());
-
         }
 
         Result<Embedding<float>> embedded = await weave.EmbedAsync(content, cancellationToken).ConfigureAwait(false);
 
         if (embedded.IsFailure)
         {
-
             return Result<float[]>.Failure(EmbeddingUnavailableError());
-
         }
 
-        return Result<float[]>.Success(embedded.Value.Vector.ToArray());
+        // The store throws when a vector is not exactly the configured width, to keep a wrong-width row out
+        // of the vector index. That is a guard against a caller bug, not an answer for an operator, so a
+        // provider that returns the wrong width (a model swapped without `embeddings reset`, or a provider
+        // that ignores the requested dimensions) is refused here, on the same code a failed embed gets,
+        // before the store is ever called.
+        int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
+            options.CurrentValue.Integrations.Embeddings.Dimensions);
 
+        float[] vector = embedded.Value.Vector.ToArray();
+
+        if (vector.Length != expectedDimensions)
+        {
+            return Result<float[]>.Failure(
+                new Error(
+                    ErrorCodes.Saga.EmbeddingUnavailable,
+                    $"The embedding provider returned a {vector.Length}-dimension vector but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions, so this write was refused."));
+        }
+
+        return Result<float[]>.Success(vector);
     }
 
     private static Error EmbeddingUnavailableError() =>
@@ -343,36 +325,27 @@ internal sealed class SagaCurationService(
     /// </summary>
     private static Result<byte[]> ParseExpectedContentHash(string expectedContentHash)
     {
-
         ArgumentNullException.ThrowIfNull(expectedContentHash);
 
         try
         {
-
             byte[] digest = Convert.FromHexString(expectedContentHash);
 
             if (digest.Length != ExpectedDigestLength)
             {
-
                 return Result<byte[]>.Failure(InvalidHashError());
-
             }
 
             return Result<byte[]>.Success(digest);
-
         }
         catch (Exception failure) when (failure is FormatException or ArgumentException)
         {
-
             return Result<byte[]>.Failure(InvalidHashError());
-
         }
-
     }
 
     private static Error InvalidHashError() =>
         new(
             ErrorCodes.Validation.InvalidFields,
             "The expected content hash must be a 64-character hexadecimal digest.");
-
 }
