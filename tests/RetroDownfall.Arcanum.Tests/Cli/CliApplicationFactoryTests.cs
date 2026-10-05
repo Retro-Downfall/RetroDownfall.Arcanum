@@ -51,6 +51,27 @@ public sealed class CliApplicationFactoryTests
         Assert.Equal(1, host.RunCount);
     }
 
+    /// <summary>
+    /// Production never gave the Command Center a token, so its 130-and-cleanup path was unreachable from
+    /// a bare launch: an external SIGTERM or SIGHUP ended the process with the auto-launched host still
+    /// running. The launch now owns a source that those signals cancel.
+    /// </summary>
+    [Fact]
+    public async Task Bare_invocation_passes_a_cancellable_token_to_the_command_center()
+    {
+        FakeCommandCenterHost host = new(exitCode: 0);
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+        services.AddSingleton<ICliEnvironment>(new FakeCliEnvironment(interactive: true, colorEnabled: true));
+        services.AddTransient<ICommandCenterHost>(_ => host);
+
+        _ = await CliTestHarness.RunAsync(services, []);
+
+        Assert.Equal(1, host.RunCount);
+        Assert.True(host.LastToken.CanBeCanceled);
+    }
+
     [Fact]
     public async Task Empty_interactive_with_NO_COLOR_still_routes_to_command_center()
     {
@@ -135,6 +156,8 @@ public sealed class CliApplicationFactoryTests
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Equal(1, host.RunCount);
+
+        Assert.True(host.LastToken.CanBeCanceled);
 
         Assert.Null(host.StartupSessionId);
 
@@ -706,9 +729,12 @@ public sealed class CliApplicationFactoryTests
 
         public Guid? StartupSessionId { get; private set; }
 
+        public CancellationToken LastToken { get; private set; }
+
         public Task<int> RunAsync(CancellationToken cancellationToken)
         {
             RunCount++;
+            LastToken = cancellationToken;
             return Task.FromResult(exitCode);
         }
 

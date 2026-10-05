@@ -11,34 +11,29 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class CommandCenterOperatorGuidanceTests
 {
-
     public static TheoryData<string> HostDiagnostics =>
     [
         CommandCenterHost.DescribeTerminalTooSmall(70, 20),
         CommandCenterHost.StartFailureMessage,
+        CommandCenterHost.RuntimeFailureMessage,
     ];
 
     [Theory]
     [MemberData(nameof(HostDiagnostics))]
     public void Host_diagnostics_never_name_a_removed_command(string message)
     {
-
         foreach (string removed in CliSuggestionEngine.RemovedSpellings)
         {
-
             Assert.DoesNotContain(
                 $"arcanum {removed}",
                 message,
                 StringComparison.OrdinalIgnoreCase);
-
         }
-
     }
 
     [Fact]
     public void Host_diagnostics_name_a_live_direct_command()
     {
-
         Assert.Contains(
             "arcanum run",
             CommandCenterHost.DescribeTerminalTooSmall(70, 20),
@@ -49,13 +44,16 @@ public sealed class CommandCenterOperatorGuidanceTests
             CommandCenterHost.StartFailureMessage,
             StringComparison.Ordinal);
 
+        Assert.Contains(
+            "arcanum run",
+            CommandCenterHost.RuntimeFailureMessage,
+            StringComparison.Ordinal);
     }
 
     /// <summary>The size gate must still lead with the remedy that actually applies.</summary>
     [Fact]
     public void The_size_gate_reports_the_detected_and_required_viewport()
     {
-
         string message = CommandCenterHost.DescribeTerminalTooSmall(70, 20);
 
         Assert.Contains("70x20", message, StringComparison.Ordinal);
@@ -66,7 +64,6 @@ public sealed class CommandCenterOperatorGuidanceTests
             StringComparison.Ordinal);
 
         Assert.Contains("Resize the terminal", message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -76,17 +73,13 @@ public sealed class CommandCenterOperatorGuidanceTests
     [Fact]
     public void The_F1_slash_summary_lists_only_spellings_the_parser_accepts()
     {
-
         AssertEveryDocumentedFormParses(CommandCenterHost.HelpOverlaySlashSummary);
-
     }
 
     [Fact]
     public void The_canonical_resume_usage_is_accepted_by_the_parser()
     {
-
         AssertEveryDocumentedFormParses(ShellCommandDispatcher.ResumeUsage);
-
     }
 
     public static TheoryData<string> ResumeHints =>
@@ -104,11 +97,9 @@ public sealed class CommandCenterOperatorGuidanceTests
     [MemberData(nameof(ResumeHints))]
     public void Every_resume_hint_quotes_the_canonical_usage(string hint)
     {
-
         Assert.Contains(ShellCommandDispatcher.ResumeUsage, hint, StringComparison.Ordinal);
 
         Assert.DoesNotContain("/session resume", hint, StringComparison.Ordinal);
-
     }
 
     public static TheoryData<string> PinUsages =>
@@ -125,9 +116,7 @@ public sealed class CommandCenterOperatorGuidanceTests
     [MemberData(nameof(PinUsages))]
     public void Every_pin_usage_is_accepted_by_the_parser(string usage)
     {
-
         AssertEveryDocumentedFormParses(usage);
-
     }
 
     /// <summary>
@@ -137,7 +126,6 @@ public sealed class CommandCenterOperatorGuidanceTests
     [Fact]
     public void The_pin_failure_messages_quote_the_canonical_usage()
     {
-
         Assert.Contains(
             ShellCommandDispatcher.UnpinUsage,
             ShellCommandDispatcher.UnpinUsageMessage,
@@ -152,14 +140,12 @@ public sealed class CommandCenterOperatorGuidanceTests
             "/context",
             ShellCommandDispatcher.UnpinUsageMessage,
             StringComparison.Ordinal);
-
     }
 
     private const string SampleId = "11111111-1111-1111-1111-111111111111";
 
     private static void AssertEveryDocumentedFormParses(string helpText)
     {
-
         ShellCommandParser parser = new();
 
         IReadOnlyList<string> forms = SlashUsageExpander.Expand(helpText, SampleId);
@@ -168,17 +154,13 @@ public sealed class CommandCenterOperatorGuidanceTests
 
         foreach (string form in forms)
         {
-
             ParsedShellCommand parsed = parser.Parse(form);
 
             Assert.True(
                 parsed.Kind is not (ShellCommandKind.Denied or ShellCommandKind.Unknown),
                 $"`{helpText}` documents `{form}`, which the parser rejects: {parsed.DenialMessage}");
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -187,94 +169,72 @@ public sealed class CommandCenterOperatorGuidanceTests
 /// </summary>
 internal static class SlashUsageExpander
 {
-
     public static IReadOnlyList<string> Expand(string helpText, string sampleId)
     {
-
         int start = helpText.IndexOf('/', StringComparison.Ordinal);
 
         if (start < 0)
         {
-
             return [];
-
         }
 
         List<string> forms = [];
 
         foreach (string fragment in helpText[start..].Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
-
             string body = fragment.Trim();
 
             if (body.Length == 0)
             {
-
                 continue;
-
             }
 
             forms.AddRange(ExpandOne(body, sampleId));
-
         }
 
         return forms;
-
     }
 
     /// <summary>Drops <c>[optional]</c> groups; they document forms the parser also accepts without.</summary>
     public static string StripOptionalGroups(string usage)
     {
-
         System.Text.StringBuilder builder = new(usage.Length);
 
         int depth = 0;
 
         foreach (char c in usage)
         {
-
             if (c == '[')
             {
-
                 depth++;
 
                 continue;
-
             }
 
             if (c == ']')
             {
-
                 depth = Math.Max(0, depth - 1);
 
                 continue;
-
             }
 
             if (depth == 0)
             {
-
                 _ = builder.Append(c);
-
             }
-
         }
 
         return builder.ToString();
-
     }
 
     private static IEnumerable<string> ExpandOne(string body, string sampleId)
     {
-
         string[] tokens = StripOptionalGroups(body)
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         if (tokens.Length == 0)
         {
-
             yield break;
-
         }
 
         int alternation = Array.FindIndex(
@@ -287,32 +247,22 @@ internal static class SlashUsageExpander
 
         foreach (string choice in choices)
         {
-
             string[] variant = (string[])tokens.Clone();
 
             if (alternation >= 0)
             {
-
                 variant[alternation] = choice;
-
             }
 
             for (int i = 0; i < variant.Length; i++)
             {
-
                 if (variant[i].StartsWith('<'))
                 {
-
                     variant[i] = sampleId;
-
                 }
-
             }
 
             yield return "/" + string.Join(' ', variant);
-
         }
-
     }
-
 }
