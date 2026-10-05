@@ -15,7 +15,8 @@ internal sealed class NoOpSessionAttachmentStore(
     Func<SessionAttachmentRecord, CancellationToken, Task<ReadOnlyMemory<byte>>>? readBytes = null,
     Func<SessionAttachmentRecord, CancellationToken, Task<Stream>>? openRead = null,
     Func<Guid, IReadOnlyList<Guid>, CancellationToken, Task>? clearEntryIds = null,
-    Func<Exception>? lookupFailure = null) : ISessionAttachmentStore
+    Func<Exception>? lookupFailure = null,
+    Func<Guid, string, int?, SessionAttachmentRecord?>? logicalLookup = null) : ISessionAttachmentStore
 {
     public int PersistNewCallCount { get; private set; }
 
@@ -81,13 +82,15 @@ internal sealed class NoOpSessionAttachmentStore(
         CancellationToken cancellationToken = default) =>
         lookupFailure is not null
             ? Task.FromException<SessionAttachmentRecord?>(lookupFailure())
-            : Task.FromResult(
-                record is not null
-                    && record.SessionId == sessionId
-                    && string.Equals(record.LogicalKey, logicalKey, StringComparison.Ordinal)
-                    && (version is null || record.Version == version)
-                        ? record
-                        : null);
+            : logicalLookup is not null
+                ? Task.FromResult(logicalLookup(sessionId, logicalKey, version))
+                : Task.FromResult(
+                    record is not null
+                        && record.SessionId == sessionId
+                        && string.Equals(record.LogicalKey, logicalKey, StringComparison.Ordinal)
+                        && (version is null || record.Version == version)
+                            ? record
+                            : null);
 
     public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
         Guid sessionId,
