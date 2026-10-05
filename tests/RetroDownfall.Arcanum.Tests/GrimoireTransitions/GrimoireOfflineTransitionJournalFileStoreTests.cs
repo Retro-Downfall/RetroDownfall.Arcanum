@@ -2235,7 +2235,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     /// The Windows exchange is two no-replace renames, so the second can fail after the first moved the
     /// canonical file aside. This drives the production composition the Windows arm calls over the real
     /// primitives of whichever host runs it, failing only the second rename, and requires the canonical
-    /// file back in place with the working file cleaned up as a pre-publication failure.
+    /// file back in place with the working file cleaned up as a pre-publication failure that keeps the
+    /// exchange's own retryable <c>Covenant.Unavailable</c>, so a caller can tell a clean rollback from
+    /// evidence that needs recovery.
     /// </summary>
     [Fact]
     public async Task Windows_exchange_second_rename_failure_restores_canonical()
@@ -2265,6 +2267,8 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             CancellationToken.None);
 
         Assert.True(replaced.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, replaced.Error.Code);
 
         Assert.NotNull(renaming);
 

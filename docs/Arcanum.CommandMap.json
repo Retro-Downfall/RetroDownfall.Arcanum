@@ -8858,7 +8858,7 @@
             {
               "path": "data encryption verify",
               "name": "verify",
-              "description": "Verify metadata, envelope authentication, plaintext length, and SHA-256.",
+              "description": "Verify metadata, envelope authentication, plaintext length, and SHA-256, and report a version-1 envelope as outdated until migrate upgrades it.",
               "runnable": true,
               "aliases": [],
               "arguments": [],

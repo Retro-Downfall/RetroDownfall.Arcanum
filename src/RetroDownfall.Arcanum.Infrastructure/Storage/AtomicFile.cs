@@ -71,8 +71,9 @@ internal static class AtomicFile
     /// verification. This exists for deterministic race testing; normal callers leave it unset.
     /// </param>
     /// <param name="flushParentDirectory">
-    /// The directory barrier issued right after the rename; <see cref="DurableDirectoryFlush.TryFlushParentOf"/>
-    /// when unset. This exists so tests can observe the barrier; normal callers leave it unset.
+    /// The directory barrier issued right after the rename, and again after a rollback that renamed the
+    /// destination aside or the backup back; <see cref="DurableDirectoryFlush.TryFlushParentOf"/> when
+    /// unset. This exists so tests can observe the barrier; normal callers leave it unset.
     /// </param>
     /// <returns>
     /// An <see cref="AtomicReplaceStatus"/> describing whether the destination was replaced and
@@ -90,6 +91,8 @@ internal static class AtomicFile
         FileContentBaseline? expectedDestinationContent = null,
         Func<string, bool>? flushParentDirectory = null)
     {
+        Func<string, bool> flushParent = flushParentDirectory ?? DurableDirectoryFlush.TryFlushParentOf;
+
         bool replaced = false;
 
         string? backupPath = null;
@@ -311,12 +314,7 @@ internal static class AtomicFile
             // The rename is durable only once its directory entry is: flush the parent through the
             // shared barrier (F_FULLFSYNC on macOS). The move has already happened, so a refused
             // barrier is logged rather than reported as a failed replace.
-            if (!(flushParentDirectory ?? DurableDirectoryFlush.TryFlushParentOf)(destinationPath))
-            {
-                Serilog.Log.Warning(
-                    "The directory holding {Path} could not be flushed after its atomic replace.",
-                    destinationPath);
-            }
+            FlushParentOrWarn(flushParent, destinationPath, "its atomic replace");
 
             afterMoveBeforeVerify?.Invoke();
 
@@ -331,7 +329,8 @@ internal static class AtomicFile
                         backupArtifact,
                         backupFingerprint,
                         backupFingerprintCaptured,
-                        retainQuarantine: true))
+                        retainQuarantine: true,
+                        flushParent))
                 {
                     backupPath = null;
 
@@ -352,7 +351,8 @@ internal static class AtomicFile
                         backupArtifact,
                         backupFingerprint,
                         backupFingerprintCaptured,
-                        retainQuarantine: false))
+                        retainQuarantine: false,
+                        flushParent))
                 {
                     backupPath = null;
 
@@ -376,7 +376,8 @@ internal static class AtomicFile
                         backupArtifact,
                         backupFingerprint,
                         backupFingerprintCaptured,
-                        retainQuarantine: true))
+                        retainQuarantine: true,
+                        flushParent))
                 {
                     backupPath = null;
 
@@ -501,7 +502,43 @@ internal static class AtomicFile
         IdentityOwnedFileSystemArtifact backupArtifact,
         StagedFileFingerprint backupFingerprint,
         bool backupFingerprintCaptured,
-        bool retainQuarantine)
+        bool retainQuarantine,
+        Func<string, bool> flushParent)
+    {
+        bool moved = false;
+
+        try
+        {
+            return TryRestoreOrQuarantineCore(
+                destinationPath,
+                backupPath,
+                stagedIdentity,
+                backupArtifact,
+                backupFingerprint,
+                backupFingerprintCaptured,
+                retainQuarantine,
+                ref moved);
+        }
+        finally
+        {
+            // Every rename the rollback landed changes the destination directory, and a rolled-back
+            // replace is only as durable as those entries, whether or not the rollback then completed.
+            if (moved)
+            {
+                FlushParentOrWarn(flushParent, destinationPath, "its rollback");
+            }
+        }
+    }
+
+    private static bool TryRestoreOrQuarantineCore(
+        string destinationPath,
+        string? backupPath,
+        FileHandleIdentity stagedIdentity,
+        IdentityOwnedFileSystemArtifact backupArtifact,
+        StagedFileFingerprint backupFingerprint,
+        bool backupFingerprintCaptured,
+        bool retainQuarantine,
+        ref bool moved)
     {
         if (!FileHandleIdentityInterop.TryGetPathMetadata(
                 destinationPath,
@@ -522,6 +559,8 @@ internal static class AtomicFile
         try
         {
             File.Move(destinationPath, quarantinePath, overwrite: false);
+
+            moved = true;
 
             if (!FileHandleIdentityInterop.TryGetPathMetadata(
                     quarantinePath,
@@ -556,6 +595,8 @@ internal static class AtomicFile
 
             File.Move(backupPath, destinationPath, overwrite: false);
 
+            moved = true;
+
             if (!TryVerifyFileFingerprint(
                     destinationPath,
                     backupFingerprint))
@@ -576,6 +617,17 @@ internal static class AtomicFile
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return false;
+        }
+    }
+
+    private static void FlushParentOrWarn(Func<string, bool> flushParent, string path, string after)
+    {
+        if (!flushParent(path))
+        {
+            Serilog.Log.Warning(
+                "The directory holding {Path} could not be flushed after {Step}.",
+                path,
+                after);
         }
     }
 

@@ -60,15 +60,12 @@ public sealed class HostProcessToolsRecoveryStartupClassifierTests(GrimoireFixtu
         Assert.True(classified.Value.CovenantPermitted);
     }
 
-    [Theory]
-    [InlineData((int)HostProcessToolsMarkerReadStatus.Malformed)]
-    [InlineData((int)HostProcessToolsMarkerReadStatus.Unavailable)]
-    public void An_untrusted_marker_refuses_before_any_database_is_opened(
-        int statusCode)
+    [Fact]
+    public void A_malformed_marker_refuses_before_any_database_is_opened()
     {
         FakeHostProcessToolsMarkerStore markers = new()
         {
-            ReadStatusOverride = (HostProcessToolsMarkerReadStatus)statusCode,
+            ReadStatusOverride = HostProcessToolsMarkerReadStatus.Malformed,
         };
 
         HostProcessToolsRecoveryStartupClassifier classifier = new(
@@ -81,6 +78,30 @@ public sealed class HostProcessToolsRecoveryStartupClassifierTests(GrimoireFixtu
         Assert.True(captured.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, captured.Error.Code);
+    }
+
+    /// <summary>
+    /// A credential store that cannot be read right now is an outage, not a marker that disagrees:
+    /// the start is retryable once the store is unlocked, so it keeps <c>Covenant.Unavailable</c>.
+    /// </summary>
+    [Fact]
+    public void An_unavailable_marker_store_is_an_outage_not_manual_recovery()
+    {
+        FakeHostProcessToolsMarkerStore markers = new()
+        {
+            ReadStatusOverride = HostProcessToolsMarkerReadStatus.Unavailable,
+        };
+
+        HostProcessToolsRecoveryStartupClassifier classifier = new(
+            markers,
+            new FakeHostProcessToolsEnvironmentProbe { EscapeHatchOptIn = false },
+            new HostProcessToolsMarkerPairJoiner());
+
+        Result<HostProcessToolsRecoveryMarkerSnapshot> captured = classifier.CaptureMarker();
+
+        Assert.True(captured.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, captured.Error.Code);
     }
 
     [SkippableFact]
@@ -158,6 +179,48 @@ public sealed class HostProcessToolsRecoveryStartupClassifierTests(GrimoireFixtu
         Assert.Equal(ErrorCodes.Covenant.Unavailable, classified.Error.Code);
     }
 
+    /// <summary>
+    /// The durable authority-row read meets the same busy catalog the identity read can. It is an
+    /// outage, not an unreadable row: the start is retryable. Any other storage failure still escapes
+    /// to the caller, which disposes the probe and rethrows.
+    /// </summary>
+    [Theory]
+    [InlineData(5, true)]
+    [InlineData(6, true)]
+    [InlineData(10, true)]
+    [InlineData(11, false)]
+    public async Task A_busy_catalog_during_the_authority_row_read_is_an_outage_not_manual_recovery(
+        int sqliteErrorCode,
+        bool outage)
+    {
+        HostProcessToolsRecoveryStartupClassifier classifier = new(
+            new FakeHostProcessToolsMarkerStore(),
+            new FakeHostProcessToolsEnvironmentProbe { EscapeHatchOptIn = false },
+            new HostProcessToolsMarkerPairJoiner());
+
+        ThrowingAuthorityStore authority = new(
+            new SqliteException("Injected authority-row read failure.", sqliteErrorCode));
+
+        if (!outage)
+        {
+            await Assert.ThrowsAsync<SqliteException>(() => classifier.ClassifyAuthorityAsync(
+                authority,
+                classifier.CaptureMarker().Value,
+                CancellationToken.None));
+
+            return;
+        }
+
+        Result<IHostProcessToolsRuntimePolicy> classified = await classifier.ClassifyAuthorityAsync(
+            authority,
+            classifier.CaptureMarker().Value,
+            CancellationToken.None);
+
+        Assert.True(classified.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, classified.Error.Code);
+    }
+
     [SkippableFact]
     public async Task An_escape_hatch_decision_refuses_recovery_without_publishing_the_real_policy()
     {
@@ -182,5 +245,37 @@ public sealed class HostProcessToolsRecoveryStartupClassifierTests(GrimoireFixtu
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
+    }
+
+    /// <summary>An authority store whose every read throws one storage failure.</summary>
+    private sealed class ThrowingAuthorityStore(Exception failure) : IHostProcessToolsAuthorityStore
+    {
+        public Task<Result<HostProcessToolsAuthorityRow>> ReadAsync(CancellationToken cancellationToken) =>
+            throw failure;
+
+        public Task<Result<HostProcessToolsAuthorityRow?>> TryReadAsync(CancellationToken cancellationToken) =>
+            throw failure;
+
+        public Task<Result<HostProcessToolsProtectedInventory>> InventoryProtectedStateAsync(
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Recovery classification never inventories.");
+
+        public Task<Result> CommitPendingAsync(
+            HostProcessToolsAuthorityRow expected,
+            Guid transitionId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Recovery classification never writes.");
+
+        public Task<Result> CommitTaintedAsync(
+            HostProcessToolsAuthorityRow expected,
+            Guid transitionId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Recovery classification never writes.");
+
+        public Task<Result> CompensateToCleanAsync(
+            HostProcessToolsAuthorityRow expected,
+            Guid transitionId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Recovery classification never writes.");
     }
 }

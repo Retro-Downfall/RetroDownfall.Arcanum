@@ -538,10 +538,13 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     /// without ever leaving the retained handle. They are not one atomic step: when the second fails,
     /// the first is undone with a third no-replace rename before returning, so a live process never
     /// leaves the canonical name empty. <see cref="ErrorCodes.Covenant.Unavailable"/> then means the
-    /// canonical file is back and the working file is still unpublished. When the undo fails too the
-    /// result is <see cref="ErrorCodes.Data.RecoveryRequired"/> and the caller must keep the working
-    /// file, because recovery restores the retained predecessor and may still adopt it; a crash between
-    /// the renames leaves the same shape.
+    /// working file is still unpublished, and normally that the canonical file is back. The one
+    /// exception is a first rename that landed while only its parent revalidation failed: the
+    /// predecessor is then at the previous name with no canonical file, exactly the shape a crash
+    /// between the renames leaves, and the caller's pre-publication cleanup removing the unpublished
+    /// working file leaves recovery to restore the predecessor as it does after that crash. When the
+    /// undo fails the result is <see cref="ErrorCodes.Data.RecoveryRequired"/> and the caller must keep
+    /// the working file, because recovery restores the retained predecessor and may still adopt it.
     /// </remarks>
     internal static Result<GrimoireOfflineTransitionExchangeResult> ExchangeByNoReplaceRenames(
         IGrimoireOfflineTransitionJournalFilePrimitives primitives,

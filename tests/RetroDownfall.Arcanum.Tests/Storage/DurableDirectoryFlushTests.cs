@@ -72,6 +72,55 @@ public sealed partial class DurableDirectoryFlushTests
             descriptor => Record(calls, "fsync", descriptor, 0)));
     }
 
+    /// <summary>
+    /// The decision above is only as good as what production feeds it: the macOS flag and the
+    /// <c>fcntl</c> command. <c>F_FULLFSYNC</c> is 51 in macOS <c>fcntl.h</c>, and the full barrier is
+    /// issued exactly on macOS.
+    /// </summary>
+    [Fact]
+    public void The_production_binding_issues_full_fsync_with_the_header_command_exactly_on_macos()
+    {
+        Assert.Equal(51, DurableDirectoryFlush.MacFullFsyncCommand);
+
+        Assert.Equal(OperatingSystem.IsMacOS(), DurableDirectoryFlush.ProductionCalls.FullFsyncHost);
+    }
+
+    /// <summary>
+    /// The real <c>fcntl(F_FULLFSYNC)</c> succeeds on a directory descriptor on this Mac's filesystem,
+    /// so the barrier reaches the full flush rather than its <c>fsync</c> fallback, and refuses a closed
+    /// descriptor rather than reporting success.
+    /// </summary>
+    [SkippableFact]
+    public void The_real_full_fsync_succeeds_on_a_directory_descriptor_on_macos()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "F_FULLFSYNC is the macOS barrier.");
+
+        string directory = Directory.CreateTempSubdirectory("arcanum-full-fsync-").FullName;
+
+        try
+        {
+            Assert.True(FileHandleIdentityInterop.TryOpenDirectoryMetadata(
+                directory,
+                out SafeFileHandle handle,
+                out _));
+
+            using (handle)
+            {
+                int descriptor = handle.DangerousGetHandle().ToInt32();
+
+                Assert.Equal(0, DurableDirectoryFlush.ProductionCalls.FullFsync(descriptor));
+
+                Assert.Equal(0, DurableDirectoryFlush.ProductionCalls.Fsync(descriptor));
+            }
+
+            Assert.Equal(-1, DurableDirectoryFlush.ProductionCalls.FullFsync(-1));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [Fact]
     public void The_real_barrier_flushes_a_directory_on_this_host()
     {

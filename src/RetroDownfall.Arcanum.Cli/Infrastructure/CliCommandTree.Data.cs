@@ -46,7 +46,7 @@ internal static partial class CliCommandTree
 
         Command verify = BuildWorkerCommand(
             "verify",
-            "Verify metadata, envelope authentication, plaintext length, and SHA-256.",
+            "Verify metadata, envelope authentication, plaintext length, and SHA-256, and report a version-1 envelope as outdated until migrate upgrades it.",
             (first, second, cancellationToken) => encryptionHandler.Value.Verify(first, second, cancellationToken));
 
         Command rotate = BuildWorkerCommand(

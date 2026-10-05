@@ -1266,7 +1266,11 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
         if (restored.IsFailure)
         {
-            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+            // An outage opening the parent comes before the rename, so nothing changed and the next
+            // start converges the same shape. Anything else is evidence for recovery.
+            return restored.Error.Code == ErrorCodes.Covenant.Unavailable
+                ? Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(restored.Error)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
         }
 
         return await RecoverAsync(heldInstallationLock, guardedDirectory, CancellationToken.None)

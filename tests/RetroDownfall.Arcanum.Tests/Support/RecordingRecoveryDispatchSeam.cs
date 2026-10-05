@@ -67,6 +67,12 @@ internal sealed class RecordingRecoveryDispatchSeam(
     {
         steps.Add("marker");
 
+        if (failAt == "marker-unavailable")
+        {
+            return Result<HostProcessToolsRecoveryMarkerSnapshot>.Failure(
+                new Error(ErrorCodes.Covenant.Unavailable, "Recording seam marker outage."));
+        }
+
         return failAt is "marker" or "marker-terminal"
             ? Result<HostProcessToolsRecoveryMarkerSnapshot>.Failure(Refusal)
             : new HostProcessToolsRecoveryMarkerSnapshot(

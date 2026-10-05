@@ -91,13 +91,22 @@ internal static partial class DurableDirectoryFlush
         }
     }
 
+    /// <summary>
+    /// The native calls the production barrier issues on this host, named so a test can pin the
+    /// binding itself and not only the decision below.
+    /// </summary>
+    internal static DirectoryBarrierCalls ProductionCalls { get; } = new(
+        OperatingSystem.IsMacOS(),
+        static target => Fcntl(target, MacFullFsyncCommand),
+        static target => Fsync(target));
+
     /// <summary>The production barrier for one descriptor on this host.</summary>
     internal static bool TryFlushDescriptor(int descriptor) =>
         TryFlushDescriptor(
             descriptor,
-            OperatingSystem.IsMacOS(),
-            static target => Fcntl(target, MacFullFsyncCommand),
-            static target => Fsync(target));
+            ProductionCalls.FullFsyncHost,
+            ProductionCalls.FullFsync,
+            ProductionCalls.Fsync);
 
     /// <summary>
     /// The barrier's decision with both native calls supplied, so a test on any host can pin what the
@@ -132,3 +141,9 @@ internal static partial class DurableDirectoryFlush
     [LibraryImport("libc", EntryPoint = "fsync", SetLastError = true)]
     private static partial int Fsync(int descriptor);
 }
+
+/// <summary>Whether this host issues <c>F_FULLFSYNC</c>, and the two native calls the barrier makes.</summary>
+internal sealed record DirectoryBarrierCalls(
+    bool FullFsyncHost,
+    Func<int, int> FullFsync,
+    Func<int, int> Fsync);

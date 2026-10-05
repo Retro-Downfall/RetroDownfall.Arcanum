@@ -324,6 +324,94 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, loaded.Error.Code);
     }
 
+    /// <summary>
+    /// A catalog another connection holds exclusively is an outage, not authority that disagrees with
+    /// the journal: the identity read meets SQLITE_BUSY and the start is retryable once it clears.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_catalog_during_the_identity_read_is_an_outage_not_manual_recovery()
+    {
+        GrimoireOfflineTransitionRecoveryEvidence evidence = LockedCatalogEvidence();
+
+        await using ExclusivelyLockedCatalog locked = await ExclusivelyLockedCatalog.CreateAsync(
+            evidence.InstallationId,
+            Token);
+
+        Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
+            .LoadAsync(_lock!, _root, locked.RecoveryConnection, evidence, PermittedHostTools.Instance, Token);
+
+        Assert.True(loaded.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, loaded.Error.Code);
+    }
+
+    /// <summary>
+    /// The launch-row and canonical-state reads that follow the identity check answer the same busy
+    /// catalog the same way, rather than as a refusal or an escaping exception.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_catalog_during_the_launch_row_or_canonical_state_read_is_an_outage()
+    {
+        GrimoireOfflineTransitionRecoveryEvidence evidence = LockedCatalogEvidence();
+
+        await using ExclusivelyLockedCatalog locked = await ExclusivelyLockedCatalog.CreateAsync(
+            evidence.InstallationId,
+            Token);
+
+        Result<CovenantRecoveryAuthorityBootstrapper.LaunchRow> row =
+            await CovenantRecoveryAuthorityBootstrapper.ReadLaunchRowAsync(
+                locked.RecoveryConnection,
+                evidence.Binding.OperationId,
+                Token);
+
+        Assert.True(row.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, row.Error.Code);
+
+        Result<CovenantOfflineTransitionSourceState> observed =
+            await CovenantRecoveryAuthorityBootstrapper.ReadObservedStateAsync(
+                locked.RecoveryConnection,
+                Token);
+
+        Assert.True(observed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, observed.Error.Code);
+    }
+
+    /// <summary>
+    /// The canonical-state read answers every failure that is not an outage with the same refusal
+    /// as its sibling identity and launch-row reads, rather than letting the exception escape the pass.
+    /// </summary>
+    [Fact]
+    public async Task A_canonical_state_read_that_fails_without_an_outage_is_the_refusal()
+    {
+        SqliteNativeRuntime.Instance.Initialize();
+
+        string directory = Directory.CreateTempSubdirectory("arcanum-authority-state-").FullName;
+
+        try
+        {
+            await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(directory, "no-state.db"),
+                Pooling = false,
+            }.ToString());
+
+            await connection.OpenAsync(Token);
+
+            Result<CovenantOfflineTransitionSourceState> observed =
+                await CovenantRecoveryAuthorityBootstrapper.ReadObservedStateAsync(connection, Token);
+
+            Assert.True(observed.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, observed.Error.Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [SkippableFact]
     public async Task An_unpermitted_host_tools_policy_refuses_rather_than_warning()
     {
@@ -629,6 +717,30 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         _ = command.Parameters.Add(parameter);
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(Token));
+    }
+
+    private static GrimoireOfflineTransitionRecoveryEvidence LockedCatalogEvidence()
+    {
+        CovenantDigest digest = new(Convert.FromHexString(new string('a', 64)));
+
+        return new GrimoireOfflineTransitionRecoveryEvidence(
+            new GrimoireOfflineTransitionBinding(
+                Guid.Parse("11111111-1111-4111-8111-111111111111"),
+                GrimoireOfflineTransitionKind.CovenantReset,
+                PayloadVersion: 1,
+                SlotEpoch: 1,
+                digest,
+                Guid.Parse("22222222-2222-4222-8222-222222222222"),
+                Guid.Parse("33333333-3333-4333-8333-333333333333"),
+                new GrimoireOfflineTransitionEpochTuple(1, 1, 1),
+                new GrimoireOfflineTransitionEpochTuple(2, 2, 2),
+                digest,
+                ExpectedDatabaseOperationRevision: 2,
+                ParentReceiptBindingDigest: null),
+            Guid.Parse("44444444-4444-4444-8444-444444444444"),
+            SlotEpoch: 1,
+            Revision: 3,
+            digest);
     }
 
     private static void RequireSqlCipher() =>

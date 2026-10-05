@@ -32,7 +32,6 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection("ProcessEnvironment")]
 public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyncLifetime
 {
-
     private readonly TempWorkspace _workspace = new();
 
     public Task InitializeAsync() => _workspace.InitializeAsync();
@@ -42,7 +41,6 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
     [Fact]
     public async Task An_active_journal_is_resumed_and_the_start_carries_on()
     {
-
         string root = _workspace.CreateSubdir("host-resume");
 
         RecordingTransitionRecovery recovery = new(
@@ -61,13 +59,11 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
             "An offline Grimoire transition is active",
             failure.Message,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_transition_that_could_not_be_finished_refuses_the_start()
     {
-
         string root = _workspace.CreateSubdir("host-refuse");
 
         RecordingTransitionRecovery recovery = new(
@@ -84,7 +80,6 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
             "An offline Grimoire transition is active",
             failure.Message,
             StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -97,7 +92,6 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
     [Fact]
     public async Task A_host_without_the_resuming_pass_still_refuses()
     {
-
         string root = _workspace.CreateSubdir("host-uncomposed");
 
         InvalidOperationException failure =
@@ -108,14 +102,51 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
             "An offline Grimoire transition is active",
             failure.Message,
             StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// A pair that cannot read its own evidence refuses the start before the transition pass runs.
+    /// </summary>
+    /// <remarks>
+    /// The pair reads the transition journal on the same guarded root and under the same held lock as
+    /// the terminal-suffix finisher. This ordering is what keeps a journal location that persistently
+    /// cannot be resolved from first reaching the finisher, whose answer to it is the retryable outage.
+    /// </remarks>
+    [Fact]
+    public async Task A_pair_that_cannot_read_its_evidence_refuses_before_the_transition_pass_runs()
+    {
+        string root = _workspace.CreateSubdir("host-pair-unavailable");
+
+        RecordingTransitionRecovery recovery = new(
+            Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Success(
+                GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed));
+
+        InvalidOperationException failure =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => Host(
+                        root,
+                        recovery,
+                        new UnreadableEvidenceStartupRecovery())
+                    .StartAsync(CancellationToken.None));
+
+        Assert.False(recovery.Called);
+
+        Assert.Contains(
+            "Installation reset recovery state could not be read safely",
+            failure.Message,
+            StringComparison.Ordinal);
     }
 
     private static GrimoireDatabaseHostedService Host(
         string root,
-        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery)
-    {
+        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery) =>
+        Host(root, transitionRecovery, new ActiveJournalStartupRecovery());
 
+    private static GrimoireDatabaseHostedService Host(
+        string root,
+        IGrimoireOfflineTransitionStartupRecovery? transitionRecovery,
+        IInstallationResetStartupRecovery startupRecovery)
+    {
         ServiceCollection services = new();
 
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
@@ -128,17 +159,15 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
             new GrimoireDbPassphraseSource(),
             root,
             new InstallationResetMaintenanceLockAccessor(),
-            new ActiveJournalStartupRecovery(),
+            startupRecovery,
             apiAdmission: null,
             startupCoordination: null,
             transitionRecovery);
-
     }
 
     /// <summary>A pair resolution that always reports one standalone transition in flight.</summary>
     private sealed class ActiveJournalStartupRecovery : IInstallationResetStartupRecovery
     {
-
         public Task<Result<InstallationResetStartupRecoveryState>> RecoverBeforeBootstrapAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default) =>
@@ -149,14 +178,25 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
                         ExpectedInstallationId: null,
                         IsLegacyV1: false,
                         InstallationResetNestedTransitionEvidenceOutcome.StandaloneTransition)));
+    }
 
+    /// <summary>A pair whose transition-journal read meets an outage.</summary>
+    private sealed class UnreadableEvidenceStartupRecovery : IInstallationResetStartupRecovery
+    {
+        public Task<Result<InstallationResetStartupRecoveryState>> RecoverBeforeBootstrapAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                Result<InstallationResetStartupRecoveryState>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.Unavailable,
+                        "The transition journal filesystem capability is unavailable.")));
     }
 
     private sealed class RecordingTransitionRecovery(
         Result<GrimoireOfflineTransitionStartupRecoveryOutcome> answer)
         : IGrimoireOfflineTransitionStartupRecovery
     {
-
         internal bool Called { get; private set; }
 
         public Task<Result<GrimoireOfflineTransitionStartupRecoveryOutcome>> RecoverBeforeBootstrapAsync(
@@ -167,15 +207,11 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
             GrimoireOfflineTransitionRecoveryEvidence? journal,
             CancellationToken cancellationToken)
         {
-
             Called = true;
 
             heldInstallationLock.AssertHeldFor(guardedDirectory);
 
             return Task.FromResult(answer);
-
         }
-
     }
-
 }

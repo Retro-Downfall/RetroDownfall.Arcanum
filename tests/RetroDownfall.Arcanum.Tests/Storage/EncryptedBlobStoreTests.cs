@@ -379,6 +379,59 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         await Assert.ThrowsAnyAsync<CryptographicException>(() => reader.CopyToAsync(output));
     }
 
+    // `verify` is read-only, so it cannot upgrade a version-1 envelope, but it must not call one valid
+    // either: an operator would get no signal that unbound envelopes remain. It reports the envelope as
+    // outdated, which fails the pass, until `migrate` re-encrypts it.
+    [Fact]
+    public async Task Verify_reports_a_v1_envelope_as_outdated_until_migrate_upgrades_it()
+    {
+        const int chunkSize = 32;
+        byte[] key = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        byte[] plaintext = RandomNumberGenerator.GetBytes(80);
+        string path = Path.Combine(_root, "legacy-v1-verify");
+        await File.WriteAllBytesAsync(
+            path,
+            EncryptedBlobCompatibilityTests.BuildVersion1Envelope(
+                key,
+                plaintext,
+                chunkSize,
+                EncryptedBlobPurpose.UploadedFile));
+        EncryptedBlobStore store = CreateStore(chunkSize, key);
+        EncryptedBlobDescriptor legacy = await store.InspectAsync(
+            path,
+            EncryptedBlobPurpose.UploadedFile,
+            verifyAllChunks: true);
+        BlobEncryptionCandidate candidate = new(
+            BlobEncryptionRecordKind.UploadedFile,
+            "legacy-v1-verify",
+            path,
+            EncryptedBlobPurpose.UploadedFile,
+            plaintext.Length,
+            Convert.ToHexString(SHA256.HashData(plaintext)),
+            EncryptedBlobFormat.LegacyVersion1,
+            legacy.KeyId);
+        byte[] before = await File.ReadAllBytesAsync(path);
+        RecordingMetadataStore metadata = new();
+        BlobEncryptionFileProcessor processor = new(metadata, store);
+
+        BlobEncryptionVerificationResult outdated = await processor.VerifyAsync(candidate);
+
+        Assert.Equal(BlobEncryptionVerificationIssue.OutdatedEnvelopeVersion, outdated.Issue);
+        Assert.False(outdated.IsValid);
+        Assert.Equal(before, await File.ReadAllBytesAsync(path));
+        Assert.Empty(metadata.Updated);
+
+        BlobEncryptionFileResult migrated = await processor.MigrateAsync(candidate);
+
+        BlobEncryptionVerificationResult current = await processor.VerifyAsync(candidate with
+        {
+            EncryptionVersion = migrated.Descriptor.Version,
+            EncryptionKeyId = migrated.Descriptor.KeyId,
+        });
+
+        Assert.Equal(BlobEncryptionVerificationIssue.None, current.Issue);
+    }
+
     // The chunk counter is the low four bytes of every chunk nonce; a blob that needed a counter value
     // past its range would repeat a nonce under the same key. The writer refuses it before reading a
     // byte of plaintext or creating anything on disk.
