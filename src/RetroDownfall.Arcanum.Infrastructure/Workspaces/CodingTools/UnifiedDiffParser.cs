@@ -50,7 +50,6 @@ internal sealed record UnifiedDiffParseResult(
 
 internal static class UnifiedDiffParser
 {
-
     private static readonly UTF8Encoding StrictUtf8 = new(
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
@@ -60,7 +59,6 @@ internal static class UnifiedDiffParser
         WorkspacePatchSettings settings,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -101,7 +99,6 @@ internal static class UnifiedDiffParser
         {
             return Failure(exception.Code, exception.Message);
         }
-
     }
 
     private static UnifiedDiffParseResult Failure(
@@ -115,7 +112,6 @@ internal static class UnifiedDiffParser
 
     private sealed class Parser
     {
-
         private readonly IReadOnlyList<string> _lines;
 
         private readonly WorkspacePatchSettings _settings;
@@ -129,7 +125,6 @@ internal static class UnifiedDiffParser
             WorkspacePatchSettings settings,
             CancellationToken cancellationToken)
         {
-
             _settings = settings;
 
             _cancellationToken = cancellationToken;
@@ -137,12 +132,10 @@ internal static class UnifiedDiffParser
             _lines = SplitLogicalLines(
                 patch,
                 cancellationToken);
-
         }
 
         internal UnifiedDiffParseResult Parse()
         {
-
             FileBuilder? current = null;
 
             for (int index = 0; index < _lines.Count;)
@@ -301,12 +294,10 @@ internal static class UnifiedDiffParser
                 Manifest: manifest,
                 Code: null,
                 Message: null);
-
         }
 
         private UnifiedDiffHunk ParseHunk(ref int index)
         {
-
             string header = _lines[index];
 
             ParseHunkHeader(
@@ -421,14 +412,12 @@ internal static class UnifiedDiffParser
                 newCount,
                 section,
                 Array.AsReadOnly(lines.ToArray()));
-
         }
 
         private void ParseMetadata(
             FileBuilder file,
             string line)
         {
-
             if (line.StartsWith("index ", StringComparison.Ordinal))
             {
                 RegisterMetadata(
@@ -449,6 +438,13 @@ internal static class UnifiedDiffParser
                     MetadataKind.NewFileMode,
                     order: 10);
                 ParsedMode mode = ParseMode(line["new file mode ".Length..]);
+
+                if (mode.UnixMode is not (RegularFileMode or ExecutableFileMode))
+                {
+                    throw Invalid(
+                        "unsupported_metadata",
+                        "A new-file mode must be 100644 or 100755; other permission bits, including setuid, setgid, sticky and write bits for group or others, are not supported.");
+                }
 
                 file.NewFileMode = mode.UnixMode;
 
@@ -531,7 +527,6 @@ internal static class UnifiedDiffParser
             throw Invalid(
                 "unsupported_metadata",
                 "The unified diff contains unsupported metadata.");
-
         }
 
         private static void RegisterMetadata(
@@ -539,7 +534,6 @@ internal static class UnifiedDiffParser
             MetadataKind kind,
             int order)
         {
-
             if (file.GitOldPath is null
                 || file.GitNewPath is null
                 || file.HasUnifiedHeaders
@@ -553,12 +547,10 @@ internal static class UnifiedDiffParser
             }
 
             file.LastMetadataOrder = order;
-
         }
 
         private void FinalizeCurrent(ref FileBuilder? current)
         {
-
             if (current is null)
             {
                 return;
@@ -569,12 +561,10 @@ internal static class UnifiedDiffParser
             _files.Add(file);
 
             current = null;
-
         }
 
         private static UnifiedDiffFile BuildFile(FileBuilder file)
         {
-
             bool hasRenameFrom = file.RenameFrom is not null;
 
             bool hasRenameTo = file.RenameTo is not null;
@@ -677,14 +667,12 @@ internal static class UnifiedDiffParser
                 operation == UnifiedDiffOperationKind.Create
                     ? file.NewFileMode
                     : null);
-
         }
 
         private static void ValidateOperationMetadata(
             FileBuilder file,
             UnifiedDiffOperationKind operation)
         {
-
             if (file.HasNewFileMode
                 && operation != UnifiedDiffOperationKind.Create)
             {
@@ -724,7 +712,6 @@ internal static class UnifiedDiffParser
                     "invalid_patch",
                     "A delete operation cannot carry create metadata.");
             }
-
         }
 
         private static void ValidateHeaderPathAgreement(
@@ -733,7 +720,6 @@ internal static class UnifiedDiffParser
             string? source,
             string? destination)
         {
-
             if (file.RenameFrom is not null
                 && file.HasUnifiedHeaders
                 && (source is null
@@ -799,12 +785,10 @@ internal static class UnifiedDiffParser
                     "path_mismatch",
                     "Git and unified file headers identify different paths.");
             }
-
         }
 
         private void ValidateManifestAliasesAndCycles()
         {
-
             ValidateRenameCycles();
 
             HashSet<string> destinations =
@@ -889,12 +873,10 @@ internal static class UnifiedDiffParser
                     topologyPaths.Add(path);
                 }
             }
-
         }
 
         private void ValidateRenameCycles()
         {
-
             Dictionary<string, string> edges =
                 new(WorkspaceRelativePath.Comparer);
 
@@ -948,14 +930,12 @@ internal static class UnifiedDiffParser
 
                 completed.UnionWith(path);
             }
-
         }
 
         private static IReadOnlyList<string> SplitLogicalLines(
             string patch,
             CancellationToken cancellationToken)
         {
-
             List<string> lines = [];
 
             int start = 0;
@@ -992,7 +972,6 @@ internal static class UnifiedDiffParser
             cancellationToken.ThrowIfCancellationRequested();
 
             return new ReadOnlyCollection<string>(lines);
-
         }
 
         private static void ParseHunkHeader(
@@ -1003,7 +982,6 @@ internal static class UnifiedDiffParser
             out int newCount,
             out string? section)
         {
-
             if (!header.StartsWith("@@ -", StringComparison.Ordinal))
             {
                 throw Invalid(
@@ -1051,7 +1029,6 @@ internal static class UnifiedDiffParser
             {
                 section = null;
             }
-
         }
 
         private static void ParseRange(
@@ -1059,7 +1036,6 @@ internal static class UnifiedDiffParser
             out int start,
             out int count)
         {
-
             int comma = range.IndexOf(',');
 
             ReadOnlySpan<char> startSpan =
@@ -1087,13 +1063,11 @@ internal static class UnifiedDiffParser
                     "invalid_hunk",
                     "A hunk range is invalid.");
             }
-
         }
 
         private static (string OldPath, string NewPath) ParseGitHeaderPaths(
             string value)
         {
-
             int index = 0;
 
             string oldPath = ParseToken(value, ref index);
@@ -1112,14 +1086,12 @@ internal static class UnifiedDiffParser
             }
 
             return (oldPath, newPath);
-
         }
 
         private static string ParseHeaderPath(
             string value,
             PathSide side)
         {
-
             string path;
 
             if (value.StartsWith('"'))
@@ -1145,12 +1117,10 @@ internal static class UnifiedDiffParser
             }
 
             return NormalizePath(path, side);
-
         }
 
         private static string ParseMetadataPath(string value)
         {
-
             if (!value.StartsWith('"'))
             {
                 return value;
@@ -1170,14 +1140,12 @@ internal static class UnifiedDiffParser
             }
 
             return path;
-
         }
 
         private static string ParseToken(
             string value,
             ref int index)
         {
-
             SkipHorizontalWhitespace(value, ref index);
 
             if (index >= value.Length)
@@ -1323,14 +1291,12 @@ internal static class UnifiedDiffParser
             throw Invalid(
                 "invalid_path",
                 "A quoted path is not terminated.");
-
         }
 
         private static string NormalizePath(
             string path,
             PathSide side)
         {
-
             if (string.Equals(path, "/dev/null", StringComparison.Ordinal))
             {
                 return null!;
@@ -1380,12 +1346,10 @@ internal static class UnifiedDiffParser
             }
 
             return normalized;
-
         }
 
         private static void ValidateIndexMetadata(string value)
         {
-
             string[] fields = value.Split(
                 ' ',
                 StringSplitOptions.RemoveEmptyEntries);
@@ -1414,12 +1378,10 @@ internal static class UnifiedDiffParser
             {
                 _ = ParseMode(fields[1]);
             }
-
         }
 
         private static bool IsHex(ReadOnlySpan<char> value)
         {
-
             if (value.Length == 0)
             {
                 return false;
@@ -1434,12 +1396,22 @@ internal static class UnifiedDiffParser
             }
 
             return true;
-
         }
+
+        private const UnixFileMode RegularFileMode =
+            UnixFileMode.UserRead
+            | UnixFileMode.UserWrite
+            | UnixFileMode.GroupRead
+            | UnixFileMode.OtherRead;
+
+        private const UnixFileMode ExecutableFileMode =
+            RegularFileMode
+            | UnixFileMode.UserExecute
+            | UnixFileMode.GroupExecute
+            | UnixFileMode.OtherExecute;
 
         private static ParsedMode ParseMode(string value)
         {
-
             if (value.Length != 6
                 || value.Any(static character =>
                     character is < '0' or > '7'))
@@ -1475,12 +1447,10 @@ internal static class UnifiedDiffParser
             }
 
             return new ParsedMode((UnixFileMode)(numeric & 0xFFF));
-
         }
 
         private static void ValidateSimilarity(string value)
         {
-
             if (!value.EndsWith('%')
                 || !int.TryParse(
                     value.AsSpan(0, value.Length - 1),
@@ -1493,7 +1463,6 @@ internal static class UnifiedDiffParser
                     "unsupported_metadata",
                     "Rename similarity metadata is malformed.");
             }
-
         }
 
         private static bool IsBinaryMarker(string line) =>
@@ -1505,13 +1474,11 @@ internal static class UnifiedDiffParser
             string value,
             ref int index)
         {
-
             while (index < value.Length
                 && value[index] is ' ' or '\t')
             {
                 index++;
             }
-
         }
 
         private static UnifiedDiffParseException Invalid(

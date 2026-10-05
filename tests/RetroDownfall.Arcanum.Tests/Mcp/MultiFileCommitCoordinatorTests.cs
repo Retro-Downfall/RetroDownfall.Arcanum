@@ -8,32 +8,26 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 [Collection("WorkspacePathPolicy")]
 public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
 {
-
     private TempWorkspace _workspace = null!;
 
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
-
     }
 
     public async Task DisposeAsync()
     {
-
         RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop
             .TryGetPathMetadataForTests = null;
 
         await _workspace.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task Commit_rejects_destinations_that_are_canonical_filesystem_aliases()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows(),
             "Case-insensitive filesystem aliasing is Mac/Windows behavior.");
@@ -60,13 +54,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal(WorkspaceCommitFailure.Validation, result.Failure);
 
         Assert.Null(result.Transaction);
-
     }
 
     [Fact]
     public async Task Commit_stages_all_inputs_then_commits_sequentially_with_observable_non_isolation()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         _workspace.WriteFile("b.txt", "b-old");
@@ -118,13 +110,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.True(cleanup.Complete);
 
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Commit_preflights_staging_capacity_before_creating_directories()
     {
-
         WorkspaceFileCommitOperation operation =
             await WriteOperationAsync(
                 "capacity/deep/new.txt",
@@ -146,13 +136,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "capacity")));
 
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Commit_failure_rolls_back_committed_steps_in_reverse_order()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         _workspace.WriteFile("b.txt", "b-old");
@@ -194,13 +182,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal("c-old", await ReadAsync("c.txt"));
 
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Commit_rechecks_each_fingerprint_and_does_not_overwrite_external_change()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         _workspace.WriteFile("b.txt", "b-old");
@@ -238,13 +224,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal("a-old", await ReadAsync("a.txt"));
 
         Assert.Equal("external", await ReadAsync("b.txt"));
-
     }
 
     [Fact]
     public async Task Commit_preserves_bom_mixed_delimiters_and_unix_mode_but_changes_mtime()
     {
-
         string path = Path.Combine(_workspace.Root, "script.txt");
 
         byte[] original =
@@ -305,13 +289,81 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         }
 
         _ = await result.Transaction!.MarkIrreversibleAsync(CancellationToken.None);
+    }
 
+    [SkippableFact]
+    public async Task Created_file_without_mode_uses_default_readable_mode()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are what this asserts.");
+
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // The mode any ordinary file creation gets here (0666 masked by the process umask).
+        string probe = _workspace.WriteFile("umask-probe.txt", "probe");
+
+        UnixFileMode defaultMode = File.GetUnixFileMode(probe);
+
+        WorkspaceFileCommitOperation operation = await WriteOperationAsync("created.txt", "created");
+
+        Assert.Null(operation.NewFileUnixMode);
+
+        WorkspaceCommitResult result = await new MultiFileCommitCoordinator(_workspace.Root)
+            .CommitAsync([operation], CancellationToken.None);
+
+        Assert.Equal(WorkspaceCommitStatus.Committed, result.Status);
+
+        Assert.Equal(
+            defaultMode,
+            File.GetUnixFileMode(Path.Combine(_workspace.Root, "created.txt")));
+
+        _ = await result.Transaction!.MarkIrreversibleAsync(CancellationToken.None);
+    }
+
+    [SkippableFact]
+    public async Task Created_file_with_an_explicit_mode_gets_exactly_that_mode()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are what this asserts.");
+
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        UnixFileMode executable =
+            UnixFileMode.UserRead
+            | UnixFileMode.UserWrite
+            | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead
+            | UnixFileMode.GroupExecute
+            | UnixFileMode.OtherRead
+            | UnixFileMode.OtherExecute;
+
+        WorkspaceFileFingerprint missing =
+            await WorkspaceFileFingerprintService.CaptureForMutationAsync(
+                _workspace.Root,
+                "run.sh",
+                CancellationToken.None);
+
+        WorkspaceCommitResult result = await new MultiFileCommitCoordinator(_workspace.Root)
+            .CommitAsync(
+                [new("run.sh", missing, Encoding.UTF8.GetBytes("#!/bin/sh\n"), executable)],
+                CancellationToken.None);
+
+        Assert.Equal(WorkspaceCommitStatus.Committed, result.Status);
+
+        Assert.Equal(
+            executable,
+            File.GetUnixFileMode(Path.Combine(_workspace.Root, "run.sh")));
+
+        _ = await result.Transaction!.MarkIrreversibleAsync(CancellationToken.None);
     }
 
     [SkippableFact]
     public async Task Staged_output_is_never_group_or_world_readable_while_it_is_written()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
@@ -319,9 +371,7 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         // AfterStagingArtifactCreated callback nested in the object initializer further down.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string path = _workspace.WriteFile("secret.env", "TOKEN=old");
@@ -338,17 +388,13 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
             {
                 AfterStagingArtifactCreated = relativePath =>
                 {
-
                     if (OperatingSystem.IsWindows())
                     {
-
                         return;
-
                     }
 
                     stagedMode ??= File.GetUnixFileMode(
                         Path.Combine(_workspace.Root, relativePath));
-
                 },
             });
 
@@ -371,13 +417,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal(ownerOnly, File.GetUnixFileMode(path));
 
         _ = await result.Transaction!.MarkIrreversibleAsync(CancellationToken.None);
-
     }
 
     [Fact]
     public async Task Rollback_incomplete_keeps_relative_recovery_artifacts_and_external_content()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         _workspace.WriteFile("b.txt", "b-old");
@@ -423,13 +467,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.All(result.Recovery.ArtifactPaths, AssertRelativePath);
 
         Assert.NotEmpty(result.Recovery.ArtifactPaths);
-
     }
 
     [Fact]
     public async Task Post_move_external_replacement_is_not_adopted_as_transaction_content()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         _workspace.WriteFile("b.txt", "b-old");
@@ -440,18 +482,14 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
             {
                 AfterDestinationMutation = context =>
                 {
-
                     if (context.Index == 0)
                     {
-
                         File.Delete(Path.Combine(_workspace.Root, "a.txt"));
 
                         File.WriteAllText(
                             Path.Combine(_workspace.Root, "a.txt"),
                             "external-after-move");
-
                     }
-
                 },
                 BeforeCommitStepAsync = (context, _) =>
                     context.Index == 1
@@ -474,13 +512,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Contains("a.txt", result.Recovery!.AffectedPaths);
 
         Assert.NotEmpty(result.Recovery.ArtifactPaths);
-
     }
 
     [Fact]
     public async Task Missing_destination_parent_replacement_invalidates_fingerprint()
     {
-
         string originalParent = _workspace.CreateSubdir("parent");
 
         WorkspaceFileFingerprint expected =
@@ -510,13 +546,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
 
         Assert.False(
             File.Exists(Path.Combine(_workspace.Root, "parent", "new.txt")));
-
     }
 
     [Fact]
     public async Task Final_create_revalidation_rejects_parent_identity_replacement()
     {
-
         string parent = _workspace.CreateSubdir("final-parent");
 
         WorkspaceFileCommitOperation operation =
@@ -528,7 +562,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
             {
                 BeforeDestinationMutation = _ =>
                 {
-
                     string displaced = Path.Combine(
                         _workspace.Root,
                         "final-parent-original");
@@ -544,7 +577,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                         staged,
                         Path.Combine(parent, Path.GetFileName(staged)),
                         overwrite: false);
-
                 },
             })
             .CommitAsync([operation], CancellationToken.None);
@@ -552,13 +584,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.NotEqual(WorkspaceCommitStatus.Committed, result.Status);
 
         Assert.False(File.Exists(Path.Combine(parent, "new.txt")));
-
     }
 
     [Fact]
     public async Task Final_create_revalidation_binds_transaction_created_parent_identity()
     {
-
         _ = _workspace.CreateSubdir("outer");
 
         string parent = Path.Combine(_workspace.Root, "outer", "generated");
@@ -574,7 +604,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
             {
                 BeforeDestinationMutation = _ =>
                 {
-
                     string displaced = Path.Combine(
                         _workspace.Root,
                         "outer",
@@ -591,7 +620,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                         staged,
                         Path.Combine(parent, Path.GetFileName(staged)),
                         overwrite: false);
-
                 },
             })
             .CommitAsync([operation], CancellationToken.None);
@@ -599,13 +627,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.NotEqual(WorkspaceCommitStatus.Committed, result.Status);
 
         Assert.False(File.Exists(Path.Combine(parent, "new.txt")));
-
     }
 
     [Fact]
     public async Task Rollback_removes_identity_matching_empty_transaction_created_directories()
     {
-
         WorkspaceFileCommitOperation[] operations =
         [
             await WriteOperationAsync("new/deep/created.txt", "created"),
@@ -629,13 +655,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal(WorkspaceCommitStatus.Failed, result.Status);
 
         Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "new")));
-
     }
 
     [Fact]
     public async Task Rollback_retains_transaction_created_directory_that_gained_external_content()
     {
-
         WorkspaceFileCommitOperation[] operations =
         [
             await WriteOperationAsync("new/deep/created.txt", "created"),
@@ -673,13 +697,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.False(File.Exists(Path.Combine(_workspace.Root, "new", "deep", "created.txt")));
 
         Assert.Contains("new", result.Recovery!.ArtifactPaths);
-
     }
 
     [Fact]
     public async Task Delete_commit_renames_to_artifact_and_rollback_restores_original()
     {
-
         _workspace.WriteFile("delete.txt", "original");
 
         WorkspaceFileCommitOperation operation = new(
@@ -728,13 +750,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal("original", await ReadAsync("delete.txt"));
 
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Delete_rename_is_journaled_before_post_rename_failure()
     {
-
         _workspace.WriteFile("delete-journal.txt", "original");
 
         WorkspaceFileCommitOperation operation = new(
@@ -759,13 +779,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Contains("delete-journal.txt", result.Recovery!.AffectedPaths);
 
         Assert.NotEmpty(result.Recovery.ArtifactPaths);
-
     }
 
     [Fact]
     public async Task Concurrent_file_replacement_during_delete_is_restored_without_overwrite()
     {
-
         _workspace.WriteFile("delete.txt", "original");
 
         WorkspaceFileCommitOperation operation = new(
@@ -784,7 +802,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                 {
                     if (context.RelativePath == "delete.txt")
                     {
-
                         string artifactPath = Path.Combine(
                             _workspace.Root,
                             context.ArtifactRelativePath.Replace(
@@ -794,7 +811,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                         File.Delete(artifactPath);
 
                         File.WriteAllText(artifactPath, "external");
-
                     }
                 },
             });
@@ -812,13 +828,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.NotEmpty(result.Recovery!.ArtifactPaths);
 
         Assert.All(result.Recovery.ArtifactPaths, AssertRelativePath);
-
     }
 
     [Fact]
     public async Task Concurrent_directory_replacement_during_cleanup_is_retained()
     {
-
         WorkspaceFileCommitOperation[] operations =
         [
             await WriteOperationAsync("new/deep/created.txt", "created"),
@@ -837,13 +851,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                 {
                     if (relativePath == "new")
                     {
-
                         string path = Path.Combine(_workspace.Root, "new");
 
                         Directory.Delete(path, recursive: false);
 
                         Directory.CreateDirectory(path);
-
                     }
                 },
             });
@@ -857,13 +869,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.True(Directory.Exists(Path.Combine(_workspace.Root, "new")));
 
         Assert.Contains("new", result.Recovery!.ArtifactPaths);
-
     }
 
     [Fact]
     public async Task External_content_added_after_directory_rename_is_restored_and_reported()
     {
-
         WorkspaceFileCommitOperation[] operations =
         [
             await WriteOperationAsync("new/created.txt", "created"),
@@ -882,7 +892,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                 {
                     if (context.RelativePath == "new")
                     {
-
                         File.WriteAllText(
                             Path.Combine(
                                 _workspace.Root,
@@ -891,7 +900,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                                     Path.DirectorySeparatorChar),
                                 "external.txt"),
                             "external");
-
                     }
                 },
             });
@@ -908,13 +916,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                 Path.Combine(_workspace.Root, "new", "external.txt")));
 
         Assert.Contains("new", result.Recovery!.ArtifactPaths);
-
     }
 
     [Fact]
     public async Task Rollback_journals_directory_rename_before_cancellation()
     {
-
         MultiFileCommitCoordinator coordinator = new(
             _workspace.Root,
             new MultiFileCommitCoordinatorOptions
@@ -951,13 +957,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                 Path.Combine(
                     _workspace.Root,
                     retained.Replace('/', Path.DirectorySeparatorChar))));
-
     }
 
     [Fact]
     public async Task Caller_cancellation_completes_rollback_then_propagates()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         _workspace.WriteFile("b.txt", "b-old");
@@ -995,13 +999,69 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal("b-old", await ReadAsync("b.txt"));
 
         Assert.Empty(ArcanumArtifacts());
+    }
 
+    [Fact]
+    public async Task Unexpected_exception_after_first_commit_step_rolls_back_and_reports_failure()
+    {
+        _workspace.WriteFile("a.txt", "a-old");
+
+        _workspace.WriteFile("b.txt", "b-old");
+
+        WorkspaceFileCommitOperation[] operations =
+        [
+            await WriteOperationAsync("a.txt", "a-new"),
+            await WriteOperationAsync("b.txt", "b-new"),
+        ];
+
+        MultiFileCommitCoordinator coordinator = new(
+            _workspace.Root,
+            new MultiFileCommitCoordinatorOptions
+            {
+                AfterCommitStepAsync = (context, _) =>
+                    context.Index == 0
+                        ? throw new NotSupportedException("A provider outside the closed exception list.")
+                        : ValueTask.CompletedTask,
+            });
+
+        WorkspaceCommitResult result = await coordinator.CommitAsync(
+            operations,
+            CancellationToken.None);
+
+        Assert.Equal(WorkspaceCommitStatus.Failed, result.Status);
+
+        Assert.Equal(WorkspaceCommitFailure.CommitFailed, result.Failure);
+
+        Assert.Null(result.Transaction);
+
+        Assert.Equal("a-old", await ReadAsync("a.txt"));
+
+        Assert.Equal("b-old", await ReadAsync("b.txt"));
+
+        Assert.Empty(ArcanumArtifacts());
+    }
+
+    [Fact]
+    public async Task Out_of_memory_after_first_commit_step_is_not_swallowed()
+    {
+        _workspace.WriteFile("a.txt", "a-old");
+
+        WorkspaceFileCommitOperation operation = await WriteOperationAsync("a.txt", "a-new");
+
+        MultiFileCommitCoordinator coordinator = new(
+            _workspace.Root,
+            new MultiFileCommitCoordinatorOptions
+            {
+                AfterCommitStepAsync = (_, _) => throw new OutOfMemoryException(),
+            });
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => coordinator.CommitAsync([operation], CancellationToken.None));
     }
 
     [Fact]
     public async Task Cancellation_immediately_after_destination_mutation_restores_original()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         WorkspaceFileCommitOperation operation = await WriteOperationAsync("a.txt", "a-new");
@@ -1021,13 +1081,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal("a-old", await ReadAsync("a.txt"));
 
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Cancellation_after_staging_artifact_creation_does_not_strand_temp()
     {
-
         WorkspaceFileCommitOperation operation = await WriteOperationAsync("new.txt", "new");
 
         using CancellationTokenSource cancellation = new();
@@ -1045,13 +1103,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.False(File.Exists(Path.Combine(_workspace.Root, "new.txt")));
 
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Concurrent_create_at_final_mutation_is_not_overwritten()
     {
-
         WorkspaceFileCommitOperation operation = await WriteOperationAsync("new.txt", "ours");
 
         MultiFileCommitCoordinator coordinator = new(
@@ -1071,13 +1127,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.NotEqual(WorkspaceCommitStatus.Committed, result.Status);
 
         Assert.Equal("external", await ReadAsync("new.txt"));
-
     }
 
     [Fact]
     public async Task Create_rename_failure_reports_affected_destination_without_claiming_artifact()
     {
-
         WorkspaceFileCommitOperation operation =
             await WriteOperationAsync("ambiguous-create.txt", "transaction");
 
@@ -1097,13 +1151,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
             result.Recovery!.AffectedPaths);
 
         Assert.Empty(result.Recovery.ArtifactPaths);
-
     }
 
     [Fact]
     public async Task Concurrent_change_at_final_rollback_is_not_overwritten()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         _workspace.WriteFile("b.txt", "b-old");
@@ -1120,11 +1172,9 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                 {
                     if (context.Index == 0)
                     {
-
                         File.WriteAllText(
                             Path.Combine(_workspace.Root, "a.txt"),
                             "external-during-rollback");
-
                     }
                 },
             });
@@ -1141,13 +1191,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal("external-during-rollback", await ReadAsync("a.txt"));
 
         Assert.NotEmpty(result.Recovery!.ArtifactPaths);
-
     }
 
     [Fact]
     public async Task Created_directory_with_unavailable_identity_is_retained_and_reported()
     {
-
         WorkspaceFileCommitOperation operation =
             await WriteOperationAsync("unverified/created.txt", "new");
 
@@ -1169,13 +1217,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Contains("unverified", result.Recovery!.ArtifactPaths);
 
         Assert.All(result.Recovery.ArtifactPaths, AssertRelativePath);
-
     }
 
     [Fact]
     public async Task Concurrent_required_directory_create_is_not_transaction_owned()
     {
-
         WorkspaceFileCommitOperation operation =
             await WriteOperationAsync("concurrent/created.txt", "transaction");
 
@@ -1185,12 +1231,10 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
             {
                 BeforeRequiredDirectoryMove = relativePath =>
                 {
-
                     Assert.Equal("concurrent", relativePath);
 
                     Directory.CreateDirectory(
                         Path.Combine(_workspace.Root, relativePath));
-
                 },
             })
             .CommitAsync([operation], CancellationToken.None);
@@ -1202,13 +1246,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.False(
             File.Exists(
                 Path.Combine(_workspace.Root, "concurrent", "created.txt")));
-
     }
 
     [Fact]
     public async Task Irreversible_cleanup_repeats_the_same_incomplete_result()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         WorkspaceCommitResult commit = await new MultiFileCommitCoordinator(_workspace.Root)
@@ -1233,13 +1275,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.False(first.Complete);
 
         Assert.Equal(first, second);
-
     }
 
     [Fact]
     public async Task Irreversible_cleanup_journals_rename_before_cancellation()
     {
-
         _workspace.WriteFile("cleanup-journal.txt", "before");
 
         WorkspaceCommitResult commit = await new MultiFileCommitCoordinator(
@@ -1271,13 +1311,11 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
                 Path.Combine(
                     _workspace.Root,
                     retained.Replace('/', Path.DirectorySeparatorChar))));
-
     }
 
     [Fact]
     public async Task Successful_commit_remains_reversible_until_marked_irreversible()
     {
-
         _workspace.WriteFile("a.txt", "a-old");
 
         WorkspaceFileCommitOperation operation = await WriteOperationAsync("a.txt", "a-new");
@@ -1298,7 +1336,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         Assert.Equal("a-old", await ReadAsync("a.txt"));
 
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
@@ -1326,7 +1363,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
         string relativePath,
         string content)
     {
-
         WorkspaceFileFingerprint fingerprint =
             await WorkspaceFileFingerprintService.CaptureForMutationAsync(
                 _workspace.Root,
@@ -1337,7 +1373,6 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
             relativePath,
             fingerprint,
             Encoding.UTF8.GetBytes(content));
-
     }
 
     private Task<string> ReadAsync(string relativePath) =>
@@ -1350,13 +1385,10 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
 
     private static void AssertRelativePath(string path)
     {
-
         Assert.False(Path.IsPathRooted(path));
 
         Assert.DoesNotContain("..", path, StringComparison.Ordinal);
 
         Assert.DoesNotContain('\\', path);
-
     }
-
 }
