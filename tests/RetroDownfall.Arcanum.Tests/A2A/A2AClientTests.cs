@@ -432,6 +432,27 @@ public sealed class A2AClientTests
     }
 
     [Fact]
+    public async Task DispatchSendingAsync_MalformedAgentCardBody_ReturnsAgentCardInvalidInsteadOfThrowing()
+    {
+        using RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{ this is not json", System.Text.Encoding.UTF8, "application/json"),
+        }));
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        // The card is remote-authored: a body that is not JSON is an invalid card, not an exception out of
+        // the tool call.
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentCardInvalid, result.Error.Code);
+    }
+
+    [Fact]
     public async Task DispatchSendingAsync_OversizedCard_IsRejected()
     {
         AgentCard card = BuildFakeCard();
