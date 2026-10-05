@@ -534,7 +534,7 @@ Maintains the legacy operator-owned key/value MageSettings store. Lore is distin
 
 Manage the Arcanum background daemon.
 
-Controls the OS background service and the server-owned Unseen Servant scheduler. `jobs`, `initiative`, and `alert` require a running authenticated host. Alert defaults are title `Arcanum alert`, severity `Warning`, and source `cli:daemon alert`.
+Controls the OS background service and the server-owned Unseen Servant scheduler. `install`, `uninstall`, and `status` drive the platform's service manager (`launchctl`, `systemctl --user`, `sc.exe`) through one shared runner that waits at most 30 seconds for each helper invocation: a helper that has not finished by then is killed with its whole process tree and the verb fails with `DaemonProcessTimeout` instead of hanging, and cancelling the command (exit `130`) kills it the same way. `jobs`, `initiative`, and `alert` require a running authenticated host. Alert defaults are title `Arcanum alert`, severity `Warning`, and source `cli:daemon alert`.
 
 | Command | Explanation | Additional command options |
 |---|---|---|

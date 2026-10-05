@@ -1,5 +1,3 @@
-using System.ComponentModel;
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
@@ -14,11 +12,26 @@ public sealed class MacOsDaemonManager : IDaemonManager
 {
     internal const string LaunchdLabel = "com.retrodownfall.arcanum";
     internal const string NotLoadedMessage = "Daemon is not currently loaded";
-    private static readonly string PlistPath = Path.Combine(
+    private static readonly string DefaultPlistPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         "Library",
         "LaunchAgents",
         "com.retrodownfall.arcanum.plist");
+    private readonly IDaemonProcessRunner _runner;
+
+    private readonly string _plistPath;
+
+    public MacOsDaemonManager()
+        : this(DaemonProcessRunner.Default, DefaultPlistPath)
+    {
+    }
+
+    internal MacOsDaemonManager(IDaemonProcessRunner runner, string plistPath)
+    {
+        _runner = runner;
+        _plistPath = plistPath;
+    }
+
     public async Task<Result> InstallAsync(CancellationToken cancellationToken)
     {
         Result<string> uidResult = await TryResolveUidAsync(cancellationToken).ConfigureAwait(false);
@@ -36,9 +49,9 @@ public sealed class MacOsDaemonManager : IDaemonManager
         }
 
         string guiDomain = string.Create(CultureInfo.InvariantCulture, $"gui/{uid}");
-        DaemonProcessOutcome bootstrapOutcome = await RunProcessAsync(
+        DaemonProcessOutcome bootstrapOutcome = await _runner.RunAsync(
             "/bin/launchctl",
-            ["bootstrap", guiDomain, PlistPath],
+            ["bootstrap", guiDomain, _plistPath],
             cancellationToken).ConfigureAwait(false);
         if (bootstrapOutcome.FatalError is { } fatalBootstrap)
         {
@@ -60,7 +73,7 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
     public async Task<Result> UninstallAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(PlistPath))
+        if (!File.Exists(_plistPath))
         {
             return Result.Success();
         }
@@ -72,9 +85,9 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
         string uid = uidResult.Value;
         string guiDomain = string.Create(CultureInfo.InvariantCulture, $"gui/{uid}");
-        DaemonProcessOutcome bootoutOutcome = await RunProcessAsync(
+        DaemonProcessOutcome bootoutOutcome = await _runner.RunAsync(
             "/bin/launchctl",
-            ["bootout", guiDomain, PlistPath],
+            ["bootout", guiDomain, _plistPath],
             cancellationToken).ConfigureAwait(false);
         if (bootoutOutcome.FatalError is { } fatalBootout)
         {
@@ -93,9 +106,9 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
         try
         {
-            if (File.Exists(PlistPath))
+            if (File.Exists(_plistPath))
             {
-                File.Delete(PlistPath);
+                File.Delete(_plistPath);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -108,7 +121,7 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
     public async Task<Result<string>> GetStatusAsync(CancellationToken cancellationToken)
     {
-        DaemonProcessOutcome listOutcome = await RunProcessAsync(
+        DaemonProcessOutcome listOutcome = await _runner.RunAsync(
             "/bin/launchctl",
             ["list", LaunchdLabel],
             cancellationToken).ConfigureAwait(false);
@@ -171,9 +184,9 @@ public sealed class MacOsDaemonManager : IDaemonManager
             || stderr.Contains("Permission denied", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<Result<string>> TryResolveUidAsync(CancellationToken cancellationToken)
+    private async Task<Result<string>> TryResolveUidAsync(CancellationToken cancellationToken)
     {
-        DaemonProcessOutcome idOutcome = await RunProcessAsync(
+        DaemonProcessOutcome idOutcome = await _runner.RunAsync(
             "/usr/bin/id",
             ["-u"],
             cancellationToken).ConfigureAwait(false);
@@ -197,9 +210,9 @@ public sealed class MacOsDaemonManager : IDaemonManager
         return Result<string>.Success(trimmed);
     }
 
-    private static async Task<Result> WritePlistAtomicallyAsync(string plistXml, CancellationToken cancellationToken)
+    private async Task<Result> WritePlistAtomicallyAsync(string plistXml, CancellationToken cancellationToken)
     {
-        string? directory = Path.GetDirectoryName(PlistPath);
+        string? directory = Path.GetDirectoryName(_plistPath);
         if (string.IsNullOrEmpty(directory))
         {
             return Result.Failure(new Error("DaemonPlistPath", "Invalid LaunchAgents plist path."));
@@ -209,7 +222,7 @@ public sealed class MacOsDaemonManager : IDaemonManager
         try
         {
             await File.WriteAllTextAsync(tempPath, plistXml, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
-            File.Move(tempPath, PlistPath, overwrite: true);
+            File.Move(tempPath, _plistPath, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -281,53 +294,5 @@ public sealed class MacOsDaemonManager : IDaemonManager
         string trimmed = stderr.Trim();
         string suffix = string.IsNullOrEmpty(trimmed) ? $"Exit code {exitCode}." : trimmed;
         return new Error(code, $"{message} {suffix}".Trim());
-    }
-
-    /// <summary>
-    /// Runs a launchd helper binary. A binary that cannot be started at all is reported as
-    /// <see cref="DaemonProcessOutcome.FatalError"/> rather than thrown, so every caller stays inside
-    /// the <see cref="Result"/> contract.
-    /// </summary>
-    internal static async Task<DaemonProcessOutcome> RunProcessAsync(
-        string fileName,
-        string[] arguments,
-        CancellationToken cancellationToken)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = fileName,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        foreach (string argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process();
-        process.StartInfo = startInfo;
-        try
-        {
-            process.Start();
-        }
-        catch (Exception ex) when (ex is Win32Exception or UnauthorizedAccessException)
-        {
-            return new DaemonProcessOutcome(-1, string.Empty, string.Empty, StartError(fileName, ex));
-        }
-
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        Task exitTask = process.WaitForExitAsync(cancellationToken);
-        await Task.WhenAll(exitTask, stdoutTask, stderrTask).ConfigureAwait(false);
-        string stdout = await stdoutTask.ConfigureAwait(false);
-        string stderr = await stderrTask.ConfigureAwait(false);
-        return new DaemonProcessOutcome(process.ExitCode, stdout, stderr, null);
-    }
-
-    private static Error StartError(string fileName, Exception ex)
-    {
-        return new Error("DaemonProcessStart", $"Could not start '{fileName}'. {ex.Message}");
     }
 }

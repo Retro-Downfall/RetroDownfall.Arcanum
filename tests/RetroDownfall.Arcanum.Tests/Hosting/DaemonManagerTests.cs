@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 public sealed class DaemonManagerTests
 {
-
     [Theory]
     [InlineData("        STATE              : 4  RUNNING", 4, true)]
     [InlineData("STATE : 1", 1, true)]
@@ -16,7 +15,6 @@ public sealed class DaemonManagerTests
     [InlineData("STATE : abc", 0, false)]
     public void TryParseServiceStateCode_ParsesExpectedStateCode(string stdout, int expectedCode, bool expectedResult)
     {
-
         MethodInfo? method = typeof(WindowsDaemonManager).GetMethod(
             "TryParseServiceStateCode",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -30,7 +28,6 @@ public sealed class DaemonManagerTests
         Assert.Equal(expectedResult, result);
 
         Assert.Equal(expectedCode, args[1]);
-
     }
 
     [Theory]
@@ -40,7 +37,6 @@ public sealed class DaemonManagerTests
     [InlineData("/path\"with\"quote/arcanum", "\"/path\\\"with\\\"quote/arcanum\" serve")]
     public void FormatExecStartArgument_FormatsExpectedValue(string executablePath, string expected)
     {
-
         MethodInfo? method = typeof(LinuxDaemonManager).GetMethod(
             "FormatExecStartArgument",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -50,51 +46,11 @@ public sealed class DaemonManagerTests
         string result = (string)method.Invoke(null, [executablePath])!;
 
         Assert.Equal(expected, result);
-
-    }
-
-    [Fact]
-    public async Task LinuxRunProcessAsync_MissingExecutable_ReturnsFatalErrorInsteadOfThrowing()
-    {
-
-        string missing = "arcanum-missing-" + Guid.NewGuid().ToString("N");
-
-        DaemonProcessOutcome outcome = await LinuxDaemonManager.RunProcessAsync(
-            missing,
-            [],
-            CancellationToken.None);
-
-        Assert.True(outcome.FatalError.HasValue);
-
-        Assert.Equal("DaemonProcessStart", outcome.FatalError.Value.Code);
-
-        Assert.Contains(missing, outcome.FatalError.Value.Message, StringComparison.Ordinal);
-
-    }
-
-    [Fact]
-    public async Task MacOsRunProcessAsync_MissingExecutable_ReturnsFatalErrorInsteadOfThrowing()
-    {
-
-        string missing = "arcanum-missing-" + Guid.NewGuid().ToString("N");
-
-        DaemonProcessOutcome outcome = await MacOsDaemonManager.RunProcessAsync(
-            missing,
-            [],
-            CancellationToken.None);
-
-        Assert.True(outcome.FatalError.HasValue);
-
-        Assert.Equal("DaemonProcessStart", outcome.FatalError.Value.Code);
-
-        Assert.Contains(missing, outcome.FatalError.Value.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void FormatStateMessage_RunningState_ReturnsRunningMessage()
     {
-
         MethodInfo? method = typeof(WindowsDaemonManager).GetMethod(
             "FormatStateMessage",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -104,13 +60,11 @@ public sealed class DaemonManagerTests
         string result = (string)method.Invoke(null, [4])!;
 
         Assert.Equal("ArcanumDaemon is running.", result);
-
     }
 
     [Fact]
     public void FormatStateMessage_UnexpectedState_ReturnsUnexpectedMessage()
     {
-
         MethodInfo? method = typeof(WindowsDaemonManager).GetMethod(
             "FormatStateMessage",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -122,7 +76,5 @@ public sealed class DaemonManagerTests
         Assert.Equal(
             string.Create(CultureInfo.InvariantCulture, $"ArcanumDaemon reports an unexpected service state code {99}."),
             result);
-
     }
-
 }
