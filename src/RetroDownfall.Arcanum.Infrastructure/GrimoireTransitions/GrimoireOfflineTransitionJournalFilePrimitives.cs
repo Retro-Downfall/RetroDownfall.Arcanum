@@ -22,18 +22,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
 internal enum GrimoireOfflineTransitionPreviousRetention : byte
 {
-
     Working,
 
     Previous,
-
 }
 internal readonly record struct GrimoireOfflineTransitionExchangeResult(
     GrimoireOfflineTransitionPreviousRetention Retention);
 
 internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
 {
-
     private const bool WindowsChildStreamsAreAsync =
         GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildStreamsAreAsync;
 
@@ -46,13 +43,11 @@ internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
         string displayPath,
         FileHandleMetadata metadata)
     {
-
         _handle = handle;
 
         DisplayPath = displayPath;
 
         Metadata = metadata;
-
     }
 
     internal string DisplayPath { get; }
@@ -66,12 +61,9 @@ internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
 
     internal FileStream GetStream(FileAccess access)
     {
-
         if (_stream is not null)
         {
-
             return _stream;
-
         }
 
         SafeFileHandle handle = _handle
@@ -86,12 +78,10 @@ internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
         _handle = null;
 
         return _stream;
-
     }
 
     public void Dispose()
     {
-
         _stream?.Dispose();
 
         _stream = null;
@@ -99,7 +89,6 @@ internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
         _handle?.Dispose();
 
         _handle = null;
-
     }
 
     private sealed class RelativeFileStream(
@@ -109,27 +98,21 @@ internal sealed class GrimoireOfflineTransitionJournalOpenedFile : IDisposable
         bool isAsync)
         : FileStream(handle, access, bufferSize: 4096, isAsync)
     {
-
         public override string Name { get; } = displayPath;
-
     }
-
 }
 
 internal sealed class GrimoireOfflineTransitionJournalChildEnumeration : IDisposable
 {
-
     private int _disposed;
 
     internal GrimoireOfflineTransitionJournalChildEnumeration(
         IReadOnlyList<string> names,
         IReadOnlyDictionary<string, GrimoireOfflineTransitionJournalOpenedFile> exactChildren)
     {
-
         Names = names;
 
         ExactChildren = exactChildren;
-
     }
 
     internal IReadOnlyList<string> Names { get; }
@@ -138,28 +121,20 @@ internal sealed class GrimoireOfflineTransitionJournalChildEnumeration : IDispos
 
     public void Dispose()
     {
-
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-
             return;
-
         }
 
         foreach (GrimoireOfflineTransitionJournalOpenedFile child in ExactChildren.Values)
         {
-
             child.Dispose();
-
         }
-
     }
-
 }
 
 internal interface IGrimoireOfflineTransitionJournalFilePrimitives : IDisposable
 {
-
     FileHandleMetadata ParentMetadata { get; }
 
     Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(string workingLeaf);
@@ -187,7 +162,6 @@ internal interface IGrimoireOfflineTransitionJournalFilePrimitives : IDisposable
     Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file);
 
     Result FlushParent();
-
 }
 
 /// <summary>
@@ -206,7 +180,6 @@ internal interface IGrimoireOfflineTransitionJournalFilePrimitives : IDisposable
 internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     : IGrimoireOfflineTransitionJournalFilePrimitives
 {
-
     internal const bool WindowsChildStreamsAreAsync = false;
 
     private const int OwnerOnlyUnixMode = 0x180;
@@ -289,12 +262,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     private const uint FileDispositionPosixSemantics = 0x00000002;
 
-    private const int FileIdBothDirectoryInformation = 37;
-
-    private const int StatusNoMoreFiles = unchecked((int)0x80000006);
-
-    private const int StatusNoSuchFile = unchecked((int)0xC000000F);
-
     private const uint OwnerSecurityInformation = 0x00000001;
 
     private const uint DaclSecurityInformation = 0x00000004;
@@ -320,13 +287,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         SafeFileHandle parent,
         FileHandleMetadata parentMetadata)
     {
-
         _parentPath = parentPath;
 
         _parent = parent;
 
         ParentMetadata = parentMetadata;
-
     }
 
     public FileHandleMetadata ParentMetadata { get; }
@@ -335,19 +300,15 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         string parentPath,
         CovenantDigest? expectedParentDigest = null)
     {
-
         if (string.IsNullOrWhiteSpace(parentPath))
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalFilePrimitives>();
-
         }
 
         SafeFileHandle? parent = null;
 
         try
         {
-
             parent = OpenParentNoFollow(Path.GetFullPath(parentPath));
 
             if (parent is null || parent.IsInvalid || parent.IsClosed
@@ -357,9 +318,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 || metadata.Kind is not FileSystemObjectKind.Directory
                 || !HasStrictOwnerOnlyParentHandlePosture(parent))
             {
-
                 return Unavailable<GrimoireOfflineTransitionJournalFilePrimitives>();
-
             }
 
             CovenantDigest physical = BackupRestoreJournalAuthenticator.PhysicalIdentity(
@@ -368,9 +327,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             if (expectedParentDigest is CovenantDigest expected && physical != expected)
             {
-
                 return RecoveryRequired<GrimoireOfflineTransitionJournalFilePrimitives>();
-
             }
 
             GrimoireOfflineTransitionJournalFilePrimitives capability = new(
@@ -381,7 +338,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             parent = null;
 
             return capability;
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -390,35 +346,26 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or NotSupportedException
                 or PlatformNotSupportedException)
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalFilePrimitives>();
-
         }
         finally
         {
-
             parent?.Dispose();
-
         }
-
     }
 
     public Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(
         string workingLeaf)
     {
-
         if (!ValidLeaf(workingLeaf) || !ValidateParent())
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalOpenedFile>();
-
         }
 
         SafeFileHandle? handle = null;
 
         try
         {
-
             SecureFileOpenStatus opened = OpenChild(
                 workingLeaf,
                 createExclusive: true,
@@ -427,9 +374,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             if (opened is not SecureFileOpenStatus.Success || handle is null)
             {
-
                 return RecoveryRequired<GrimoireOfflineTransitionJournalOpenedFile>();
-
             }
 
             if (!FileHandleIdentityInterop.TryGetHandleMetadata(
@@ -438,9 +383,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 || metadata.Kind is not FileSystemObjectKind.RegularFile
                 || metadata.HardLinkCount != 1)
             {
-
                 return RecoveryRequired<GrimoireOfflineTransitionJournalOpenedFile>();
-
             }
 
             string displayPath = ChildPath(workingLeaf);
@@ -458,7 +401,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             if (!ownerOnly || !ownerOnlyVerified)
             {
-
                 using GrimoireOfflineTransitionJournalOpenedFile failed = new(
                     handle,
                     displayPath,
@@ -469,7 +411,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 return CompareUnlink(failed, workingLeaf).IsSuccess
                     ? Unavailable<GrimoireOfflineTransitionJournalOpenedFile>()
                     : RecoveryRequired<GrimoireOfflineTransitionJournalOpenedFile>();
-
             }
 
             GrimoireOfflineTransitionJournalOpenedFile file = new(
@@ -480,7 +421,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             handle = null;
 
             return file;
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -488,32 +428,23 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or ArgumentException
                 or NotSupportedException)
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalOpenedFile>();
-
         }
         finally
         {
-
             handle?.Dispose();
-
         }
-
     }
 
     public Result PublishFirstNoReplace(string journalLeaf, string workingLeaf)
     {
-
         if (!ValidLeaf(journalLeaf) || !ValidLeaf(workingLeaf) || !ValidateParent())
         {
-
             return Unavailable();
-
         }
 
         try
         {
-
             bool moved = OperatingSystem.IsLinux()
                 ? RenameAt2(ParentDescriptor, workingLeaf, ParentDescriptor, journalLeaf, RenameNoReplace) == 0
                 : OperatingSystem.IsMacOS()
@@ -527,7 +458,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                         && RenameWindowsHandle(workingLeaf, journalLeaf);
 
             return moved && ValidateParent() ? Result.Success() : Unavailable();
-
         }
         catch (Exception exception) when (
             exception is EntryPointNotFoundException
@@ -535,11 +465,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return Unavailable();
-
         }
-
     }
 
     public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(
@@ -547,21 +474,16 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         string workingLeaf,
         string previousLeaf)
     {
-
         if (!ValidLeaf(journalLeaf) || !ValidLeaf(workingLeaf) || !ValidLeaf(previousLeaf)
             || !ValidateParent())
         {
-
             return Unavailable<GrimoireOfflineTransitionExchangeResult>();
-
         }
 
         try
         {
-
             if (OperatingSystem.IsLinux())
             {
-
                 return RenameAt2(
                     ParentDescriptor,
                     workingLeaf,
@@ -571,12 +493,10 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     ? new GrimoireOfflineTransitionExchangeResult(
                         GrimoireOfflineTransitionPreviousRetention.Working)
                     : Unavailable<GrimoireOfflineTransitionExchangeResult>();
-
             }
 
             if (OperatingSystem.IsMacOS())
             {
-
                 return RenameAtXMac(
                     ParentDescriptor,
                     workingLeaf,
@@ -586,14 +506,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     ? new GrimoireOfflineTransitionExchangeResult(
                         GrimoireOfflineTransitionPreviousRetention.Working)
                     : Unavailable<GrimoireOfflineTransitionExchangeResult>();
-
             }
 
             if (!OperatingSystem.IsWindows())
             {
-
                 return Unavailable<GrimoireOfflineTransitionExchangeResult>();
-
             }
 
             // Every other Windows mutation (OpenWindowsChild, RenameWindowsHandle, CompareUnlink's
@@ -611,7 +528,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 ? new GrimoireOfflineTransitionExchangeResult(
                     GrimoireOfflineTransitionPreviousRetention.Previous)
                 : Unavailable<GrimoireOfflineTransitionExchangeResult>();
-
         }
         catch (Exception exception) when (
             exception is EntryPointNotFoundException
@@ -619,26 +535,19 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return Unavailable<GrimoireOfflineTransitionExchangeResult>();
-
         }
-
     }
 
     public Result MoveNoReplace(string sourceLeaf, string destinationLeaf)
     {
-
         if (!ValidLeaf(sourceLeaf) || !ValidLeaf(destinationLeaf) || !ValidateParent())
         {
-
             return Unavailable();
-
         }
 
         try
         {
-
             bool moved = OperatingSystem.IsLinux()
                 ? RenameAt2(
                     ParentDescriptor,
@@ -657,7 +566,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                         && RenameWindowsHandle(sourceLeaf, destinationLeaf);
 
             return moved && ValidateParent() ? Result.Success() : Unavailable();
-
         }
         catch (Exception exception) when (
             exception is EntryPointNotFoundException
@@ -665,30 +573,23 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return Unavailable();
-
         }
-
     }
 
     public Result ApplyOwnerOnlyAndVerify(
         GrimoireOfflineTransitionJournalOpenedFile expected,
         string relativeLeaf)
     {
-
         ArgumentNullException.ThrowIfNull(expected);
 
         if (!ValidLeaf(relativeLeaf) || !ValidateParent())
         {
-
             return RecoveryRequired();
-
         }
 
         try
         {
-
             bool applied = OperatingSystem.IsWindows()
                 ? ApplyWindowsOwnerOnly(expected.Handle)
                 : Fchmod(expected.Handle.DangerousGetHandle().ToInt32(), OwnerOnlyUnixMode) == 0;
@@ -711,9 +612,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     expected.Metadata.Identity,
                     captured.Identity))
             {
-
                 return RecoveryRequired();
-
             }
 
             SecureFileOpenStatus status = OpenChild(
@@ -724,7 +623,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             using (reopened)
             {
-
                 bool reopenedOwnerOnly = reopened is not null
                     && (OperatingSystem.IsWindows()
                         ? VerifyWindowsOwnerOnlyHandle(reopened)
@@ -744,15 +642,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                         captured.Identity,
                         current.Identity))
                 {
-
                     return RecoveryRequired();
-
                 }
-
             }
 
             return ValidateParent() ? Result.Success() : RecoveryRequired();
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -760,18 +654,14 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or PlatformNotSupportedException
                 or System.Security.SecurityException)
         {
-
             return RecoveryRequired();
-
         }
-
     }
 
     public Result CompareUnlink(
         GrimoireOfflineTransitionJournalOpenedFile expected,
         string relativeLeaf)
     {
-
         ArgumentNullException.ThrowIfNull(expected);
 
         if (!ValidLeaf(relativeLeaf) || !ValidateParent()
@@ -782,9 +672,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             || before.HardLinkCount != 1
             || !FileHandleIdentity.IdentitiesMatch(expected.Metadata.Identity, before.Identity))
         {
-
             return RecoveryRequired();
-
         }
 
         SecureFileOpenStatus status = OpenChild(
@@ -810,7 +698,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
         try
         {
-
             if (OperatingSystem.IsWindows())
             {
                 uint disposition = FileDispositionDelete | FileDispositionPosixSemantics;
@@ -861,9 +748,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             || !FileHandleIdentity.IdentitiesMatch(before.Identity, after.Identity)
             || after.HardLinkCount != 0)
         {
-
             return RecoveryRequired();
-
         }
 
         SecureFileOpenStatus finalStatus = OpenChild(
@@ -877,29 +762,23 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         return finalStatus is SecureFileOpenStatus.NotFound && ValidateParent()
             ? Result.Success()
             : RecoveryRequired();
-
     }
 
     public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
         IReadOnlyList<string> exactLeaves)
     {
-
         ArgumentNullException.ThrowIfNull(exactLeaves);
 
         if (!ValidateParent() || exactLeaves.Count == 0 || exactLeaves.Any(leaf => !ValidLeaf(leaf)))
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalChildEnumeration>();
-
         }
 
         List<string>? names = EnumerateNames();
 
         if (names is null || names.Count != names.Distinct(StringComparer.Ordinal).Count())
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalChildEnumeration>();
-
         }
 
         HashSet<string> observed = new(names, StringComparer.Ordinal);
@@ -909,10 +788,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
         try
         {
-
             foreach (string leaf in exactLeaves)
             {
-
                 SecureFileOpenStatus status = OpenChild(
                     leaf,
                     createExclusive: false,
@@ -921,9 +798,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
                 if (status is SecureFileOpenStatus.NotFound && !observed.Contains(leaf))
                 {
-
                     continue;
-
                 }
 
                 if (status is not SecureFileOpenStatus.Success || handle is null
@@ -931,11 +806,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                         handle,
                         out FileHandleMetadata metadata))
                 {
-
                     handle?.Dispose();
 
                     return Unavailable<GrimoireOfflineTransitionJournalChildEnumeration>();
-
                 }
 
                 observed.Add(leaf);
@@ -946,14 +819,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                         handle,
                         ChildPath(leaf),
                         metadata));
-
             }
 
             if (!ValidateParent())
             {
-
                 return RecoveryRequired<GrimoireOfflineTransitionJournalChildEnumeration>();
-
             }
 
             GrimoireOfflineTransitionJournalChildEnumeration result = new(
@@ -964,44 +834,32 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 StringComparer.Ordinal);
 
             return result;
-
         }
         finally
         {
-
             foreach (GrimoireOfflineTransitionJournalOpenedFile child in children.Values)
             {
-
                 child.Dispose();
-
             }
-
         }
-
     }
 
     public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file)
     {
-
         ArgumentNullException.ThrowIfNull(file);
 
         try
         {
-
             file.GetStream(FileAccess.ReadWrite).Flush(flushToDisk: true);
 
             return Result.Success();
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException)
         {
-
             return RecoveryRequired();
-
         }
-
     }
 
     public Result FlushParent() =>
@@ -1011,11 +869,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     public void Dispose()
     {
-
         _parent?.Dispose();
 
         _parent = null;
-
     }
 
     private SafeFileHandle ParentHandle =>
@@ -1036,7 +892,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     internal static bool VerifyOwnerControlledOpenedFileHandle(
         GrimoireOfflineTransitionJournalOpenedFile child)
     {
-
         ArgumentNullException.ThrowIfNull(child);
 
         if (!FileHandleIdentityInterop.TryGetHandleMetadata(
@@ -1048,16 +903,12 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 child.Metadata.Identity,
                 current.Identity))
         {
-
             return false;
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return VerifyWindowsOwnerOnlyHandle(child.Handle);
-
         }
 
         return (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
@@ -1065,24 +916,18 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 child.Handle,
                 child.DisplayPath,
                 current.Identity);
-
     }
 
     private static bool HasStrictOwnerOnlyParentHandlePosture(SafeFileHandle handle)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return VerifyWindowsOwnerOnlyHandle(handle);
-
         }
 
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
-
             return false;
-
         }
 
         const UnixFileMode ownerOnlyDirectory =
@@ -1094,17 +939,14 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 out uint ownerUserId)
             && mode == ownerOnlyDirectory
             && ownerUserId == GetEffectiveUserIdUnix();
-
     }
 
     private string ChildPath(string leaf) => Path.Combine(_parentPath, leaf);
 
     private static SafeFileHandle? OpenParentNoFollow(string path)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             SafeFileHandle handle = CreateFileWindows(
                 path,
                 WindowsParentDesiredAccess,
@@ -1115,14 +957,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 IntPtr.Zero);
 
             return handle.IsInvalid ? null : handle;
-
         }
 
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
-
             return null;
-
         }
 
         int flags = OperatingSystem.IsMacOS()
@@ -1132,7 +971,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         int descriptor = OpenUnix(path, flags);
 
         return descriptor < 0 ? null : new SafeFileHandle(new IntPtr(descriptor), ownsHandle: true);
-
     }
 
     internal SecureFileOpenStatus OpenChild(
@@ -1141,35 +979,27 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         bool writable,
         out SafeFileHandle? handle)
     {
-
         handle = null;
 
         if (!ValidLeaf(leaf) || !ValidateParent())
         {
-
             return SecureFileOpenStatus.Rejected;
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return OpenWindowsChild(leaf, createExclusive, writable, out handle);
-
         }
 
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
-
             return SecureFileOpenStatus.Rejected;
-
         }
 
         int flags;
 
         if (OperatingSystem.IsMacOS())
         {
-
             flags = (writable ? 0x00000002 : 0)
                 | 0x00000004
                 | 0x00000100
@@ -1177,15 +1007,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             if (createExclusive)
             {
-
                 flags |= 0x00000200 | 0x00000800;
-
             }
-
         }
         else
         {
-
             flags = (writable ? 0x00000002 : 0)
                 | 0x00000800
                 | 0x00020000
@@ -1193,11 +1019,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             if (createExclusive)
             {
-
                 flags |= 0x00000040 | 0x00000080;
-
             }
-
         }
 
         int descriptor = OpenAtUnix(
@@ -1208,11 +1031,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
         if (descriptor >= 0)
         {
-
             handle = new SafeFileHandle(new IntPtr(descriptor), ownsHandle: true);
 
             return SecureFileOpenStatus.Success;
-
         }
 
         int error = Marshal.GetLastPInvokeError();
@@ -1224,7 +1045,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             40 or 62 => SecureFileOpenStatus.Rejected,
             _ => SecureFileOpenStatus.IoError,
         };
-
     }
 
     [SupportedOSPlatform("windows")]
@@ -1234,24 +1054,19 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         bool writable,
         out SafeFileHandle? handle)
     {
-
         handle = null;
 
         IntPtr securityDescriptor = IntPtr.Zero;
 
         try
         {
-
             if (createExclusive && !TryCreateOwnerOnlySecurityDescriptor(out securityDescriptor))
             {
-
                 return SecureFileOpenStatus.Rejected;
-
             }
 
             fixed (char* leafPointer = leaf)
             {
-
                 UnicodeString objectName = new()
                 {
                     Length = checked((ushort)(leaf.Length * sizeof(char))),
@@ -1288,11 +1103,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
                 if (status >= 0)
                 {
-
                     handle = new SafeFileHandle(raw, ownsHandle: true);
 
                     return SecureFileOpenStatus.Success;
-
                 }
 
                 return status switch
@@ -1304,270 +1117,31 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     unchecked((int)0xC000050B) => SecureFileOpenStatus.Rejected,
                     _ => SecureFileOpenStatus.IoError,
                 };
-
             }
-
         }
         finally
         {
-
             if (securityDescriptor != IntPtr.Zero)
             {
-
                 _ = LocalFreeWindows(securityDescriptor);
-
             }
-
         }
-
     }
 
-    private List<string>? EnumerateNames()
-    {
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            return EnumerateWindowsNames();
-
-        }
-
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
-        {
-
-            return null;
-
-        }
-
-        int duplicate = DuplicateUnix(ParentDescriptor);
-
-        if (duplicate < 0)
-        {
-
-            return null;
-
-        }
-
-        IntPtr directory = FdOpenDirectoryUnix(duplicate);
-
-        if (directory == IntPtr.Zero)
-        {
-
-            _ = CloseUnix(duplicate);
-
-            return null;
-
-        }
-
-        try
-        {
-
-            List<string> names = [];
-
-            RewindDirectoryUnix(directory);
-
-            Marshal.SetLastPInvokeError(0);
-
-            while (true)
-            {
-
-                IntPtr entry = ReadDirectoryUnix(directory);
-
-                if (entry == IntPtr.Zero)
-                {
-
-                    return Marshal.GetLastPInvokeError() == 0 ? names : null;
-
-                }
-
-                int nameOffset = OperatingSystem.IsMacOS() ? 21 : 19;
-
-                int length;
-
-                if (OperatingSystem.IsMacOS())
-                {
-
-                    length = Marshal.ReadInt16(entry, 18);
-
-                }
-                else
-                {
-
-                    length = 0;
-
-                    while (length <= 255 && Marshal.ReadByte(entry, nameOffset + length) != 0)
-                    {
-
-                        length++;
-
-                    }
-
-                }
-
-                if (length is <= 0 or > 255)
-                {
-
-                    return null;
-
-                }
-
-                byte[] bytes = new byte[length];
-
-                Marshal.Copy(IntPtr.Add(entry, nameOffset), bytes, 0, length);
-
-                string name;
-
-                try
-                {
-
-                    name = new System.Text.UTF8Encoding(
-                        encoderShouldEmitUTF8Identifier: false,
-                        throwOnInvalidBytes: true).GetString(bytes);
-
-                }
-                catch (System.Text.DecoderFallbackException)
-                {
-
-                    return null;
-
-                }
-
-                if (name is not "." and not "..")
-                {
-
-                    names.Add(name);
-
-                }
-
-            }
-
-        }
-        finally
-        {
-
-            _ = CloseDirectoryUnix(directory);
-
-        }
-
-    }
-
-    private unsafe List<string>? EnumerateWindowsNames()
-    {
-
-        const int bufferBytes = 64 * 1024;
-
-        byte[] buffer = new byte[bufferBytes];
-
-        List<string> names = [];
-
-        bool restart = true;
-
-        fixed (byte* pointer = buffer)
-        {
-
-            while (true)
-            {
-
-                bool initialQuery = restart;
-
-                int status = NtQueryDirectoryFile(
-                    ParentHandle.DangerousGetHandle(),
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    out IoStatusBlock io,
-                    new IntPtr(pointer),
-                    bufferBytes,
-                    FileIdBothDirectoryInformation,
-                    returnSingleEntry: false,
-                    IntPtr.Zero,
-                    restart);
-
-                restart = false;
-
-                if (IsWindowsDirectoryEnumerationComplete(
-                        status,
-                        initialQuery,
-                        names.Count))
-                {
-
-                    return names;
-
-                }
-
-                if (status < 0 || io.Information.ToInt64() <= 0)
-                {
-
-                    return null;
-
-                }
-
-                int offset = 0;
-
-                int available = checked((int)io.Information.ToInt64());
-
-                while (offset + 104 <= available)
-                {
-
-                    ReadOnlySpan<byte> entry = buffer.AsSpan(offset, available - offset);
-
-                    uint next = BinaryPrimitives.ReadUInt32LittleEndian(entry);
-
-                    uint nameBytes = BinaryPrimitives.ReadUInt32LittleEndian(entry.Slice(60));
-
-                    if ((nameBytes & 1) != 0 || nameBytes > 510 || 104 + nameBytes > entry.Length)
-                    {
-
-                        return null;
-
-                    }
-
-                    string name = System.Text.Encoding.Unicode.GetString(
-                        entry.Slice(104, checked((int)nameBytes)));
-
-                    if (name is not "." and not "..")
-                    {
-
-                        names.Add(name);
-
-                    }
-
-                    if (next == 0)
-                    {
-
-                        break;
-
-                    }
-
-                    if (next > int.MaxValue || offset + next > available)
-                    {
-
-                        return null;
-
-                    }
-
-                    offset += checked((int)next);
-
-                }
-
-            }
-
-        }
-
-    }
-
-    internal static bool IsWindowsDirectoryEnumerationComplete(
-        int status,
-        bool initialQuery,
-        int observedNameCount) =>
-        status == StatusNoMoreFiles
-        || status == StatusNoSuchFile
-            && initialQuery
-            && observedNameCount == 0;
+    /// <summary>
+    /// Names in the retained parent directory, read through the one shared no-follow enumerator so this
+    /// store and every other caller rewind, decode and complete a Windows scan the same way.
+    /// </summary>
+    private List<string>? EnumerateNames() =>
+        SecureDirectoryNameEnumerator.TryEnumerate(
+            ParentHandle,
+            CancellationToken.None,
+            out string[] names)
+            ? [.. names]
+            : null;
 
     private unsafe bool RenameWindowsHandle(string sourceLeaf, string destinationLeaf)
     {
-
         SecureFileOpenStatus status = OpenChild(
             sourceLeaf,
             createExclusive: false,
@@ -1576,12 +1150,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
         using (source)
         {
-
             if (status is not SecureFileOpenStatus.Success || source is null)
             {
-
                 return false;
-
             }
 
             byte[] target = System.Text.Encoding.Unicode.GetBytes(destinationLeaf);
@@ -1609,7 +1180,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             fixed (byte* pointer = buffer)
             {
-
                 int renameStatus = NtSetInformationFile(
                     source,
                     out _,
@@ -1618,27 +1188,20 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     NtFileRenameInformation);
 
                 return renameStatus >= 0;
-
             }
-
         }
-
     }
 
     [SupportedOSPlatform("windows")]
     private static bool ApplyWindowsOwnerOnly(SafeFileHandle handle)
     {
-
         if (!TryCreateOwnerOnlySecurityDescriptor(out IntPtr descriptor))
         {
-
             return false;
-
         }
 
         try
         {
-
             if (!GetSecurityDescriptorOwnerWindows(
                     descriptor,
                     out IntPtr owner,
@@ -1650,9 +1213,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     out _)
                 || !present)
             {
-
                 return false;
-
             }
 
             const uint ownerInformation = 0x00000001;
@@ -1669,26 +1230,20 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 IntPtr.Zero,
                 dacl,
                 IntPtr.Zero) == 0;
-
         }
         finally
         {
-
             _ = LocalFreeWindows(descriptor);
-
         }
-
     }
 
     [SupportedOSPlatform("windows")]
     private static bool VerifyWindowsOwnerOnlyHandle(SafeFileHandle handle)
     {
-
         IntPtr securityDescriptor = IntPtr.Zero;
 
         try
         {
-
             uint status = GetSecurityInfoWindows(
                 handle,
                 objectType: 1,
@@ -1719,9 +1274,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 || size.AclBytesInUse == 0
                 || size.AclBytesInUse > int.MaxValue)
             {
-
                 return false;
-
             }
 
             byte[] aclBytes = new byte[checked((int)size.AclBytesInUse)];
@@ -1734,21 +1287,16 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             foreach (GenericAce ace in acl)
             {
-
                 if (ace is not QualifiedAce qualified
                     || !qualified.SecurityIdentifier.Equals(currentUser))
                 {
-
                     return false;
-
                 }
 
                 currentUserAllowed |= qualified.AceQualifier is AceQualifier.AccessAllowed;
-
             }
 
             return currentUserAllowed;
-
         }
         catch (Exception exception) when (
             exception is ArgumentException
@@ -1757,28 +1305,20 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or System.Security.SecurityException
                 or IdentityNotMappedException)
         {
-
             return false;
-
         }
         finally
         {
-
             if (securityDescriptor != IntPtr.Zero)
             {
-
                 _ = LocalFreeWindows(securityDescriptor);
-
             }
-
         }
-
     }
 
     [SupportedOSPlatform("windows")]
     private static bool TryCreateOwnerOnlySecurityDescriptor(out IntPtr descriptor)
     {
-
         descriptor = IntPtr.Zero;
 
         using WindowsIdentity current = WindowsIdentity.GetCurrent();
@@ -1787,9 +1327,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
         if (user is null)
         {
-
             return false;
-
         }
 
         string sddl = $"O:{user.Value}D:P(A;;FA;;;{user.Value})";
@@ -1799,7 +1337,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             stringSdRevision: 1,
             out descriptor,
             out _);
-
     }
 
     private static bool ValidLeaf(string? leaf) =>
@@ -1824,19 +1361,16 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     [StructLayout(LayoutKind.Sequential)]
     private struct UnicodeString
     {
-
         internal ushort Length;
 
         internal ushort MaximumLength;
 
         internal IntPtr Buffer;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct ObjectAttributes
     {
-
         internal int Length;
 
         internal IntPtr RootDirectory;
@@ -1848,29 +1382,24 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         internal IntPtr SecurityDescriptor;
 
         internal IntPtr SecurityQualityOfService;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly struct AclSizeInformation
     {
-
         internal readonly uint AceCount;
 
         internal readonly uint AclBytesInUse;
 
         internal readonly uint AclBytesFree;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly struct IoStatusBlock
     {
-
         internal readonly IntPtr Status;
 
         internal readonly IntPtr Information;
-
     }
 
     [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
@@ -1934,24 +1463,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     [LibraryImport("libc", EntryPoint = "geteuid")]
     private static partial uint GetEffectiveUserIdUnix();
-
-    [LibraryImport("libc", EntryPoint = "dup", SetLastError = true)]
-    private static partial int DuplicateUnix(int descriptor);
-
-    [LibraryImport("libc", EntryPoint = "fdopendir", SetLastError = true)]
-    private static partial IntPtr FdOpenDirectoryUnix(int descriptor);
-
-    [LibraryImport("libc", EntryPoint = "readdir", SetLastError = true)]
-    private static partial IntPtr ReadDirectoryUnix(IntPtr directory);
-
-    [LibraryImport("libc", EntryPoint = "rewinddir")]
-    private static partial void RewindDirectoryUnix(IntPtr directory);
-
-    [LibraryImport("libc", EntryPoint = "closedir", SetLastError = true)]
-    private static partial int CloseDirectoryUnix(IntPtr directory);
-
-    [LibraryImport("libc", EntryPoint = "close", SetLastError = true)]
-    private static partial int CloseUnix(int descriptor);
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     private static partial SafeFileHandle CreateFileWindows(
@@ -2054,19 +1565,4 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         uint createOptions,
         IntPtr eaBuffer,
         uint eaLength);
-
-    [LibraryImport("ntdll.dll", EntryPoint = "NtQueryDirectoryFile")]
-    private static partial int NtQueryDirectoryFile(
-        IntPtr fileHandle,
-        IntPtr eventHandle,
-        IntPtr apcRoutine,
-        IntPtr apcContext,
-        out IoStatusBlock ioStatusBlock,
-        IntPtr fileInformation,
-        int length,
-        int fileInformationClass,
-        [MarshalAs(UnmanagedType.U1)] bool returnSingleEntry,
-        IntPtr fileName,
-        [MarshalAs(UnmanagedType.U1)] bool restartScan);
-
 }
