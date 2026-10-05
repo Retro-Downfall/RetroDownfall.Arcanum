@@ -442,6 +442,74 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// The old file provider could be reloaded; a snapshot provider that threw on a second load
+    /// would turn any future <c>IConfigurationRoot.Reload()</c> caller into a startup crash.
+    /// </summary>
+    [Fact]
+    public void AddArcanumConfiguration_snapshot_survives_a_reload_and_keeps_serving_the_validated_bytes()
+    {
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        ConfigurationBuilder builder = new();
+
+        builder.AddArcanumConfiguration();
+
+        IConfigurationRoot root = builder.Build();
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":7777}}}""");
+
+        root.Reload();
+
+        Assert.Equal("5001", root["Arcanum:Host:Port"]);
+    }
+
+    /// <summary>
+    /// The read observer is a test seam, so it must not be visible to a thread that did not set it:
+    /// another test class loading the configuration in parallel would otherwise inflate the count.
+    /// </summary>
+    [Fact]
+    public async Task PersistedFileReadObserver_is_scoped_to_the_execution_context_that_set_it()
+    {
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        int reads = 0;
+
+        ConfigurationBootstrapper.PersistedFileReadObserver = _ => Interlocked.Increment(ref reads);
+
+        try
+        {
+            Task unrelated;
+
+            using (ExecutionContext.SuppressFlow())
+            {
+                unrelated = Task.Run(() => ConfigurationBootstrapper.LoadPersistedArcanumSettings());
+            }
+
+            await unrelated;
+
+            Assert.Equal(0, Volatile.Read(ref reads));
+
+            _ = ConfigurationBootstrapper.LoadPersistedArcanumSettings();
+
+            Assert.Equal(1, Volatile.Read(ref reads));
+        }
+        finally
+        {
+            ConfigurationBootstrapper.PersistedFileReadObserver = null;
+        }
+    }
+
     [Fact]
     public void AddArcanumConfiguration_projects_array_overrides_when_file_omits_the_key()
     {
