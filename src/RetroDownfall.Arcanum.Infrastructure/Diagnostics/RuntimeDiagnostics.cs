@@ -288,8 +288,7 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
         }
 
         if (parentTopology.IsFailure
-            || parentTopology.Value is not NoFollowPathTopologyKind.Directory
-            || !SecureFilePermissions.HasOwnerOnlyPosture(parent, isDirectory: true))
+            || parentTopology.Value is not NoFollowPathTopologyKind.Directory)
         {
             return UnsafeFinding();
         }
@@ -297,12 +296,20 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
         Result<NoFollowPathTopologyKind> leafTopology =
             NoFollowPathTopology.Classify(path);
 
+        // Absence is decided before the parent's posture. The parent is often a shared directory
+        // (~/.config) that only the first acquisition tightens, and with no lock file there is nothing for
+        // anyone to hold: calling that unsafe would flag every installation that has not yet started a host.
         if (leafTopology.IsSuccess
             && leafTopology.Value is NoFollowPathTopologyKind.Absent)
         {
             return new DoctorFinding(
                 DoctorOutcome.Healthy,
                 "No maintenance lock file is present.");
+        }
+
+        if (!SecureFilePermissions.HasOwnerOnlyPosture(parent, isDirectory: true))
+        {
+            return UnsafeFinding();
         }
 
         if (leafTopology.IsFailure

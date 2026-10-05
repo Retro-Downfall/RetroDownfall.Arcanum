@@ -53,6 +53,35 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.False(File.Exists(ArcanumMaintenanceLock.LockPathFor(guarded)));
     }
 
+    /// <summary>
+    /// The lock's parent is often a directory Arcanum shares (<c>~/.config</c>) and only tightens when it
+    /// first acquires the lock. Until then there is no lock file, nothing can hold one, and the parent's
+    /// posture is the acquirer's business, so the read-only probe reports the absence instead of calling an
+    /// ordinary fresh installation unsafe.
+    /// </summary>
+    [Fact]
+    public void A_missing_lock_file_is_healthy_under_a_parent_that_is_not_yet_owner_only()
+    {
+        string guarded = Path.Combine(_container, "shared-parent", "arcanum");
+
+        string path = ArcanumMaintenanceLock.LockPathFor(guarded);
+
+        string parent = Path.GetDirectoryName(path)!;
+
+        Directory.CreateDirectory(parent);
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
+            (candidate, isDirectory) => !(isDirectory && string.Equals(candidate, parent, StringComparison.Ordinal));
+
+        DoctorFinding finding = Inspect(guarded);
+
+        Assert.Equal(DoctorOutcome.Healthy, finding.Outcome);
+
+        Assert.Contains("No maintenance lock file", finding.Detail, StringComparison.Ordinal);
+
+        Assert.False(File.Exists(path));
+    }
+
     [Fact]
     public void Stale_owner_only_lock_is_reusable_and_its_bytes_are_unchanged()
     {
