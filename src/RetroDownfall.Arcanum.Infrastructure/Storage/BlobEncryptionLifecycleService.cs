@@ -16,6 +16,15 @@ public sealed class BlobEncryptionLifecycleService(
 {
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(15);
 
+    /// <summary>
+    /// The inventory: catalog metadata plus each file's presence and envelope magic.
+    /// </summary>
+    /// <remarks>
+    /// No blob body is opened, decrypted, or hashed here. Content verification (authentication, length,
+    /// SHA-256, key availability) is the explicit, bounded and throttled <see cref="VerifyAsync"/>, so
+    /// status stays cheap on a large store and <see cref="BlobEncryptionStatus.InvalidFiles"/> counts only
+    /// what the inventory itself can see: a catalogued blob whose file is missing or unreadable.
+    /// </remarks>
     public async Task<BlobEncryptionStatus> GetStatusAsync(
         CancellationToken cancellationToken = default)
     {
@@ -33,34 +42,31 @@ public sealed class BlobEncryptionLifecycleService(
         foreach (BlobEncryptionCandidate candidate in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            BlobEncryptionVerificationResult result = await processor
-                .VerifyAsync(candidate, cancellationToken)
-                .ConfigureAwait(false);
-            bool hasEnvelope = blobStore.HasEnvelope(candidate.Path);
-            if (hasEnvelope)
+            if (!File.Exists(candidate.Path))
+            {
+                invalid++;
+                continue;
+            }
+
+            if (blobStore.HasEnvelope(candidate.Path))
             {
                 encrypted++;
                 encryptedBytes += candidate.ExpectedPlaintextLength;
-                string key = result.Descriptor?.KeyId
-                    ?? candidate.EncryptionKeyId
-                    ?? "<unknown>";
+                string key = candidate.EncryptionKeyId ?? "<unknown>";
                 byKey[key] = byKey.GetValueOrDefault(key) + 1;
+                if (candidate.EncryptionVersion == 0)
+                {
+                    reconciliation++;
+                }
             }
-            else if (File.Exists(candidate.Path))
+            else
             {
                 legacy++;
                 legacyBytes += candidate.ExpectedPlaintextLength;
-            }
-
-            if (result.Issue is BlobEncryptionVerificationIssue.MetadataEncryptedFilePlaintext
-                or BlobEncryptionVerificationIssue.MetadataPlaintextFileEncrypted)
-            {
-                reconciliation++;
-            }
-            else if (result.Issue is not (BlobEncryptionVerificationIssue.None
-                or BlobEncryptionVerificationIssue.LegacyPlaintext))
-            {
-                invalid++;
+                if (candidate.EncryptionVersion > 0)
+                {
+                    reconciliation++;
+                }
             }
         }
 
@@ -431,9 +437,7 @@ public sealed class BlobEncryptionLifecycleService(
             {
                 ct.ThrowIfCancellationRequested();
                 await throttle.WaitAsync(candidate.ExpectedPlaintextLength, ct).ConfigureAwait(false);
-                BlobEncryptionVerificationResult result = await VerifyCandidateAsync(
-                        candidate,
-                        CancellationToken.None)
+                BlobEncryptionVerificationResult result = await VerifyCandidateAsync(candidate, ct)
                     .ConfigureAwait(false);
                 if (result.IsValid && result.Descriptor is not null)
                 {

@@ -56,6 +56,40 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
         Assert.Equal(1, status.InvalidFiles);
     }
 
+    // Status is an inventory: metadata plus the envelope magic. Decrypting and hashing every blob
+    // belongs to the explicit verify verb, which is bounded and throttled.
+    [Fact]
+    public async Task Status_does_not_read_blob_bodies()
+    {
+        InMemoryKeyRing keys = new();
+        EncryptedBlobStore blobs = new(keys);
+        BlobEncryptionCandidate healthy = await WriteEncryptedAsync(blobs, "healthy");
+        BlobEncryptionCandidate legacy = await WriteLegacyAsync("legacy");
+        BlobEncryptionCandidate stale = await WriteEncryptedAsync(blobs, "metadata-says-plaintext");
+        stale = stale with { EncryptionVersion = 0, EncryptionKeyId = null };
+        ObservedBlobStore observed = new(blobs);
+        ListOnlyMetadataStore metadata = new([healthy, legacy, stale]);
+        BlobEncryptionLifecycleService service = new(
+            metadata,
+            new BlobEncryptionFileProcessor(metadata, observed),
+            observed,
+            keyRing: null!,
+            operationCoordinator: null!,
+            operationStore: null!,
+            TimeProvider.System);
+
+        BlobEncryptionStatus status = await service.GetStatusAsync();
+
+        Assert.Equal(0, observed.OpenReadCalls);
+        Assert.Equal(0, observed.InspectCalls);
+        Assert.Equal(3, status.TotalFiles);
+        Assert.Equal(2, status.EncryptedFiles);
+        Assert.Equal(1, status.LegacyPlaintextFiles);
+        Assert.Equal(1, status.FilesNeedingReconciliation);
+        Assert.Equal(0, status.InvalidFiles);
+        Assert.Equal(1, status.FilesByKeyId[healthy.EncryptionKeyId!]);
+    }
+
     // The foreground migration loop catches IOException/InvalidDataException/CryptographicException
     // per candidate, counts the file as failed, and carries on. Crash recovery walked the same
     // candidates with no try/catch at all, so a single blob deleted out-of-band unwound the whole
