@@ -26,7 +26,6 @@ public sealed class WeaveService(
     IServiceScopeFactory scopeFactory,
     ILogger<WeaveService> logger) : IWeaveService
 {
-
     /// <summary>
     /// Computed fresh on every access from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> —
     /// no <c>OnChange</c> registration (avoids leak/fragility risk); cheap, since the monitor holds a
@@ -37,25 +36,21 @@ public sealed class WeaveService(
     {
         get
         {
-
             EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
             return embeddings.Enabled
                 && !string.IsNullOrWhiteSpace(embeddings.Provider)
                 && !string.IsNullOrWhiteSpace(embeddings.Model);
-
         }
     }
 
     public async Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken)
     {
-
         Result<Embedding<float>[]> batchResult = await EmbedBatchAsync([text], cancellationToken).ConfigureAwait(false);
 
         if (batchResult.IsFailure)
         {
             return Result<Embedding<float>>.Failure(batchResult.Error);
-
         }
 
         // A provider may answer 200 with no vectors at all (model still loading, input silently
@@ -68,33 +63,27 @@ public sealed class WeaveService(
             return Result<Embedding<float>>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "The embedding provider returned no vectors. See server logs for detail."));
-
         }
 
         return Result<Embedding<float>>.Success(batchResult.Value[0]);
-
     }
 
     public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(
         IReadOnlyList<string> texts,
         CancellationToken cancellationToken)
     {
-
         // Disabled-path (no generator resolution, no HTTP call, no exception): checked first, before
         // anything else in this method runs.
         if (!IsAvailable)
         {
-
             return Result<Embedding<float>[]>.Failure(new Error(
                 ErrorCodes.Embeddings.FeatureDisabled,
                 "Embeddings are disabled or incomplete (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model)."));
-
         }
 
         if (texts.Count == 0)
         {
             return Result<Embedding<float>[]>.Success([]);
-
         }
 
         EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
@@ -147,7 +136,6 @@ public sealed class WeaveService(
             // live. The rethrow keeps the caller's behaviour exactly as it was.
             try
             {
-
                 begin = await TurnAccountingHandle.BeginAsync(
                         turnRunWriter,
                         budgetReservations,
@@ -160,15 +148,12 @@ public sealed class WeaveService(
                         cancellationToken,
                         reservedUsdOverride: reservedUsd)
                     .ConfigureAwait(false);
-
             }
             catch
             {
-
                 accountingScope.Dispose();
 
                 throw;
-
             }
 
             if (begin.IsFailure)
@@ -186,15 +171,12 @@ public sealed class WeaveService(
 
         try
         {
-
             // Sequential, not parallel — avoids overwhelming local providers (e.g. Ollama).
             foreach (List<string> batch in sanitizedBatches)
             {
                 Embedding<float>[] batchEmbeddings = await EmbedOneBatchAsync(
                     batch,
                     cancellationToken).ConfigureAwait(false);
-
-                results.AddRange(batchEmbeddings);
 
                 await accounting.RecordUsageAsync(
                         turnRunWriter,
@@ -210,15 +192,29 @@ public sealed class WeaveService(
                         CancellationToken.None)
                     .ConfigureAwait(false);
 
+                // The provider answered, so the batch is billed whatever its shape is; the spend is
+                // ledgered above before the shape can fail the call. The service promises one vector
+                // per input, in order, so every consumer can index positionally without re-checking.
+                if (batchEmbeddings.Length != batch.Count)
+                {
+                    logger.LogWarning(
+                        "Embedding provider returned {ActualCount} vector(s) for {ExpectedCount} input(s); the batch is treated as failed.",
+                        batchEmbeddings.Length,
+                        batch.Count);
+
+                    return Result<Embedding<float>[]>.Failure(new Error(
+                        ErrorCodes.Embeddings.ProviderUnavailable,
+                        "The embedding provider returned a different number of vectors than inputs. See server logs for detail."));
+                }
+
+                results.AddRange(batchEmbeddings);
             }
 
             accountingStatus = InferenceRunStatus.Completed;
             return Result<Embedding<float>[]>.Success([.. results]);
-
         }
         catch (ClientResultException ex) when (IsPayloadOrRequestSizeError(ex.Status))
         {
-
             // OpenAI-SDK-shaped providers (OpenAI, DeepSeek, most self-hosted OpenAI-compatible
             // servers) surface HTTP error responses as ClientResultException, not HttpRequestException.
             logger.LogWarning(
@@ -229,11 +225,9 @@ public sealed class WeaveService(
             return Result<Embedding<float>[]>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "The embedding provider rejected the request as too large. See server logs for detail."));
-
         }
         catch (HttpRequestException ex) when (IsPayloadOrRequestSizeError((int?)ex.StatusCode ?? 0))
         {
-
             // Defense-in-depth for providers/transports that surface a raw HttpRequestException with a
             // populated StatusCode instead of the SDK's ClientResultException.
             logger.LogWarning(
@@ -244,17 +238,14 @@ public sealed class WeaveService(
             return Result<Embedding<float>[]>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "The embedding provider rejected the request as too large. See server logs for detail."));
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(ex, "Embedding provider call failed; The Weave will be treated as unavailable for this request.");
 
             return Result<Embedding<float>[]>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "The embedding provider is unavailable. See server logs for detail."));
-
         }
         finally
         {
@@ -277,7 +268,6 @@ public sealed class WeaveService(
                 accountingScope?.Dispose();
             }
         }
-
     }
 
     private static long EstimateApproximateTokens(IEnumerable<string> texts)
@@ -293,18 +283,18 @@ public sealed class WeaveService(
     }
 
     /// <summary>
-    /// <c>413 Payload Too Large</c> and <c>400 Bad Request</c> are the two statuses upstream OpenAI-
-    /// compatible providers (OpenAI, DeepSeek, Ollama) use to reject an oversized embedding batch or
-    /// a single input exceeding the provider's context/dimension limit.
+    /// <c>413 Payload Too Large</c> is the status upstream OpenAI-compatible providers use to reject an
+    /// oversized embedding batch. A <c>400 Bad Request</c> is deliberately not here: it covers any
+    /// malformed request (bad model name, rejected input), and reporting it as "too large" sends the
+    /// operator to shrink chunk sizes for a problem that has nothing to do with size.
     /// </summary>
     private static bool IsPayloadOrRequestSizeError(int statusCode) =>
-        statusCode is 413 or 400;
+        statusCode is 413;
 
     private async Task<Embedding<float>[]> EmbedOneBatchAsync(
         List<string> batch,
         CancellationToken cancellationToken)
     {
-
         using EmbeddingGeneratorLease lease = await generatorFactory
             .ResolveGeneratorAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -318,21 +308,17 @@ public sealed class WeaveService(
         for (int i = 0; i < generated.Count; i++)
         {
             embeddings[i] = generated[i];
-
         }
 
         return embeddings;
-
     }
 
     public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken)
     {
-
         // Pure CPU — always runs regardless of IsAvailable (no generator involved).
         if (string.IsNullOrEmpty(text))
         {
             return Task.FromResult(Result<(string Chunk, int Offset)[]>.Success([]));
-
         }
 
         EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
@@ -350,7 +336,6 @@ public sealed class WeaveService(
 
         for (int offset = 0; offset < text.Length; offset += step)
         {
-
             // Never begin a chunk on an orphaned low surrogate either. Window starts land on multiples
             // of `step`, which is computed from the settings and knows nothing about the text, so an
             // astral character straddling that index would otherwise open the next chunk with half a
@@ -362,7 +347,6 @@ public sealed class WeaveService(
             if (start >= text.Length)
             {
                 break;
-
             }
 
             // Never end a non-final chunk on a lone high surrogate — the next window (offset + step,
@@ -377,13 +361,10 @@ public sealed class WeaveService(
             if (isFinalChunk)
             {
                 break;
-
             }
-
         }
 
         return Task.FromResult(Result<(string Chunk, int Offset)[]>.Success([.. chunks]));
-
     }
 
     /// <summary>
@@ -396,11 +377,8 @@ public sealed class WeaveService(
     /// </summary>
     internal static int ResolveChunkStep(int chunkSizeChars, int chunkOverlapChars)
     {
-
         int boundedOverlap = Math.Clamp(chunkOverlapChars, 0, chunkSizeChars / 2);
 
         return Math.Max(1, chunkSizeChars - boundedOverlap);
-
     }
-
 }

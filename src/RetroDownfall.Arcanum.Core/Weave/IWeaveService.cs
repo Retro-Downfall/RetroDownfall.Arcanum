@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// </summary>
 public interface IWeaveService
 {
-
     /// <summary>
     /// <c>true</c> only when an embedding-backed <c>Arcanum:Features</c> opt-in is enabled and both
     /// <c>Arcanum:Integrations:Embeddings:Provider</c> and
@@ -40,7 +39,9 @@ public interface IWeaveService
     /// <summary>
     /// Imprints many texts in code-owned sequential batches (not in parallel, to avoid overwhelming
     /// local providers). Same error semantics as <see cref="EmbedAsync"/>: never throws, and a
-    /// failure on any batch fails the whole call rather than returning partial results.
+    /// failure on any batch fails the whole call rather than returning partial results. On success
+    /// the array holds exactly one vector per input, in input order: a provider that answers a
+    /// different number of vectors fails the call, so callers may index positionally.
     /// </summary>
     Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken);
 
@@ -51,5 +52,4 @@ public interface IWeaveService
     /// naive sliding-window split with no sentence-boundary detection (documented limitation).
     /// </summary>
     Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken);
-
 }
