@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -35,6 +36,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </remarks>
 internal static class CovenantAuthorityStartupReconciler
 {
+    private static readonly AsyncLocal<Action<byte[]>?> MasterKeyMaterialObserverOverride = new();
+
+    /// <summary>
+    /// Test seam observing the UTF-8 copy of the master key taken for derivation, for the current async
+    /// flow only, so a test can prove that copy is zeroed however the reconciliation ends.
+    /// </summary>
+    internal static Action<byte[]>? MasterKeyMaterialObserverForTests
+    {
+        get => MasterKeyMaterialObserverOverride.Value;
+
+        set => MasterKeyMaterialObserverOverride.Value = value;
+    }
 
     internal static async Task<bool> ReconcileAsync(
         SqliteConnection installConnection,
@@ -45,7 +58,6 @@ internal static class CovenantAuthorityStartupReconciler
         string masterApiKey,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(installConnection);
 
         ArgumentNullException.ThrowIfNull(runtime);
@@ -58,32 +70,27 @@ internal static class CovenantAuthorityStartupReconciler
 
         if (!hostToolsPolicy.CovenantPermitted)
         {
-
             Log.Warning(
                 "Covenant authority stays unavailable: the host-process-tools startup gate has not permitted it ({Disposition}).",
                 hostToolsPolicy.Disposition?.ToString() ?? "Unclassified");
 
             return false;
-
         }
 
         CovenantRuntimeGenerationState expected = runtime.Current;
 
         try
         {
-
             CovenantAuthoritySnapshot? snapshot = await ReadAuthorityAsync(
                 installConnection,
                 cancellationToken).ConfigureAwait(false);
 
             if (snapshot is null)
             {
-
                 Log.Warning(
                     "Covenant authority state is absent after schema installation; operator authority stays unavailable.");
 
                 return false;
-
             }
 
             CovenantEnvelopeStateRow? envelope = availability.Canonical is CovenantCapabilityState.Healthy
@@ -96,34 +103,44 @@ internal static class CovenantAuthorityStartupReconciler
             // safe answer: deriving from either version would authenticate tokens the other rejects.
             if (envelope is not null && envelope.MasterKeyVersion != snapshot.MasterKeyVersion)
             {
-
                 Log.Warning(
                     "Covenant canonical envelope state records a different master key version than core authority; dataset-keyed envelopes stay unavailable.");
 
                 envelope = null;
-
             }
 
             byte[] material = Encoding.UTF8.GetBytes(masterApiKey);
 
-            Result<CovenantPreparedEnvelopeKeyGeneration> prepared = keyProvider.PrepareInitial(
-                material,
-                new CovenantEnvelopeBootstrapKeyInput(
-                    snapshot.InstallationIdentity,
-                    snapshot.MasterKeyVersion,
-                    envelope?.EnvelopeKeyEpoch ?? 1,
-                    snapshot.RecoveryEnvelopeEpoch,
-                    envelope?.DatasetGeneration));
+            MasterKeyMaterialObserverForTests?.Invoke(material);
+
+            Result<CovenantPreparedEnvelopeKeyGeneration> prepared;
+
+            try
+            {
+                // The input is validated while it is built, so a corrupt authority row throws here,
+                // before PrepareInitial could take ownership of the buffer. PrepareInitial zeroes it on
+                // its own paths; this finally covers the ones that never reach it.
+                prepared = keyProvider.PrepareInitial(
+                    material,
+                    new CovenantEnvelopeBootstrapKeyInput(
+                        snapshot.InstallationIdentity,
+                        snapshot.MasterKeyVersion,
+                        envelope?.EnvelopeKeyEpoch ?? 1,
+                        snapshot.RecoveryEnvelopeEpoch,
+                        envelope?.DatasetGeneration));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(material);
+            }
 
             if (!prepared.IsSuccess)
             {
-
                 Log.Warning(
                     "Covenant envelope key derivation failed with {ErrorCode}; opaque Covenant tokens stay unavailable.",
                     prepared.Error.Code);
 
                 return false;
-
             }
 
             using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
@@ -132,34 +149,27 @@ internal static class CovenantAuthorityStartupReconciler
 
             if (!initialized.IsSuccess)
             {
-
                 Log.Warning(
                     "Covenant runtime authority initialization failed with {ErrorCode}; authority and opaque tokens stay unavailable.",
                     initialized.Error.Code);
 
                 return false;
-
             }
 
             return true;
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             Log.Warning(ex, "Covenant authority reconciliation failed; operator authority stays unavailable.");
 
             return false;
-
         }
-
     }
 
     private static async Task<CovenantAuthoritySnapshot?> ReadAuthorityAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -189,7 +199,5 @@ internal static class CovenantAuthorityStartupReconciler
             reader.GetInt64(3),
             (CovenantHostToolsState)reader.GetInt64(4),
             reader.IsDBNull(5) ? null : reader.GetString(5));
-
     }
-
 }
