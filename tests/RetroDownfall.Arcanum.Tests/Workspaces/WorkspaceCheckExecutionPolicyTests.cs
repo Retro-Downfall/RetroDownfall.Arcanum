@@ -1,29 +1,41 @@
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Workspaces;
 
 /// <summary>
 /// The mandatory-jail probe spawns <c>/usr/bin/sandbox-exec</c>. A healthy result is cached for the
 /// process lifetime so the <c>workspace_check</c> invocation path and the tools/list advertisement gate
-/// do not pay that spawn on every call; a failed result is never cached (a transient failure must not
-/// disable the tool until restart), and a disabled tool never probes at all. Every test builds its own
-/// cache or injects its own probe, so none of them touches process-global state.
+/// do not pay that spawn on every call. A failed result is remembered only for a short window: a transient
+/// failure must not disable the tool until restart, but a host whose probe keeps failing (or hanging to its
+/// two-second timeout) must not re-spawn it on every status, tools/list and health call either. A disabled
+/// tool never probes at all. Every test builds its own cache (with its own clock) or injects its own probe,
+/// so none of them touches process-global state.
 /// </summary>
 public sealed class WorkspaceCheckExecutionPolicyTests
 {
+    private static readonly TimeSpan RetryAfter = TimeSpan.FromSeconds(5);
+
     [Fact]
     public void Successful_probe_is_cached_for_the_process_lifetime()
     {
         int probes = 0;
 
-        MandatoryJailProbeCache cache = new(() =>
-        {
-            probes++;
+        FakeTimeProvider time = new();
 
-            return true;
-        });
+        MandatoryJailProbeCache cache = new(
+            () =>
+            {
+                probes++;
+
+                return true;
+            },
+            RetryAfter,
+            time);
+
+        time.Advance(TimeSpan.FromDays(30));
 
         Assert.True(cache.IsAvailable());
 
@@ -37,15 +49,21 @@ public sealed class WorkspaceCheckExecutionPolicyTests
     }
 
     [Fact]
-    public void Failed_probe_is_retried_on_next_call()
+    public void Failed_probe_is_retried_once_the_retry_window_has_passed()
     {
         Queue<bool> results = new([false, false, true]);
 
-        MandatoryJailProbeCache cache = new(results.Dequeue);
+        FakeTimeProvider time = new();
+
+        MandatoryJailProbeCache cache = new(results.Dequeue, RetryAfter, time);
 
         Assert.False(cache.IsAvailable());
 
+        time.Advance(RetryAfter);
+
         Assert.False(cache.IsAvailable());
+
+        time.Advance(RetryAfter);
 
         Assert.True(cache.IsAvailable());
 
@@ -55,11 +73,58 @@ public sealed class WorkspaceCheckExecutionPolicyTests
     }
 
     [Fact]
-    public void Reset_clears_the_cached_result_and_the_counter()
+    public void Failed_probe_is_not_repeated_inside_the_retry_window()
     {
-        MandatoryJailProbeCache cache = new(() => true);
+        int probes = 0;
 
-        Assert.True(cache.IsAvailable());
+        FakeTimeProvider time = new();
+
+        MandatoryJailProbeCache cache = new(
+            () =>
+            {
+                probes++;
+
+                return false;
+            },
+            RetryAfter,
+            time);
+
+        // A hung or persistently failing sandbox-exec costs up to its two-second timeout per probe, while
+        // every GetStatus, tools/list and health call asks. Inside the window they all get the remembered
+        // answer instead of each spawning (and each queueing behind the previous spawn).
+        for (int call = 0; call < 50; call++)
+        {
+            Assert.False(cache.IsAvailable());
+
+            time.Advance(TimeSpan.FromMilliseconds(50));
+        }
+
+        Assert.Equal(1, probes);
+
+        Assert.Equal(1, cache.ProbeCount);
+
+        time.Advance(RetryAfter);
+
+        Assert.False(cache.IsAvailable());
+
+        Assert.Equal(2, probes);
+    }
+
+    [Fact]
+    public void Reset_clears_the_cached_result_the_failure_window_and_the_counter()
+    {
+        bool healthy = false;
+
+        FakeTimeProvider time = new();
+
+        MandatoryJailProbeCache cache = new(() => healthy, RetryAfter, time);
+
+        Assert.False(cache.IsAvailable());
+
+        healthy = true;
+
+        // Still inside the failure window: the remembered failure answers.
+        Assert.False(cache.IsAvailable());
 
         cache.Reset();
 

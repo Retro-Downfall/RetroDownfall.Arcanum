@@ -79,8 +79,15 @@ internal static class WorkspaceCheckExecutionPolicy
             ExplicitRiskReason);
     }
 
+    /// <summary>
+    /// How long a failed jail probe is remembered. Long enough that a host whose probe keeps failing (or
+    /// hangs to its two-second timeout) spawns it at most once per window instead of on every status,
+    /// tools/list and health call; short enough that a transient failure clears itself without a restart.
+    /// </summary>
+    internal static readonly TimeSpan JailProbeFailureRetryAfter = TimeSpan.FromSeconds(5);
+
     private static readonly MandatoryJailProbeCache s_mandatoryJailProbeCache =
-        new(ProbeMandatoryJail);
+        new(ProbeMandatoryJail, JailProbeFailureRetryAfter, TimeProvider.System);
 
     internal static bool IsMandatoryJailAvailableForCurrentHost() =>
         s_mandatoryJailProbeCache.IsAvailable();
@@ -184,14 +191,25 @@ internal static class WorkspaceCheckExecutionPolicy
 
 /// <summary>
 /// Caches a healthy mandatory-jail probe result (a <c>sandbox-exec</c> spawn) for the process lifetime.
-/// A failed result is never cached: a transient failure (a timeout, a momentary resource shortage) must
-/// not report the jail as unavailable until the host restarts, so the next call probes again.
+/// A failed result is remembered only for <paramref name="failureRetryAfter"/>: a transient failure (a
+/// timeout, a momentary resource shortage) must not report the jail as unavailable until the host
+/// restarts, but a host where the probe keeps failing must not re-spawn it, with its timeout, on every
+/// call either. Probing is single-flight under the gate: concurrent callers wait for the one probe in
+/// flight (at most its timeout, once per window) and share its answer, and every caller inside the window
+/// after a failure gets the remembered answer without any spawn.
 /// </summary>
-internal sealed class MandatoryJailProbeCache(Func<bool> probe)
+internal sealed class MandatoryJailProbeCache(
+    Func<bool> probe,
+    TimeSpan failureRetryAfter,
+    TimeProvider timeProvider)
 {
     private readonly Lock _gate = new();
 
     private bool _available;
+
+    private bool _hasFailure;
+
+    private long _failedAtTimestamp;
 
     internal int ProbeCount { get; private set; }
 
@@ -204,9 +222,23 @@ internal sealed class MandatoryJailProbeCache(Func<bool> probe)
                 return true;
             }
 
+            if (_hasFailure
+                && timeProvider.GetElapsedTime(_failedAtTimestamp) < failureRetryAfter)
+            {
+                return false;
+            }
+
             ProbeCount++;
 
             _available = probe();
+
+            _hasFailure = !_available;
+
+            if (_hasFailure)
+            {
+                // Stamped after the probe returns, so a slow failing probe does not eat its own window.
+                _failedAtTimestamp = timeProvider.GetTimestamp();
+            }
 
             return _available;
         }
@@ -217,6 +249,10 @@ internal sealed class MandatoryJailProbeCache(Func<bool> probe)
         lock (_gate)
         {
             _available = false;
+
+            _hasFailure = false;
+
+            _failedAtTimestamp = 0;
 
             ProbeCount = 0;
         }

@@ -29,6 +29,8 @@ public sealed class WorkspaceCheckCapabilityReporter
 
     private readonly TimeSpan _probeTimeout;
 
+    private readonly Func<bool> _mandatoryJailAvailability;
+
     private CacheEntry? _cache;
 
     private RefreshEntry? _refresh;
@@ -42,7 +44,8 @@ public sealed class WorkspaceCheckCapabilityReporter
             TimeProvider.System,
             DefaultFreshFor,
             DefaultAsyncWait,
-            DefaultProbeTimeout)
+            DefaultProbeTimeout,
+            mandatoryJailAvailability: null)
     {
     }
 
@@ -56,7 +59,8 @@ public sealed class WorkspaceCheckCapabilityReporter
         TimeProvider timeProvider,
         TimeSpan freshFor,
         TimeSpan asyncWait,
-        TimeSpan probeTimeout)
+        TimeSpan probeTimeout,
+        Func<bool>? mandatoryJailAvailability)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -81,6 +85,8 @@ public sealed class WorkspaceCheckCapabilityReporter
         _freshFor = freshFor;
         _asyncWait = asyncWait;
         _probeTimeout = probeTimeout;
+        _mandatoryJailAvailability = mandatoryJailAvailability
+            ?? WorkspaceCheckExecutionPolicy.IsMandatoryJailAvailableForCurrentHost;
     }
 
     public bool IsCurrentlyEligible => GetStatus().IsAvailable;
@@ -358,8 +364,7 @@ public sealed class WorkspaceCheckCapabilityReporter
             current.ResolveWorkspaceChecks();
         string platform = WorkspaceCheckExecutionPolicy.DetectPlatform();
         bool jailAvailable = check.Enabled
-            && WorkspaceCheckExecutionPolicy
-                .IsMandatoryJailAvailableForCurrentHost();
+            && _mandatoryJailAvailability();
         WorkspaceCheckExecutionStatus platformStatus =
             WorkspaceCheckExecutionPolicy.Resolve(
                 platform,

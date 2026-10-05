@@ -80,6 +80,33 @@ public sealed class RuntimeWorkspaceRegexFactoryTests
     }
 
     [Fact]
+    public void Fallback_attempt_that_is_also_not_supported_is_reported_as_invalid_pattern_not_thrown()
+    {
+        int attempts = 0;
+
+        RuntimeWorkspaceRegexCreationResult created = RuntimeWorkspaceRegexFactory.Create(
+            "magic",
+            caseSensitive: true,
+            Timeout,
+            (_, _, _) =>
+            {
+                attempts++;
+
+                throw new NotSupportedException("no engine takes this syntax");
+            });
+
+        Assert.False(created.Success);
+
+        Assert.True(created.FallbackAttempted);
+
+        Assert.Equal("invalid_pattern", created.ErrorCode);
+
+        Assert.Null(created.Regex);
+
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
     public void Syntax_error_is_invalid_pattern_without_a_fallback_attempt()
     {
         int attempts = 0;
