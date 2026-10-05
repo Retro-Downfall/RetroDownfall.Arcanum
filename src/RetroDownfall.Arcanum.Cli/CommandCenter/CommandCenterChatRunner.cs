@@ -154,7 +154,7 @@ internal sealed class CommandCenterChatRunner(
                             streaming: true);
                         reasoning.Append(reasoningSegment.Text);
                         await coalescer
-                            .NoteTokenAsync(reasoningSegment.Text, cancellationToken)
+                            .NoteTokenAsync(cancellationToken)
                             .ConfigureAwait(false);
                         if (stoppedThinking)
                         {
@@ -175,7 +175,7 @@ internal sealed class CommandCenterChatRunner(
 
                         _ = await StopThinkingAsync(state, uiUpdates, cancellationToken).ConfigureAwait(false);
                         assistant.Append(chunk);
-                        await coalescer.NoteTokenAsync(chunk, cancellationToken).ConfigureAwait(false);
+                        await coalescer.NoteTokenAsync(cancellationToken).ConfigureAwait(false);
                         break;
 
                     case IntelligenceEventType.Context when evt.ContextBreakdown is { } breakdown:

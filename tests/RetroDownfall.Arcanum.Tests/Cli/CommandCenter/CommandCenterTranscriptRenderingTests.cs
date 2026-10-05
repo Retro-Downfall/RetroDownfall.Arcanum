@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.Text;
 
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -132,6 +133,77 @@ public sealed class CommandCenterTranscriptRenderingTests
 
         Assert.Equal(fresh, incremental);
         Assert.Equal(freshAnchors, incrementalAnchors);
+    }
+
+    /// <summary>
+    /// A streaming flush used to re-wrap the whole answer, so a long answer cost O(n) per flush and
+    /// O(n²) overall, on the UI thread. Lines the stream has already terminated cannot change, so only the
+    /// new ones (and the still-open tail) are wrapped.
+    /// </summary>
+    [Fact]
+    public void A_streaming_flush_wraps_only_the_new_lines_not_the_whole_answer()
+    {
+        SessionLogBuffer log = new();
+        SessionLogEntry entry = log.Append(SessionLogEntryKind.Assistant, string.Empty, streaming: true);
+        ObservableCollection<string> lines = [];
+        const int lineCount = 300;
+        StringBuilder answer = new();
+
+        for (int i = 0; i < lineCount; i++)
+        {
+            _ = answer.Append($"line {i} of the streamed answer, long enough that it needs wrapping at forty cells\n");
+            log.UpdateStreaming(entry, answer.ToString());
+            log.CopyLinesTo(lines, lineAnchors: null, wrapWidth: 40);
+        }
+
+        // Each flush wraps its one new terminated line plus the open tail segment; re-wrapping the whole
+        // entry each time would be on the order of lineCount * lineCount / 2.
+        Assert.True(
+            log.WrappedSegmentCount <= lineCount * 3,
+            $"expected linear wrapping work, saw {log.WrappedSegmentCount} segments for {lineCount} flushes");
+    }
+
+    [Theory]
+    [InlineData(1, 40)]
+    [InlineData(2, 12)]
+    [InlineData(3, 1)]
+    [InlineData(4, 25)]
+    public void Incremental_wrapping_matches_a_from_scratch_wrap_for_any_chunking(int seed, int wrapWidth)
+    {
+        string[] pieces =
+        [
+            "alpha ", "beta", " gamma delta ", "\n", "\n\n", "supercalifragilisticexpialidocious", "你好世界",
+            "🜁🜂", "tab\there ", "x", "  ", "\n", "ends here.",
+        ];
+        Random random = new(seed);
+        SessionLogBuffer incremental = new();
+        SessionLogEntry entry = incremental.Append(SessionLogEntryKind.Assistant, string.Empty, streaming: true);
+        ObservableCollection<string> lines = [];
+        StringBuilder text = new();
+
+        for (int step = 0; step < 120; step++)
+        {
+            _ = text.Append(pieces[random.Next(pieces.Length)]);
+            incremental.UpdateStreaming(entry, text.ToString());
+            incremental.CopyLinesTo(lines, lineAnchors: null, wrapWidth);
+
+            SessionLogBuffer fresh = new();
+            _ = fresh.Append(SessionLogEntryKind.Assistant, text.ToString(), streaming: true);
+            ObservableCollection<string> expected = [];
+            fresh.CopyLinesTo(expected, lineAnchors: null, wrapWidth);
+
+            Assert.Equal(expected, lines);
+        }
+
+        incremental.CompleteStreaming(entry);
+        incremental.CopyLinesTo(lines, lineAnchors: null, wrapWidth);
+
+        SessionLogBuffer completed = new();
+        _ = completed.Append(SessionLogEntryKind.Assistant, text.ToString());
+        ObservableCollection<string> completedLines = [];
+        completed.CopyLinesTo(completedLines, lineAnchors: null, wrapWidth);
+
+        Assert.Equal(completedLines, lines);
     }
 
     [Fact]

@@ -84,7 +84,6 @@ public sealed class CommandCenterKeymapTests
     [Fact]
     public void CtrlPage_keys_request_adjacent_transcript_pages()
     {
-
         Assert.Equal(
             CommandCenterAction.LoadOlderTranscriptPage,
             CommandCenterKeymap.Map(
@@ -120,7 +119,6 @@ public sealed class CommandCenterKeymapTests
                 false,
                 false,
                 new KeyChord(IsCtrl: true, IsPageUp: true)));
-
     }
 
     [Fact]
@@ -359,7 +357,7 @@ public sealed class CommandCenterKeymapTests
 public sealed class StreamingUiCoalescerTests
 {
     [Fact]
-    public async Task NoteToken_without_newline_or_interval_buffers()
+    public async Task NoteToken_within_the_interval_buffers()
     {
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
         DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
@@ -368,7 +366,7 @@ public sealed class StreamingUiCoalescerTests
             flushInterval: TimeSpan.FromMilliseconds(50),
             utcNow: () => now);
 
-        await coalescer.NoteTokenAsync("hello");
+        await coalescer.NoteTokenAsync();
         Assert.True(coalescer.HasPending);
         Assert.Equal(0, coalescer.FlushCount);
         Assert.False(channel.Reader.TryRead(out _));
@@ -386,8 +384,8 @@ public sealed class StreamingUiCoalescerTests
             utcNow: () => now,
             beforeFlush: () => snapshots++);
 
-        await coalescer.NoteTokenAsync("a");
-        await coalescer.NoteTokenAsync("b");
+        await coalescer.NoteTokenAsync();
+        await coalescer.NoteTokenAsync();
         Assert.Equal(0, snapshots);
 
         await coalescer.FlushFinalAsync();
@@ -396,16 +394,54 @@ public sealed class StreamingUiCoalescerTests
     }
 
     [Fact]
-    public async Task NoteToken_with_newline_flushes_immediately()
+    public async Task NoteToken_with_newline_flushes_once_the_interval_has_elapsed()
     {
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
-        await using StreamingUiCoalescer coalescer = new(channel.Writer);
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        await using StreamingUiCoalescer coalescer = new(
+            channel.Writer,
+            flushInterval: TimeSpan.FromMilliseconds(50),
+            utcNow: () => now);
 
-        await coalescer.NoteTokenAsync("line\n");
+        now = now.AddMilliseconds(60);
+        await coalescer.NoteTokenAsync();
+
         Assert.False(coalescer.HasPending);
         Assert.Equal(1, coalescer.FlushCount);
         Assert.True(channel.Reader.TryRead(out CommandCenterUiUpdate? update));
         Assert.Equal(CommandCenterUiUpdateKind.RefreshLog, update!.Kind);
+    }
+
+    /// <summary>
+    /// Each flush copies the whole answer and re-wraps its entry on the UI thread, so a newline that
+    /// bypassed the interval made a line-heavy answer (a log, a table, a code block) flush once per line.
+    /// Newlines are held to the same cadence as every other chunk.
+    /// </summary>
+    [Fact]
+    public async Task Newline_chunks_inside_the_flush_interval_do_not_flush_each_time()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        await using StreamingUiCoalescer coalescer = new(
+            channel.Writer,
+            flushInterval: TimeSpan.FromMilliseconds(50),
+            utcNow: () => now);
+
+        for (int i = 0; i < 100; i++)
+        {
+            await coalescer.NoteTokenAsync();
+            now = now.AddTicks(TimeSpan.TicksPerMillisecond / 100);
+        }
+
+        Assert.Equal(0, coalescer.FlushCount);
+        Assert.True(coalescer.HasPending);
+        Assert.False(channel.Reader.TryRead(out _));
+
+        now = now.AddMilliseconds(60);
+        await coalescer.NoteTokenAsync();
+
+        Assert.Equal(1, coalescer.FlushCount);
+        Assert.False(coalescer.HasPending);
     }
 
     [Fact]
@@ -418,9 +454,9 @@ public sealed class StreamingUiCoalescerTests
             flushInterval: TimeSpan.FromMilliseconds(50),
             utcNow: () => now);
 
-        await coalescer.NoteTokenAsync("a");
+        await coalescer.NoteTokenAsync();
         now = now.AddMilliseconds(60);
-        await coalescer.NoteTokenAsync("b");
+        await coalescer.NoteTokenAsync();
 
         Assert.Equal(1, coalescer.FlushCount);
         Assert.False(coalescer.HasPending);
@@ -432,12 +468,12 @@ public sealed class StreamingUiCoalescerTests
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
         await using StreamingUiCoalescer coalescer = new(channel.Writer);
 
-        await coalescer.NoteTokenAsync("pending");
+        await coalescer.NoteTokenAsync();
         await coalescer.FlushBeforeBlockAsync();
         Assert.Equal(1, coalescer.FlushCount);
         Assert.False(coalescer.HasPending);
 
-        await coalescer.NoteTokenAsync("more");
+        await coalescer.NoteTokenAsync();
         await coalescer.FlushFinalAsync();
         Assert.Equal(2, coalescer.FlushCount);
     }
@@ -448,11 +484,11 @@ public sealed class StreamingUiCoalescerTests
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
         StreamingUiCoalescer coalescer = new(channel.Writer);
 
-        await coalescer.NoteTokenAsync("partial");
+        await coalescer.NoteTokenAsync();
         await coalescer.FlushCancelledAsync();
         Assert.Equal(1, coalescer.FlushCount);
 
-        await coalescer.NoteTokenAsync("again");
+        await coalescer.NoteTokenAsync();
         await coalescer.DisposeAsync();
         Assert.Equal(2, coalescer.FlushCount);
         Assert.False(coalescer.HasPending);
