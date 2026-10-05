@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Api;
 
 internal static class ApiRequestJson
 {
-
     public const string DefaultInvalidBodyMessage = "Request body is required.";
 
     public const string MalformedJsonMessage = "Request body could not be parsed as valid JSON.";
@@ -28,48 +27,42 @@ internal static class ApiRequestJson
 
     public const string UnreadableBodyMessage = "Request body could not be read.";
 
+    public const string UnacceptedMediaTypeMessage = "The request's Content-Type is not accepted by this route.";
+
+    public const string ParameterBindingFailedMessage = "Request parameters could not be bound to this route.";
+
     public static async ValueTask<(T? Body, IResult? Error)> ReadAsync<T>(
         HttpContext httpContext,
         JsonTypeInfo<T> typeInfo,
         Func<HttpContext, IResult> invalidJsonResult,
         CancellationToken cancellationToken)
     {
-
         // ReadFromJsonAsync throws InvalidOperationException — not JsonException — for a missing or
         // non-JSON Content-Type. Left uncaught it escapes to ArcanumExceptionHandler and a routine client
         // mistake becomes a 500 Hub.Unhandled with an Error-level stack trace.
         if (!httpContext.Request.HasJsonContentType())
         {
-
             return (default, UnsupportedMediaTypeResult(httpContext));
-
         }
 
         try
         {
-
             T? body = await httpContext.Request
                 .ReadFromJsonAsync(typeInfo, cancellationToken)
                 .ConfigureAwait(false);
 
             return (body, null);
-
         }
         catch (JsonException)
         {
-
             return (default, invalidJsonResult(httpContext));
-
         }
         catch (InvalidOperationException)
         {
-
             return (default, UnsupportedMediaTypeResult(httpContext));
-
         }
         catch (BadHttpRequestException failure)
         {
-
             // Kestrel raises this for every request-level fault it detects while a body is being read
             // -- an early end, a body past the size ceiling, one under the minimum data rate, trailers
             // over the header ceiling -- and it is neither a JsonException nor an InvalidOperationException.
@@ -79,9 +72,7 @@ internal static class ApiRequestJson
             // routine client-side fault. Minimal-API parameter binding answers these with the
             // exception's own status, and every caller of this helper had lost that by using it.
             return (default, UnreadableBodyResult(httpContext, failure));
-
         }
-
     }
 
     /// <summary>
@@ -98,36 +89,64 @@ internal static class ApiRequestJson
     /// </remarks>
     public static IResult UnreadableBodyResult(HttpContext httpContext, BadHttpRequestException failure)
     {
+        (string code, string message) = ResolveBodyFault(failure);
 
+        return BodyFaultResult(httpContext, failure.StatusCode, code, message);
+    }
+
+    /// <summary>
+    /// A 415 the framework's own binder wrote without throwing: the route binds its body and the request's
+    /// Content-Type is not one the binder accepts.
+    /// </summary>
+    /// <remarks>
+    /// <c>ThrowOnBadRequest</c> routes a failed read or parse into the exception handler, but the binder
+    /// answers an unaccepted media type by setting the status and returning with nothing written, so this
+    /// result is what a status-code hook puts on that otherwise empty response. The wording does not say
+    /// JSON because a multipart route reaches it too.
+    /// </remarks>
+    public static IResult UnacceptedMediaTypeResult(HttpContext httpContext) =>
+        BodyFaultResult(
+            httpContext,
+            StatusCodes.Status415UnsupportedMediaType,
+            ErrorCodes.Validation.UnsupportedMediaType,
+            UnacceptedMediaTypeMessage);
+
+    private static IResult BodyFaultResult(HttpContext httpContext, int statusCode, string code, string message)
+    {
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-        (string code, string message) = ResolveBodyFault(failure.StatusCode);
 
         return Results.Json(
             ApiResponse<bool>.FromResult(
                 Result<bool>.Failure(new Error(code, message)),
                 traceId),
             ArcanumJsonContext.Default.ApiResponseBoolean,
-            statusCode: failure.StatusCode);
-
+            statusCode: statusCode);
     }
 
     /// <summary>
     /// Picks the code and wording for one request-body fault from the status Kestrel chose.
     /// </summary>
     /// <remarks>
-    /// The four statuses named below are the ones Kestrel raises for a fault detected while reading a
-    /// body, and each resolves back through <c>ArcanumErrorMapper</c> to the very status it was chosen
-    /// for -- <c>ApiRequestJsonBodyFaultTests</c> asserts that round trip. The default arm exists for a
-    /// status not on that list: the response still carries Kestrel's status verbatim, and
-    /// <see cref="ErrorCodes.Validation.InvalidBody"/> is the honest generic answer for "the body could
-    /// not be read", but it is the one case where the mapper's status for the code (400) and the status
-    /// on the response may differ. Naming a new status here rather than widening the default is what
-    /// keeps that set empty.
+    /// The five statuses named below are the ones the framework raises for a fault detected while
+    /// binding or reading a body, and each resolves back through <c>ArcanumErrorMapper</c> to the very
+    /// status it was chosen for -- <c>ApiRequestJsonBodyFaultTests</c> asserts that round trip. A 400
+    /// whose inner exception is a <see cref="JsonException"/> is the framework's own binder reporting a
+    /// body that is not valid JSON for the parameter, and is worded the same as the routes that read
+    /// the body themselves, so a route's answer does not depend on which of the two reads it. The default
+    /// arm exists for a status not on that list: the response still carries the framework's status
+    /// verbatim, and <see cref="ErrorCodes.Validation.InvalidBody"/> is the honest generic answer for
+    /// "the body could not be read", but it is the one case where the mapper's status for the code
+    /// (400) and the status on the response may differ. Naming a new status here rather than widening
+    /// the default is what keeps that set empty.
     /// </remarks>
-    private static (string Code, string Message) ResolveBodyFault(int statusCode) =>
-        statusCode switch
+    private static (string Code, string Message) ResolveBodyFault(BadHttpRequestException failure) =>
+        failure.StatusCode switch
         {
+            StatusCodes.Status400BadRequest when failure.InnerException is JsonException =>
+                (ErrorCodes.Validation.InvalidBody, MalformedJsonMessage),
+
+            StatusCodes.Status400BadRequest when IsParameterBindingFault(failure) =>
+                (ErrorCodes.Validation.InvalidBody, ParameterBindingFailedMessage),
 
             StatusCodes.Status400BadRequest => (ErrorCodes.Validation.InvalidBody, IncompleteBodyMessage),
 
@@ -135,16 +154,32 @@ internal static class ApiRequestJson
 
             StatusCodes.Status413PayloadTooLarge => (ErrorCodes.Validation.BodyTooLarge, BodyTooLargeMessage),
 
+            StatusCodes.Status415UnsupportedMediaType =>
+                (ErrorCodes.Validation.UnsupportedMediaType, UnacceptedMediaTypeMessage),
+
             StatusCodes.Status431RequestHeaderFieldsTooLarge =>
                 (ErrorCodes.Validation.RequestHeadersTooLarge, RequestHeadersTooLargeMessage),
 
             _ => (ErrorCodes.Validation.InvalidBody, UnreadableBodyMessage),
-
         };
+
+    /// <summary>
+    /// Whether the framework's parameter binder, not a body read, raised this 400.
+    /// </summary>
+    /// <remarks>
+    /// The binder reports a query, route or header value it could not convert, and a required one that
+    /// was absent, with a 400 and no inner exception, and the wording below is what it has said since
+    /// minimal APIs shipped. Matching it is only a choice of which of two honest messages to send: a
+    /// wording change falls back to the body message, never to a different status or code.
+    /// </remarks>
+    private static bool IsParameterBindingFault(BadHttpRequestException failure) =>
+        failure.InnerException is null
+        && (failure.Message.StartsWith("Failed to bind parameter", StringComparison.Ordinal)
+            || failure.Message.StartsWith("Required parameter", StringComparison.Ordinal)
+            || failure.Message.StartsWith("Implicit body inferred", StringComparison.Ordinal));
 
     public static IResult UnsupportedMediaTypeResult(HttpContext httpContext)
     {
-
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         return Results.Json(
@@ -154,7 +189,6 @@ internal static class ApiRequestJson
                 traceId),
             ArcanumJsonContext.Default.ApiResponseBoolean,
             statusCode: StatusCodes.Status415UnsupportedMediaType);
-
     }
 
     public static IResult InvalidBodyResult<TResponse>(
@@ -162,7 +196,6 @@ internal static class ApiRequestJson
         string message,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo)
     {
-
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         return Results.Json(
@@ -171,19 +204,15 @@ internal static class ApiRequestJson
                 traceId),
             responseTypeInfo,
             statusCode: StatusCodes.Status400BadRequest);
-
     }
 
     public static IResult InvalidBodyResult(
         HttpContext httpContext,
         string message)
     {
-
         return InvalidBodyResult(
             httpContext,
             message,
             ArcanumJsonContext.Default.ApiResponseBoolean);
-
     }
-
 }

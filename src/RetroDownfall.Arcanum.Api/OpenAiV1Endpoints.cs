@@ -1254,6 +1254,16 @@ internal static partial class OpenAiV1Endpoints
 
     internal static IResult CreateRequestBodyReadErrorResult(int statusCode)
     {
+        if (statusCode == StatusCodes.Status415UnsupportedMediaType)
+        {
+            return JsonError(
+                ApiRequestJson.UnacceptedMediaTypeMessage,
+                "invalid_request_error",
+                code: "unsupported_media_type",
+                param: null,
+                statusCode: StatusCodes.Status415UnsupportedMediaType);
+        }
+
         bool payloadTooLarge = statusCode == StatusCodes.Status413PayloadTooLarge;
 
         return JsonError(

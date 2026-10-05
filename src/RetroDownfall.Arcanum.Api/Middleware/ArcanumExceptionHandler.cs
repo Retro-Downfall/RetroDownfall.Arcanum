@@ -16,41 +16,60 @@ namespace RetroDownfall.Arcanum.Api.Middleware;
 [ExcludeFromCodeCoverage] // Reason: ASP.NET exception-handler glue; exercised via integration tests and fault injection.
 public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> logger) : IExceptionHandler
 {
-
     public async ValueTask<bool> TryHandleAsync(
         HttpContext httpContext,
         Exception exception,
         CancellationToken cancellationToken)
     {
-
         if (exception is OperationCanceledException && httpContext.RequestAborted.IsCancellationRequested)
         {
-
             return false;
-
         }
 
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-        if (exception is JsonException)
+        if (exception is BadHttpRequestException badRequest)
         {
+            // Expected control flow, not a fault. The framework's parameter binder and Kestrel's body
+            // reader raise this for a request the client got wrong -- a body that is not valid JSON for
+            // the parameter, a Content-Type the route does not accept, a body past the ceiling or under the
+            // minimum data rate -- and carry the status they chose. AddArcanumApiServices turns
+            // RouteHandlerOptions.ThrowOnBadRequest on in every environment so a bound route reaches this
+            // arm instead of the binder's own empty 400/415 outside Development, and instead of the logged
+            // 500 below inside it.
+            //
+            // The line is Debug and carries only the status: the client's mistake is not the operator's
+            // error, and the exception text is the framework's wording, which is not echoed back.
+            logger.LogDebug("A request was refused before its handler ran ({StatusCode}).", badRequest.StatusCode);
 
             if (httpContext.Response.HasStarted)
             {
-
                 return false;
+            }
 
+            IResult bodyFault = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase)
+                ? OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(badRequest.StatusCode)
+                : ApiRequestJson.UnreadableBodyResult(httpContext, badRequest);
+
+            await bodyFault.ExecuteAsync(httpContext).ConfigureAwait(false);
+
+            return true;
+        }
+
+        if (exception is JsonException)
+        {
+            if (httpContext.Response.HasStarted)
+            {
+                return false;
             }
 
             if (httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
             {
-
                 IResult openAiJsonError = OpenAiV1Endpoints.CreateInvalidJsonErrorResult();
 
                 await openAiJsonError.ExecuteAsync(httpContext).ConfigureAwait(false);
 
                 return true;
-
             }
 
             httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -66,12 +85,10 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
                 .ConfigureAwait(false);
 
             return true;
-
         }
 
         if (exception is GrimoireMaintenanceUnavailableException)
         {
-
             // Expected control flow, not a fault. Admission refuses what arrives after a transition
             // begins; this is the request that was already in flight when admission closed under it,
             // and it deserves the same answer rather than "Arcanum broke".
@@ -91,13 +108,11 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
             // already begun a response when admission closed under them. A response whose first byte
             // has left is finished by its own writer; there is nothing further to say about it.
             return true;
-
         }
 
         if (exception is LabeledArtifactRefusalException refusal
             && !httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
         {
-
             // Expected control flow, not a fault. A raw delete that returns no Result of its own asked the
             // labelled-artifact guard inside its own transaction and was refused: the artifact is labelled,
             // or the label table cannot be read. The refusal carries the guard's own Error, so the status
@@ -110,9 +125,7 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
 
             if (httpContext.Response.HasStarted)
             {
-
                 return false;
-
             }
 
             httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(refusal.Error.Code);
@@ -126,7 +139,6 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
                 .ConfigureAwait(false);
 
             return true;
-
         }
 
         logger.LogError(
@@ -138,19 +150,14 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
 
         if (httpContext.Response.HasStarted)
         {
-
             return false;
-
         }
 
         if (httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
         {
-
             if (httpContext.Response.HasStarted)
             {
-
                 return false;
-
             }
 
             IResult openAiError = OpenAiV1Endpoints.CreateUnhandledInferenceErrorResult();
@@ -158,7 +165,6 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
             await openAiError.ExecuteAsync(httpContext).ConfigureAwait(false);
 
             return true;
-
         }
 
         httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
@@ -176,7 +182,5 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
             .ConfigureAwait(false);
 
         return true;
-
     }
-
 }

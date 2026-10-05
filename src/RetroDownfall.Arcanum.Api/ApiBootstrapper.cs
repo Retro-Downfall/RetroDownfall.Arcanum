@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
@@ -291,6 +292,12 @@ public static class ApiBootstrapper
     {
         services.AddExceptionHandler<ArcanumExceptionHandler>();
 
+        // The framework's default is to throw a binder failure into the exception handler only in
+        // Development and to write an empty 400/415 everywhere else. Pinned on so a bound-body route
+        // answers a malformed, mistyped or oversized body with the same envelope in every environment,
+        // through ArcanumExceptionHandler's BadHttpRequestException arm.
+        services.Configure<RouteHandlerOptions>(static options => options.ThrowOnBadRequest = true);
+
         services.AddProblemDetails();
 
         services.AddSingleton<IGrimoireLivenessProbe, GrimoireLivenessProbe>();
@@ -500,6 +507,27 @@ public static class ApiBootstrapper
     public static void UseArcanumExceptionHandler(this WebApplication app)
     {
         app.UseExceptionHandler();
+
+        // The binder answers a request whose Content-Type it does not accept by setting 415 and
+        // returning, so ThrowOnBadRequest never routes it to the exception handler and the response
+        // would reach the client with no body. Every other empty status is left exactly as it was.
+        app.UseStatusCodePages(WriteUnacceptedMediaTypeAsync);
+    }
+
+    private static async Task WriteUnacceptedMediaTypeAsync(StatusCodeContext context)
+    {
+        HttpContext httpContext = context.HttpContext;
+
+        if (httpContext.Response.StatusCode != StatusCodes.Status415UnsupportedMediaType)
+        {
+            return;
+        }
+
+        IResult unaccepted = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase)
+            ? OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(StatusCodes.Status415UnsupportedMediaType)
+            : ApiRequestJson.UnacceptedMediaTypeResult(httpContext);
+
+        await unaccepted.ExecuteAsync(httpContext).ConfigureAwait(false);
     }
 
     /// <summary>

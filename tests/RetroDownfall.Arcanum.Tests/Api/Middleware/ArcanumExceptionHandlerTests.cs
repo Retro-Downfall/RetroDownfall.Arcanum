@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Api.Middleware;
 
 public sealed class ArcanumExceptionHandlerTests
 {
-
     [Fact]
     public async Task TryHandleAsync_V1Path_WithResponseStarted_ReturnsFalse()
     {
@@ -52,7 +51,6 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.True(handled);
 
         Assert.Equal(400, httpContext.Response.StatusCode);
-
     }
 
     [Fact]
@@ -70,7 +68,6 @@ public sealed class ArcanumExceptionHandlerTests
             CancellationToken.None);
 
         Assert.False(handled);
-
     }
 
     [Fact]
@@ -90,7 +87,6 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.True(handled);
 
         Assert.Equal(400, httpContext.Response.StatusCode);
-
     }
 
     [Fact]
@@ -108,7 +104,6 @@ public sealed class ArcanumExceptionHandlerTests
             CancellationToken.None);
 
         Assert.True(handled);
-
     }
 
     [Fact]
@@ -128,7 +123,6 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.True(handled);
 
         Assert.Equal(500, httpContext.Response.StatusCode);
-
     }
 
     [Fact]
@@ -150,7 +144,6 @@ public sealed class ArcanumExceptionHandlerTests
             CancellationToken.None);
 
         Assert.False(handled);
-
     }
 
     /// <summary>
@@ -165,7 +158,6 @@ public sealed class ArcanumExceptionHandlerTests
     [Fact]
     public async Task TryHandleAsync_MaintenanceRefusal_ApiPath_IsTheDocumentedServiceUnavailable()
     {
-
         RecordingLogger logger = new();
 
         ArcanumExceptionHandler handler = new(logger);
@@ -198,13 +190,11 @@ public sealed class ArcanumExceptionHandlerTests
             static entry => entry.Message.Contains("/api/sessions", StringComparison.Ordinal));
 
         Assert.All(logger.Entries, static entry => Assert.Null(entry.Exception));
-
     }
 
     [Fact]
     public async Task TryHandleAsync_MaintenanceRefusal_V1Path_IsTheOpenAiServiceUnavailable()
     {
-
         RecordingLogger logger = new();
 
         ArcanumExceptionHandler handler = new(logger);
@@ -231,13 +221,11 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.Equal("service_unavailable", body.Error.Type);
 
         Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
-
     }
 
     [Fact]
     public async Task TryHandleAsync_MaintenanceRefusal_WithResponseStarted_RewritesNothing()
     {
-
         RecordingLogger logger = new();
 
         ArcanumExceptionHandler handler = new(logger);
@@ -260,7 +248,6 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.Equal(StatusCodes.Status200OK, httpContext.Response.StatusCode);
 
         Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
-
     }
 
     /// <summary>
@@ -272,7 +259,6 @@ public sealed class ArcanumExceptionHandlerTests
     [InlineData(ErrorCodes.Covenant.Unavailable, StatusCodes.Status503ServiceUnavailable)]
     public async Task TryHandleAsync_LabeledArtifactRefusal_AnswersTheMappedStatusWithTheGuardsError(string code, int status)
     {
-
         RecordingLogger logger = new();
 
         ArcanumExceptionHandler handler = new(logger);
@@ -305,7 +291,6 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
 
         Assert.All(logger.Entries, static entry => Assert.Null(entry.Exception));
-
     }
 
     /// <summary>
@@ -315,7 +300,6 @@ public sealed class ArcanumExceptionHandlerTests
     [Fact]
     public async Task TryHandleAsync_LabeledArtifactRefusal_V1Path_KeepsTheOpenAiUnhandledAnswer()
     {
-
         RecordingLogger logger = new();
 
         ArcanumExceptionHandler handler = new(logger);
@@ -334,13 +318,11 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
 
         Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Error);
-
     }
 
     [Fact]
     public async Task TryHandleAsync_LabeledArtifactRefusal_WithResponseStarted_ReturnsFalse()
     {
-
         ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
 
         DefaultHttpContext httpContext = CreateHttpContext(responseStarted: true);
@@ -353,7 +335,6 @@ public sealed class ArcanumExceptionHandlerTests
             CancellationToken.None);
 
         Assert.False(handled);
-
     }
 
     /// <summary>
@@ -362,7 +343,6 @@ public sealed class ArcanumExceptionHandlerTests
     [Fact]
     public async Task TryHandleAsync_UnexpectedException_StillLogsAtError()
     {
-
         RecordingLogger logger = new();
 
         ArcanumExceptionHandler handler = new(logger);
@@ -381,40 +361,154 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
 
         Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
 
+    /// <summary>
+    /// A request-level fault the framework detected while binding or reading a body is the client's, and is
+    /// answered with the status the framework chose and the documented envelope, never a 500.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_BadHttpRequestException_413_ReturnsBodyTooLargeEnvelope()
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/prompts";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new BadHttpRequestException("Request body too large.", StatusCodes.Status413PayloadTooLarge),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, httpContext.Response.StatusCode);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Validation.BodyTooLarge, body.Error?.Code);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.All(logger.Entries, static entry => Assert.Null(entry.Exception));
+    }
+
+    [Theory]
+    [InlineData(StatusCodes.Status400BadRequest, ErrorCodes.Validation.InvalidBody)]
+    [InlineData(StatusCodes.Status408RequestTimeout, ErrorCodes.Validation.BodyReadTimeout)]
+    [InlineData(StatusCodes.Status415UnsupportedMediaType, ErrorCodes.Validation.UnsupportedMediaType)]
+    [InlineData(StatusCodes.Status431RequestHeaderFieldsTooLarge, ErrorCodes.Validation.RequestHeadersTooLarge)]
+    public async Task TryHandleAsync_BadHttpRequestException_KeepsTheFrameworkStatusWithItsDocumentedCode(
+        int status,
+        string expectedCode)
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/spells/execute";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new BadHttpRequestException("framework wording is never echoed", status),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(status, httpContext.Response.StatusCode);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(expectedCode, body.Error?.Code);
+
+        Assert.DoesNotContain("framework wording", body.Error?.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_BadHttpRequestException_V1Path_ReturnsTheOpenAiPayloadTooLargeError()
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/v1/files";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new BadHttpRequestException("Request body too large.", StatusCodes.Status413PayloadTooLarge),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, httpContext.Response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal("payload_too_large", body.Error.Code);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_BadHttpRequestException_ResponseStarted_ReturnsFalse()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext(responseStarted: true);
+
+        httpContext.Request.Path = "/api/prompts";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new BadHttpRequestException("Request body too large.", StatusCodes.Status413PayloadTooLarge),
+            CancellationToken.None);
+
+        Assert.False(handled);
     }
 
     private static string ReadBody(HttpContext httpContext)
     {
-
         MemoryStream body = (MemoryStream)httpContext.Features
             .GetRequiredFeature<IHttpResponseBodyFeature>()
             .Stream;
 
         return Encoding.UTF8.GetString(body.ToArray());
-
     }
 
     private sealed class RecordingLogger : ILogger<ArcanumExceptionHandler>
     {
-
         private readonly List<LogEntry> _entries = [];
 
         internal IReadOnlyList<LogEntry> Entries
         {
-
             get
             {
-
                 lock (_entries)
                 {
-
                     return [.. _entries];
-
                 }
-
             }
-
         }
 
         public IDisposable? BeginScope<TState>(TState state)
@@ -429,16 +523,11 @@ public sealed class ArcanumExceptionHandlerTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-
             lock (_entries)
             {
-
                 _entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
-
             }
-
         }
-
     }
 
     internal sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
@@ -482,7 +571,6 @@ public sealed class ArcanumExceptionHandlerTests
 
     private sealed class TestRequestFeature : IHttpRequestFeature
     {
-
         public string Protocol { get; set; } = "HTTP/1.1";
 
         public string Scheme { get; set; } = "http";
@@ -500,12 +588,10 @@ public sealed class ArcanumExceptionHandlerTests
         public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
 
         public Stream Body { get; set; } = new MemoryStream();
-
     }
 
     private sealed class TestResponseFeature : IHttpResponseFeature
     {
-
         public int StatusCode { get; set; } = 200;
 
         public string? ReasonPhrase { get; set; }
@@ -523,12 +609,10 @@ public sealed class ArcanumExceptionHandlerTests
         public void OnCompleted(Func<object, Task> callback, object state)
         {
         }
-
     }
 
     private sealed class TestResponseBodyFeature : IHttpResponseBodyFeature
     {
-
         private readonly Stream _stream;
 
         private readonly IHttpResponseFeature _responseFeature;
@@ -537,13 +621,11 @@ public sealed class ArcanumExceptionHandlerTests
 
         public TestResponseBodyFeature(Stream stream, IHttpResponseFeature responseFeature)
         {
-
             _stream = stream;
 
             _responseFeature = responseFeature;
 
             _writer = PipeWriter.Create(stream);
-
         }
 
         public Stream Stream => _stream;
@@ -563,11 +645,7 @@ public sealed class ArcanumExceptionHandlerTests
 
         public Task StartAsync(CancellationToken cancellationToken = default)
         {
-
             return Task.CompletedTask;
-
         }
-
     }
-
 }
