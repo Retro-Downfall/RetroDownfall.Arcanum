@@ -723,6 +723,35 @@ public sealed class ShellCommandDispatcherTests
         Assert.DoesNotContain("/context unpin", text, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// <c>/pin</c> names its kind, so a numeric ordinal, one that names no member and a comma-joined list
+    /// get the usage message rather than being cast into a kind the operator never typed.
+    /// </summary>
+    [Theory]
+    [InlineData("0")]
+    [InlineData("99")]
+    [InlineData("file,url")]
+    public async Task Pin_takes_a_kind_name_only(string kind)
+    {
+        ShellCommandDispatcher dispatcher = CreateDispatcher();
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(
+            Guid.Parse("11111111-2222-3333-4444-555555555555"),
+            "S",
+            "Active",
+            1);
+
+        _ = await dispatcher.DispatchAsync($"/pin {kind} src/App.cs", state, CancellationToken.None);
+
+        string text = state.Log.RenderPlainText();
+
+        Assert.Contains("Usage: /pin <kind> <target>", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Pinned", text, StringComparison.Ordinal);
+    }
+
     private static ShellCommandDispatcher CreateDispatcher() =>
         CreateDispatcher(new FakeHandler());
 

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -805,7 +806,7 @@ internal sealed class ShellCommandDispatcher(
             return ShellDispatchResult.Continue;
         }
 
-        if (!Enum.TryParse(kindText, ignoreCase: true, out SessionContextPinKind kind)
+        if (!CliEnumInput.TryParseName(kindText, out SessionContextPinKind kind)
             || string.IsNullOrWhiteSpace(targetText))
         {
             state.Log.Append(SessionLogEntryKind.Error, PinUsageMessage);

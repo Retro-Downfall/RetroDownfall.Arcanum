@@ -916,7 +916,7 @@ internal sealed class SetupCommand(
 
         if (options.Edition is not null)
         {
-            draft = Enum.TryParse(options.Edition, ignoreCase: true, out ArcanumEdition edition)
+            draft = CliEnumInput.TryParseName(options.Edition, out ArcanumEdition edition)
                 ? draft with { Edition = edition }
                 : throw new SetupInputException(
                     $"Unknown edition '{options.Edition}'. Supported editions: local, development.");

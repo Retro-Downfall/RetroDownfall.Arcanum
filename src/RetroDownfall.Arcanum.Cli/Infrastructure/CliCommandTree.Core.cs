@@ -433,6 +433,17 @@ internal static partial class CliCommandTree
             Description = "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
         };
 
+    /// <summary>
+    /// The <c>--workspace</c> of the verbs that default to the workspace saved by <c>use workspace</c> and
+    /// never look at the current directory (<c>mcp</c> and <c>tool</c>): unlike <see cref="WorkspaceOption"/>
+    /// its help text does not promise a detection those verbs do not perform.
+    /// </summary>
+    private static Option<string?> SavedContextWorkspaceOption() =>
+        new("--workspace")
+        {
+            Description = "Workspace ID, name, or server path; defaults to the workspace saved with 'use workspace'. The current directory is not detected.",
+        };
+
     private static Command BuildMcp(IServiceProvider sp)
     {
         DeferredHandler<McpCommands> handler = new(sp);
@@ -443,9 +454,9 @@ internal static partial class CliCommandTree
 
         Command list = new(
             "list",
-            "List safe MCP scope, transport, trust, lifecycle, tool-count, and last-error status.");
+            "List safe MCP scope, transport, lifecycle, tool-count, and last-error status.");
 
-        Option<string?> listWorkspace = WorkspaceOption();
+        Option<string?> listWorkspace = SavedContextWorkspaceOption();
 
         list.Add(listWorkspace);
 
@@ -463,7 +474,7 @@ internal static partial class CliCommandTree
             "server",
             "MCP server name");
 
-        Option<string?> showWorkspace = WorkspaceOption();
+        Option<string?> showWorkspace = SavedContextWorkspaceOption();
 
         show.Add(showIdentifier);
 
@@ -498,7 +509,7 @@ internal static partial class CliCommandTree
             "reload",
             "Clear MCP partitions and reload global or explicitly scoped workspace configuration.");
 
-        Option<string?> reloadWorkspace = WorkspaceOption();
+        Option<string?> reloadWorkspace = SavedContextWorkspaceOption();
 
         reload.Add(reloadWorkspace);
 
@@ -535,7 +546,7 @@ internal static partial class CliCommandTree
             "server",
             "MCP server name");
 
-        Option<string?> toolsWorkspace = WorkspaceOption();
+        Option<string?> toolsWorkspace = SavedContextWorkspaceOption();
 
         tools.Add(toolsIdentifier);
 
@@ -564,7 +575,7 @@ internal static partial class CliCommandTree
             Description = "External MCP server name or unique prefix; omit for tool-based selection.",
         };
 
-        Option<string?> invokeWorkspace = WorkspaceOption();
+        Option<string?> invokeWorkspace = SavedContextWorkspaceOption();
 
         invoke.Add(invokeTool);
 
@@ -616,7 +627,7 @@ internal static partial class CliCommandTree
             "server",
             "MCP server name");
 
-        Option<string?> workspace = WorkspaceOption();
+        Option<string?> workspace = SavedContextWorkspaceOption();
 
         command.Add(identifier);
 
@@ -644,7 +655,7 @@ internal static partial class CliCommandTree
             "list",
             "List built-in diagnostic tools available for the selected workspace scope.");
 
-        Option<string?> listWorkspace = WorkspaceOption();
+        Option<string?> listWorkspace = SavedContextWorkspaceOption();
 
         list.Add(listWorkspace);
 
@@ -663,7 +674,7 @@ internal static partial class CliCommandTree
             Description = "Built-in tool name or unique prefix.",
         };
 
-        Option<string?> showWorkspace = WorkspaceOption();
+        Option<string?> showWorkspace = SavedContextWorkspaceOption();
 
         show.Add(showTool);
 
@@ -687,7 +698,7 @@ internal static partial class CliCommandTree
 
         Argument<string?> invokeArguments = ToolArgumentsArgument();
 
-        Option<string?> invokeWorkspace = WorkspaceOption();
+        Option<string?> invokeWorkspace = SavedContextWorkspaceOption();
 
         invoke.Add(invokeTool);
 

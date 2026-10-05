@@ -897,6 +897,86 @@ public sealed class McpToolCommandTests
     }
 
     /// <summary>
+    /// A path-looking <c>--workspace</c> is canonicalised before it is compared, so a relative spelling, a
+    /// dot segment and doubled or trailing separators name the server's directory the way its absolute
+    /// spelling does.
+    /// </summary>
+    [Theory]
+    [InlineData("./mcp-proj/")]
+    [InlineData("sub/../mcp-proj")]
+    [InlineData("./mcp-proj//")]
+    public void Mcp_list_workspace_accepts_a_relative_spelling_of_the_servers_directory(string spelling)
+    {
+        McpServerInfo project = WorkspaceServer() with
+        {
+            Name = "project-server",
+            WorkingDirectory = Path.Combine(global::System.Environment.CurrentDirectory, "mcp-proj"),
+        };
+
+        McpServerInfo other = WorkspaceServer() with
+        {
+            Name = "other-server",
+            WorkingDirectory = Path.Combine(global::System.Environment.CurrentDirectory, "mcp-other"),
+        };
+
+        RecordingHandler handler = new(_ => McpListResponse([project, other]));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "list", "--workspace", spelling]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("project-server", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("other-server", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A server-owned Windows path matches in either separator and any case, on every platform, because
+    /// Windows treats them as one location. The Windows lane of this is
+    /// <c>McpWorkspacePathTests.On_Windows_a_real_path_in_another_case_and_separator_is_the_same_location</c>.
+    /// </summary>
+    [Fact]
+    public void Mcp_list_workspace_accepts_a_windows_path_in_another_separator_and_case()
+    {
+        McpServerInfo project = WorkspaceServer() with { Name = "project-server", WorkingDirectory = @"C:\Srv\Proj" };
+
+        McpServerInfo other = WorkspaceServer() with { Name = "other-server", WorkingDirectory = @"D:\srv\proj" };
+
+        RecordingHandler handler = new(_ => McpListResponse([project, other]));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "list", "--workspace", "c:/srv/proj/"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("project-server", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("other-server", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The path the host is asked about is the canonical one, so a relative <c>--workspace</c> reaches it
+    /// as the absolute path the CLI's own current directory makes it, not as text the host would resolve
+    /// against its own.
+    /// </summary>
+    [Fact]
+    public void Mcp_reload_sends_the_canonical_absolute_workspace_path()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<string>("reloaded", true, null),
+            ArcanumJsonContext.Default.ApiResponseString));
+
+        CliTestResult reload = RunCommand(handler, ["mcp", "reload", "--workspace", "./mcp-proj/"]);
+
+        Assert.Equal(0, reload.ExitCode);
+
+        using JsonDocument body = JsonDocument.Parse(ReadBody(Assert.Single(handler.Requests)));
+
+        Assert.Equal(
+            Path.Combine(global::System.Environment.CurrentDirectory, "mcp-proj"),
+            body.RootElement.GetProperty("workingDirectory").GetString());
+    }
+
+    /// <summary>
     /// The listing knows only a server's working directory, which says where it was configured and
     /// nothing about whether the host trusts that configuration, so it does not print a trust verdict.
     /// </summary>
