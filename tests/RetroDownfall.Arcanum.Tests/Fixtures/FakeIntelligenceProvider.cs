@@ -7,7 +7,6 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, IContextPreviewService
 {
-
     public ContextPreviewResult NextContextPreview { get; set; } = ContextPreviewTestData.Create();
 
     public ContextPreviewRequest? LastContextPreviewRequest { get; private set; }
@@ -83,13 +82,18 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
 
     public TaskCompletionSource? ExecuteEntered { get; set; }
 
+    /// <summary>
+    /// When set, <see cref="StreamPromptAsync"/> waits on this gate (or until cancelled) before it yields its
+    /// first event, so a test can hold a stream idle and observe what the writer does while it waits.
+    /// </summary>
+    public TaskCompletionSource? StreamGate { get; set; }
+
     public Task<Result<PromptTurnResult>> ExecutePromptAsync(
         PingRequest request,
         ArcanumInvocationContext invocationContext,
         CancellationToken cancellationToken,
         InferenceAuditContext? auditContext = null)
     {
-
         _ = Interlocked.Increment(ref _executePromptCallCount);
 
         ExecuteEntered?.TrySetResult();
@@ -102,16 +106,12 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
 
         if (ExecuteGate is { } gate)
         {
-
             return WaitForGateThenCompleteAsync(gate, request, cancellationToken);
-
         }
 
         if (NextFailure is Error failure)
         {
-
             return Task.FromResult(Result<PromptTurnResult>.Failure(failure));
-
         }
 
         return Task.FromResult(
@@ -121,11 +121,9 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
                 Reasoning = NextReasoning ?? [],
                 PreserveProviderToolCallIds = request.ForwardClientTools,
             }));
-
     }
 
     public Task<Result<ContextPreviewResult>> PreviewContextAsync(
-
         ContextPreviewRequest request,
 
         ArcanumInvocationContext invocationContext,
@@ -133,7 +131,6 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         CancellationToken cancellationToken)
 
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         PreviewContextCallCount++;
@@ -147,7 +144,6 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
             : NextContextPreview with { Content = null };
 
         return Task.FromResult(Result<ContextPreviewResult>.Success(result));
-
     }
 
     private async Task<Result<PromptTurnResult>> WaitForGateThenCompleteAsync(
@@ -155,14 +151,11 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         PingRequest request,
         CancellationToken cancellationToken)
     {
-
         await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         if (NextFailure is Error failure)
         {
-
             return Result<PromptTurnResult>.Failure(failure);
-
         }
 
         return Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null, NextToolCalls, NextFinishReason)
@@ -171,7 +164,6 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
             Reasoning = NextReasoning ?? [],
             PreserveProviderToolCallIds = request.ForwardClientTools,
         });
-
     }
 
     public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
@@ -180,7 +172,6 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
         InferenceAuditContext? auditContext = null)
     {
-
         _ = Interlocked.Increment(ref _streamPromptCallCount);
 
         LastRequest = request;
@@ -191,28 +182,27 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
 
         if (cancellationToken.CanBeCanceled)
         {
-
             cancellationToken.Register(() => StreamCancellationObserved = true);
+        }
 
+        if (StreamGate is { } streamGate)
+        {
+            await streamGate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         if (NextFailure is Error failure)
         {
-
             yield return new IntelligenceEvent(
                 IntelligenceEventType.Error,
                 failure.Message,
                 failure.Code);
 
             yield break;
-
         }
 
         if (NextStreamException is Exception ex)
         {
-
             throw ex;
-
         }
 
         if (NextStreamEvents is { } streamEvents)
@@ -227,28 +217,22 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
 
         if (NextStreamToolCalls is { Count: > 0 } toolCalls)
         {
-
             foreach (IntelligenceToolCallEvent toolCall in toolCalls)
             {
-
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.ToolCall,
                     toolCall.Name,
                     toolCall.ArgumentsJson,
                     null,
                     toolCall with { PreserveProviderCallId = request.ForwardClientTools });
-
             }
-
         }
 
         yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, NextText);
 
         if (ThrowOnSecondYield is Exception secondEx)
         {
-
             throw secondEx;
-
         }
 
         yield return new IntelligenceEvent(
@@ -260,7 +244,5 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         {
             Warnings = NextWarnings ?? []
         };
-
     }
-
 }

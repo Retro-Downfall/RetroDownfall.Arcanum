@@ -353,7 +353,7 @@ The twelve original checks are a second case: they remain inline in `DoctorComma
 
 ### 4.5 `RetroDownfall.Arcanum.Api.DevHost` (console executable, debug-only)
 
-Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Core`, and `Infrastructure`; mirrors `ServeCommand` wiring. Not the production entrypoint. The project sets `IsAotCompatible` and `EnableConfigurationBindingGenerator` as unconditional **analysis signals** so F5 catches source-level AOT and binding defects, but it does not set `PublishAot` or import EF NativeAOT query generation. Its ordinary managed runtime therefore matches `arcanum serve` for dynamic EF behavior instead of stamping NativeAOT feature switches into a debug runtimeconfig. On first run generates an API key and prints it to stdout.
+Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Core`, and `Infrastructure`; mirrors `ServeCommand` wiring. Not the production entrypoint. The project sets `IsAotCompatible` and `EnableConfigurationBindingGenerator` as unconditional **analysis signals** so F5 catches source-level AOT and binding defects, but it does not set `PublishAot` or import EF NativeAOT query generation. Its ordinary managed runtime therefore matches `arcanum serve` for dynamic EF behavior instead of stamping NativeAOT feature switches into a debug runtimeconfig. On first run generates an API key and prints it to stdout, which is why it **refuses to start** (a message on stderr and exit code `2`) in any environment other than `Development` or `Testing`; production hosting is `arcanum serve`.
 
 ### 4.6 `RetroDownfall.Compendium.Ux` (.NET 10 Avalonia desktop configuration editor)
 

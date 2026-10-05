@@ -412,6 +412,8 @@ When `Arcanum:Features:ClientTools` is enabled, Sanctum, Ward recording, and ser
 
 The NDJSON streaming endpoint sets `Cache-Control: no-cache` and `X-Accel-Buffering: no` (parity with the SSE endpoint in §8.5/§8.8) so reverse proxies (nginx, Cloudflare, k8s ingress) do not coalesce incremental frames.
 
+**Idle keep-alive.** While the provider has said nothing for a whole `Arcanum:EventBus:HeartbeatSeconds` interval (default 30; `0` disables it, the same setting the SSE routes use) the stream writes a **blank line** (`\n`), so an idle connection is not dropped by a proxy or client that treats silence as a dead peer. NDJSON is one JSON document per non-blank line, so every conforming reader skips it, as `arcanum` and The Forge do. It is written between frames only, never inside one, and it counts as a response byte, so a stream whose provider fails before its first event still answers `200` with the terminal error frame, exactly as before.
+
 ### 8.10 Buffered `/api/intelligence/ping` envelope
 
 The buffered ping endpoint wraps a **`PromptResponseDto`** (Core) inside `ApiResponse<T>`: `text` (assistant answer only), `usage` (native token counts, including additive top-level `reasoning_tokens`), `toolCalls` (the assistant-issued calls executed server-side, when any), `finishReason`, and `reasoning` (an ordered array of `{ text, output }` client-safe segments; empty by default). Reasoning is never concatenated into `text`. Previously the envelope held only the assistant text as a bare `string`; clients now get the full turn context without falling back to NDJSON.
