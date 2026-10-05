@@ -22,8 +22,8 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// is written through to its target rather than replaced by a regular file, and the permission bits of
 /// an existing file are carried onto the replacement on Unix (an export the operator made owner-only
 /// stays owner-only); on Windows <see cref="File.Replace(string, string, string?)"/> keeps the replaced
-/// file's attributes and access-control list. Ownership and extended attributes are not carried over: they
-/// belong to the new file.</para>
+/// file's attributes. On Unix, ownership and extended attributes are not carried over: they belong to the
+/// new file.</para>
 /// </remarks>
 internal static class CliOutputFile
 {
@@ -272,7 +272,7 @@ internal static class CliOutputFile
 
     /// <summary>
     /// Moves the completed temporary file over the destination, keeping what the destination already had:
-    /// its permission bits on Unix, its attributes and access-control list on Windows.
+    /// its permission bits on Unix, its attributes on Windows.
     /// </summary>
     private static void ReplaceFile(string temporaryPath, string destination)
     {
