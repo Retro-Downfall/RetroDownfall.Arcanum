@@ -32,6 +32,10 @@ public sealed class McpConnectionManagerTransportEndedTests
 
         ScriptedMcpClient first = Assert.Single(clients.Created);
 
+        // The entry holds the production generation wrapper around the scripted client, as it does for a
+        // real transport.
+        IMcpClient firstGeneration = Assert.IsType<McpClientGeneration>(entry.Client);
+
         // The first client's transport ends at the very moment a restart is replacing it: the restart
         // already holds the entry gate and is disposing the first client, and has not yet moved the
         // entry to the next transport generation. The handler therefore still sees its own generation
@@ -60,9 +64,18 @@ public sealed class McpConnectionManagerTransportEndedTests
 
         Assert.Equal(McpServerState.Running, entry.State);
 
-        Assert.Same(second, entry.Client);
+        IMcpClient secondGeneration = Assert.IsType<McpClientGeneration>(entry.Client);
+
+        Assert.NotSame(firstGeneration, secondGeneration);
 
         Assert.Equal(0, second.DisposeCount);
+
+        // The restart retired the first generation, so a late call on it is refused before dispatch rather
+        // than reaching a client that is gone.
+        McpTransportUnavailableException retired = await Assert.ThrowsAsync<McpTransportUnavailableException>(
+            () => firstGeneration.GetToolsAsync());
+
+        Assert.Equal(McpRequestDispatchState.NotDispatched, retired.DispatchState);
 
         Assert.Null(entry.ErrorMessage);
 

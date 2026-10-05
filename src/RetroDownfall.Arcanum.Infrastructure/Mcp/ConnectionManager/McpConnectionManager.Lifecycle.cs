@@ -48,7 +48,7 @@ public sealed partial class McpConnectionManager
             if (!detachedDisposal.IsCompleted)
             {
                 return new Error(
-                    "Mcp.ClientDisposalIncomplete",
+                    ErrorCodes.Mcp.ClientDisposalIncomplete,
                     "The previous MCP client is still shutting down.");
             }
 
@@ -63,10 +63,13 @@ public sealed partial class McpConnectionManager
 
         if (ClientFactoryForTests is { } clientFactory)
         {
+            // Wrapped exactly as both real transports below wrap theirs, so a test through this seam runs
+            // the production generation wrapper too: retirement rejects a new call on the old client and
+            // lets the active ones drain before the inner client is disposed.
             return await FinishStartAsync(
                     entry,
                     cfg,
-                    clientFactory(entry, transportGeneration),
+                    new McpClientGeneration(clientFactory(entry, transportGeneration)),
                     entry.ScopeWorkingDirectory ?? "global",
                     cancellationToken)
                 .ConfigureAwait(false);

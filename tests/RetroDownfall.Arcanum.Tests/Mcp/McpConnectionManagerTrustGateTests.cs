@@ -765,8 +765,12 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         client.AllowDispose.TrySetResult();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => stop);
+        // The caller left while the old client was disposing, but the stop itself ran to completion: the
+        // answer is the stop's own result, not a bare cancellation that would say nothing had happened.
+        Result stopped = await stop.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        Assert.True(stopped.IsSuccess, stopped.IsFailure ? stopped.Error.Message : null);
 
         _ = await restart.WaitAsync(
             TimeSpan.FromSeconds(5));
@@ -844,7 +848,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             TimeSpan.FromSeconds(5));
 
         Assert.True(canceled.IsFailure);
-        Assert.Equal("Mcp.RestartCanceled", canceled.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.RestartCanceled, canceled.Error.Code);
 
         _ = await overlappingRestart.WaitAsync(
             TimeSpan.FromSeconds(5));
@@ -943,7 +947,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         Assert.True(result.IsFailure);
 
-        Assert.Equal("Mcp.RestartCanceled", result.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.RestartCanceled, result.Error.Code);
 
         Assert.Contains("stopped", result.Error.Message, StringComparison.OrdinalIgnoreCase);
 
@@ -1002,9 +1006,54 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         ScriptedMcpClient replacement = Assert.Single(clients.Created);
 
-        Assert.Same(replacement, entry.Client);
+        _ = Assert.IsType<McpClientGeneration>(entry.Client);
 
         Assert.Equal(0, replacement.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Start_whose_caller_cancels_after_the_server_started_completes_instead_of_stranding_the_client()
+    {
+        const string serverName = "start-cancelled-after-start";
+
+        (McpConnectionManager manager, DigestTrustStore trust, ManagedMcpServerEntry entry) =
+            await RegisterWorkspaceServerAsync(serverName);
+
+        await using McpConnectionManager disposable = manager;
+
+        ScriptedMcpClientFactory clients = new();
+
+        manager.ClientFactoryForTests = clients.Create;
+
+        using CancellationTokenSource cancellation = new();
+
+        // The first approval read (before the start) answers normally. The caller leaves during the
+        // second, which re-checks the approval after the client is already up. The start is committed by
+        // then: it must finish rather than leave a live client behind an entry stuck in Starting, which a
+        // later start would then report as already started.
+        trust.BeforeSnapshotReturn = (_, _) =>
+        {
+            trust.BeforeSnapshotReturn = async (_, token) =>
+            {
+                await cancellation.CancelAsync();
+
+                token.ThrowIfCancellationRequested();
+            };
+
+            return Task.CompletedTask;
+        };
+
+        Result result = await manager.StartAsync(serverName, _workspace.Root, cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(McpServerState.Running, entry.State);
+
+        ScriptedMcpClient started = Assert.Single(clients.Created);
+
+        _ = Assert.IsType<McpClientGeneration>(entry.Client);
+
+        Assert.Equal(0, started.DisposeCount);
     }
 
     [Fact]

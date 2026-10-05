@@ -140,6 +140,68 @@ public sealed class McpSecurityLimitsTests
         Assert.True(error.Message.Length < 400, "The message quoted the whole hostile tool name.");
     }
 
+    [Fact]
+    public void A_tool_name_cut_for_the_error_label_never_splits_a_surrogate_pair()
+    {
+        // 79 ASCII characters then an emoji: the 80-character cut lands between the pair's two UTF-16 units.
+        string hostileName = new string('a', 79) + "\U0001F600" + new string('b', 40);
+
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => McpSecurityLimits.BoundToolDescription(
+                hostileName,
+                new string('x', McpSecurityLimits.MaxMcpToolDescriptionUtf8Bytes + 1)));
+
+        AssertWellFormedUtf16(error.Message);
+
+        // The whole character is kept or dropped, never half of it.
+        Assert.Contains(new string('a', 79) + "\U0001F600", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_tool_name_with_a_lone_surrogate_is_not_echoed_as_one()
+    {
+        // The name arrives from an external server's JSON, which can carry an unpaired escape such as
+        // \ud800. System.Text.Json refuses to write one, so quoting it would break the status payload that
+        // carries this message.
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => McpSecurityLimits.BoundToolDescription(
+                "evil\ud800name",
+                new string('x', McpSecurityLimits.MaxMcpToolDescriptionUtf8Bytes + 1)));
+
+        AssertWellFormedUtf16(error.Message);
+
+        Assert.Contains("evil", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("\u2028")]
+    [InlineData("\u2029")]
+    [InlineData("\u202E")]
+    [InlineData("\u2066")]
+    [InlineData("\u200B")]
+    [InlineData("\u0085")]
+    [InlineData("\r")]
+    public void A_tool_name_cannot_inject_a_line_break_or_a_bidirectional_control_into_the_label(
+        string hostileCharacter)
+    {
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => McpSecurityLimits.BoundToolDescription(
+                "evil" + hostileCharacter + "INJECTED",
+                new string('x', McpSecurityLimits.MaxMcpToolDescriptionUtf8Bytes + 1)));
+
+        Assert.DoesNotContain(hostileCharacter, error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("evil?INJECTED", error.Message, StringComparison.Ordinal);
+    }
+
+    private static void AssertWellFormedUtf16(string text)
+    {
+        // A strict UTF-8 encoder throws on an unpaired surrogate, which is what System.Text.Json does too.
+        UTF8Encoding strict = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+        _ = strict.GetBytes(text);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

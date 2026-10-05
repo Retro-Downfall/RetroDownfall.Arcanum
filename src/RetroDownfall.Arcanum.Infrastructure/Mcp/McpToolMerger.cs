@@ -11,8 +11,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// Stateless merge of MCP tool rows into a workspace tool surface: internal → global → local with local-wins dedup (Ordinal tool names)
 /// among external servers only. An internal tool's name is never replaced by an external server's.
-/// A workspace-local server is held to a stricter rule than a global one: it may not claim any name the
-/// in-process server registers a handler for, whether or not this session advertises that tool.
+/// Neither kind of external server may claim a name the in-process server registers a handler for, whether
+/// or not this session advertises that tool. A global server alone is let off the file-tool names a workspace
+/// root alone makes the server advertise (<see cref="ArcanumInternalToolServer.WorkspaceRootToolNames"/>),
+/// because a filesystem server's <c>write_file</c> in a session with no workspace root is ordinary and, in a
+/// session with a root, the internal row wins the name. A name with a second condition on its advertisement
+/// (<c>read_command_output</c> also needs host-process tools) is not among them.
 /// </summary>
 internal static class McpToolMerger
 {
@@ -44,10 +48,34 @@ internal static class McpToolMerger
     /// with the Lexicon feature off, the Conclave, Saga, A2A and attachment tools behind their own flags,
     /// the file tools without a workspace root) has no advertised row to collide with, and an approved
     /// <c>mcp.json</c> could otherwise answer to the built-in's name exactly when the built-in is unavailable.
-    /// Global servers are the operator's own configuration and are not held to it.
     /// </summary>
     private static readonly HashSet<string> InProcessServerToolNames =
         new(ArcanumInternalToolServer.RegisteredToolNames, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// What a global server may not claim: the six unconditionally reserved names plus every registered
+    /// handler name except the file tools. A global server is the operator's own configuration, so it keeps
+    /// the file-tool names a session with no workspace root leaves unadvertised, but it is not trusted to
+    /// answer to <c>ask_human</c>, <c>scribe_lexicon</c>, <c>read_command_output</c> or the like exactly when
+    /// that built-in is gated off: the model and the name-keyed Ward policy would still attribute the call
+    /// to the built-in.
+    /// </summary>
+    private static readonly HashSet<string> GloballyReservedToolNames = BuildGloballyReservedToolNames();
+
+    private static HashSet<string> BuildGloballyReservedToolNames()
+    {
+        HashSet<string> names = new(ReservedInternalToolNames, StringComparer.OrdinalIgnoreCase);
+
+        foreach (string registered in ArcanumInternalToolServer.RegisteredToolNames)
+        {
+            if (!ArcanumInternalToolServer.WorkspaceRootToolNames.Contains(registered))
+            {
+                _ = names.Add(registered);
+            }
+        }
+
+        return names;
+    }
 
     internal readonly record struct GlobalDedupResult(
         Dictionary<string, LoadedMcpToolRow> FirstByToolName,
@@ -67,7 +95,7 @@ internal static class McpToolMerger
 
         foreach (LoadedMcpToolRow row in globalTagged)
         {
-            if (IsReservedInternalName(row.Tool.Name))
+            if (IsReservedAgainstGlobalServers(row.Tool.Name))
             {
                 LogExternalCollision(collisionLogger, row.Tool.Name, "global");
 
@@ -110,7 +138,7 @@ internal static class McpToolMerger
 
         foreach (KeyValuePair<string, LoadedMcpToolRow> kv in globalFirstByToolName)
         {
-            if (IsReservedInternalName(kv.Key))
+            if (IsReservedAgainstGlobalServers(kv.Key))
             {
                 LogExternalCollision(bridgeFallbackLogger, kv.Key, "global");
 
@@ -239,6 +267,9 @@ internal static class McpToolMerger
 
     private static bool IsReservedInternalName(string name) =>
         ReservedInternalToolNames.Contains(name);
+
+    private static bool IsReservedAgainstGlobalServers(string name) =>
+        GloballyReservedToolNames.Contains(name);
 
     private static void LogExternalCollision(
         ILogger? logger,

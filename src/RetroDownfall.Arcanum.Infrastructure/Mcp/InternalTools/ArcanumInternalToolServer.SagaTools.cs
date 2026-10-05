@@ -165,7 +165,9 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "read_saga failed for query {Query}.", query);
+            // The exception type only: the query is the model's, and the exception message (an FTS
+            // fragment, say) can echo it, which would copy memory text into the rolling log and GET /api/logs.
+            _logger?.LogError("read_saga failed ({ExceptionType}).", ex.GetType().Name);
 
             return ToolError("An internal error occurred during tool execution.");
         }

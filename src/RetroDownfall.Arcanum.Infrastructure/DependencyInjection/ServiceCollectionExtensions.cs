@@ -1646,8 +1646,7 @@ public static class ServiceCollectionExtensions
             // could otherwise stream an unbounded message into memory; bound each one at the same
             // frame cap the in-process transport enforces.
             .AddHttpMessageHandler(static () => new McpHttpResponseBoundHandler(
-                ArcanumSettingClamps.McpMaxJsonRpcLineBytes(
-                    ArcanumRuntimeDefaults.Mcp.MaxJsonRpcLineBytes)))
+                McpSecurityLimits.MaxJsonRpcLineBytes))
             .ConfigurePrimaryHttpMessageHandler(sp =>
             {
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();

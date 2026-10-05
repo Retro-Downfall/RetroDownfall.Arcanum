@@ -529,11 +529,26 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     private McpToolsCallResultWire BuildSendingToolResult(string agentUrl, Result<A2ADispatchResult> result)
     {
+        // The remote chooses its task ids, and they reach the model as ordinary JSON fields rather than
+        // inside the untrusted-content frame (the model passes the exact string back to continue_sending, so
+        // it cannot be quoted or altered). Only a plain token is echoed: an id that is a sentence is withheld.
+        string? taskId = result.IsSuccess ? PlainRemoteId(result.Value.TaskId) : null;
+
+        string? continuationTaskId = result.IsSuccess ? PlainRemoteId(result.Value.Continuation?.TaskId) : null;
+
+        if (result.IsSuccess
+            && ((result.Value.TaskId is not null && taskId is null)
+                || (result.Value.Continuation is not null && continuationTaskId is null)))
+        {
+            _logger?.LogWarning(
+                "A remote A2A agent returned a task id that is not a plain token; it was withheld from the model.");
+        }
+
         DispatchSendingResultWire payload = result.IsSuccess
             ? new DispatchSendingResultWire
             {
                 AgentUrl = agentUrl,
-                TaskId = result.Value.TaskId,
+                TaskId = taskId,
                 Succeeded = true,
 
                 // The remote agent controls this text completely and it lands directly in the model's
@@ -545,8 +560,10 @@ internal sealed partial class ArcanumInternalToolServer
                 RemoteCostUsd = result.Value.RemoteCost.CostUsd,
                 DispatchedAt = Stamp(result.Value.DispatchedAt),
                 SettledAt = Stamp(result.Value.SettledAt),
-                ContinuationTaskId = result.Value.Continuation?.TaskId,
-                ContinuationNeed = DescribeNeed(result.Value.Continuation?.Need),
+                ContinuationTaskId = continuationTaskId,
+
+                // With no id the model could pass back there is nothing to continue, so no need is offered.
+                ContinuationNeed = continuationTaskId is null ? null : DescribeNeed(result.Value.Continuation?.Need),
             }
             : new DispatchSendingResultWire
             {
@@ -632,10 +649,42 @@ internal sealed partial class ArcanumInternalToolServer
                 ApprenticeId = apprenticeId,
                 Timestamp = update.Timestamp,
                 Description = update.AgentUrl,
-                Summary = update.TaskId,
+
+                // The peer chooses its task ids, so a progress frame echoes one only when it is a plain
+                // token, exactly as the dispatched and terminal frames do (BuildSendingToolResult).
+                Summary = PlainRemoteId(update.TaskId),
                 SendingState = update.RemoteState,
                 SendingDirection = update.Direction == A2ASendingDirection.Inbound ? "inbound" : "outbound",
             });
+    }
+
+    /// <summary>
+    /// The longest peer-authored task id shown to the model. A2A task ids are opaque strings (reference
+    /// servers mint GUIDs), so a longer one is not an identifier worth echoing.
+    /// </summary>
+    private const int MaxRemoteTaskIdChars = 128;
+
+    /// <summary>
+    /// <paramref name="remoteId"/> when it is a plain token (1 to <see cref="MaxRemoteTaskIdChars"/> ASCII
+    /// letters, digits or <c>- _ . : / + = ~ @</c>), otherwise <c>null</c>.
+    /// </summary>
+    internal static string? PlainRemoteId(string? remoteId)
+    {
+        if (string.IsNullOrEmpty(remoteId) || remoteId.Length > MaxRemoteTaskIdChars)
+        {
+            return null;
+        }
+
+        foreach (char character in remoteId)
+        {
+            if (!char.IsAsciiLetterOrDigit(character)
+                && character is not ('-' or '_' or '.' or ':' or '/' or '+' or '=' or '~' or '@'))
+            {
+                return null;
+            }
+        }
+
+        return remoteId;
     }
 
     /// <summary>
@@ -673,6 +722,107 @@ internal sealed partial class ArcanumInternalToolServer
 
     private static string NewFrameBoundary() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+
+    /// <summary>
+    /// The remote text inside a frame <see cref="FrameUntrustedRemoteText"/> wrote, for the operator-facing
+    /// Chronicle: the frame is a model-facing safeguard, and an operator reading a failure Arcanum authored
+    /// itself should not see it called untrusted content from the peer. Only a frame whose header names a
+    /// boundary and whose BEGIN and END markers carry exactly that boundary is removed (the remote cannot
+    /// know it, so text it forges inside the data never matches); anything else is returned untouched.
+    /// </summary>
+    internal static string UnframeUntrustedRemoteText(string framed)
+    {
+        const string Opening = "[Remote A2A agent ";
+
+        const string KindEnd = " \u2014 untrusted content from ";
+
+        const string BoundaryLabel = "boundary id ";
+
+        const int BoundaryChars = 32;
+
+        if (!framed.StartsWith(Opening, StringComparison.Ordinal))
+        {
+            return framed;
+        }
+
+        int kindEnd = framed.IndexOf(KindEnd, Opening.Length, StringComparison.Ordinal);
+
+        if (kindEnd < 0)
+        {
+            return framed;
+        }
+
+        string kind = framed[Opening.Length..kindEnd];
+
+        if (kind is not ("response" or "error"))
+        {
+            return framed;
+        }
+
+        int labelAt = framed.IndexOf(BoundaryLabel, kindEnd, StringComparison.Ordinal);
+
+        if (labelAt < 0 || framed.Length < labelAt + BoundaryLabel.Length + BoundaryChars)
+        {
+            return framed;
+        }
+
+        string boundary = framed.Substring(labelAt + BoundaryLabel.Length, BoundaryChars);
+
+        if (!boundary.All(static character => char.IsAsciiHexDigitLower(character)))
+        {
+            return framed;
+        }
+
+        string marker = kind.ToUpperInvariant();
+
+        string begin = $"---BEGIN REMOTE {marker} {boundary}---";
+
+        string end = $"---END REMOTE {marker} {boundary}---";
+
+        int beginAt = framed.IndexOf(begin, labelAt, StringComparison.Ordinal);
+
+        string body = framed.TrimEnd();
+
+        if (beginAt < 0 || !body.EndsWith(end, StringComparison.Ordinal))
+        {
+            return framed;
+        }
+
+        int contentStart = SkipLineBreak(body, beginAt + begin.Length);
+
+        int contentEnd = body.Length - end.Length;
+
+        if (contentStart < 0 || contentEnd < contentStart)
+        {
+            return framed;
+        }
+
+        // The END marker sits on its own line, so the break before it belongs to the frame, not the text.
+        // A frame the server wrote always has one; without it this is not that frame.
+        if (contentEnd <= contentStart || body[contentEnd - 1] != '\n')
+        {
+            return framed;
+        }
+
+        contentEnd -= contentEnd - 2 >= contentStart && body[contentEnd - 2] == '\r' ? 2 : 1;
+
+        return body[contentStart..contentEnd];
+    }
+
+    private static int SkipLineBreak(string text, int index)
+    {
+        if (index < text.Length && text[index] == '\n')
+        {
+            return index + 1;
+        }
+
+        if (index + 1 < text.Length && text[index] == '\r' && text[index + 1] == '\n')
+        {
+            return index + 2;
+        }
+
+        return -1;
+    }
 
     /// <summary>
     /// Resolves the dispatch mode from the two flags a caller may set.

@@ -15,43 +15,39 @@ public sealed class McpConnectionManagerInitializeTimeoutTests
 
         manager.InitializationTimeoutForTests = TimeSpan.FromMilliseconds(300);
 
+        // Two hung servers, because the registry enumerates in hash order and that order differs from one
+        // process to the next. With one hung server and one fast one, the abort this guards against only
+        // shows when the hung server happens to come first; with two, whichever is first aborts the loop
+        // and the other is never attempted, so every ordering exposes it.
         await manager.RegisterFromConfigAsync(
             new McpConfig
             {
                 McpServers = new Dictionary<string, McpServerConfig>(StringComparer.Ordinal)
                 {
-                    ["hung-initialize"] = HungServer(),
-                    ["never-spawns"] = new()
-                    {
-                        Command = Path.Combine(Path.GetTempPath(), "arcanum-tests-no-such-mcp-server"),
-                    },
+                    ["hung-initialize-a"] = HungServer(),
+                    ["hung-initialize-b"] = HungServer(),
                 },
             },
             scopeWorkingDirectory: null,
             CancellationToken.None);
 
         // The handshake deadline used to surface as OperationCanceledException, which aborted this
-        // call and every server after the hung one.
+        // call and every server after the first hung one.
         await manager.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(60));
 
-        ManagedMcpServerEntry hung = Assert.IsType<ManagedMcpServerEntry>(
-            manager.GetManagedEntryForTests("hung-initialize", workingDirectory: null));
+        foreach (string name in new[] { "hung-initialize-a", "hung-initialize-b" })
+        {
+            ManagedMcpServerEntry hung = Assert.IsType<ManagedMcpServerEntry>(
+                manager.GetManagedEntryForTests(name, workingDirectory: null));
 
-        Assert.Equal(McpServerState.Error, hung.State);
+            Assert.Equal(McpServerState.Error, hung.State);
 
-        Assert.Contains("initialize handshake", hung.ErrorMessage, StringComparison.Ordinal);
+            Assert.Contains("initialize handshake", hung.ErrorMessage, StringComparison.Ordinal);
 
-        DateTimeOffset retryAfter = Assert.NotNull(hung.RestartAfterUtc);
+            DateTimeOffset retryAfter = Assert.NotNull(hung.RestartAfterUtc);
 
-        Assert.True(retryAfter > DateTimeOffset.UtcNow, "A hung server must be backed off, not retried on the next turn.");
-
-        // The loop reached the other server too, whichever order the registry enumerated them in.
-        ManagedMcpServerEntry other = Assert.IsType<ManagedMcpServerEntry>(
-            manager.GetManagedEntryForTests("never-spawns", workingDirectory: null));
-
-        Assert.Equal(McpServerState.Error, other.State);
-
-        Assert.NotNull(other.RestartAfterUtc);
+            Assert.True(retryAfter > DateTimeOffset.UtcNow, $"{name} must be backed off, not retried on the next turn.");
+        }
     }
 
     private static McpServerConfig HungServer() =>

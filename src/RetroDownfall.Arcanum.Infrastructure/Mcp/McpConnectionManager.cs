@@ -329,7 +329,13 @@ public sealed partial class McpConnectionManager :
                     }
                     else if (!await IsWorkspaceServerVisibleAsync(
                                       entry,
-                                      cancellationToken)
+
+                                      // The client is already running, so the start is committed. This
+                                      // approval re-check is bounded local work and runs on None: a caller
+                                      // that cancels during it must not throw out of here and leave a live
+                                      // client behind an entry stuck in Starting, which every later start
+                                      // would report as already started.
+                                      CancellationToken.None)
                                   .ConfigureAwait(false))
                     {
                         _ = await StopManagedServerCoreAsync(
@@ -458,12 +464,14 @@ public sealed partial class McpConnectionManager :
 
                 RemoveServerMetadataFromPartition(entry);
 
-                cancellationToken.ThrowIfCancellationRequested();
-
+                // No cancellation check from here on: the client is gone and the entry is Stopped, so a
+                // caller that leaves now is told what happened (and the Stopped event below is still
+                // published) instead of getting a bare cancellation that reads as "nothing changed".
+                // The caller's token only ever governed the wait for the entry gate above.
                 result = disposalCompleted
                     ? Result.Success()
                     : new Error(
-                        "Mcp.ClientDisposalIncomplete",
+                        ErrorCodes.Mcp.ClientDisposalIncomplete,
                         "The MCP client is still shutting down.");
             }
         }
@@ -568,7 +576,7 @@ public sealed partial class McpConnectionManager :
                             []));
 
                         result = new Error(
-                            "Mcp.ClientDisposalIncomplete",
+                            ErrorCodes.Mcp.ClientDisposalIncomplete,
                             entry.ErrorMessage);
                     }
                     else
@@ -745,7 +753,7 @@ public sealed partial class McpConnectionManager :
 
     private static Error RestartCanceledError(ManagedMcpServerEntry entry, string outcome) =>
         new(
-            "Mcp.RestartCanceled",
+            ErrorCodes.Mcp.RestartCanceled,
             $"The restart of MCP server '{entry.Name}' was canceled after the old server was stopped; {outcome}. Start it again to restore it.");
 
     /// <inheritdoc />

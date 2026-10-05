@@ -2107,7 +2107,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
             Result bounded = await ordinaryStop.WaitAsync(TimeSpan.FromSeconds(60));
 
-            Assert.Equal("Mcp.ClientDisposalIncomplete", bounded.Error.Code);
+            Assert.Equal(ErrorCodes.Mcp.ClientDisposalIncomplete, bounded.Error.Code);
 
             Assert.False(ordinaryClient.Completed.Task.IsCompleted);
 

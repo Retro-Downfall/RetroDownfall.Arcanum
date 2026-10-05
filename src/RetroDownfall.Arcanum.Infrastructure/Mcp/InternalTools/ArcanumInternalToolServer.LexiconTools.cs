@@ -107,7 +107,9 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "scribe_lexicon failed for name {Name}.", name);
+            // The exception type only: the entry name and facts are memory text, and the exception message
+            // can echo them into the rolling log and GET /api/logs.
+            _logger?.LogError("scribe_lexicon failed ({ExceptionType}).", ex.GetType().Name);
 
             return ToolError("An internal error occurred during tool execution.");
         }
@@ -248,7 +250,7 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "delete_lexicon failed for name {Name}.", name);
+            _logger?.LogError("delete_lexicon failed ({ExceptionType}).", ex.GetType().Name);
 
             return ToolError("An internal error occurred during tool execution.");
         }
@@ -305,7 +307,7 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "search_archives failed for query {Query}.", query);
+            _logger?.LogError("search_archives failed ({ExceptionType}).", ex.GetType().Name);
 
             return ToolError("An internal error occurred during tool execution.");
         }

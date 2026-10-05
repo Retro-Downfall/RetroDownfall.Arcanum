@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -22,6 +23,14 @@ internal static class McpSecurityLimits
     public const int MaxMcpToolDescriptionUtf8Bytes = 8 * 1024;
 
     public const int MaxMcpToolInputSchemaUtf8Bytes = 64 * 1024;
+
+    /// <summary>
+    /// The code-owned per-message cap (not an <c>Arcanum:Mcp</c> setting), clamped once here. The in-process
+    /// transport and the Streamable HTTP response bound both enforce it, so neither reads the default and
+    /// clamps it on its own.
+    /// </summary>
+    public static int MaxJsonRpcLineBytes =>
+        ArcanumSettingClamps.McpMaxJsonRpcLineBytes(ArcanumRuntimeDefaults.Mcp.MaxJsonRpcLineBytes);
 
     public static readonly JsonDocumentOptions JsonDocumentOptions = new()
     {
@@ -67,29 +76,48 @@ internal static class McpSecurityLimits
     }
 
     /// <summary>
-    /// A tool name as an external server chose it, made safe to quote in an error: control characters
-    /// are replaced and an over-long name is cut, so a hostile server cannot inject lines or bulk into
-    /// the operator-facing message.
+    /// A tool name as an external server chose it, made safe to quote in an error: an over-long name is cut
+    /// at 80 characters, and anything that could break up or disguise the operator-facing message is
+    /// replaced, so a hostile server cannot inject lines, bidirectional text or bulk into it.
     /// </summary>
+    /// <remarks>
+    /// The name is walked a Unicode scalar at a time, so the cut can never split a surrogate pair, and an
+    /// unpaired surrogate (a JSON <c>\ud800</c> escape the server sent) is already a replacement character
+    /// by the time it is quoted: System.Text.Json refuses to write one, which would break the status
+    /// payload that carries this message. Control, format (zero-width and bidirectional controls), line
+    /// separator and paragraph separator characters become <c>?</c>.
+    /// </remarks>
     private static string ToolLabel(string toolName)
     {
-        const int MaxLabelChars = 80;
+        const int MaxLabelCharacters = 80;
 
-        string name = toolName ?? string.Empty;
+        StringBuilder label = new();
 
-        string shown = name.Length > MaxLabelChars ? name[..MaxLabelChars] + "..." : name;
+        int characters = 0;
 
-        return string.Create(
-            shown.Length,
-            shown,
-            static (span, source) =>
+        foreach (Rune rune in (toolName ?? string.Empty).EnumerateRunes())
+        {
+            if (characters == MaxLabelCharacters)
             {
-                for (int index = 0; index < span.Length; index++)
-                {
-                    span[index] = char.IsControl(source[index]) ? '?' : source[index];
-                }
-            });
+                _ = label.Append("...");
+
+                break;
+            }
+
+            _ = IsUnsafeInLabel(rune) ? label.Append('?') : label.Append(rune.ToString());
+
+            characters++;
+        }
+
+        return label.ToString();
     }
+
+    private static bool IsUnsafeInLabel(Rune rune) =>
+        Rune.GetUnicodeCategory(rune) is
+            UnicodeCategory.Control
+            or UnicodeCategory.Format
+            or UnicodeCategory.LineSeparator
+            or UnicodeCategory.ParagraphSeparator;
 
     public static string TruncateUtf8(string text, long maxUtf8Bytes)
     {

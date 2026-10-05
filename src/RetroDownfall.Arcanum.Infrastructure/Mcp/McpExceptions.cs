@@ -10,7 +10,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal sealed class McpLineSizeExceededException : Exception
 {
-
     public int MaxJsonRpcLineBytes { get; }
 
     public int ActualUtf8Bytes { get; }
@@ -18,13 +17,10 @@ internal sealed class McpLineSizeExceededException : Exception
     public McpLineSizeExceededException(int maxJsonRpcLineBytes, int actualUtf8Bytes)
         : base($"Outbound JSON-RPC line of {actualUtf8Bytes} UTF-8 bytes exceeds the maximum of {maxJsonRpcLineBytes} bytes; the line was not written.")
     {
-
         MaxJsonRpcLineBytes = maxJsonRpcLineBytes;
 
         ActualUtf8Bytes = actualUtf8Bytes;
-
     }
-
 }
 
 /// <summary>
@@ -40,13 +36,11 @@ internal enum McpRequestDispatchState
 
 internal sealed class McpTransportUnavailableException : Exception
 {
-
     public McpTransportUnavailableException(string message)
         : this(
             message,
             McpRequestDispatchState.DispatchedOrUnknown)
     {
-
     }
 
     public McpTransportUnavailableException(
@@ -54,7 +48,6 @@ internal sealed class McpTransportUnavailableException : Exception
         McpRequestDispatchState dispatchState)
         : base(message)
     {
-
         DispatchState = dispatchState;
     }
 
@@ -64,7 +57,6 @@ internal sealed class McpTransportUnavailableException : Exception
             McpRequestDispatchState.DispatchedOrUnknown,
             innerException)
     {
-
     }
 
     public McpTransportUnavailableException(
@@ -73,12 +65,10 @@ internal sealed class McpTransportUnavailableException : Exception
         Exception innerException)
         : base(message, innerException)
     {
-
         DispatchState = dispatchState;
     }
 
     public McpRequestDispatchState DispatchState { get; }
-
 }
 
 /// <summary>
@@ -90,24 +80,19 @@ internal sealed class McpTransportUnavailableException : Exception
 /// </summary>
 internal static class McpOutboundLineGuard
 {
-
     /// <summary>
     /// Throws <see cref="McpLineSizeExceededException"/> when <paramref name="line"/> exceeds
-    /// <paramref name="maxJsonRpcLineBytes"/> UTF-8 bytes. AOT-safe: <paramref name="line"/> is
-    /// already the source-generated serialized string from a <see cref="JsonSerializerContext"/>.
+    /// <paramref name="maxJsonRpcLineBytes"/> UTF-8 bytes. <paramref name="line"/> is the whole line as it
+    /// is written, newline delimiter included, because the reader at the other end measures it that way.
+    /// AOT-safe: the serialized payload inside it comes from a <see cref="JsonSerializerContext"/>.
     /// </summary>
     public static void Enforce(string line, int maxJsonRpcLineBytes)
     {
-
         if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line, maxJsonRpcLineBytes))
         {
-
             int actual = Encoding.UTF8.GetByteCount(line);
 
             throw new McpLineSizeExceededException(maxJsonRpcLineBytes, actual);
-
         }
-
     }
-
 }

@@ -127,10 +127,9 @@ public sealed partial class McpConnectionManager
             ArcanumRuntimeDefaults.Mcp.MaxToolsTotalBytes);
     }
 
-    private int GetClampedMcpMaxJsonRpcLineBytes()
+    private static int GetClampedMcpMaxJsonRpcLineBytes()
     {
-        return ArcanumSettingClamps.McpMaxJsonRpcLineBytes(
-            ArcanumRuntimeDefaults.Mcp.MaxJsonRpcLineBytes);
+        return McpSecurityLimits.MaxJsonRpcLineBytes;
     }
 
     private readonly McpElicitationBridge _elicitationBridge;
