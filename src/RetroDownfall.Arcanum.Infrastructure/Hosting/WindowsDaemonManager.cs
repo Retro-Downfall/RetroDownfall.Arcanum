@@ -94,24 +94,41 @@ public sealed class WindowsDaemonManager : IDaemonManager
 
         string servicePath = string.Create(CultureInfo.InvariantCulture, $"\"{processPath}\" serve");
 
-        DaemonProcessOutcome createOutcome = await RunScAsync(
-            [
-                "create",
-                ServiceName,
-                "binPath=",
-                servicePath,
-                "start=",
-                "auto",
-                "obj=",
-                account.AccountName.Trim(),
-                "password=",
-                account.Password,
-            ],
-            cancellationToken).ConfigureAwait(false);
+        DaemonProcessOutcome createOutcome;
+
+        try
+        {
+            createOutcome = await RunScAsync(
+                [
+                    "create",
+                    ServiceName,
+                    "binPath=",
+                    servicePath,
+                    "start=",
+                    "auto",
+                    "obj=",
+                    account.AccountName.Trim(),
+                    "password=",
+                    account.Password,
+                ],
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The runner kills sc.exe on cancellation, which can be after it created the service but before it
+            // answered, so the service is removed on a token that cannot be cancelled.
+            _ = await RemoveCreatedServiceAsync().ConfigureAwait(false);
+
+            throw;
+        }
 
         if (createOutcome.FatalError is { } fatalCreate)
         {
-            return Result.Failure(fatalCreate);
+            // A create that timed out may have created the service before it was killed; one that never started
+            // cannot have, and its delete would only add noise.
+            return string.Equals(fatalCreate.Code, DaemonProcessRunner.TimeoutErrorCode, StringComparison.Ordinal)
+                ? await FailAfterRollbackAsync(fatalCreate).ConfigureAwait(false)
+                : Result.Failure(fatalCreate);
         }
 
         if (IndicatesElevationDenied(createOutcome.ExitCode, createOutcome.StdErr))

@@ -453,6 +453,76 @@ public sealed class DaemonManagerTests : IDisposable
             "The rollback after a cancelled install must not be cancellable.");
     }
 
+    [Fact]
+    public async Task Windows_install_removes_a_service_that_a_timed_out_create_may_have_made()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "create"
+                ? new DaemonProcessOutcome(
+                    -1,
+                    string.Empty,
+                    string.Empty,
+                    new Error(DaemonProcessRunner.TimeoutErrorCode, "'sc.exe' did not finish within 30 seconds and was stopped."))
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(DaemonProcessRunner.TimeoutErrorCode, result.Error.Code);
+
+        Assert.Equal(["create", "delete"], runner.Invocations.Select(static call => call.Arguments[0]));
+    }
+
+    [Fact]
+    public async Task Windows_install_does_not_try_to_delete_when_sc_exe_could_not_even_start()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => new DaemonProcessOutcome(
+                -1,
+                string.Empty,
+                string.Empty,
+                new Error(DaemonProcessRunner.StartErrorCode, "Could not start 'sc.exe'.")));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.Equal(DaemonProcessRunner.StartErrorCode, result.Error.Code);
+
+        _ = Assert.Single(runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Windows_install_removes_the_service_on_an_uncancelled_token_when_cancelled_while_creating()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) =>
+            {
+                if (arguments[0] == "create")
+                {
+                    cancellation.Cancel();
+
+                    throw new OperationCanceledException(cancellation.Token);
+                }
+
+                return ScriptedDaemonProcessRunner.Exit(0);
+            });
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => manager.InstallAsync(ServiceAccountRequest, cancellation.Token));
+
+        Assert.Equal(["create", "delete"], runner.Invocations.Select(static call => call.Arguments[0]));
+
+        Assert.False(runner.Invocations[1].Token.CanBeCanceled);
+    }
+
     [SkippableFact]
     public async Task Windows_real_runner_install_without_an_account_refuses_without_starting_sc_exe()
     {
