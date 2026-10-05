@@ -682,49 +682,117 @@ public sealed class ReleasePipelineTests
     /// process dump on a hosted runner.
     /// </summary>
     [Fact]
-    public void Every_arcanum_suite_invocation_detects_a_hung_test()
+    public void Every_dotnet_test_invocation_detects_a_hung_test()
     {
         string root = RepositoryRoot();
 
-        string coverage = File.ReadAllText(Path.Combine(root, "scripts", "coverage.sh"));
+        // The minimum number of invocations each file is known to hold. A rewrite of one of them
+        // into a shape the scan no longer recognises would otherwise leave it unchecked, and the
+        // test green, so the floor is what proves the scan still sees every lane.
+        Dictionary<string, int> expectedMinimums = new(StringComparer.Ordinal)
+        {
+            ["ci.yml"] = 8,
 
-        string[] invocations =
+            ["coverage.sh"] = 1,
+
+            ["verify-published-apphost.sh"] = 1,
+
+            ["verify-local-ollama-aot.sh"] = 1,
+        };
+
+        string[] files =
         [
-            .. BlameHangCandidates(coverage, "dotnet test \"$TEST_PROJECT\""),
-            .. BlameHangCandidates(
-                File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("`\n", " ", StringComparison.Ordinal).Replace("\\\n", " ", StringComparison.Ordinal),
-                "dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj"),
+            .. Directory.EnumerateFiles(Path.Combine(root, ".github", "workflows"), "*.yml"),
+            .. Directory
+                .EnumerateFiles(Path.Combine(root, "scripts"), "*.sh")
+                .Where(static path => !path.EndsWith("_test.sh", StringComparison.Ordinal)),
         ];
 
-        Assert.True(invocations.Length >= 4, $"Expected at least four Arcanum suite invocations (coverage.sh plus three CI lanes), found {invocations.Length}.");
-
-        foreach (string invocation in invocations)
+        foreach (string file in files)
         {
-            Assert.Contains("--blame-hang-timeout 15m", invocation, StringComparison.Ordinal);
+            string[] invocations = [.. DotnetTestInvocations(File.ReadAllText(file))];
 
-            Assert.Contains("--blame-hang-dump-type none", invocation, StringComparison.Ordinal);
+            string name = Path.GetFileName(file);
+
+            if (expectedMinimums.TryGetValue(name, out int minimum))
+            {
+                Assert.True(
+                    invocations.Length >= minimum,
+                    $"{name} should hold at least {minimum} `dotnet test` invocations but the scan found {invocations.Length}.");
+
+                expectedMinimums.Remove(name);
+            }
+
+            // 15 minutes everywhere except the local Ollama qualification, whose single test legitimately
+            // spends longer than that in cold model turns and carries its own 30 minute bound.
+            int allowedMinutes = name == "verify-local-ollama-aot.sh" ? 30 : 15;
+
+            foreach (string invocation in invocations)
+            {
+                Match timeout = HangTimeout.Match(invocation);
+
+                Assert.True(
+                    timeout.Success
+                    && int.Parse(timeout.Groups["minutes"].Value, System.Globalization.CultureInfo.InvariantCulture) <= allowedMinutes
+                    && invocation.Contains("--blame-hang-dump-type none", StringComparison.Ordinal),
+                    $"{name} runs a test project without a hang bound of at most {allowedMinutes}m (and no dump), so a hung test host is bounded only by the job ceiling: {invocation[..Math.Min(invocation.Length, 140)]}");
+            }
         }
+
+        Assert.True(
+            expectedMinimums.Count == 0,
+            "The scan never opened: " + string.Join(", ", expectedMinimums.Keys));
     }
 
     /// <summary>
-    /// The text from each occurrence of <paramref name="command"/> to the end of its logical line.
-    /// Callers fold line continuations first when the document uses them.
+    /// xunit reports a test that is still running past <c>longRunningTestSeconds</c> as a diagnostic
+    /// message, and the runner prints diagnostic messages only when <c>diagnosticMessages</c> is on.
+    /// Without it the setting would configure a notice nobody can read.
     /// </summary>
-    private static IEnumerable<string> BlameHangCandidates(string text, string command)
+    [Fact]
+    public void The_long_running_test_notice_is_visible_because_diagnostic_messages_are_enabled()
     {
-        text = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\\\n", " ", StringComparison.Ordinal);
+        string path = Path.Combine(RepositoryRoot(), "tests", "RetroDownfall.Arcanum.Tests", "xunit.runner.json");
 
-        int index = 0;
+        using System.Text.Json.JsonDocument runner = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
 
-        while ((index = text.IndexOf(command, index, StringComparison.Ordinal)) >= 0)
+        Assert.True(
+            runner.RootElement.TryGetProperty("longRunningTestSeconds", out System.Text.Json.JsonElement seconds)
+            && seconds.GetInt32() > 0,
+            "xunit.runner.json no longer sets longRunningTestSeconds, so a slow test is never named.");
+
+        Assert.True(
+            runner.RootElement.TryGetProperty("diagnosticMessages", out System.Text.Json.JsonElement diagnostics)
+            && diagnostics.ValueKind == System.Text.Json.JsonValueKind.True,
+            "xunit.runner.json sets longRunningTestSeconds without diagnosticMessages, so the notice is never printed.");
+    }
+
+    /// <summary>
+    /// The text from each <c>dotnet test</c> of a test project to the end of its logical line, with
+    /// shell (<c>\</c>) and PowerShell (<c>`</c>) line continuations folded first.
+    /// </summary>
+    private static IEnumerable<string> DotnetTestInvocations(string text)
+    {
+        string folded = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("`\n", " ", StringComparison.Ordinal)
+            .Replace("\\\n", " ", StringComparison.Ordinal);
+
+        foreach (Match invocation in DotnetTestInvocation.Matches(folded))
         {
-            int end = text.IndexOf('\n', index);
-
-            yield return text[index..(end < 0 ? text.Length : end)];
-
-            index += command.Length;
+            yield return invocation.Value;
         }
     }
+
+    private static readonly Regex HangTimeout = new(
+        @"--blame-hang-timeout (?<minutes>\d+)m(?=\s|$)",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    private static readonly Regex DotnetTestInvocation = new(
+        @"dotnet test (?:""\$TEST_PROJECT""|tests/)[^\n]*",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
 
     /// <summary>
     /// Bodies of every brace-delimited block that follows <paramref name="header"/>, brace-matched
