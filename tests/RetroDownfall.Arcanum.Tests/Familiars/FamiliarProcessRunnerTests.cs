@@ -386,6 +386,98 @@ public sealed class FamiliarProcessRunnerTests
         Assert.Equal(FamiliarProcessFailure.TimedOut, failure.Failure);
     }
 
+    /// <summary>
+    /// The per-frame ceiling bounds one line; nothing bounded the whole stream, so a runaway CLI that
+    /// writes endless short frames fed the consumer until the fifteen-minute deadline. Past the
+    /// aggregate ceiling the tree is killed and the turn fails closed with its own failure kind.
+    /// </summary>
+    [Fact]
+    public async Task Runner_KillsProcessWhenAggregateOutputExceedsCeiling()
+    {
+        string frame = new('x', 1_000);
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(
+            Enumerable.Repeat(frame, 400),
+            perLineDelayMilliseconds: 100);
+
+        int delivered = 0;
+
+        System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
+            async () =>
+            {
+                await foreach (string _ in _runner.RunLinesAsync(
+                    new FamiliarProcessRequest
+                    {
+                        FileName = stub.FileName,
+                        Arguments = [.. stub.Arguments],
+                        Timeout = TimeSpan.FromMinutes(2),
+                        MaxOutputCharacters = 10_000,
+                    },
+                    CancellationToken.None))
+                {
+                    delivered++;
+                }
+            });
+
+        stopwatch.Stop();
+
+        Assert.Equal(FamiliarProcessFailure.OutputLimitExceeded, failure.Failure);
+
+        // Cut off near the ceiling rather than after the whole 400-frame script (~40 s of output).
+        Assert.InRange(delivered, 1, 20);
+
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(20),
+            $"The run took {stopwatch.Elapsed.TotalSeconds:F1}s; the child was not stopped at the ceiling.");
+    }
+
+    /// <summary>
+    /// The ceiling has to hold while a frame is still being read, not only between frames: a CLI that
+    /// never writes a newline would otherwise be read, and discarded, until the deadline.
+    /// </summary>
+    [Fact]
+    public async Task The_reader_stops_an_unterminated_stream_at_the_aggregate_ceiling()
+    {
+        FamiliarStdoutLineReader reader = new(
+            new StringReader(new string('x', 64 * 1024)),
+            maxLineCharacters: 16,
+            maxTotalCharacters: 4_096);
+
+        _ = await Assert.ThrowsAsync<FamiliarOutputLimitExceededException>(
+            async () => await reader.ReadLineAsync(CancellationToken.None));
+    }
+
+    /// <summary>
+    /// The count is cumulative over everything read, not per frame: frames that fit inside what the
+    /// reader has pulled so far are still delivered, and the read that carries the stream past the
+    /// ceiling is the one that stops it.
+    /// </summary>
+    [Fact]
+    public async Task The_aggregate_ceiling_counts_everything_read_not_each_frame()
+    {
+        FamiliarStdoutLineReader reader = new(
+            new StringReader(string.Join('\n', Enumerable.Repeat(new string('y', 1_000), 10)) + "\n"),
+            maxLineCharacters: 4_096,
+            maxTotalCharacters: 5_000);
+
+        int delivered = 0;
+
+        _ = await Assert.ThrowsAsync<FamiliarOutputLimitExceededException>(
+            async () =>
+            {
+                while (await reader.ReadLineAsync(CancellationToken.None) is not null)
+                {
+                    delivered++;
+                }
+            });
+
+        // The first 4,096-character read holds four whole frames; the fifth needs a second read, which
+        // takes the total past 5,000.
+        Assert.Equal(4, delivered);
+    }
+
     [Fact]
     public async Task Caller_cancellation_stops_the_stream_without_a_transport_failure()
     {

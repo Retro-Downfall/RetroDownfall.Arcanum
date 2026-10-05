@@ -196,8 +196,16 @@ internal sealed class SubagentRunner(
 
             throw;
         }
-        catch
+        catch (Exception ex)
         {
+            // Provider and engine faults are logged downstream; anything else would otherwise
+            // collapse into ChildFailed with no trace. Type only: the message can echo child
+            // prompt or attached-file content.
+            logger.LogWarning(
+                "Subagent run {RunId} failed unexpectedly (exception type {ExceptionType}).",
+                childRunId,
+                ex.GetType().FullName);
+
             if (operationLease is { Acquired: true })
             {
                 await FailOperationAsync(

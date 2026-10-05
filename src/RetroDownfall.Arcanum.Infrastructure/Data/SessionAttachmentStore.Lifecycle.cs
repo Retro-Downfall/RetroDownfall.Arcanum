@@ -724,6 +724,38 @@ internal sealed partial class SessionAttachmentStore
     }
 
     /// <summary>
+    /// Removes a row <see cref="PersistNewWithOutcomeAsync"/> created for a turn that then failed, and
+    /// its blob. Guarded by the same <c>State</c>/<c>RelativePath</c> predicate as a sweep delete, so a
+    /// row that was promoted (or otherwise rewritten) in the meantime is left alone. The derived index
+    /// rows go with it through their <c>ON DELETE CASCADE</c> keys. The blob unlink is best effort: the
+    /// orphan-file sweep reclaims it if it fails.
+    /// </summary>
+    public async Task<bool> DeleteCreatedAttachmentAsync(
+        SessionAttachmentRecord created,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(created);
+
+        bool deleted = await DeleteSweptRowAsync(created, cancellationToken).ConfigureAwait(false);
+
+        if (!deleted)
+        {
+            return false;
+        }
+
+        try
+        {
+            TryDeleteFile(ResolveUnderRoot(created.RelativePath));
+        }
+        catch (InvalidOperationException)
+        {
+            // A path that escapes the root names nothing this store owns; the row is already gone.
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Deletes a row a sweep decided is dead, but only while the persisted row still names the exact
     /// <c>State</c> and <c>RelativePath</c> the sweep observed.
     /// </summary>

@@ -185,6 +185,32 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         return persisted.Record;
     }
 
+    public async Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+        Guid? sessionId,
+        string? pendingTurnId,
+        Guid? entryId,
+        string logicalNameHint,
+        string originalFileName,
+        ReadOnlyMemory<byte> bytes,
+        string mimeType,
+        SessionAttachmentKind kind,
+        CancellationToken cancellationToken = default)
+    {
+        PersistNewCoreResult persisted = await PersistNewCoreAsync(
+            sessionId,
+            pendingTurnId,
+            entryId,
+            logicalNameHint,
+            originalFileName,
+            bytes,
+            mimeType,
+            kind,
+            source: null,
+            cancellationToken).ConfigureAwait(false);
+
+        return new SessionAttachmentPersistence(persisted.Record, persisted.NewVersionCreated);
+    }
+
     public async Task<SessionAttachmentRecord> PersistNewResolvedSourceAsync(
         Guid? sessionId,
         string? pendingTurnId,

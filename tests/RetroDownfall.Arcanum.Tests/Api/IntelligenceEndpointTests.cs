@@ -1,10 +1,15 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -13,20 +18,57 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class IntelligenceEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public IntelligenceEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
+    }
 
+    /// <summary>
+    /// A <c>workingDirectory</c> that does not normalize to a workspace is not a workspace, so the
+    /// arsenal must not hand that raw text to the MCP manager, which would resolve workspace-local MCP
+    /// configuration from it. The manager is asked about no workspace at all.
+    /// </summary>
+    [SkippableFact]
+    public async Task Arsenal_WithInvalidWorkingDirectory_DoesNotQueryWorkspaceMcp()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingMcpConnectionManager manager = new();
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.RemoveAll<IMcpConnectionManager>();
+
+                services.AddSingleton<IMcpConnectionManager>(manager);
+            },
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        // A NUL byte cannot be part of any path, so this never normalizes to a workspace root.
+        const string hostile = "not-a-workspace\0../../escape";
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/intelligence/arsenal",
+            new StringContent(
+                JsonSerializer.Serialize(new OptionalWorkspaceRequest(hostile), ArcanumJsonContext.Default.OptionalWorkspaceRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string queried = Assert.Single(manager.StatusQueries);
+
+        Assert.Equal(string.Empty, queried);
     }
 
     [SkippableFact]
     public async Task PostPing_Buffered_PassesAuditContextWithRequestTypeAndClientIp()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -50,13 +92,11 @@ public sealed class IntelligenceEndpointTests
         Assert.NotNull(auditContext);
 
         Assert.Equal("ping", auditContext.RequestType);
-
     }
 
     [SkippableFact]
     public async Task PostPingStream_PassesAuditContextWithRequestType()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -82,7 +122,6 @@ public sealed class IntelligenceEndpointTests
         Assert.NotNull(auditContext);
 
         Assert.Equal("ping-stream", auditContext.RequestType);
-
     }
 
     /// <summary>
@@ -96,7 +135,6 @@ public sealed class IntelligenceEndpointTests
     [InlineData("text/plain")]
     public async Task PostPingStream_NonJsonContentType_ReturnsUnsupportedMediaType(string contentType)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -112,13 +150,11 @@ public sealed class IntelligenceEndpointTests
             ArcanumJsonContext.Default.ApiResponseString);
 
         Assert.Equal(ErrorCodes.Validation.UnsupportedMediaType, envelope!.Error!.Value.Code);
-
     }
 
     [SkippableFact]
     public async Task PostPing_Buffered_ReturnsFakeIntelligenceText()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -154,13 +190,11 @@ public sealed class IntelligenceEndpointTests
         Assert.Equal("buffered-pong", body.Data.Text);
 
         Assert.Equal("ping", _factory.FakeIntelligence.LastPrompt);
-
     }
 
     [SkippableFact]
     public async Task PostPing_MissingPrompt_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -182,13 +216,11 @@ public sealed class IntelligenceEndpointTests
         Assert.False(body.IsSuccess);
 
         Assert.Equal("Validation.InvalidPrompt", body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task PostMana_WithPrompt_ReturnsManaCount()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -232,7 +264,6 @@ public sealed class IntelligenceEndpointTests
             body.Data.Breakdown!.Components,
             static component => component.Source == ContextTokenSource.CurrentPrompt
                 && component.Estimate.TokenCount > 0);
-
     }
 
     [SkippableFact]
@@ -262,7 +293,6 @@ public sealed class IntelligenceEndpointTests
     [SkippableFact]
     public async Task PostMana_WithMessages_ReturnsPerMessageBreakdown()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -298,13 +328,11 @@ public sealed class IntelligenceEndpointTests
         Assert.All(body.Data.PerMessage, static count => Assert.True(count > 0));
 
         Assert.True(body.Data.PerMessage.Sum() <= body.Data.ManaCount);
-
     }
 
     [SkippableFact]
     public async Task PostMana_WithToolsTrue_ReturnsToolManaEstimate()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -330,13 +358,11 @@ public sealed class IntelligenceEndpointTests
         Assert.NotNull(body.Data.ToolManaEstimate);
 
         Assert.True(body.Data.ToolManaEstimate!.Value > 0);
-
     }
 
     [SkippableFact]
     public async Task PostMana_MissingMessagesAndPrompt_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -358,13 +384,11 @@ public sealed class IntelligenceEndpointTests
         Assert.False(body.IsSuccess);
 
         Assert.Equal("Validation.InvalidBody", body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task PostHumanResponse_AnswerExceedingMaxEntryContentBytes_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -389,7 +413,51 @@ public sealed class IntelligenceEndpointTests
         Assert.False(body.IsSuccess);
         Assert.Equal("Validation.InvalidBody", body.Error?.Code);
         Assert.Contains("UTF-8", body.Error?.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-
     }
 
+    private sealed class RecordingMcpConnectionManager : IMcpConnectionManager
+    {
+        public List<string> StatusQueries { get; } = [];
+
+        public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<Result> StartAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result> StopAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result> RestartAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
+
+        public Task<McpServerInfo?> GetStatusAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default) =>
+            Task.FromResult<McpServerInfo?>(null);
+
+        public Task<McpServerInfo[]> GetAllStatusesAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(Array.Empty<McpServerInfo>());
+
+        public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<AITool>>([]);
+
+        public Task<AIFunction?> GetToolAsync(
+            string serverName,
+            string toolName,
+            string? workingDirectory,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<AIFunction?>(null);
+
+        public Task<List<McpServerStatusDto>> GetServerStatusesAsync(string workingDirectory, CancellationToken cancellationToken = default)
+        {
+            StatusQueries.Add(workingDirectory);
+
+            return Task.FromResult(new List<McpServerStatusDto>());
+        }
+
+        public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
+    }
 }

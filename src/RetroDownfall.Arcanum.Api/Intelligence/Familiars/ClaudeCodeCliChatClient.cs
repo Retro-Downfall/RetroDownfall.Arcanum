@@ -22,14 +22,12 @@ internal sealed class ClaudeCodeCliChatClient(
     IReadOnlyList<string> deniedEnvironmentVariables)
     : FamiliarChatClient(runner, provider, resolvedModel, deniedEnvironmentVariables)
 {
-
     /// <summary>
     /// The largest value Arcanum will put on this CLI's command line. Windows caps a whole command
     /// line at 32,767 characters and Linux caps one argument at 128 KiB (<c>MAX_ARG_STRLEN</c>), and
-    /// a composed Arcanum system prompt carries attached-file bodies plus resonant spell text
-    /// (<c>SpellSettings.MaxResonantBytes</c> alone defaults to 131,072). Overshooting makes
-    /// <c>Process.Start</c> fail, which the pipeline reads as a connectivity failure and silently
-    /// falls back from — so anything larger goes on stdin instead, where no limit applies.
+    /// overshooting makes <c>Process.Start</c> fail, which the pipeline reads as a connectivity
+    /// failure and silently falls back from. Only the structured-output schema still rides on argv
+    /// (the system prompt always goes on stdin), and one too large for this ceiling is dropped.
     /// </summary>
     private const int MaxInlineArgumentLength = 8 * 1024;
 
@@ -39,7 +37,6 @@ internal sealed class ClaudeCodeCliChatClient(
 
     protected override FamiliarProcessRequest BuildRequest(FamiliarPrompt prompt, string? jsonSchema)
     {
-
         List<string> arguments =
         [
             "--print",
@@ -78,31 +75,17 @@ internal sealed class ClaudeCodeCliChatClient(
 
         if (prompt.SystemPrompt is { Length: > 0 } systemPrompt)
         {
-
-            if (systemPrompt.Length <= MaxInlineArgumentLength)
-            {
-
-                arguments.Add("--system-prompt");
-
-                arguments.Add(systemPrompt);
-
-            }
-            else
-            {
-
-                // Too large for argv, so it rides in on stdin the way Codex's instructions already
-                // do. The headers are what keeps the model from reading the instructions as part of
-                // the operator's question.
-                standardInput =
-                    $"{FoldedSystemPromptHeader}\n{systemPrompt}\n\n{FoldedConversationHeader}\n{standardInput}";
-
-            }
-
+            // Always on stdin, however short. A running process's command line is readable by every
+            // other local user, and a composed Arcanum system prompt carries attached-file bodies and
+            // conversation context; stdin is also where the OS argument ceilings do not apply. The
+            // headers are what keeps the model from reading the instructions as part of the
+            // operator's question.
+            standardInput =
+                $"{FoldedSystemPromptHeader}\n{systemPrompt}\n\n{FoldedConversationHeader}\n{standardInput}";
         }
 
         if (jsonSchema is { Length: > 0 } schema && schema.Length <= MaxInlineArgumentLength)
         {
-
             // The CLI validates the answer against the schema itself, so a structured-output turn
             // does not have to survive Arcanum's retry loop to come back well-formed. A schema too
             // large for argv is dropped rather than fatal: Arcanum still validates the answer and
@@ -110,12 +93,10 @@ internal sealed class ClaudeCodeCliChatClient(
             arguments.Add("--json-schema");
 
             arguments.Add(schema);
-
         }
 
         return new FamiliarProcessRequest
         {
-
             FileName = FamiliarProviders.ResolveCommand(Provider),
 
             Arguments = arguments,
@@ -123,14 +104,11 @@ internal sealed class ClaudeCodeCliChatClient(
             StandardInput = standardInput,
 
             WorkingDirectory = WorkingDirectory,
-
         };
-
     }
 
     protected override IEnumerable<ChatResponseUpdate> ProjectFrame(string line, FamiliarTurnState state)
     {
-
         ClaudeCodeFrame? frame = TryParse(line);
 
         if (frame is null)
@@ -140,7 +118,6 @@ internal sealed class ClaudeCodeCliChatClient(
 
         switch (frame.Type)
         {
-
             case "stream_event":
 
                 foreach (ChatResponseUpdate update in ProjectStreamEvent(frame.Event, state))
@@ -162,16 +139,13 @@ internal sealed class ClaudeCodeCliChatClient(
                 // release adds: not an answer, and not an error. Skipping unknown frames is what
                 // keeps a CLI upgrade from breaking a turn.
                 break;
-
         }
-
     }
 
     private IEnumerable<ChatResponseUpdate> ProjectStreamEvent(
         ClaudeCodeStreamEvent? streamEvent,
         FamiliarTurnState state)
     {
-
         if (streamEvent?.Type != "content_block_delta" || streamEvent.Delta is not { } delta)
         {
             yield break;
@@ -179,7 +153,6 @@ internal sealed class ClaudeCodeCliChatClient(
 
         switch (delta.Type)
         {
-
             case "text_delta" when delta.Text is { Length: > 0 } text:
 
                 state.EmittedText = true;
@@ -197,21 +170,16 @@ internal sealed class ClaudeCodeCliChatClient(
             default:
 
                 break;
-
         }
-
     }
 
     private void Complete(ClaudeCodeFrame frame, FamiliarTurnState state)
     {
-
         // `is_error`, not `subtype`. A rejected model still arrives as subtype "success", so reading
         // the subtype would turn an API error into a confident wrong answer.
         if (frame.IsError)
         {
-
             throw Refused(frame.Result);
-
         }
 
         state.Completed = true;
@@ -219,12 +187,10 @@ internal sealed class ClaudeCodeCliChatClient(
         state.CompleteText = frame.Result;
 
         state.Usage = MapUsage(frame.Usage);
-
     }
 
     private static UsageDetails? MapUsage(ClaudeCodeUsage? usage)
     {
-
         if (usage is null)
         {
             return null;
@@ -247,16 +213,13 @@ internal sealed class ClaudeCodeCliChatClient(
 
         if (input == 0L && output == 0L)
         {
-
             // "No usage reported" is preserved as absent rather than flattened to zero — a zero
             // would read as a free turn instead of an unknown one.
             return null;
-
         }
 
         return new UsageDetails
         {
-
             InputTokenCount = input,
 
             OutputTokenCount = output,
@@ -264,29 +227,20 @@ internal sealed class ClaudeCodeCliChatClient(
             CachedInputTokenCount = cacheRead,
 
             TotalTokenCount = input + output,
-
         };
-
     }
 
     private static ClaudeCodeFrame? TryParse(string line)
     {
-
         try
         {
-
             return JsonSerializer.Deserialize(line, FamiliarWireJsonContext.Default.ClaudeCodeFrame);
-
         }
         catch (JsonException)
         {
-
             // A malformed line is one frame, not the turn. The terminal frame decides the outcome,
             // so dropping noise here cannot turn a failure into a success.
             return null;
-
         }
-
     }
-
 }

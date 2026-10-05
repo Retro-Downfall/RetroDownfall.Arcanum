@@ -11,11 +11,12 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// enabled and the request uses <c>response_format: json_schema</c>, this handler injects
 /// <c>strict: true</c> into the <c>json_schema</c> wrapper. If the provider rejects it with a 400
 /// mentioning <c>strict</c>, the handler makes one retry without the flag.
-/// Only <c>application/json</c> request bodies are parsed; streaming requests are passed through unchanged.
+/// Only <c>application/json</c> request bodies are parsed; streaming requests (an event-stream
+/// <c>Accept</c> header, or <c>"stream": true</c> in the body, which is what the OpenAI client sends)
+/// are passed through unchanged.
 /// </summary>
 public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 {
-
     private const int MaxResponseInspectionBytes = 64 * 1024;
 
     private readonly ILogger<OpenAiRequestAugmentingHandler> _logger;
@@ -24,76 +25,67 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
         ILogger<OpenAiRequestAugmentingHandler> logger)
     {
         _logger = logger;
-
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
-
         if (!IsJsonRequest(request))
         {
-
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-
         }
 
         StructuredOutputSettings structuredOutput = ArcanumRuntimeDefaults.StructuredOutput;
 
         if (!structuredOutput.Enabled || !structuredOutput.UseProviderConstrainedDecoding)
         {
-
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-
         }
 
         HttpContent? originalContent = request.Content;
 
         if (originalContent is null)
         {
-
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-
         }
 
         byte[] bodyBytes = await originalContent.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
         if (bodyBytes.Length == 0)
         {
-
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-
         }
 
         JsonDocument? document = TryParseJson(bodyBytes);
 
         if (document is null)
         {
-
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-
         }
 
         try
         {
-
-            if (!TryGetJsonSchemaResponseFormat(document, out JsonElement jsonSchemaWrapper))
+            // The OpenAI client marks a streaming turn with "stream": true in the body and sends no
+            // event-stream Accept header, so the header test above alone lets every real streaming
+            // request through to be rewritten. The body is the authority; pass it through unchanged.
+            if (IsStreamingBody(document))
             {
-
                 return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-
             }
 
-            byte[] modifiedBody = InjectStrictFlag(bodyBytes, jsonSchemaWrapper);
+            if (!TryGetJsonSchemaResponseFormat(document, out _))
+            {
+                return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+
+            byte[] modifiedBody = InjectStrictFlag(document);
 
             originalContent.Dispose();
 
             request.Content = new ByteArrayContent(modifiedBody)
             {
-
                 Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json") }
-
             };
 
             HttpResponseMessage response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -101,7 +93,6 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
             if (response.StatusCode == System.Net.HttpStatusCode.BadRequest
                 && await ResponseMentionsStrictAsync(response, cancellationToken).ConfigureAwait(false))
             {
-
                 _logger.LogWarning(
                     "Provider rejected strict structured-output request; retrying once without strict: true.");
 
@@ -113,133 +104,108 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
                 if (contentType is not null)
                 {
-
                     request.Content.Headers.ContentType = contentType;
-
                 }
 
                 response.Dispose();
 
                 response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-
             }
 
             return response;
-
         }
         finally
         {
-
             document.Dispose();
-
         }
-
     }
 
     private static bool IsJsonRequest(HttpRequestMessage request)
     {
-
         if (request.Content?.Headers.ContentType?.MediaType is not "application/json")
         {
-
             return false;
-
         }
 
         string? accept = request.Headers.Accept.ToString();
 
         return !accept.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase);
-
     }
 
     private static JsonDocument? TryParseJson(byte[] bytes)
     {
-
         try
         {
-
             return JsonDocument.Parse(bytes);
-
         }
         catch (JsonException)
         {
-
             return null;
-
         }
-
     }
+
+    private static bool IsStreamingBody(JsonDocument document) =>
+        document.RootElement.ValueKind == JsonValueKind.Object
+        && document.RootElement.TryGetProperty("stream", out JsonElement stream)
+        && stream.ValueKind == JsonValueKind.True;
 
     private static bool TryGetJsonSchemaResponseFormat(JsonDocument document, out JsonElement jsonSchemaWrapper)
     {
-
         jsonSchemaWrapper = default;
 
         if (document.RootElement.ValueKind != JsonValueKind.Object)
         {
-
             return false;
-
         }
 
         if (!document.RootElement.TryGetProperty("response_format", out JsonElement responseFormatElement)
             || responseFormatElement.ValueKind != JsonValueKind.Object)
         {
-
             return false;
-
         }
 
         if (!responseFormatElement.TryGetProperty("type", out JsonElement typeElement)
             || typeElement.ValueKind != JsonValueKind.String
             || !string.Equals(typeElement.GetString(), "json_schema", StringComparison.OrdinalIgnoreCase))
         {
-
             return false;
-
         }
 
         if (!responseFormatElement.TryGetProperty("json_schema", out JsonElement schemaWrapper)
             || schemaWrapper.ValueKind != JsonValueKind.Object)
         {
-
             return false;
-
         }
 
         jsonSchemaWrapper = schemaWrapper;
 
         return true;
-
     }
 
-    private static byte[] InjectStrictFlag(ReadOnlySpan<byte> originalBody, JsonElement jsonSchemaWrapper)
+    /// <summary>
+    /// Rewrites the already-parsed request with <c>strict: true</c> on its <c>json_schema</c> wrapper,
+    /// reusing the caller's document rather than decoding and parsing the same bytes a second time.
+    /// </summary>
+    private static byte[] InjectStrictFlag(JsonDocument document)
     {
-
         using MemoryStream output = new();
 
         using Utf8JsonWriter writer = new(output);
 
         writer.WriteStartObject();
 
-        using JsonDocument document = JsonDocument.Parse(Encoding.UTF8.GetString(originalBody));
-
         foreach (JsonProperty property in document.RootElement.EnumerateObject())
         {
-
             if (property.NameEquals("response_format"))
             {
-
                 writer.WritePropertyName("response_format");
 
                 writer.WriteStartObject();
 
                 foreach (JsonProperty responseFormatProperty in property.Value.EnumerateObject())
                 {
-
                     if (responseFormatProperty.NameEquals("json_schema"))
                     {
-
                         writer.WritePropertyName("json_schema");
 
                         writer.WriteStartObject();
@@ -248,40 +214,28 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
                         foreach (JsonProperty schemaProperty in responseFormatProperty.Value.EnumerateObject())
                         {
-
                             if (schemaProperty.NameEquals("strict"))
                             {
-
                                 continue;
-
                             }
 
                             schemaProperty.WriteTo(writer);
-
                         }
 
                         writer.WriteEndObject();
-
                     }
                     else
                     {
-
                         responseFormatProperty.WriteTo(writer);
-
                     }
-
                 }
 
                 writer.WriteEndObject();
-
             }
             else
             {
-
                 property.WriteTo(writer);
-
             }
-
         }
 
         writer.WriteEndObject();
@@ -289,15 +243,12 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
         writer.Flush();
 
         return output.ToArray();
-
     }
 
     private static async Task<bool> ResponseMentionsStrictAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
-
         try
         {
-
             // Not `await using`: the stream belongs to a response that is handed back to the caller
             // whenever the body turns out not to be about `strict`. Disposing it there destroys the
             // provider's real error — the only place the reason for the 400 lives.
@@ -311,20 +262,16 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
             while (totalRead < prefix.Length)
             {
-
                 int read = await stream
                     .ReadAsync(prefix.AsMemory(totalRead, prefix.Length - totalRead), cancellationToken)
                     .ConfigureAwait(false);
 
                 if (read == 0)
                 {
-
                     break;
-
                 }
 
                 totalRead += read;
-
             }
 
             // Put the consumed prefix back in front of whatever is left, so the caller reads the
@@ -334,9 +281,7 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
             foreach (KeyValuePair<string, IEnumerable<string>> header in response.Content.Headers)
             {
-
                 _ = replayable.Headers.TryAddWithoutValidation(header.Key, header.Value);
-
             }
 
             response.Content = replayable;
@@ -344,21 +289,15 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
             string body = Encoding.UTF8.GetString(prefix, 0, totalRead);
 
             return body.Contains("strict", StringComparison.OrdinalIgnoreCase);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch
         {
-
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -367,7 +306,6 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
     /// </summary>
     private sealed class PrefixedStream(ReadOnlyMemory<byte> prefix, Stream rest) : Stream
     {
-
         private int _prefixPosition;
 
         public override bool CanRead => true;
@@ -389,10 +327,8 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
         public override int Read(Span<byte> buffer)
         {
-
             if (_prefixPosition < prefix.Length)
             {
-
                 int taken = Math.Min(buffer.Length, prefix.Length - _prefixPosition);
 
                 prefix.Span.Slice(_prefixPosition, taken).CopyTo(buffer);
@@ -400,21 +336,17 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
                 _prefixPosition += taken;
 
                 return taken;
-
             }
 
             return rest.Read(buffer);
-
         }
 
         public override async ValueTask<int> ReadAsync(
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-
             if (_prefixPosition < prefix.Length)
             {
-
                 int taken = Math.Min(buffer.Length, prefix.Length - _prefixPosition);
 
                 prefix.Slice(_prefixPosition, taken).CopyTo(buffer);
@@ -422,11 +354,9 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
                 _prefixPosition += taken;
 
                 return taken;
-
             }
 
             return await rest.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-
         }
 
         public override Task<int> ReadAsync(
@@ -448,18 +378,12 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
         protected override void Dispose(bool disposing)
         {
-
             if (disposing)
             {
-
                 rest.Dispose();
-
             }
 
             base.Dispose(disposing);
-
         }
-
     }
-
 }

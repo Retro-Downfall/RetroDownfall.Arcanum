@@ -383,6 +383,45 @@ public sealed class SubagentRunnerTests
     }
 
     /// <summary>
+    /// A child turn that faults outside the provider/engine paths (which log downstream) used to be
+    /// collapsed into <c>Subagent.ChildFailed</c> with nothing in the log. The failure is now
+    /// logged, as exception type only because the message can echo child prompt or file content.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_WhenChildThrowsUnexpectedly_LogsAndFailsTheOperation()
+    {
+        const string marker = "child-secret-marker";
+        CapturingTurnFacade facade = new(
+            Result<PromptTurnResult>.Success(new PromptTurnResult("unused", null)))
+        {
+            Failure = new InvalidOperationException(marker),
+        };
+        FakeOperationCoordinator operations = new();
+        TestCapturingLogger<SubagentRunner> logger = new();
+        SubagentRunner runner = new(
+            new Lazy<ITurnExecutionFacade>(() => facade),
+            operations,
+            TimeProvider.System,
+            logger);
+
+        SubagentRunResult result = await runner.RunAsync(
+            new SubagentRunRequest("Faulting task.", null, [], MaxTokens: 1_000, MaxCostUsd: null),
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SubagentFailureCodes.ChildFailed, result.FailureCode);
+        Assert.Equal(1, operations.FailCalls);
+        Assert.Equal(SubagentFailureCodes.ChildFailed, operations.FailureCode);
+
+        TestLogEntry entry = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
+
+        Assert.Contains(result.RunId.ToString(), entry.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(nameof(InvalidOperationException), entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(marker, entry.Message, StringComparison.Ordinal);
+        Assert.Null(entry.Exception);
+    }
+
+    /// <summary>
     /// R-008: the child turn starts inside the parent's <c>delegate_task</c> call, where the parent
     /// turn's accounting is now re-established. The child must not see it: a child that adopted the
     /// parent's handle would settle the parent's run and reservation when it completed.
@@ -448,6 +487,9 @@ public sealed class SubagentRunnerTests
 
         public Action? OnExecute { get; init; }
 
+        /// <summary>Thrown from the child turn to model an unexpected fault.</summary>
+        public Exception? Failure { get; init; }
+
         /// <summary>Held open to model a child turn that outlives the durable lease.</summary>
         public Task? Gate { get; init; }
 
@@ -465,6 +507,11 @@ public sealed class SubagentRunnerTests
             InvocationContext = invocationContext;
             OnExecute?.Invoke();
             _ = _entered.TrySetResult();
+
+            if (Failure is not null)
+            {
+                throw Failure;
+            }
 
             if (Gate is not null)
             {

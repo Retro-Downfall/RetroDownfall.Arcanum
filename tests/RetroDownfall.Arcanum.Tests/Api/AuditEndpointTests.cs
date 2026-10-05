@@ -25,30 +25,25 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class AuditEndpointTests : IAsyncLifetime
 {
-
     private ArcanumWebApplicationFactory _factory = null!;
 
     private FakeInferenceAuditLogger _auditLogger = null!;
 
     public Task InitializeAsync()
     {
-
         _auditLogger = new FakeInferenceAuditLogger();
 
         _factory = new ArcanumWebApplicationFactory
         {
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<IInferenceAuditLogger>();
 
                 services.AddSingleton<IInferenceAuditLogger>(_auditLogger);
-
             },
         };
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync() => await _factory.DisposeAsync();
@@ -56,7 +51,6 @@ public sealed class AuditEndpointTests : IAsyncLifetime
     [SkippableFact]
     public async Task GetAudit_ReturnsRecordsNewestFirst()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _auditLogger.Records.Add(MakeRecord("ping", model: "model-a"));
@@ -84,13 +78,11 @@ public sealed class AuditEndpointTests : IAsyncLifetime
         Assert.Equal("model-b", body.Data[0].Model);
 
         Assert.Equal("model-a", body.Data[1].Model);
-
     }
 
     [SkippableFact]
     public async Task GetAudit_FiltersByModel()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _auditLogger.Records.Add(MakeRecord("ping", model: "model-a"));
@@ -112,13 +104,11 @@ public sealed class AuditEndpointTests : IAsyncLifetime
         InferenceAuditRecord record = Assert.Single(body!.Data!);
 
         Assert.Equal("model-a", record.Model);
-
     }
 
     [SkippableFact]
     public async Task GetAudit_FiltersBySessionId()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _auditLogger.Records.Add(MakeRecord("ping", sessionId: "session-1"));
@@ -140,20 +130,16 @@ public sealed class AuditEndpointTests : IAsyncLifetime
         InferenceAuditRecord record = Assert.Single(body!.Data!);
 
         Assert.Equal("session-2", record.SessionId);
-
     }
 
     [SkippableFact]
     public async Task GetAudit_RespectsLimit()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         for (int i = 0; i < 5; i++)
         {
-
             _auditLogger.Records.Add(MakeRecord("ping"));
-
         }
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -169,13 +155,11 @@ public sealed class AuditEndpointTests : IAsyncLifetime
         Assert.NotNull(body?.Data);
 
         Assert.Equal(2, body!.Data!.Length);
-
     }
 
     [SkippableFact]
     public async Task GetAudit_Returns_and_accepts_opaque_cursor_without_changing_array_body()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _auditLogger.Records.Add(MakeRecord("ping", sessionId: "oldest"));
@@ -216,18 +200,23 @@ public sealed class AuditEndpointTests : IAsyncLifetime
         Assert.Equal("oldest", record.SessionId);
 
         Assert.False(secondResponse.Headers.Contains("X-Arcanum-Next-Cursor"));
-
     }
 
-    [SkippableFact]
-    public async Task GetAudit_InvalidFromDate_Returns400()
+    /// <summary>
+    /// The two audit routes document one query contract, so the same bad <c>from</c> must answer with
+    /// the same code on both: <c>Validation.InvalidQuery</c>, not the body-shaped code.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("from=not-a-date")]
+    [InlineData("to=not-a-date")]
+    [InlineData("from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z")]
+    public async Task InvalidFrom_Returns_InvalidQuery(string query)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
 
-        HttpResponseMessage response = await client.GetAsync("/api/audit?from=not-a-date");
+        HttpResponseMessage response = await client.GetAsync($"/api/audit?{query}");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -239,14 +228,12 @@ public sealed class AuditEndpointTests : IAsyncLifetime
 
         Assert.False(body.IsSuccess);
 
-        Assert.Equal("Validation.InvalidBody", body.Error?.Code);
-
+        Assert.Equal("Validation.InvalidQuery", body.Error?.Code);
     }
 
     [SkippableFact]
     public async Task GetAudit_FromAfterTo_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -254,13 +241,11 @@ public sealed class AuditEndpointTests : IAsyncLifetime
         HttpResponseMessage response = await client.GetAsync("/api/audit?from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task GetAudit_NoRecords_ReturnsEmptyArray()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -276,13 +261,11 @@ public sealed class AuditEndpointTests : IAsyncLifetime
         Assert.NotNull(body?.Data);
 
         Assert.Empty(body!.Data!);
-
     }
 
     [SkippableFact]
     public async Task GetAudit_WithoutApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -290,7 +273,6 @@ public sealed class AuditEndpointTests : IAsyncLifetime
         HttpResponseMessage response = await client.GetAsync("/api/audit");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
     }
 
     private static InferenceAuditRecord MakeRecord(
@@ -314,5 +296,4 @@ public sealed class AuditEndpointTests : IAsyncLifetime
             ClientIp: "127.0.0.1",
             SpellName: null,
             CampaignId: null);
-
 }

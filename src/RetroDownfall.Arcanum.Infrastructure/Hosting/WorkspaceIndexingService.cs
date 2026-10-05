@@ -788,18 +788,13 @@ internal sealed partial class WorkspaceIndexingService(
                                 cancellationToken)
                             .ConfigureAwait(false);
 
-                        if (embedResult.IsFailure
-                            || embedResult.Value.Length != missing.Length)
+                        if (embedResult.IsFailure)
                         {
                             logger.LogWarning(
                                 "Workspace indexing embed page failed for {FullPath} ({Code}): {Message}",
                                 fullPath,
-                                embedResult.IsFailure
-                                    ? embedResult.Error.Code
-                                    : ErrorCodes.Embeddings.ProviderUnavailable,
-                                embedResult.IsFailure
-                                    ? embedResult.Error.Message
-                                    : "Embedding provider returned an unexpected result count.");
+                                embedResult.Error.Code,
+                                embedResult.Error.Message);
 
                             await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
 

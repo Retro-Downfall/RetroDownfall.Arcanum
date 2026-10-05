@@ -31,6 +31,13 @@ public sealed record FamiliarProcessRequest
     /// the deadline is mandatory in practice — the default is generous, not absent.
     /// </summary>
     public TimeSpan Timeout { get; init; } = FamiliarProcessLimits.DefaultTimeout;
+
+    /// <summary>
+    /// Ceiling on the characters a streamed invocation may write to stdout in total, frames and
+    /// discarded over-long frames alike. The per-frame ceiling bounds one line; this bounds the
+    /// stream, so a CLI that never stops writing is killed instead of read until the deadline.
+    /// </summary>
+    public int MaxOutputCharacters { get; init; } = FamiliarProcessLimits.MaxTotalStandardOutputCharacters;
 }
 
 /// <summary>
@@ -53,6 +60,9 @@ public enum FamiliarProcessFailure
 
     /// <summary>The CLI exceeded its deadline and its process tree was killed.</summary>
     TimedOut,
+
+    /// <summary>The CLI wrote more than the aggregate output ceiling and its process tree was killed.</summary>
+    OutputLimitExceeded,
 }
 
 /// <summary>Buffered outcome, used where a classification is wanted instead of an exception.</summary>
@@ -104,6 +114,13 @@ internal static class FamiliarProcessLimits
     /// inventory, but bounded so a runaway line cannot exhaust memory.
     /// </summary>
     public const int MaxLineCharacters = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// Total stdout a streamed invocation may produce. Far beyond any honest answer (a long
+    /// stream-json turn with partial-message frames is a few megabytes), and bounded so a runaway CLI
+    /// cannot feed the host for the whole deadline.
+    /// </summary>
+    public const int MaxTotalStandardOutputCharacters = 64 * 1024 * 1024;
 
     /// <summary>Enough stderr to explain a refusal; the rest is dropped rather than buffered.</summary>
     public const int MaxStandardErrorCharacters = 64 * 1024;

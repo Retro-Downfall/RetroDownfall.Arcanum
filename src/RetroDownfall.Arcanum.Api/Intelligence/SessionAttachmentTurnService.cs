@@ -22,6 +22,8 @@ public static class SessionAttachmentTurnService
     internal const string PublicPromotionFailureMessage =
         "Session attachment promotion failed.";
 
+    private static readonly TimeSpan RollbackBudget = TimeSpan.FromSeconds(10);
+
     private static readonly SessionAttachmentTurnPreparation Empty = new(
         IndexItems: [],
         RehydratedContents: [],
@@ -62,7 +64,6 @@ public static class SessionAttachmentTurnService
         CancellationToken cancellationToken,
         ILogger? logger)
     {
-
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(settings);
@@ -76,6 +77,10 @@ public static class SessionAttachmentTurnService
 
         Guid? sessionId = request.SessionId ?? turnSessionId;
         string operation = "validation";
+
+        // Rows this call created. A reused (de-duplicated) row is not in here, so a rollback never
+        // removes something another turn may still reference.
+        List<SessionAttachmentRecord> createdRows = [];
 
         try
         {
@@ -93,57 +98,17 @@ public static class SessionAttachmentTurnService
             HashSet<Guid> explicitlyVisibleAttachmentIds = [];
             List<SessionAttachmentExplicitMaterialization> explicitMaterializations = [];
 
-            if (request.AttachedFiles is { Count: > 0 })
-            {
-                for (int attachedFileIndex = 0; attachedFileIndex < request.AttachedFiles.Count; attachedFileIndex++)
-                {
-                    AttachedFileDto file = request.AttachedFiles[attachedFileIndex];
-
-                    string nameHint = Path.GetFileName(file.RelativePath);
-
-                    if (string.IsNullOrWhiteSpace(nameHint))
-                    {
-                        nameHint = "attachment.txt";
-                    }
-
-                    ReadOnlyMemory<byte> bytes = Encoding.UTF8.GetBytes(file.Content ?? string.Empty);
-
-                    operation = "persist-text";
-
-                    SessionAttachmentRecord persisted = await store
-                        .PersistNewAsync(
-                            sessionId,
-                            effectivePending,
-                            entryId,
-                            nameHint,
-                            nameHint,
-                            bytes,
-                            "text/plain",
-                            SessionAttachmentKind.Text,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                    explicitlyVisibleAttachmentIds.Add(persisted.Id);
-
-                    explicitMaterializations.Add(
-                        new SessionAttachmentExplicitMaterialization(
-                            persisted,
-                            ContextMaterializationSourceKind.CurrentTurnAttachment,
-                            [],
-                            attachedFileIndex));
-                }
-            }
+            // Everything that can be refused without writing is checked before the first persist, so a
+            // bad image or a stale reference after a good file cannot strand that file's row.
+            List<byte[]> decodedFoci = [];
 
             if (request.ScryingFoci is { Count: > 0 })
             {
-                for (int i = 0; i < request.ScryingFoci.Count; i++)
+                foreach (ScryingFocusDto focus in request.ScryingFoci)
                 {
-                    ScryingFocusDto focus = request.ScryingFoci[i];
-                    string nameHint = $"image-{i}.png";
-                    byte[] decoded;
-
                     try
                     {
-                        decoded = Convert.FromBase64String(focus.Data);
+                        decodedFoci.Add(Convert.FromBase64String(focus.Data));
                     }
                     catch (FormatException)
                     {
@@ -153,35 +118,10 @@ public static class SessionAttachmentTurnService
                             effectivePending,
                             "Scrying focus data is not valid base64.");
                     }
-
-                    string mime = string.IsNullOrWhiteSpace(focus.MimeType) ? "image/png" : focus.MimeType;
-
-                    operation = "persist-image";
-
-                    SessionAttachmentRecord persisted = await store
-                        .PersistNewAsync(
-                            sessionId,
-                            effectivePending,
-                            entryId,
-                            nameHint,
-                            nameHint,
-                            decoded,
-                            mime,
-                            SessionAttachmentKind.Image,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                    explicitlyVisibleAttachmentIds.Add(persisted.Id);
-
-                    explicitMaterializations.Add(
-                        new SessionAttachmentExplicitMaterialization(
-                            persisted,
-                            ContextMaterializationSourceKind.CurrentTurnAttachment,
-                            [],
-                            ScryingFocusIndex: i));
                 }
             }
 
-            List<AIContent> rehydrated = [];
+            List<SessionAttachmentRecord> referencedRecords = [];
 
             if (request.AttachmentReferences is { Count: > 0 } && request.SessionId is { } refSessionId)
             {
@@ -217,9 +157,7 @@ public static class SessionAttachmentTurnService
                         and not SessionAttachmentKind.Image)
 
                     {
-
                         return new SessionAttachmentTurnPreparation(
-
                             [],
 
                             [],
@@ -227,18 +165,108 @@ public static class SessionAttachmentTurnService
                             effectivePending,
 
                             $"Attachment '{attachmentId}' cannot be injected into model context.");
-
                     }
 
-                    explicitlyVisibleAttachmentIds.Add(record.Id);
+                    referencedRecords.Add(record);
+                }
+            }
+
+            if (request.AttachedFiles is { Count: > 0 })
+            {
+                for (int attachedFileIndex = 0; attachedFileIndex < request.AttachedFiles.Count; attachedFileIndex++)
+                {
+                    AttachedFileDto file = request.AttachedFiles[attachedFileIndex];
+
+                    string nameHint = Path.GetFileName(file.RelativePath);
+
+                    if (string.IsNullOrWhiteSpace(nameHint))
+                    {
+                        nameHint = "attachment.txt";
+                    }
+
+                    ReadOnlyMemory<byte> bytes = Encoding.UTF8.GetBytes(file.Content ?? string.Empty);
+
+                    operation = "persist-text";
+
+                    SessionAttachmentPersistence persistence = await store
+                        .PersistNewWithOutcomeAsync(
+                            sessionId,
+                            effectivePending,
+                            entryId,
+                            nameHint,
+                            nameHint,
+                            bytes,
+                            "text/plain",
+                            SessionAttachmentKind.Text,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    SessionAttachmentRecord persisted = persistence.Record;
+
+                    if (persistence.NewVersionCreated)
+                    {
+                        createdRows.Add(persisted);
+                    }
+
+                    explicitlyVisibleAttachmentIds.Add(persisted.Id);
 
                     explicitMaterializations.Add(
                         new SessionAttachmentExplicitMaterialization(
-                            record,
-                            ContextMaterializationSourceKind.ExplicitAttachmentReference,
+                            persisted,
+                            ContextMaterializationSourceKind.CurrentTurnAttachment,
                             [],
-                            RequiresMaterialization: true));
+                            attachedFileIndex));
                 }
+            }
+
+            for (int i = 0; i < decodedFoci.Count; i++)
+            {
+                ScryingFocusDto focus = request.ScryingFoci![i];
+                string nameHint = $"image-{i}.png";
+                string mime = string.IsNullOrWhiteSpace(focus.MimeType) ? "image/png" : focus.MimeType;
+
+                operation = "persist-image";
+
+                SessionAttachmentPersistence persistence = await store
+                    .PersistNewWithOutcomeAsync(
+                        sessionId,
+                        effectivePending,
+                        entryId,
+                        nameHint,
+                        nameHint,
+                        decodedFoci[i],
+                        mime,
+                        SessionAttachmentKind.Image,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                SessionAttachmentRecord persisted = persistence.Record;
+
+                if (persistence.NewVersionCreated)
+                {
+                    createdRows.Add(persisted);
+                }
+
+                explicitlyVisibleAttachmentIds.Add(persisted.Id);
+
+                explicitMaterializations.Add(
+                    new SessionAttachmentExplicitMaterialization(
+                        persisted,
+                        ContextMaterializationSourceKind.CurrentTurnAttachment,
+                        [],
+                        ScryingFocusIndex: i));
+            }
+
+            List<AIContent> rehydrated = [];
+
+            foreach (SessionAttachmentRecord record in referencedRecords)
+            {
+                explicitlyVisibleAttachmentIds.Add(record.Id);
+
+                explicitMaterializations.Add(
+                    new SessionAttachmentExplicitMaterialization(
+                        record,
+                        ContextMaterializationSourceKind.ExplicitAttachmentReference,
+                        [],
+                        RequiresMaterialization: true));
             }
 
             IReadOnlyList<SessionAttachmentIndexItem> indexItems = [];
@@ -263,10 +291,8 @@ public static class SessionAttachmentTurnService
 
                 foreach (SessionAttachmentIndexItem item in indexItems)
                 {
-
                     if (seenLogicalKeys.Add(item.LogicalKey))
                     {
-
                         indexedLogicalKeys.Add(item.LogicalKey);
                     }
                 }
@@ -292,6 +318,8 @@ public static class SessionAttachmentTurnService
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await RollBackCreatedRowsAsync(createdRows, store, logger).ConfigureAwait(false);
+
             throw;
         }
         catch (Exception ex)
@@ -303,13 +331,50 @@ public static class SessionAttachmentTurnService
                 sessionId,
                 turnEntryId);
 
+            await RollBackCreatedRowsAsync(createdRows, store, logger).ConfigureAwait(false);
+
             return new SessionAttachmentTurnPreparation(
                 [],
                 [],
                 null,
                 PublicPersistenceFailureMessage);
         }
+    }
 
+    /// <summary>
+    /// Removes the rows a failed or cancelled preparation had already created, so the Session is not
+    /// left holding attachments no turn will ever reference. This is compensation for work that
+    /// already committed, so it runs on its own bounded budget rather than the request token the
+    /// failure may have just cancelled, and it never replaces the original outcome.
+    /// </summary>
+    private static async Task RollBackCreatedRowsAsync(
+        List<SessionAttachmentRecord> createdRows,
+        ISessionAttachmentStore store,
+        ILogger? logger)
+    {
+        if (createdRows.Count == 0)
+        {
+            return;
+        }
+
+        using CancellationTokenSource budget = new(RollbackBudget);
+
+        foreach (SessionAttachmentRecord row in createdRows)
+        {
+            try
+            {
+                _ = await store
+                    .DeleteCreatedAttachmentAsync(row, budget.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(
+                    "Session attachment rollback could not remove attachment {AttachmentId}; exception type {ExceptionType}.",
+                    row.Id,
+                    ex.GetType().FullName);
+            }
+        }
     }
 
     internal static async Task<SessionAttachmentReferenceMaterialization> MaterializeReferenceAsync(
@@ -319,7 +384,6 @@ public static class SessionAttachmentTurnService
         string resolvedModel,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(record);
 
         ArgumentNullException.ThrowIfNull(store);
@@ -328,12 +392,10 @@ public static class SessionAttachmentTurnService
 
         try
         {
-
             List<AIContent> contents = [];
 
             if (record.Kind == SessionAttachmentKind.Image)
             {
-
                 int declaredLength = int.CreateSaturating(record.ByteLength);
 
                 string? imageError = SessionAttachmentToolInjection.ValidateImageAttach(
@@ -344,9 +406,7 @@ public static class SessionAttachmentTurnService
 
                 if (imageError is not null)
                 {
-
                     return new SessionAttachmentReferenceMaterialization([], imageError);
-
                 }
 
                 await using Stream stream = await store
@@ -363,30 +423,23 @@ public static class SessionAttachmentTurnService
                 contents.Add(
                     new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(imageLabel))
                     {
-
                         AdditionalProperties = ExplicitAttachmentContextProperties(),
-
                     });
 
                 contents.Add(
                     new DataContent(bytes, record.MimeType)
                     {
-
                         AdditionalProperties = ExplicitAttachmentContextProperties(),
-
                     });
 
                 return new SessionAttachmentReferenceMaterialization(contents, ErrorMessage: null);
-
             }
 
             if (record.Kind != SessionAttachmentKind.Text)
             {
-
                 return new SessionAttachmentReferenceMaterialization(
                     [],
                     $"Attachment '{record.Id}' cannot be injected into model context.");
-
             }
 
             long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
@@ -400,7 +453,6 @@ public static class SessionAttachmentTurnService
                 .OpenReadAsync(record, cancellationToken)
                 .ConfigureAwait(false))
             {
-
                 ReadOnlyMemory<byte> bytes = await ReadDeclaredBytesAsync(
                     stream,
                     readLength,
@@ -413,33 +465,24 @@ public static class SessionAttachmentTurnService
                 contents.Add(
                     new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))
                     {
-
                         AdditionalProperties = ExplicitAttachmentContextProperties(),
-
                     });
-
             }
 
             return new SessionAttachmentReferenceMaterialization(contents, ErrorMessage: null);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception)
         {
-
             string label = ResolveReferenceLabel(record, record.Id.ToString());
 
             return new SessionAttachmentReferenceMaterialization(
                 [],
                 $"Attachment '{label}' could not be read for model context. Retry the request or refresh the attachment.");
-
         }
-
     }
 
     /// <summary>
@@ -485,7 +528,6 @@ public static class SessionAttachmentTurnService
 
     private static string DecodeTextWithByteBound(ReadOnlyMemory<byte> bytes, long maxTextBytes)
     {
-
         ReadOnlySpan<byte> span = bytes.Span;
 
         if (span.Length > maxTextBytes && maxTextBytes > 0)
@@ -495,7 +537,6 @@ public static class SessionAttachmentTurnService
         }
 
         return Encoding.UTF8.GetString(span);
-
     }
 
     private static async Task<ReadOnlyMemory<byte>> ReadDeclaredBytesAsync(
@@ -503,13 +544,10 @@ public static class SessionAttachmentTurnService
         long declaredLength,
         CancellationToken cancellationToken)
     {
-
         if (declaredLength < 0 || declaredLength > int.MaxValue)
         {
-
             throw new InvalidDataException(
                 "Attachment exceeds the per-item in-memory provider boundary.");
-
         }
 
         byte[] bytes = GC.AllocateUninitializedArray<byte>((int)declaredLength);
@@ -518,51 +556,40 @@ public static class SessionAttachmentTurnService
 
         while (offset < bytes.Length)
         {
-
             int read = await stream
                 .ReadAsync(bytes.AsMemory(offset), cancellationToken)
                 .ConfigureAwait(false);
 
             if (read == 0)
             {
-
                 throw new InvalidDataException(
                     "Attachment ended before its declared byte length.");
-
             }
 
             offset += read;
-
         }
 
         return bytes;
-
     }
 
     private static string ResolveReferenceLabel(
         SessionAttachmentRecord record,
         string fallback)
     {
-
         string label = SystemPromptBuilder.HardenAttachmentIndexName(record.OriginalFileName);
 
         if (label.Length == 0)
         {
-
             label = SystemPromptBuilder.HardenAttachmentIndexName(record.LogicalKey);
-
         }
 
         return label.Length == 0 ? fallback : label;
-
     }
 
     private static AdditionalPropertiesDictionary ExplicitAttachmentContextProperties() =>
         new()
         {
-
             ["arcanum.context_source"] = "explicitAttachment",
-
         };
 
     /// <summary>
@@ -571,7 +598,6 @@ public static class SessionAttachmentTurnService
     [Obsolete("Use Utf8Truncation.TruncateUtf8BytesToCodepointBoundary.")]
     internal static ReadOnlySpan<byte> TruncateUtf8ToRuneBoundary(ReadOnlySpan<byte> utf8, int maxBytes) =>
         Utf8Truncation.TruncateUtf8BytesToCodepointBoundary(utf8, maxBytes);
-
 }
 
 /// <summary>

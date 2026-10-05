@@ -671,13 +671,19 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         await SeedTenChunksAsync(this);
 
-        // The provider answers a 10-input batch with 9 vectors. Zipping the response against the
-        // request by index would hand every leaf from the omission onward its neighbour's vector, and
-        // those wrong-but-well-formed vectors pass the quarantine check and are persisted as this
+        // The provider answers a 10-input batch with 9 vectors. The real WeaveService turns that into
+        // a failed batch at the provider boundary. Zipping the response against the request by index
+        // would instead hand every leaf from the omission onward its neighbour's vector, and those
+        // wrong-but-well-formed vectors pass the quarantine check and are persisted as this
         // generation's leaf embeddings — poisoning clustering, retrieval, and summary provenance.
-        _weave!.OmitBatchIndex = 3;
+        TapestryWeaver weaver = new(
+            _store!,
+            ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService(),
+            _summarizer!,
+            TimeProvider.System,
+            _logger);
 
-        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
 
         Assert.Equal(TapestryWeaveStatus.EmbeddingUnavailable, outcome.Status);
 
@@ -825,9 +831,6 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public string? PoisonContentSubstring { get; set; }
 
-        /// <summary>Drops one input from the middle of every batch response, shortening it by one.</summary>
-        public int? OmitBatchIndex { get; set; }
-
         public bool IsAvailable => Available;
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
@@ -849,12 +852,8 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
                     "unavailable")));
             }
 
-            IEnumerable<string> answered = OmitBatchIndex is { } omitted
-                ? texts.Where((_, index) => index != omitted)
-                : texts;
-
             return Task.FromResult(Result<Embedding<float>[]>.Success(
-                [.. answered.Select(text => new Embedding<float>(Vector(text)))]));
+                [.. texts.Select(text => new Embedding<float>(Vector(text)))]));
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(

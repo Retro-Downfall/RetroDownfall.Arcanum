@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -226,10 +227,120 @@ public sealed class WeaveServiceTests
     }
 
     /// <summary>
+    /// <see cref="IWeaveService.EmbedBatchAsync"/> promises one vector per input, in order, on success.
+    /// A provider that answers fewer vectors than inputs (a proxy dropping an input, a model that
+    /// skipped one) used to hand that short array to every consumer, each of which re-checked it
+    /// separately. The service enforces the promise once, at the provider boundary.
+    /// </summary>
+    [Fact]
+    public async Task EmbedBatch_WhenProviderReturnsFewerVectors_Fails()
+    {
+        FakeEmbeddingGeneratorFactory factory = new();
+
+        factory.Generator.ReturnVectorCount = 2;
+
+        WeaveService service = CreateService(EnabledSettings(), factory);
+
+        Result<Embedding<float>[]> result = await service.EmbedBatchAsync(["a", "b", "c"], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
+    }
+
+    [Fact]
+    public async Task EmbedBatch_WhenProviderReturnsMoreVectors_Fails()
+    {
+        FakeEmbeddingGeneratorFactory factory = new();
+
+        factory.Generator.ReturnVectorCount = 4;
+
+        WeaveService service = CreateService(EnabledSettings(), factory);
+
+        Result<Embedding<float>[]> result = await service.EmbedBatchAsync(["a", "b", "c"], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
+    }
+
+    /// <summary>
+    /// The provider answered, so the batch was billed whether or not its shape is usable: the spend
+    /// is ledgered even though the result is a failure.
+    /// </summary>
+    [Fact]
+    public async Task EmbedBatch_WhenProviderReturnsTheWrongVectorCount_StillLedgersTheBilledBatch()
+    {
+        FakeEmbeddingGeneratorFactory factory = new();
+
+        factory.Generator.ReturnVectorCount = 1;
+
+        RecordingTurnRunWriter writer = new();
+
+        RecordingBudgetReservationService reservations = new();
+
+        WeaveService service = CreateService(EnabledSettings(), factory, writer, reservations);
+
+        Result<Embedding<float>[]> result = await service.EmbedBatchAsync(["a", "b", "c"], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        _ = Assert.Single(writer.Operations);
+    }
+
+    /// <summary>
+    /// Only <c>413 Payload Too Large</c> means the request was too large. A <c>400</c> is any
+    /// malformed request, a bad model name, a rejected input, so it must not be reported as a size
+    /// problem the operator would then chase by shrinking chunks.
+    /// </summary>
+    [Fact]
+    public async Task EmbedBatch_WhenProviderRejectsWithBadRequest_IsNotReportedAsTooLarge()
+    {
+        FakeEmbeddingGeneratorFactory factory = new();
+
+        factory.Generator.ThrowOnGenerate = new HttpRequestException(
+            "bad request",
+            inner: null,
+            HttpStatusCode.BadRequest);
+
+        WeaveService service = CreateService(EnabledSettings(), factory);
+
+        Result<Embedding<float>[]> result = await service.EmbedBatchAsync(["a"], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
+
+        Assert.DoesNotContain("too large", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EmbedBatch_WhenProviderRejectsWith413_IsReportedAsTooLarge()
+    {
+        FakeEmbeddingGeneratorFactory factory = new();
+
+        factory.Generator.ThrowOnGenerate = new HttpRequestException(
+            "payload too large",
+            inner: null,
+            HttpStatusCode.RequestEntityTooLarge);
+
+        WeaveService service = CreateService(EnabledSettings(), factory);
+
+        Result<Embedding<float>[]> result = await service.EmbedBatchAsync(["a"], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
+
+        Assert.Contains("too large", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// An OpenAI-compatible backend can answer 200 with an empty <c>data</c> array (model still
     /// loading, input silently dropped). The single-text overload must degrade to a
     /// <see cref="Result{T}"/> failure like every other provider fault instead of throwing out of an
-    /// API documented as never throwing.
+    /// API documented as never throwing. The single-text overload has no vector-count check of its
+    /// own: it relies on the batch guard, so this pins that the guard covers the empty answer.
     /// </summary>
     [Fact]
     public async Task EmbedAsync_ProviderReturnsNoVectors_ReturnsProviderUnavailable_NeverThrows()
@@ -783,6 +894,9 @@ public sealed class WeaveServiceTests
 
         public bool ReturnNoVectors { get; set; }
 
+        /// <summary>When set, answers this many vectors whatever the batch size was.</summary>
+        public int? ReturnVectorCount { get; set; }
+
         public CancellationToken GenerateCancellationToken { get; private set; }
 
         public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
@@ -813,9 +927,11 @@ public sealed class WeaveServiceTests
                 return new GeneratedEmbeddings<Embedding<float>>();
             }
 
-            GeneratedEmbeddings<Embedding<float>> result = new(list.Count);
+            int vectorCount = ReturnVectorCount ?? list.Count;
 
-            foreach (string _ in list)
+            GeneratedEmbeddings<Embedding<float>> result = new(vectorCount);
+
+            for (int i = 0; i < vectorCount; i++)
             {
                 result.Add(new Embedding<float>(new float[] { 1f, 0f, 0f }));
             }

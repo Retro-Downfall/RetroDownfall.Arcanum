@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 /// <summary>RAG Phase 5 — <see cref="SpellWeaveCache"/> caching, invalidation, and graceful degradation.</summary>
 public sealed class SpellWeaveCacheTests
 {
-
     [Fact]
     public async Task GetOrCreateAsync_FirstCall_EmbedsTheCatalogOnce()
     {
@@ -119,7 +118,6 @@ public sealed class SpellWeaveCacheTests
     [Fact]
     public async Task GetOrCreateAsync_EmbeddingModelChangedViaHotReload_ReEmbeds()
     {
-
         // Same spell catalog, but the operator hot-reloads Arcanum:Integrations:Embeddings:Model — a cache key
         // built only from spell name/description pairs would keep serving stale vectors (embedded
         // against the OLD model) forever, since the catalog content itself never changed.
@@ -159,19 +157,17 @@ public sealed class SpellWeaveCacheTests
         _ = await cache.GetOrCreateAsync(spells, CancellationToken.None);
 
         Assert.Equal(2, weave.EmbedBatchCallCount);
-
     }
 
     [Fact]
-    public async Task GetOrCreateAsync_EmbedBatchReturnsWrongCount_ReturnsNull()
+    public async Task GetOrCreateAsync_ProviderAnswersFewerVectorsThanDescriptions_ReturnsNull()
     {
+        // A provider answering fewer vectors than requested is turned into a failure by the real
+        // WeaveService, once, at the provider boundary; the cache does not re-check the count and
+        // only has to degrade to LLM routing instead of pairing the wrong spell with a vector.
+        IWeaveService weave = ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService();
 
-        // A provider returning fewer vectors than requested is a shape mismatch that must be
-        // rejected explicitly, rather than allowed to throw IndexOutOfRangeException (opaque to
-        // operators) or silently pair the wrong spell with the wrong vector.
-        FakeWeaveService weave = new() { ShortBatchResponse = true };
-
-        SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), NullLogger<SpellWeaveCache>.Instance);
+        SpellWeaveCache cache = new(weave,new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), NullLogger<SpellWeaveCache>.Instance);
 
         List<SpellMetadata> spells =
         [
@@ -182,7 +178,6 @@ public sealed class SpellWeaveCacheTests
         ConcurrentDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(spells, CancellationToken.None);
 
         Assert.Null(result);
-
     }
 
     [Fact]
@@ -240,12 +235,9 @@ public sealed class SpellWeaveCacheTests
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         public bool Available { get; set; } = true;
 
         public bool FailBatch { get; set; }
-
-        public bool ShortBatchResponse { get; set; }
 
         public TimeSpan Delay { get; set; }
 
@@ -268,11 +260,9 @@ public sealed class SpellWeaveCacheTests
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated batch embedding failure."));
             }
 
-            int returnedCount = ShortBatchResponse ? Math.Max(0, texts.Count - 1) : texts.Count;
+            Embedding<float>[] result = new Embedding<float>[texts.Count];
 
-            Embedding<float>[] result = new Embedding<float>[returnedCount];
-
-            for (int i = 0; i < returnedCount; i++)
+            for (int i = 0; i < texts.Count; i++)
             {
                 result[i] = new Embedding<float>(new float[] { i + 1 });
             }
@@ -285,7 +275,5 @@ public sealed class SpellWeaveCacheTests
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by SpellWeaveCache.");
-
     }
-
 }

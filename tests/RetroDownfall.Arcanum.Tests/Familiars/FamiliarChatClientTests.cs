@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Familiars;
 /// </summary>
 public sealed class FamiliarChatClientTests
 {
-
     private static readonly ProviderSettings ClaudeProvider = new()
     {
         Name = "ClaudeCode-subscription",
@@ -34,7 +33,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_buffered_turn_returns_the_assistant_text()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -46,13 +44,11 @@ public sealed class FamiliarChatClientTests
             cancellationToken: CancellationToken.None);
 
         Assert.Equal("PONG", response.Text);
-
     }
 
     [Fact]
     public async Task Claude_buffered_turn_surfaces_provider_reported_usage()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -73,7 +69,6 @@ public sealed class FamiliarChatClientTests
 
         // Nothing was read back from cache on this turn.
         Assert.Equal(0L, usage.CachedInputTokenCount);
-
     }
 
     /// <summary>
@@ -83,7 +78,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_streaming_turn_yields_text_deltas_as_they_arrive()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudePartialMessages);
@@ -96,27 +90,21 @@ public sealed class FamiliarChatClientTests
             [new ChatMessage(ChatRole.User, "hi")],
             cancellationToken: CancellationToken.None))
         {
-
             foreach (AIContent content in update.Contents)
             {
-
                 if (content is TextContent text && text.Text.Length > 0)
                 {
                     deltas.Add(text.Text);
                 }
-
             }
-
         }
 
         Assert.Equal("PONG PONG PONG", string.Concat(deltas));
-
     }
 
     [Fact]
     public async Task Claude_streaming_turn_projects_thinking_as_reasoning_content()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudePartialMessages);
@@ -129,21 +117,16 @@ public sealed class FamiliarChatClientTests
             [new ChatMessage(ChatRole.User, "hi")],
             cancellationToken: CancellationToken.None))
         {
-
             foreach (AIContent content in update.Contents)
             {
-
                 if (content is TextReasoningContent thinking && thinking.Text.Length > 0)
                 {
                     reasoning.Add(thinking.Text);
                 }
-
             }
-
         }
 
         Assert.Contains("PONG PONG PONG", string.Concat(reasoning), StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -154,7 +137,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_streaming_turn_falls_back_to_the_result_frame_when_no_deltas_arrive()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -168,7 +150,6 @@ public sealed class FamiliarChatClientTests
             .ToChatResponseAsync(CancellationToken.None);
 
         Assert.Equal("PONG", response.Text);
-
     }
 
     /// <summary>
@@ -179,7 +160,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_reports_an_errored_result_frame_as_a_transport_failure()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeModelError);
@@ -192,13 +172,11 @@ public sealed class FamiliarChatClientTests
                 cancellationToken: CancellationToken.None));
 
         Assert.Contains("definitely-not-a-real-model", failure.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Claude_never_completes_empty_when_the_familiar_says_nothing()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueLines();
@@ -209,13 +187,11 @@ public sealed class FamiliarChatClientTests
             async () => await client.GetResponseAsync(
                 [new ChatMessage(ChatRole.User, "hi")],
                 cancellationToken: CancellationToken.None));
-
     }
 
     [Fact]
     public async Task Claude_tolerates_a_malformed_frame_without_losing_the_turn()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueLines(
@@ -230,7 +206,6 @@ public sealed class FamiliarChatClientTests
             cancellationToken: CancellationToken.None);
 
         Assert.Equal("ok", response.Text);
-
     }
 
     /// <summary>
@@ -240,7 +215,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_fails_closed_on_a_stream_that_ends_without_a_result_frame()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueLines(
@@ -252,13 +226,11 @@ public sealed class FamiliarChatClientTests
             async () => await client.GetResponseAsync(
                 [new ChatMessage(ChatRole.User, "hi")],
                 cancellationToken: CancellationToken.None));
-
     }
 
     [Fact]
     public async Task Claude_is_invoked_headlessly_with_its_own_agent_loop_disabled()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -288,13 +260,17 @@ public sealed class FamiliarChatClientTests
         Assert.Contains("--disable-slash-commands", argv);
 
         Assert.Contains("--strict-mcp-config", argv);
-
     }
 
+    /// <summary>
+    /// The command line of a running process is readable by every other local user (<c>ps</c>,
+    /// <c>/proc/&lt;pid&gt;/cmdline</c>), and a composed Arcanum system prompt carries attached-file bodies
+    /// and conversation context. It therefore never rides on argv, however short: it is folded into
+    /// standard input behind the instruction headers.
+    /// </summary>
     [Fact]
-    public async Task Claude_receives_the_system_message_as_a_system_prompt()
+    public async Task ClaudeCode_never_places_system_prompt_in_arguments()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -310,18 +286,18 @@ public sealed class FamiliarChatClientTests
 
         IReadOnlyList<string> argv = runner.LastRequest.Arguments;
 
-        int index = argv.ToList().IndexOf("--system-prompt");
+        Assert.DoesNotContain("--system-prompt", argv);
 
-        Assert.True(index >= 0);
+        Assert.DoesNotContain(argv, static argument => argument.Contains("You are terse.", StringComparison.Ordinal));
 
-        Assert.Equal("You are terse.", argv[index + 1]);
-
+        Assert.Equal(
+            "=== SYSTEM INSTRUCTIONS ===\nYou are terse.\n\n=== CONVERSATION ===\nhi",
+            runner.LastRequest.StandardInput);
     }
 
     [Fact]
     public async Task The_prompt_travels_on_standard_input_not_on_the_command_line()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -335,7 +311,6 @@ public sealed class FamiliarChatClientTests
         Assert.Equal("the quick brown fox", runner.LastRequest.StandardInput);
 
         Assert.DoesNotContain("the quick brown fox", runner.LastRequest.Arguments);
-
     }
 
     /// <summary>
@@ -348,7 +323,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_folds_an_oversized_system_prompt_into_standard_input()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -375,7 +349,6 @@ public sealed class FamiliarChatClientTests
         Assert.Contains("ATTACHED FILE BODY", request.StandardInput, StringComparison.Ordinal);
 
         Assert.Contains("hi", request.StandardInput, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -385,7 +358,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_keeps_an_oversized_output_schema_off_the_command_line()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -400,7 +372,6 @@ public sealed class FamiliarChatClientTests
         Assert.All(
             runner.LastRequest.Arguments,
             static argument => Assert.True(argument.Length <= 8192));
-
     }
 
     /// <summary>
@@ -410,7 +381,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task A_multi_turn_conversation_is_rendered_as_a_labelled_transcript()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -432,13 +402,11 @@ public sealed class FamiliarChatClientTests
         Assert.Contains("first answer", prompt, StringComparison.Ordinal);
 
         Assert.Contains("second question", prompt, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_single_user_message_is_sent_verbatim_without_role_labels()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -450,7 +418,6 @@ public sealed class FamiliarChatClientTests
             cancellationToken: CancellationToken.None);
 
         Assert.Equal("just this", runner.LastRequest.StandardInput);
-
     }
 
     // ---- Codex -------------------------------------------------------------------------------
@@ -458,7 +425,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Codex_buffered_turn_returns_the_agent_message()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
@@ -470,13 +436,11 @@ public sealed class FamiliarChatClientTests
             cancellationToken: CancellationToken.None);
 
         Assert.Equal("PONG", response.Text);
-
     }
 
     [Fact]
     public async Task Codex_surfaces_provider_reported_usage_including_cached_and_reasoning_tokens()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
@@ -496,13 +460,11 @@ public sealed class FamiliarChatClientTests
         Assert.Equal(265L, usage.OutputTokenCount);
 
         Assert.Equal(257L, usage.ReasoningTokenCount);
-
     }
 
     [Fact]
     public async Task Codex_reports_a_failed_turn_as_a_transport_failure()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexTurnFailed);
@@ -515,13 +477,11 @@ public sealed class FamiliarChatClientTests
                 cancellationToken: CancellationToken.None));
 
         Assert.Contains("not supported", failure.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task Codex_is_invoked_non_interactively_with_a_read_only_sandbox()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
@@ -553,7 +513,6 @@ public sealed class FamiliarChatClientTests
 
         // `-` makes the prompt come from stdin explicitly rather than being appended to it.
         Assert.Equal("-", argv[^1]);
-
     }
 
     /// <summary>
@@ -566,7 +525,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Codex_disables_the_vendor_agent_loop_through_tolerant_config_overrides()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
@@ -583,13 +541,10 @@ public sealed class FamiliarChatClientTests
 
         foreach (string feature in CodexCliChatClient.SuppressedFeatures)
         {
-
             Assert.Contains($"features.{feature}=false", argv);
-
         }
 
         Assert.Contains("shell_tool", string.Join(' ', argv));
-
     }
 
     /// <summary>
@@ -600,7 +555,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Codex_ignores_repository_execpolicy_rules()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
@@ -612,7 +566,6 @@ public sealed class FamiliarChatClientTests
             cancellationToken: CancellationToken.None);
 
         Assert.Contains("--ignore-rules", runner.LastRequest.Arguments);
-
     }
 
     /// <summary>
@@ -624,7 +577,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Codex_fails_closed_when_the_vendor_loop_executed_a_tool_anyway()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexShellTool);
@@ -640,7 +592,6 @@ public sealed class FamiliarChatClientTests
 
         // The laundered answer must not reach the caller in any form.
         Assert.DoesNotContain("logged in as", failure.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     // ---- Shared ------------------------------------------------------------------------------
@@ -654,7 +605,6 @@ public sealed class FamiliarChatClientTests
     [InlineData(AiProviderKind.CodexCli)]
     public async Task A_missing_binary_fails_closed_with_the_runners_remediation(AiProviderKind kind)
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFailure(
@@ -674,7 +624,6 @@ public sealed class FamiliarChatClientTests
         Assert.Equal(FamiliarProcessFailure.NotInstalled, failure.Failure);
 
         Assert.Contains("was not found", failure.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -684,7 +633,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Configured_provider_credential_variables_are_named_for_stripping()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -719,7 +667,6 @@ public sealed class FamiliarChatClientTests
 
         // The derived default is stripped too — an operator who never named one still has a key.
         Assert.Contains("ARCANUM_PROVIDER_COMPAT_API_KEY", runner.LastRequest.DeniedEnvironmentVariables);
-
     }
 
     // ---- Defects the review caught -------------------------------------------------------------
@@ -735,7 +682,6 @@ public sealed class FamiliarChatClientTests
     [InlineData(AiProviderKind.CodexCli)]
     public async Task A_familiar_never_runs_in_the_hosts_current_directory(AiProviderKind kind)
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(
@@ -764,7 +710,6 @@ public sealed class FamiliarChatClientTests
         Assert.NotEqual(
             Path.TrimEndingDirectorySeparator(Path.GetTempPath()),
             Path.TrimEndingDirectorySeparator(working));
-
     }
 
     /// <summary>
@@ -775,7 +720,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_loads_user_settings_only_so_a_repository_cannot_run_hooks()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -793,7 +737,6 @@ public sealed class FamiliarChatClientTests
         Assert.True(index >= 0);
 
         Assert.Equal("user", argv[index + 1]);
-
     }
 
     /// <summary>
@@ -804,7 +747,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_usage_counts_cache_written_and_cache_read_prompt_tokens()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -819,7 +761,6 @@ public sealed class FamiliarChatClientTests
 
         // 2 uncached + 2,640 written to cache + 0 read from cache.
         Assert.Equal(2642L, usage.InputTokenCount);
-
     }
 
     /// <summary>
@@ -829,7 +770,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task A_terminal_frame_with_no_answer_fails_closed()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueLines(
@@ -843,7 +783,6 @@ public sealed class FamiliarChatClientTests
                 cancellationToken: CancellationToken.None));
 
         Assert.Contains("without an answer", failure.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -854,7 +793,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task A_codex_error_item_never_becomes_the_assistants_answer()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueLines(
@@ -870,7 +808,6 @@ public sealed class FamiliarChatClientTests
 
         // The CLI's own words explain the empty turn, rather than standing in for the answer.
         Assert.Contains("Model metadata not found.", failure.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -880,7 +817,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Claude_passes_a_requested_output_schema_to_the_cli()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
@@ -899,13 +835,11 @@ public sealed class FamiliarChatClientTests
         Assert.True(index >= 0);
 
         Assert.Contains("\"answer\"", argv[index + 1], StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Codex_passes_a_requested_output_schema_as_a_file_in_its_private_directory()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
@@ -926,7 +860,6 @@ public sealed class FamiliarChatClientTests
         Assert.StartsWith(runner.LastRequest.WorkingDirectory!, argv[index + 1], StringComparison.Ordinal);
 
         Assert.Contains("\"answer\"", File.ReadAllText(argv[index + 1]), StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -939,7 +872,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Codex_writes_a_fresh_output_schema_for_every_call_on_one_client()
     {
-
         RecordingFamiliarProcessRunner runner = new();
 
         runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
@@ -982,7 +914,6 @@ public sealed class FamiliarChatClientTests
             "\"answer\"",
             File.ReadAllText(second[secondIndex + 1]),
             StringComparison.Ordinal);
-
     }
 
     private static ChatResponseFormat SchemaFormat() =>
@@ -1009,7 +940,6 @@ public sealed class FamiliarChatClientTests
     [Fact]
     public async Task Codex_logs_a_warning_when_it_cannot_hand_the_schema_to_the_child_process()
     {
-
         TestCapturingLogger<CodexCliChatClient> logger = new();
 
         RecordingFamiliarProcessRunner runner = new();
@@ -1047,7 +977,6 @@ public sealed class FamiliarChatClientTests
         Assert.DoesNotContain("--output-schema", runner.LastRequest.Arguments);
 
         Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Warning);
-
     }
 
     private static IChatClient CreateClaude(IFamiliarProcessRunner runner, string model) =>
@@ -1055,5 +984,4 @@ public sealed class FamiliarChatClientTests
 
     private static IChatClient CreateCodex(IFamiliarProcessRunner runner, string model) =>
         new CodexCliChatClient(runner, CodexProvider, model, []);
-
 }

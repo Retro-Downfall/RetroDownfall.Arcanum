@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public interface IContextCompressionService
 {
-
     Task<CompactResult> CompressSessionAsync(Guid sessionId, int contextWindowLimit, CancellationToken cancellationToken);
 
     int CountTokens(
@@ -30,12 +29,10 @@ public interface IContextCompressionService
         int reservedReasoningTokens = 0);
 
     int ComputeEffectiveLimit(int contextWindowLimit, int thresholdPercent);
-
 }
 
 internal sealed class ContextCompressionService : IContextCompressionService
 {
-
     private const int DefaultContextWindowLimit = 8192;
 
     private readonly IGrimoireRepository _grimoire;
@@ -56,7 +53,6 @@ internal sealed class ContextCompressionService : IContextCompressionService
         IModelTokenEstimator? modelTokenEstimator = null,
         ICovenantSensitiveArtifactPurger? purger = null)
     {
-
         _grimoire = grimoire;
 
         _settings = settings;
@@ -67,7 +63,6 @@ internal sealed class ContextCompressionService : IContextCompressionService
         _logger = logger;
 
         _purger = purger;
-
     }
 
     /// <summary>
@@ -90,14 +85,12 @@ internal sealed class ContextCompressionService : IContextCompressionService
         HashSet<Guid> erasedByPurge,
         CancellationToken cancellationToken)
     {
-
         List<CovenantSensitivePurgeResult> results = [];
 
         CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
 
         foreach (Guid[] page in entryIds.Chunk(ICovenantSensitiveArtifactPurger.MaxTargets))
         {
-
             Result<CovenantSensitivePurgeOutcome> purged = await _purger!
                 .PurgeAsync(
                     [.. page.Select(static id =>
@@ -107,9 +100,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             if (purged.IsFailure)
             {
-
                 return purged.Error;
-
             }
 
             erasedByPurge.UnionWith(
@@ -119,22 +110,18 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             if (purged.Value.IsBlocked)
             {
-
                 return new Error(
                     CovenantSensitiveDeletion.BlockedError(purged.Value).Code,
                     "A protected Entry selected by compaction could not be erased and was left unchanged.");
-
             }
 
             results.AddRange(purged.Value.Results);
 
             progress = progress.Add(purged.Value.Progress);
-
         }
 
         return Result<CovenantSensitivePurgeOutcome>.Success(
             new CovenantSensitivePurgeOutcome(results, progress));
-
     }
 
     /// <summary>
@@ -159,12 +146,9 @@ internal sealed class ContextCompressionService : IContextCompressionService
         Session? reloaded,
         CancellationToken cancellationToken)
     {
-
         if (reloaded is null)
         {
-
             return erasedByPurge.Count;
-
         }
 
         HashSet<Guid> inWindow = [.. reloaded.Entries.Select(static entry => entry.Id)];
@@ -173,12 +157,9 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         foreach (Guid entryId in dispatched)
         {
-
             if (inWindow.Contains(entryId))
             {
-
                 continue;
-
             }
 
             if (erasedByPurge.Contains(entryId)
@@ -186,29 +167,22 @@ internal sealed class ContextCompressionService : IContextCompressionService
                     .GetEntryByIdAsync(sessionId, entryId, cancellationToken)
                     .ConfigureAwait(false) is null)
             {
-
                 gone++;
-
             }
-
         }
 
         return gone;
-
     }
 
     public async Task<CompactResult> CompressSessionAsync(Guid sessionId, int contextWindowLimit, CancellationToken cancellationToken)
     {
-
         Session? session = await _grimoire
             .GetSessionAsync(sessionId, cancellationToken)
             .ConfigureAwait(false);
 
         if (session is null)
         {
-
             return new CompactResult(0, 0, 0);
-
         }
 
         IntelligenceSettings intelligenceSettings = _settings.Value.ResolveIntelligence();
@@ -220,9 +194,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         if (!intelligenceSettings.EnableContextCompression)
         {
-
             return new CompactResult(0, 0, 0);
-
         }
 
         int minMessages = ArcanumSettingClamps.CompressionPreflightMinMessages(
@@ -232,9 +204,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         if (messages.Count < minMessages)
         {
-
             return new CompactResult(0, 0, 0);
-
         }
 
         int tokensBefore = CountTokens(messages, compressionProvider, compressionModel);
@@ -245,9 +215,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         if (tokensBefore <= effectiveLimit)
         {
-
             return new CompactResult(tokensBefore, tokensBefore, 0);
-
         }
 
         List<Entry> ordered = session.Entries
@@ -263,7 +231,6 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         if (ordered.Count > 0)
         {
-
             int tokensToRemove = tokensBefore - effectiveLimit;
 
             long estimatedRemoved = 0;
@@ -288,11 +255,8 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
                 if (estimatedRemoved >= tokensToRemove)
                 {
-
                     break;
-
                 }
-
             }
 
             HashSet<Guid> groupSafeDeletes = TurnContextGuards.ExpandDeletionToCompleteToolGroups(ordered, entryIdsToDelete);
@@ -309,41 +273,40 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             if (purged is { } attempted && attempted.IsFailure)
             {
-
                 // A refused purge stops compaction rather than falling back to the ordinary delete.
                 // Removing the unlabelled remainder would leave the Session compacted around protected
                 // Entries that are still there, which is worse than not compacting at all.
                 stoppedBy = attempted.Error.Code;
-
             }
             else
             {
+                // The last chance to honour the caller's cancellation. Once the first delete (or the
+                // purge that already succeeded) has committed, a tool group is half gone until the
+                // whole set is, so the remaining deletes are bookkeeping that finishes the group
+                // and must not stop at the request token.
+                if (purged is null)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
 
                 foreach (Guid entryId in groupSafeDeletes)
                 {
-
                     if (purged is { } outcome && !outcome.Value.RequiresOrdinaryDelete(entryId))
                     {
-
                         if (outcome.Value.WasPurged(entryId))
                         {
-
                             removed++;
-
                         }
 
                         continue;
-
                     }
 
                     await _grimoire
-                        .DeleteEntryAsync(sessionId, entryId, cancellationToken)
+                        .DeleteEntryAsync(sessionId, entryId, CancellationToken.None)
                         .ConfigureAwait(false);
 
                     removed++;
-
                 }
-
             }
 
             session = await _grimoire
@@ -352,16 +315,13 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             if (session is not null)
             {
-
                 messages = InferenceContextBuilder.MapGrimoireToMeAiMessages(session, string.Empty);
 
                 tokensAfter = CountTokens(messages, compressionProvider, compressionModel);
-
             }
 
             if (stoppedBy is not null)
             {
-
                 removed = await CountRemovedAfterStopAsync(
                         sessionId,
                         groupSafeDeletes,
@@ -369,36 +329,29 @@ internal sealed class ContextCompressionService : IContextCompressionService
                         session,
                         cancellationToken)
                     .ConfigureAwait(false);
-
             }
-
         }
 
         if (stoppedBy is not null)
         {
-
             _logger.LogWarning(
                 "Compaction of session {SessionId} stopped after removing {Removed} entries: a protected Entry could not be erased ({Code}).",
                 sessionId,
                 removed,
                 stoppedBy);
-
         }
 
         if (removed > 0 && tokensAfter > effectiveLimit)
         {
-
             _logger.LogWarning(
                 "Compact removed {Removed} entries from session {SessionId} but context remains {TokensAfter} tokens (threshold {EffectiveLimit}).",
                 removed,
                 sessionId,
                 tokensAfter,
                 effectiveLimit);
-
         }
 
         return new CompactResult(tokensBefore, tokensAfter, removed, stoppedBy);
-
     }
 
     public int CountTokens(
@@ -471,12 +424,10 @@ internal sealed class ContextCompressionService : IContextCompressionService
             Models = [new ModelEntry(resolvedModel)],
             ContextWindowLimit = DefaultContextWindowLimit,
         };
-
     }
 
     public int ComputeEffectiveLimit(int contextWindowLimit, int thresholdPercent)
     {
-
         int clampedLimit = ArcanumSettingClamps.ContextWindowLimit(contextWindowLimit);
 
         int thresholdPct = ArcanumSettingClamps.ContextWindowCompressionThreshold(thresholdPercent);
@@ -484,7 +435,5 @@ internal sealed class ContextCompressionService : IContextCompressionService
         long effectiveLong = (long)clampedLimit * thresholdPct / 100L;
 
         return effectiveLong > int.MaxValue ? int.MaxValue : (int)effectiveLong;
-
     }
-
 }

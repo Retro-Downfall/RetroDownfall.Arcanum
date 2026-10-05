@@ -63,9 +63,14 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             deadline.Token,
             cancellationToken);
 
+        int maxOutputCharacters = request.MaxOutputCharacters > 0
+            ? request.MaxOutputCharacters
+            : FamiliarProcessLimits.MaxTotalStandardOutputCharacters;
+
         FamiliarStdoutLineReader reader = new(
             process.StandardOutput,
-            FamiliarProcessLimits.MaxLineCharacters);
+            FamiliarProcessLimits.MaxLineCharacters,
+            maxOutputCharacters);
 
         try
         {
@@ -80,6 +85,14 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                     throw TimedOut(request, standardError);
+                }
+                catch (FamiliarOutputLimitExceededException)
+                {
+                    // Reaped before the verdict is raised, so the child stops writing now rather than
+                    // when the enumerator is eventually disposed.
+                    KillQuietly(process);
+
+                    throw OutputLimitExceeded(request, maxOutputCharacters, standardError);
                 }
 
                 if (frame is not { } line)
@@ -399,6 +412,15 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             $"'{request.FileName}' did not finish within {request.Timeout.TotalSeconds:0} seconds and its process tree was terminated.",
             standardError: ReadTail(standardError));
 
+    private static FamiliarProcessException OutputLimitExceeded(
+        FamiliarProcessRequest request,
+        int maxOutputCharacters,
+        StringBuilder standardError) =>
+        new(
+            FamiliarProcessFailure.OutputLimitExceeded,
+            $"'{request.FileName}' wrote more than {maxOutputCharacters:N0} characters of output and its process tree was terminated.",
+            standardError: ReadTail(standardError));
+
     /// <summary>
     /// The buffered path's timeout verdict, in one place because two routes reach it: the deadline
     /// state the run is judged by, and the cancelled read that only some platforms raise.
@@ -621,6 +643,11 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
     }
 }
 
+/// <summary>Raised by <see cref="FamiliarStdoutLineReader"/> when a stream passes its aggregate ceiling.</summary>
+internal sealed class FamiliarOutputLimitExceededException : Exception
+{
+}
+
 /// <summary>One NDJSON frame from a Familiar, and whether it outgrew the frame ceiling.</summary>
 internal readonly record struct FamiliarStdoutLine(string Text, bool Exceeded);
 
@@ -636,9 +663,11 @@ internal readonly record struct FamiliarStdoutLine(string Text, bool Exceeded);
 /// a frame passes it the rest is discarded as it arrives rather than accumulated, and the frame is
 /// reported as oversize instead of being handed on as an unparseable fragment.
 /// </remarks>
-internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCharacters)
+internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCharacters, int maxTotalCharacters = int.MaxValue)
 {
     private readonly char[] _buffer = new char[4096];
+
+    private long _totalCharacters;
 
     private int _length;
 
@@ -664,6 +693,15 @@ internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCha
                     return line.Length == 0 && !exceeded
                         ? null
                         : new FamiliarStdoutLine(Render(line), exceeded);
+                }
+
+                // Counted as it is read, so the ceiling holds even inside one unterminated frame and
+                // for frames that are discarded as over-long: both still cost the pipe and the child.
+                _totalCharacters += _length;
+
+                if (_totalCharacters > maxTotalCharacters)
+                {
+                    throw new FamiliarOutputLimitExceededException();
                 }
             }
 
