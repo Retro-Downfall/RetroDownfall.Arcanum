@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -23,7 +24,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 [Trait("Category", "Integration")]
 public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 {
-
     private const int TestDimensions = 64;
 
     private readonly GrimoireFixture _fixture;
@@ -41,14 +41,11 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
     public EmbeddingsResetServiceTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -76,32 +73,24 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             Services());
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task Purge_releases_page_owner_before_dispatching_the_scoped_purger()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid artifactId = Guid.NewGuid();
@@ -137,7 +126,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         try
         {
-
             await pause.WaitUntilEnteredAsync();
 
             Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
@@ -159,21 +147,17 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             Assert.Equal(1, connections.LiveOwnerLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
 
             Assert.Equal(0, connections.LiveBorrowLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
-
         }
         finally
         {
-
             pause.Release();
 
             allowPurge.TrySetResult();
 
             _ = await resetting.WaitAsync(TimeSpan.FromSeconds(10));
-
         }
 
         Assert.Equal(0, connections.LiveLeaseCount);
-
     }
 
     /// <summary>
@@ -185,10 +169,15 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     /// </remarks>
     private ServiceProvider Services(
         RecordingScopedOrdinaryConnectionFactory? connections = null,
-        ICovenantLabeledArtifactTransactionGuard? guard = null)
+        ICovenantLabeledArtifactTransactionGuard? guard = null,
+        TapestryBuildBackoff? backoff = null)
     {
-
         ServiceCollection services = new();
+
+        if (backoff is not null)
+        {
+            services.AddSingleton(backoff);
+        }
 
         services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
             connections ?? new RecordingScopedOrdinaryConnectionFactory());
@@ -196,7 +185,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         services.AddSingleton(guard ?? FixtureLabeledArtifactGuard.For(_db!));
 
         return services.BuildServiceProvider();
-
     }
 
     private Task SeedLabelAsync(
@@ -219,14 +207,11 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         string artifactId,
         CancellationToken cancellationToken = default)
     {
-
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         if (connection.State is not System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(cancellationToken);
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -253,7 +238,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         _ = command.Parameters.AddWithValue("$now", "2026-01-01T00:00:00.0000000Z");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     private sealed class ScopedConnectionPurger(
@@ -262,12 +246,10 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         TaskCompletionSource entered,
         TaskCompletionSource release) : ICovenantSensitiveArtifactPurger
     {
-
         public async ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
             IReadOnlyList<CovenantSensitivePurgeTarget> targets,
             CancellationToken cancellationToken = default)
         {
-
             SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
 
             Result<IGrimoireOrdinaryConnectionLease> acquired = await connections.AcquireScopedAsync(
@@ -295,9 +277,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
                             CovenantErasureBlocker.None)),
                     ],
                     CovenantArtifactErasureProgress.Empty));
-
         }
-
     }
 
     /// <summary>
@@ -317,7 +297,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     [InlineData(EmbeddingsResetScope.All)]
     public async Task ResetAsync_RefusesWhenTheLabelTableCannotBeRead_AndKeepsTheSagaRows(EmbeddingsResetScope scope)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _ = await _sagaStore!.InsertAsync(
@@ -348,7 +327,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memories;"));
 
         Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
-
     }
 
     /// <summary>
@@ -377,7 +355,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         SensitiveArtifactKind kind,
         int unparseableRows)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _ = await _sagaStore!.InsertAsync(
@@ -393,12 +370,10 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         // Sorted ahead of every real label, so they are what the first page reads.
         for (int index = 1; index <= unparseableRows; index++)
         {
-
             await SeedLabelRowAsync(
                 string.Create(System.Globalization.CultureInfo.InvariantCulture, $"00000000-0000-0000-0000-{index:D12}"),
                 kind,
                 $"not-a-guid-{index}");
-
         }
 
         await SeedLabelRowAsync(
@@ -423,11 +398,8 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         if (kind is SensitiveArtifactKind.Saga)
         {
-
             Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memories;"));
-
         }
-
     }
 
     /// <summary>
@@ -443,17 +415,14 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task ResetAsync_DispatchesEveryLabelAcrossPages_WhenEveryRowParses()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         for (int index = 1; index <= 130; index++)
         {
-
             await SeedLabelRowAsync(
                 string.Create(System.Globalization.CultureInfo.InvariantCulture, $"00000000-0000-0000-0000-{index:D12}"),
                 SensitiveArtifactKind.Saga,
                 Guid.NewGuid().ToString("D").ToUpperInvariant());
-
         }
 
         CountingPurger purger = new(_db);
@@ -465,7 +434,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal([128, 2], purger.PageSizes);
 
         Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     /// <summary>
@@ -490,7 +458,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         SensitiveArtifactKind intrudingKind,
         string expectedKinds)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         int kindsTruncated = expectedKinds.Split(',').Length;
@@ -524,7 +491,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal(0, intruder.AskedOutsideTransaction);
 
         Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     /// <summary>
@@ -538,7 +504,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task ResetAsync_RefusesWhenALabelSurvivesToTheTruncation_AndKeepsTheSagaRows()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid memoryId = Guid.NewGuid();
@@ -571,7 +536,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
 
         Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     /// <summary>
@@ -581,7 +545,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task ResetAsync_RefusesWhenTheGuardCannotReadTheLabelsAtTheTruncation_AndKeepsTheSagaRows()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _ = await _sagaStore!.InsertAsync(
@@ -608,14 +571,12 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memories;"));
 
         Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
-
     }
 
     /// <summary>A guard that records the kind of every bulk question and passes each one on.</summary>
     private sealed class KindRecordingGuard(ICovenantLabeledArtifactTransactionGuard inner)
         : ICovenantLabeledArtifactTransactionGuard
     {
-
         /// <summary>The kind of each whole-kind question, in the order they were asked.</summary>
         public List<SensitiveArtifactKind> BulkKinds { get; } = [];
 
@@ -647,19 +608,15 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             DbTransaction transaction,
             CancellationToken cancellationToken = default)
         {
-
             BulkKinds.Add(kind);
 
             return inner.EnsureNoneLabeledAsync(kind, connection, transaction, cancellationToken);
-
         }
-
     }
 
     /// <summary>A purger that records how often it was asked, with how many targets, and removes nothing.</summary>
     private sealed class CountingPurger(ArcanumDbContext? removeLabelsFrom = null) : ICovenantSensitiveArtifactPurger
     {
-
         public int Calls { get; private set; }
 
         /// <summary>The number of targets each call was handed, in call order.</summary>
@@ -669,7 +626,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             IReadOnlyList<CovenantSensitivePurgeTarget> targets,
             CancellationToken cancellationToken = default)
         {
-
             Calls++;
 
             PageSizes.Add(targets.Count);
@@ -678,19 +634,15 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             // Without it the labels are still there when the truncation asks, and the truncation refuses.
             if (removeLabelsFrom is not null)
             {
-
                 await RemoveLabelsAsync(
                     (SqliteConnection)removeLabelsFrom.Database.GetDbConnection(),
                     targets,
                     cancellationToken);
-
             }
 
             return Result<CovenantSensitivePurgeOutcome>.Success(
                 new CovenantSensitivePurgeOutcome([], CovenantArtifactErasureProgress.Empty));
-
         }
-
     }
 
     /// <summary>Removes the label row of every target, which is what a purge that erased them leaves.</summary>
@@ -699,10 +651,8 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         IReadOnlyList<CovenantSensitivePurgeTarget> targets,
         CancellationToken cancellationToken)
     {
-
         foreach (CovenantSensitivePurgeTarget target in targets)
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             // The label table refuses a delete from anything but a purge, a retention or a maintenance
@@ -718,9 +668,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             _ = command.Parameters.AddWithValue("$artifact", target.ArtifactId.ToString("D").ToUpperInvariant());
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
         }
-
     }
 
     /// <summary>
@@ -742,7 +690,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task ResetAsync_SagaScope_TakesTheClaimsDescribingTheMemoriesItClears()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SagaMemoryStore claiming = new(
@@ -790,17 +737,13 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM annal_heads WHERE SubjectStoreCode = 1;"));
 
         Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM annal_versions;"));
-
     }
 
     private async Task<int> ScalarAsync(string sql)
     {
-
         if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         await using DbCommand command = _db.Database.GetDbConnection().CreateCommand();
@@ -810,17 +753,13 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(CancellationToken.None),
             System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private async Task ExecuteAsync(string sql)
     {
-
         if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         await using DbCommand command = _db.Database.GetDbConnection().CreateCommand();
@@ -828,24 +767,20 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static float[] Vec(params float[] leading)
     {
-
         float[] result = new float[TestDimensions];
 
         leading.AsSpan().CopyTo(result);
 
         return result;
-
     }
 
     [SkippableFact]
     public async Task ResetAsync_SagaScope_ClearsMemoriesAndEmbeddingsAndWatermarks()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -873,7 +808,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.True(result.DeletedRowCounts.ContainsKey("saga_memory_embeddings"));
 
         Assert.True(result.DeletedRowCounts.ContainsKey("saga_extraction_watermarks"));
-
     }
 
     /// <summary>
@@ -887,7 +821,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task ResetAsync_SagaScope_EmptiesAPlainVectorMirrorWhileTheFlagIsOff()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // The plain table a test stands in for the accelerator's mirror: no schema file installs it.
@@ -919,7 +852,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
 
         Assert.Equal(1, result.DeletedRowCounts["saga_memory_embeddings_vec"]);
-
     }
 
     /// <summary>Every scope that owns a vector mirror, with the mirror's table.</summary>
@@ -962,16 +894,13 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         EmbeddingsResetScope scope,
         string mirror)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         foreach ((string table, string tableKey) in EveryMirror)
         {
-
             await CreatePlainMirrorAsync(table, tableKey);
 
             await SeedMirrorRowsAsync(table, tableKey, 2);
-
         }
 
         Assert.False(_vectorAccelerator.IsVecAvailable);
@@ -984,11 +913,8 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         foreach ((string table, _) in EveryMirror.Where(entry => entry.Table != mirror))
         {
-
             Assert.Equal(2, await ScalarAsync($"SELECT COUNT(*) FROM \"{table}\";"));
-
         }
-
     }
 
     /// <summary>
@@ -1007,7 +933,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         EmbeddingsResetScope scope,
         string mirror)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string key = EveryMirror.Single(entry => entry.Table == mirror).Key;
@@ -1021,35 +946,28 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal(2, await ScalarAsync($"SELECT COUNT(*) FROM \"{mirror}\";"));
 
         Assert.Equal(0, result.DeletedRowCounts[mirror]);
-
     }
 
     [SkippableFact]
     public async Task ResetAsync_AllScope_EmptiesEveryPlainVectorMirrorWhileTheFlagIsOff()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         foreach ((string table, string key) in EveryMirror)
         {
-
             await CreatePlainMirrorAsync(table, key);
 
             await SeedMirrorRowsAsync(table, key, 3);
-
         }
 
         EmbeddingsResetResult result = await _resetService!.ResetAsync(EmbeddingsResetScope.All, CancellationToken.None);
 
         foreach ((string table, _) in EveryMirror)
         {
-
             Assert.Equal(0, await ScalarAsync($"SELECT COUNT(*) FROM \"{table}\";"));
 
             Assert.Equal(3, result.DeletedRowCounts[table]);
-
         }
-
     }
 
     /// <summary>
@@ -1059,29 +977,22 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task ResetAsync_AllScope_SkipsALegacyVirtualMirrorAndEmptiesTheOthers()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         const string Legacy = "entry_embeddings_vec";
 
         foreach ((string table, string key) in EveryMirror)
         {
-
             if (table == Legacy)
             {
-
                 await CreateLegacyMirrorAsync(table, key);
-
             }
             else
             {
-
                 await CreatePlainMirrorAsync(table, key);
-
             }
 
             await SeedMirrorRowsAsync(table, key, 2);
-
         }
 
         EmbeddingsResetResult result = await _resetService!.ResetAsync(EmbeddingsResetScope.All, CancellationToken.None);
@@ -1092,13 +1003,10 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         foreach ((string table, _) in EveryMirror.Where(entry => entry.Table != Legacy))
         {
-
             Assert.Equal(0, await ScalarAsync($"SELECT COUNT(*) FROM \"{table}\";"));
 
             Assert.Equal(2, result.DeletedRowCounts[table]);
-
         }
-
     }
 
     /// <summary>The plain table a build without an accelerator can read, write, and delete from.</summary>
@@ -1118,21 +1026,16 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     /// </summary>
     private async Task SeedMirrorRowsAsync(string table, string key, int count)
     {
-
         for (int index = 0; index < count; index++)
         {
-
             await ExecuteAsync(
                 $"INSERT INTO \"{table}\" (\"{key}\", \"Embedding\") VALUES ('{table}-{index}', 'v{index}')");
-
         }
-
     }
 
     [SkippableFact]
     public async Task ResetAsync_AllScope_CoversSagaTables()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1172,13 +1075,42 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.True(result.DeletedRowCounts.ContainsKey("tapestry_nodes"));
 
         Assert.True(result.DeletedRowCounts.ContainsKey("tapestry_node_embeddings"));
+    }
 
+    /// <summary>
+    /// Dropping the trees is how an operator asks for them to be rebuilt, so the record that holds a failing
+    /// build off for up to a day has to go with them: the corpus, settings and model are unchanged, and
+    /// without this the rebuild they asked for would still answer "backing off".
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(EmbeddingsResetScope.Tapestry, true)]
+    [InlineData(EmbeddingsResetScope.All, true)]
+    [InlineData(EmbeddingsResetScope.Entry, false)]
+    [InlineData(EmbeddingsResetScope.WorkspaceFile, false)]
+    public async Task ResetAsync_ForgetsTheRecordOfFailedTapestryBuildsOnlyWhenItDropsTheTrees(
+        EmbeddingsResetScope scope,
+        bool forgets)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TapestryBuildBackoff backoff = new();
+
+        TapestryScope tapestryScope = new(TapestryScopeKind.Workspace, "/repo");
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _ = backoff.RecordFailure(tapestryScope, "build-1", now, TimeSpan.FromHours(1));
+
+        EmbeddingsResetService service = new(_db!, Services(backoff: backoff));
+
+        _ = await service.ResetAsync(scope, CancellationToken.None);
+
+        Assert.Equal(!forgets, backoff.IsBackingOff(tapestryScope, "build-1", now));
     }
 
     [SkippableFact]
     public async Task ResetAsync_TapestryScope_DropsTreeTablesAndNothingElse()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1209,7 +1141,5 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
                 "tapestry_nodes",
             ],
             result.DeletedRowCounts.Keys.Order(StringComparer.Ordinal));
-
     }
-
 }

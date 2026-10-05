@@ -200,9 +200,9 @@ public static class TapestryLimits
     /// The most leaves one scope may hold and still be woven. A rebuild keeps every leaf's text and vector
     /// in memory to cluster them and pays for roughly one summary call per eight leaves, so a scope larger
     /// than this is reported as <see cref="TapestryWeaveStatus.TooLarge"/> instead of being loaded. At the
-    /// default dimension a full scope's vectors alone are about 120 MB.
+    /// default 768 dimensions a full scope's vectors alone are about 150 MB, before the text.
     /// </summary>
-    public const int MaxLeavesPerScope = 20_000;
+    public const int MaxLeavesPerScope = 50_000;
 }
 
 /// <summary>A prior generation's summary node offered for reuse when its identity matches exactly.</summary>
@@ -278,6 +278,14 @@ public enum TapestryWeaveStatus
     /// at again on the next sweep.
     /// </summary>
     TooLarge,
+
+    /// <summary>
+    /// The corpus changed between the moment its leaves were read and the moment the staging generation
+    /// existed, so what was read may include text that has since been erased. Nothing was embedded,
+    /// summarized or published; the prior generation, if any, stays current and the next sweep starts over
+    /// from the corpus as it now is.
+    /// </summary>
+    CorpusChanged,
 }
 
 /// <summary>The result of one scope's weave attempt, including what the build actually spent.</summary>

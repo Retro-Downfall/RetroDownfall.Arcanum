@@ -1058,6 +1058,107 @@ public sealed class TapestryStoreTests : IAsyncLifetime
                 DateTimeOffset.UtcNow),
             Vec(1f));
 
+    /// <summary>
+    /// A Session is a scope when it has at least one Entry with text, whichever Entry that is: blank
+    /// Entries do not make a Session, and do not stop a later one from doing so.
+    /// </summary>
+    [SkippableFact]
+    public async Task Session_scopes_are_the_Sessions_with_at_least_one_non_blank_Entry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid blankFirst = Guid.NewGuid();
+
+        Guid onlyBlank = Guid.NewGuid();
+
+        Guid plain = Guid.NewGuid();
+
+        await SeedSessionEntriesAsync(blankFirst, "   ", string.Empty, "the one Entry that has text");
+
+        await SeedSessionEntriesAsync(onlyBlank, " ", string.Empty, "  ");
+
+        await SeedSessionEntriesAsync(plain, "ordinary text");
+
+        IReadOnlyList<TapestryScope> discovered = await _store!.DiscoverScopesAsync(
+            includeWorkspace: false,
+            includeSessionAttachments: false,
+            includeSessions: true,
+            CancellationToken.None);
+
+        Assert.Equal(
+            new[] { blankFirst, plain }
+                .Select(static id => id.ToString("D").ToUpperInvariant())
+                .Order(StringComparer.Ordinal),
+            discovered.Select(static scope => scope.Id));
+    }
+
+    /// <summary>
+    /// Finding the Sessions must not read every Entry's text. The sweep runs this every tick whether or not
+    /// anything changed, so the plan matters: the Sessions come from an index that holds no text, and each
+    /// is then checked by a probe that stops at its first non-blank Entry, instead of one pass that
+    /// fetches every Entry row to test its content.
+    /// </summary>
+    [SkippableFact]
+    public async Task Session_scope_discovery_probes_each_Session_instead_of_reading_every_Entry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "EXPLAIN QUERY PLAN " + TapestryStore.LiveScopeIdQuery(TapestryScopeKind.Session);
+
+        List<string> plan = [];
+
+        await using (DbDataReader reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                plan.Add(reader.GetString(3));
+            }
+        }
+
+        string described = string.Join(" | ", plan);
+
+        Assert.Contains("COVERING INDEX", described, StringComparison.Ordinal);
+
+        Assert.Contains("EXISTS", described, StringComparison.Ordinal);
+    }
+
+    /// <summary>One Session with several Entries, in order, written through the object-relational writer.</summary>
+    private async Task SeedSessionEntriesAsync(Guid sessionId, params string[] contents)
+    {
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Status = "active",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        for (int index = 0; index < contents.Length; index++)
+        {
+            _db.Entries.Add(new Entry
+            {
+                Id = Guid.NewGuid(),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = contents[index],
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+                Sequence = index + 1,
+            });
+        }
+
+        _ = await _db.SaveChangesAsync(CancellationToken.None);
+    }
+
     /// <summary>One Session with one Entry, written through the object-relational writer.</summary>
     private async Task SeedSessionEntryAsync(Guid sessionId, string content)
     {

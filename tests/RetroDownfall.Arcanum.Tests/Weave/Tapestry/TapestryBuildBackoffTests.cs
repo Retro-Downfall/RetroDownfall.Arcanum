@@ -93,6 +93,44 @@ public sealed class TapestryBuildBackoffTests
     }
 
     [Fact]
+    public void Clear_forgets_every_scope()
+    {
+        TapestryBuildBackoff backoff = new();
+
+        TapestryScope other = new(TapestryScopeKind.Session, "S");
+
+        _ = backoff.RecordFailure(Scope, "build-1", Start, Interval);
+
+        _ = backoff.RecordFailure(other, "build-2", Start, Interval);
+
+        backoff.Clear();
+
+        Assert.False(backoff.IsBackingOff(Scope, "build-1", Start));
+
+        Assert.False(backoff.IsBackingOff(other, "build-2", Start));
+
+        Assert.Equal(Start + Interval, backoff.RecordFailure(Scope, "build-1", Start, Interval));
+    }
+
+    [Fact]
+    public void RetainOnly_forgets_the_scopes_that_no_longer_exist_and_keeps_the_rest()
+    {
+        TapestryBuildBackoff backoff = new();
+
+        TapestryScope deleted = new(TapestryScopeKind.Session, "GONE");
+
+        _ = backoff.RecordFailure(Scope, "build-1", Start, Interval);
+
+        _ = backoff.RecordFailure(deleted, "build-2", Start, Interval);
+
+        backoff.RetainOnly([Scope]);
+
+        Assert.True(backoff.IsBackingOff(Scope, "build-1", Start));
+
+        Assert.False(backoff.IsBackingOff(deleted, "build-2", Start));
+    }
+
+    [Fact]
     public void A_published_scope_forgets_its_failures()
     {
         TapestryBuildBackoff backoff = new();

@@ -41,6 +41,14 @@ public sealed class EmbeddingsResetService(
     private readonly ICovenantLabeledArtifactTransactionGuard _labeledArtifactGuard =
         serviceProvider.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>();
 
+    /// <summary>
+    /// The record of failed Tapestry builds, forgotten when this reset drops the trees. Optional because a
+    /// composition that never runs the Tapestry has none, and resolved here for the reason the other
+    /// collaborators are: this class is public and the record is not.
+    /// </summary>
+    private readonly TapestryBuildBackoff? _tapestryBackoff =
+        serviceProvider.GetService<TapestryBuildBackoff>();
+
     private static readonly IReadOnlyList<string> EntryTables =
     [
         "entry_embeddings",
@@ -478,6 +486,13 @@ public sealed class EmbeddingsResetService(
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
+
+        // After the commit, because the trees are only gone once it has: the rebuild the operator asked for
+        // must not be told to wait out a failure of a tree that no longer exists.
+        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Tapestry)
+        {
+            _tapestryBackoff?.Clear();
+        }
 
         return new EmbeddingsResetResult(deleted);
     }
