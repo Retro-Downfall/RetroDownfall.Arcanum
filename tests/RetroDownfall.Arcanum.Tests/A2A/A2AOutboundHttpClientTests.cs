@@ -13,26 +13,25 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// <remarks>
 /// <c>dispatch_sending</c> blocks until the remote agent reaches a terminal state, and a remote
 /// Apprentice can legitimately work for far longer than <see cref="HttpClient"/>'s 100-second default.
-/// Issue #55 replaces arbitrary whole-operation deadlines with connection/idle-I/O bounds plus caller
-/// cancellation, so this client carries no total deadline and instead bounds connection establishment.
+/// Issue #55 replaces arbitrary whole-operation deadlines with caller cancellation, so this client carries
+/// no total deadline. What it does bound is connection establishment (the connect timeout), discovery (the
+/// service's own <see cref="A2AClientService.DefaultDiscoveryTimeout"/>, applied to the Agent Card fetch and
+/// never to a Sending) and the size of any buffered response body. There is deliberately no idle-read
+/// deadline on the Sending itself: a remote Apprentice may be silent for as long as it is thinking.
 /// </remarks>
 [Collection("ApiHost")]
 public sealed class A2AOutboundHttpClientTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public A2AOutboundHttpClientTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public void OutboundClient_HasNoArbitraryWholeOperationDeadline()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpClient client = _factory.Services
@@ -41,26 +40,35 @@ public sealed class A2AOutboundHttpClientTests
 
         // A 100-second ceiling would abort a perfectly healthy long-running remote Sending.
         Assert.Equal(Timeout.InfiniteTimeSpan, client.Timeout);
+    }
 
+    [SkippableFact]
+    public void OutboundClient_CapsTheBufferedResponseBody()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.Services
+            .GetRequiredService<IHttpClientFactory>()
+            .CreateClient(A2AClientService.OutboundHttpClientName);
+
+        // HttpClient's default is 2 GiB, and the peer is a model-named host.
+        Assert.Equal(A2AClientService.MaxRpcResponseBytes, client.MaxResponseContentBufferSize);
     }
 
     [Fact]
     public void UntrustedEgressHandler_BoundsConnectionEstablishmentWhenAsked()
     {
-
         using SocketsHttpHandler handler = OutboundUrlGuard.CreateUntrustedEgressHandler(
             connectTimeout: TimeSpan.FromSeconds(30));
 
         Assert.False(handler.AllowAutoRedirect);
 
         Assert.False(handler.UseProxy);
-
     }
 
     [Fact]
     public async Task UntrustedEgressHandler_ConnectTimeout_FailsTheConnectionRatherThanHanging()
     {
-
         // A host whose DNS never resolves stands in for a black-holed connect: the connect timeout must
         // surface as a request failure instead of waiting on the OS TCP timeout.
         using SocketsHttpHandler handler = OutboundUrlGuard.CreateUntrustedEgressHandler(
@@ -70,7 +78,5 @@ public sealed class A2AOutboundHttpClientTests
 
         await Assert.ThrowsAnyAsync<HttpRequestException>(
             () => client.GetAsync("http://a2a-connect-timeout.invalid/"));
-
     }
-
 }

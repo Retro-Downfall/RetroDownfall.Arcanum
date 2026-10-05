@@ -373,12 +373,119 @@ public sealed class A2AClientTests
         Assert.Empty(handler.ObservedCredentialHeaders);
     }
 
-    private static A2AClientService CreateClient(HttpMessageHandler handler, ArcanumSettings settings) =>
+    [Fact]
+    public async Task DispatchSendingAsync_PeerStallsCardResponse_FailsWithinDiscoveryDeadlineAndReleasesTheSlot()
+    {
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(new EchoingAgentHandler("second answer"));
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        // Only the first card request never completes, so the second dispatch can only succeed if the
+        // first gave its one concurrency slot back.
+        using StallFirstCardRequestHandler handler = new(serverHandler);
+
+        ArcanumSettings settings = EnabledSettings();
+
+        settings.Execution.MaxConcurrentA2ATasks = 1;
+
+        A2AClientService client = CreateClient(handler, settings, discoveryTimeout: TimeSpan.FromMilliseconds(300));
+
+        Result<A2ADispatchResult> stalled = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(20));
+
+        Assert.True(stalled.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentUnreachable, stalled.Error.Code);
+
+        Result<A2ADispatchResult> next = await client
+            .DispatchSendingAsync("do the thing again", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(20));
+
+        Assert.True(next.IsSuccess, next.IsFailure ? $"{next.Error.Code}: {next.Error.Message}" : string.Empty);
+
+        Assert.Equal("second answer", next.Value.ResponseText);
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_PeerStallsCardResponse_CallerCancellationStillPropagates()
+    {
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(new EchoingAgentHandler("never"));
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        using StallFirstCardRequestHandler handler = new(serverHandler);
+
+        // A long deadline: the caller's own cancellation, not the discovery bound, has to end this.
+        A2AClientService client = CreateClient(handler, EnabledSettings(), discoveryTimeout: TimeSpan.FromMinutes(5));
+
+        using CancellationTokenSource cts = new();
+
+        Task<Result<A2ADispatchResult>> dispatch =
+            client.DispatchSendingAsync("do the thing", null, DiscoveryUrl, cancellationToken: cts.Token);
+
+        Assert.True(await handler.WaitUntilStalledAsync(TimeSpan.FromSeconds(20)), "the card request never reached the peer.");
+
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatch.WaitAsync(TimeSpan.FromSeconds(20)));
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_MalformedAgentCardBody_ReturnsAgentCardInvalidInsteadOfThrowing()
+    {
+        using RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{ this is not json", System.Text.Encoding.UTF8, "application/json"),
+        }));
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        // The card is remote-authored: a body that is not JSON is an invalid card, not an exception out of
+        // the tool call.
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentCardInvalid, result.Error.Code);
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_OversizedCard_IsRejected()
+    {
+        AgentCard card = BuildFakeCard();
+
+        // Valid JSON, but far beyond anything a card legitimately weighs: a hostile peer can otherwise make
+        // this client buffer its way to the HttpClient default of 2 GiB.
+        card.Description = new string('a', checked((int)A2AClientService.MaxAgentCardBytes) + 1024);
+
+        using OversizedCardHandler handler = new(card);
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentCardInvalid, result.Error.Code);
+    }
+
+    private static A2AClientService CreateClient(
+        HttpMessageHandler handler,
+        ArcanumSettings settings,
+        TimeSpan? discoveryTimeout = null) =>
         new(
             new FakeHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<A2AClientService>.Instance,
-            DeterministicDns());
+            DeterministicDns())
+        {
+            DiscoveryTimeout = discoveryTimeout ?? A2AClientService.DefaultDiscoveryTimeout,
+        };
 
     private static IDnsResolver DeterministicDns()
     {
@@ -502,6 +609,56 @@ public sealed class A2AClientTests
             Task completed = await Task.WhenAny(_firstPoll.Task, Task.Delay(timeout)).ConfigureAwait(false);
 
             return ReferenceEquals(completed, _firstPoll.Task);
+        }
+    }
+
+    /// <summary>
+    /// Never answers the first Agent Card request (until the caller's token cancels it) and forwards
+    /// everything else, so a test can tell a stalled discovery from a stalled Sending.
+    /// </summary>
+    private sealed class StallFirstCardRequestHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        private readonly TaskCompletionSource _stalled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _stalls;
+
+        public async Task<bool> WaitUntilStalledAsync(TimeSpan timeout)
+        {
+            Task completed = await Task.WhenAny(_stalled.Task, Task.Delay(timeout)).ConfigureAwait(false);
+
+            return ReferenceEquals(completed, _stalled.Task);
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            bool isCard = request.RequestUri?.AbsolutePath.Contains("agent-card", StringComparison.OrdinalIgnoreCase) == true;
+
+            if (isCard && Interlocked.Increment(ref _stalls) == 1)
+            {
+                _stalled.TrySetResult();
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Answers every Agent Card request with one oversized, otherwise valid, card.</summary>
+    private sealed class OversizedCardHandler(AgentCard card) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            byte[] body = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+                card,
+                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<AgentCard>)
+                    A2AJsonUtilities.DefaultOptions.GetTypeInfo(typeof(AgentCard)));
+
+            ByteArrayContent content = new(body);
+
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
         }
     }
 

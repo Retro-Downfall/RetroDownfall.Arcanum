@@ -11,11 +11,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// <summary>Which side of the door a durable Sending record describes.</summary>
 public enum A2ASendingRecordDirection
 {
-
     Inbound = 0,
 
     Outbound = 1,
-
 }
 
 /// <summary>
@@ -29,7 +27,6 @@ public enum A2ASendingRecordDirection
 /// </remarks>
 public sealed record A2ASendingRecord
 {
-
     /// <summary>Checkpoint schema version. Bumped only on a breaking shape change.</summary>
     [JsonPropertyName("version")]
     public int Version { get; init; } = A2ASendingLedger.CheckpointVersion;
@@ -111,7 +108,6 @@ public sealed record A2ASendingRecord
     [JsonPropertyName("callbackTokenHash")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CallbackTokenHash { get; init; }
-
 }
 
 /// <summary>
@@ -129,9 +125,7 @@ public readonly record struct A2AParkedSending(
 /// <summary>Handle on a durable Sending record, used to close it out when the Sending settles.</summary>
 public readonly record struct A2ASendingLedgerEntry(Guid OperationId, string OwnerId)
 {
-
     public bool IsRecorded => OperationId != Guid.Empty;
-
 }
 
 /// <summary>
@@ -139,7 +133,6 @@ public readonly record struct A2ASendingLedgerEntry(Guid OperationId, string Own
 /// </summary>
 public interface IA2ASendingLedger
 {
-
     Task<A2ASendingLedgerEntry> RegisterInboundAsync(string taskId, Guid apprenticeId, CancellationToken cancellationToken = default);
 
     /// <param name="budgetReservationId">
@@ -226,7 +219,6 @@ public interface IA2ASendingLedger
     Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
         string remoteTaskId,
         CancellationToken cancellationToken = default);
-
 }
 
 /// <summary>
@@ -252,7 +244,6 @@ internal sealed class A2ASendingLedger(
     ILogger<A2ASendingLedger> logger,
     A2ASendingLeaseRenewer? leases = null) : IA2ASendingLedger
 {
-
     internal const int CheckpointVersion = 1;
 
     /// <summary>
@@ -318,20 +309,16 @@ internal sealed class A2ASendingLedger(
         A2ARemoteCost cost,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(cost);
 
         if (entry.IsRecorded)
         {
-
             try
             {
-
                 LongRunningOperation? current = await store.GetAsync(entry.OperationId, cancellationToken).ConfigureAwait(false);
 
                 if (current is not null && TryRead(current) is { } record)
                 {
-
                     // The cost is written before the row closes, so a settled row always carries either a
                     // reported figure or an explicit "nobody said" — never an absence that reads as zero.
                     byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
@@ -355,34 +342,25 @@ internal sealed class A2ASendingLedger(
                             timeProvider.GetUtcNow(),
                             cancellationToken)
                         .ConfigureAwait(false);
-
                 }
-
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-
                 logger.LogWarning(
                     ex,
                     "A2A: could not record what settled Sending {OperationId} cost.",
                     entry.OperationId);
-
             }
-
         }
 
         await ReleaseAsync(entry, cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
     {
-
         if (!entry.IsRecorded)
         {
-
             return;
-
         }
 
         // Settled: renewing a closed row's lease would keep it out of every later reconciliation pass.
@@ -390,14 +368,11 @@ internal sealed class A2ASendingLedger(
 
         try
         {
-
             LongRunningOperation? current = await store.GetAsync(entry.OperationId, cancellationToken).ConfigureAwait(false);
 
             if (current is null)
             {
-
                 return;
-
             }
 
             bool closed = await store.TryTransitionAsync(
@@ -411,9 +386,7 @@ internal sealed class A2ASendingLedger(
 
             if (closed)
             {
-
                 return;
-
             }
 
             // The transition is owner-scoped, and a parked Sending outlives its own lease: nothing
@@ -428,9 +401,7 @@ internal sealed class A2ASendingLedger(
 
             if (!lease.Acquired)
             {
-
                 return;
-
             }
 
             await store.TryTransitionAsync(
@@ -441,15 +412,11 @@ internal sealed class A2ASendingLedger(
                     timeProvider.GetUtcNow(),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(ex, "A2A: could not close durable Sending record {OperationId}.", entry.OperationId);
-
         }
-
     }
 
     public async Task MarkParkedAsync(
@@ -457,12 +424,9 @@ internal sealed class A2ASendingLedger(
         string? contextId,
         CancellationToken cancellationToken = default)
     {
-
         if (!entry.IsRecorded)
         {
-
             return;
-
         }
 
         // Waiting on a peer is not work: a parked Sending stops being renewed so reconciliation can flag
@@ -471,14 +435,11 @@ internal sealed class A2ASendingLedger(
 
         try
         {
-
             LongRunningOperation? current = await store.GetAsync(entry.OperationId, cancellationToken).ConfigureAwait(false);
 
             if (current is null || TryRead(current) is not { } record)
             {
-
                 return;
-
             }
 
             A2ASendingRecord parked = record with { Parked = true, ContextId = contextId };
@@ -508,7 +469,6 @@ internal sealed class A2ASendingLedger(
 
             if (afterCheckpoint is not null)
             {
-
                 await store.TryTransitionAsync(
                         entry.OperationId,
                         afterCheckpoint.Revision,
@@ -517,20 +477,15 @@ internal sealed class A2ASendingLedger(
                         timeProvider.GetUtcNow(),
                         cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
-
             }
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(
                 ex,
                 "A2A: could not record that Sending {OperationId} is parked awaiting an answer.",
                 entry.OperationId);
-
         }
-
     }
 
     public async Task<A2AParkedSending?> FindParkedInboundAsync(
@@ -538,17 +493,13 @@ internal sealed class A2ASendingLedger(
         bool takeLease = true,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(taskId))
         {
-
             return null;
-
         }
 
         try
         {
-
             LongRunningOperation? match = await FindOpenInboundAsync(
                     taskId,
                     static record => record.Parked,
@@ -557,16 +508,12 @@ internal sealed class A2ASendingLedger(
 
             if (match is null || TryRead(match) is not { ApprenticeId: { } apprenticeId } record)
             {
-
                 return null;
-
             }
 
             if (!takeLease)
             {
-
                 return new A2AParkedSending(apprenticeId, record.ContextId, default);
-
             }
 
             // Take the lease when it is free so the resumed relay owns the record and can close it. When
@@ -586,47 +533,35 @@ internal sealed class A2ASendingLedger(
             leases?.Track(resumed);
 
             return new A2AParkedSending(apprenticeId, record.ContextId, resumed);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(ex, "A2A: could not resolve a parked Sending record for task {TaskId}.", taskId);
 
             return null;
-
         }
-
     }
 
     public async Task<Guid?> FindInboundApprenticeAsync(string taskId, CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(taskId))
         {
-
             return null;
-
         }
 
         try
         {
-
             LongRunningOperation? match = await FindOpenInboundAsync(taskId, static _ => true, cancellationToken)
                 .ConfigureAwait(false);
 
             return match is null ? null : TryRead(match)?.ApprenticeId;
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(ex, "A2A: could not resolve a durable Sending record for task {TaskId}.", taskId);
 
             return null;
-
         }
-
     }
 
     public async Task RecordOutboundCallbackAsync(
@@ -635,24 +570,18 @@ internal sealed class A2ASendingLedger(
         string callbackTokenHash,
         CancellationToken cancellationToken = default)
     {
-
         if (!entry.IsRecorded || string.IsNullOrWhiteSpace(callbackConfigId))
         {
-
             return;
-
         }
 
         try
         {
-
             LongRunningOperation? current = await store.GetAsync(entry.OperationId, cancellationToken).ConfigureAwait(false);
 
             if (current is null || TryRead(current) is not { } record)
             {
-
                 return;
-
             }
 
             byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
@@ -666,43 +595,38 @@ internal sealed class A2ASendingLedger(
                     expectedCheckpointVersion: CheckpointVersion,
                     checkpointVersion: CheckpointVersion,
                     payload,
-                    checkpointReference: null,
+                    checkpointReference: CallbackReference(callbackConfigId),
                     $"Outbound A2A Sending {record.TaskId} awaiting a peer callback.",
                     timeProvider.GetUtcNow(),
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(
                 ex,
                 "A2A: could not record the callback registration for Sending {OperationId}.",
                 entry.OperationId);
-
         }
-
     }
 
     public async Task<A2AOutboundCallback?> FindOutboundCallbackAsync(
         string callbackConfigId,
         CancellationToken cancellationToken = default)
     {
-
         // The caller is the anonymous callback route, so this id is an unauthenticated peer-supplied
         // string and the paging scan below is the most expensive thing it can reach. An id this instance
         // could never have minted is answered from its shape alone rather than by reading the ledger.
         if (!A2ACallbackConfigId.IsWellFormed(callbackConfigId))
         {
-
             return null;
-
         }
 
         try
         {
-
+            // Keyed lookup: SQLite returns only the row whose checkpoint reference is this id's, so a
+            // well-formed id nothing ever minted reads no rows at all instead of every open Sending.
+            // The payload comparison stays as the authority — the reference is only the index.
             LongRunningOperation? match = await FindOpenAsync(
                     LongRunningOperationKinds.A2AOutboundSending,
                     record => record is
@@ -712,14 +636,13 @@ internal sealed class A2ASendingLedger(
                             CallbackTokenHash.Length: > 0,
                         }
                         && string.Equals(configId, callbackConfigId, StringComparison.Ordinal),
-                    cancellationToken)
+                    cancellationToken,
+                    CallbackReference(callbackConfigId))
                 .ConfigureAwait(false);
 
             if (match is null || TryRead(match) is not { CallbackTokenHash: { Length: > 0 } tokenHash } found)
             {
-
                 return null;
-
             }
 
             return new A2AOutboundCallback(
@@ -727,37 +650,29 @@ internal sealed class A2ASendingLedger(
                 found.AgentUrl ?? string.Empty,
                 tokenHash,
                 new A2ASendingLedgerEntry(match.Id, OwnerId));
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(
                 ex,
                 "A2A: could not resolve the Sending behind callback config {ConfigId}.",
                 callbackConfigId);
 
             return null;
-
         }
-
     }
 
     public async Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
         string remoteTaskId,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(remoteTaskId))
         {
-
             return default;
-
         }
 
         try
         {
-
             LongRunningOperation? match = await FindOpenAsync(
                     LongRunningOperationKinds.A2AOutboundSending,
                     record => record.Direction == A2ASendingRecordDirection.Outbound
@@ -767,18 +682,14 @@ internal sealed class A2ASendingLedger(
 
             if (match is null)
             {
-
                 return default;
-
             }
 
             // Already ours when the dispatch that opened the row ran in this process, which is the common
             // case; otherwise the row is only adoptable if its previous owner's lease has lapsed.
             if (string.Equals(match.LeaseOwner, OwnerId, StringComparison.Ordinal))
             {
-
                 return new A2ASendingLedgerEntry(match.Id, OwnerId);
-
             }
 
             DateTimeOffset now = timeProvider.GetUtcNow();
@@ -788,20 +699,16 @@ internal sealed class A2ASendingLedger(
                 .ConfigureAwait(false);
 
             return lease.Acquired ? new A2ASendingLedgerEntry(match.Id, OwnerId) : default;
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(
                 ex,
                 "A2A: could not resolve the open durable record for remote task {TaskId}.",
                 remoteTaskId);
 
             return default;
-
         }
-
     }
 
     /// <summary>
@@ -840,50 +747,54 @@ internal sealed class A2ASendingLedger(
     /// record is still the live correspondence (issue #68).
     /// </para>
     /// </remarks>
+    /// <param name="checkpointReference">
+    /// When set, SQLite is asked only for rows carrying exactly this checkpoint reference, so rows that
+    /// cannot be the answer are never read, decrypted or deserialised.
+    /// </param>
     private async Task<LongRunningOperation?> FindOpenAsync(
         string kind,
         Func<A2ASendingRecord, bool> predicate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? checkpointReference = null)
     {
-
         foreach (LongRunningOperationState state in OpenStates)
         {
-
             for (int offset = 0; ; offset += PageSize)
             {
-
                 IReadOnlyList<LongRunningOperation> page = await store
                     .ListAsync(
-                        new LongRunningOperationQuery(kind, state, Limit: PageSize, Offset: offset),
+                        new LongRunningOperationQuery(
+                            kind,
+                            state,
+                            Limit: PageSize,
+                            Offset: offset,
+                            CheckpointReference: checkpointReference),
                         cancellationToken)
                     .ConfigureAwait(false);
 
                 foreach (LongRunningOperation candidate in page)
                 {
-
                     if (TryRead(candidate) is { } record && predicate(record))
                     {
-
                         return candidate;
-
                     }
-
                 }
 
                 if (page.Count < PageSize)
                 {
-
                     break;
-
                 }
-
             }
-
         }
 
         return null;
-
     }
+
+    /// <summary>
+    /// The checkpoint reference an outbound Sending's row carries once a callback is registered: the
+    /// lookup key the anonymous callback route resolves a config id by.
+    /// </summary>
+    internal static string CallbackReference(string callbackConfigId) => "a2a-callback:" + callbackConfigId;
 
     /// <summary>Reads a checkpointed record, treating any unreadable shape as "no record".</summary>
     internal static A2ASendingRecord? TryRead(LongRunningOperation operation) =>
@@ -895,24 +806,18 @@ internal sealed class A2ASendingLedger(
     /// <inheritdoc cref="TryRead(LongRunningOperation)"/>
     internal static A2ASendingRecord? TryReadPayload(byte[] payload)
     {
-
         try
         {
-
             A2ASendingRecord? record = JsonSerializer.Deserialize(
                 payload,
                 A2ASendingLedgerJsonContext.Default.A2ASendingRecord);
 
             return record is { TaskId.Length: > 0 } ? record : null;
-
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
-
             return null;
-
         }
-
     }
 
     private async Task<A2ASendingLedgerEntry> RegisterAsync(
@@ -930,17 +835,13 @@ internal sealed class A2ASendingLedger(
         Guid? budgetReservationId,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(record.TaskId))
         {
-
             return default;
-
         }
 
         try
         {
-
             DateTimeOffset now = timeProvider.GetUtcNow();
 
             LongRunningOperation operation = await store
@@ -960,9 +861,7 @@ internal sealed class A2ASendingLedger(
 
             if (!lease.Acquired)
             {
-
                 return default;
-
             }
 
             byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
@@ -990,21 +889,16 @@ internal sealed class A2ASendingLedger(
             leases?.Track(entry);
 
             return entry;
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             // A2A stays usable without the Grimoire: losing the durable record costs restart
             // reconciliation, not the Sending itself.
             logger.LogWarning(ex, "A2A: could not record a durable Sending for task {TaskId}.", record.TaskId);
 
             return default;
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -1012,10 +906,8 @@ internal sealed class A2ASendingLedger(
 /// </summary>
 internal static class A2ASendingLedgerScope
 {
-
     internal static IA2ASendingLedger? Resolve(IServiceProvider services) =>
         services.GetService<IA2ASendingLedger>();
-
 }
 
 /// <summary>Source-generated contract so the durable Sending checkpoint stays Native AOT-safe.</summary>

@@ -6,33 +6,20 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 [Collection("ChildProcess")]
 public sealed class MacOsDescendantSupervisorTests
 {
-
     /// <summary>
-    /// The full process-table scan must run on every monitor tick. macOS delivers NOTE_FORK without
-    /// the child's pid, so the kqueue watcher can report that a tracked process forked but never
-    /// which pid to track: the scan is the only way to learn a descendant's identity. It has to do so
-    /// before that descendant escapes its process group and its parent exits, because after
-    /// reparenting to launchd no ancestry walk can attribute it to this root and containment is lost
-    /// permanently. Throttling the scan is therefore not a performance trade — it silently widens the
-    /// escape window. The scan is expensive (two proc_pidinfo syscalls per live pid); the way to pay
-    /// less is to make each scan cheaper, never to scan less often.
+    /// The full process-table scan is expensive (two proc_pidinfo syscalls per live pid), so it runs on
+    /// every monitor tick only while the tracked set is changing or a kqueue event says a tracked process
+    /// forked or exited; a quiescent child is rescanned on a slow safety cadence instead. NOTE_FORK carries
+    /// no child pid, so the scan stays the only way to learn a descendant's identity — which is why a fork
+    /// event wakes it on the very next tick rather than leaving it to the slow cadence (the policy itself
+    /// is pinned by <see cref="DescendantScanScheduleTests"/>).
     /// </summary>
     [SkippableFact]
-    public async Task Monitor_loop_scans_the_process_table_on_every_tick()
+    public async Task Quiescent_child_backs_off_full_scans()
     {
-
         Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
 
-        using System.Diagnostics.Process child = new();
-
-        child.StartInfo = new ProcessStartInfo("/bin/sleep", "5")
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-
-        _ = child.Start();
+        using System.Diagnostics.Process child = StartSleepingChild();
 
         MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(child.Id);
 
@@ -40,44 +27,226 @@ public sealed class MacOsDescendantSupervisorTests
 
         try
         {
+            // Count ticks, not seconds: the loop slows under coverage instrumentation on a loaded suite,
+            // and the schedule is defined in ticks, so the ratio is load-independent.
+            await WaitUntilAsync(
+                () => supervisor!.MonitorTickCount >= 250,
+                TimeSpan.FromSeconds(60),
+                "The monitor loop did not reach 250 ticks.");
 
-            await Task.Delay(TimeSpan.FromSeconds(1));
-
-            // Assert the invariant itself — one scan per tick — rather than a scans-per-second rate.
-            // A rate threshold has to be calibrated against wall clock, and the honest loop slows
-            // down by an order of magnitude under coverage instrumentation on a loaded parallel
-            // suite, so any floor is either too tight (false failures) or too loose to catch the
-            // regression. Comparing the two counters is exact and load-independent: a throttled
-            // cadence makes scans fall behind ticks immediately, however slowly the host is running.
             long ticks = supervisor!.MonitorTickCount;
 
             long scans = supervisor.FullScanCount;
 
-            Assert.True(ticks > 0, "The monitor loop did not run.");
-
-            // The counters are read without a lock, so the loop may sit between its tick increment
-            // and its scan: one outstanding tick is expected, more is a throttle.
+            // The initial active window plus a safety scan every few dozen ticks, not one scan per tick.
             Assert.True(
-                ticks - scans <= 1,
-                $"The monitor loop ticked {ticks} times but scanned only {scans} times. The scan must "
-                + "run on every tick: NOTE_FORK carries no child pid, so the scan is the only way to "
-                + "identify a descendant before it escapes its process group and is reparented.");
+                scans <= ticks / 3,
+                $"A quiescent child was scanned {scans} times over {ticks} ticks; the scan must back off "
+                + "once the tracked set stops changing.");
 
+            Assert.True(scans > 0, "The monitor never scanned.");
         }
         finally
         {
-
             await supervisor!.DisposeAsync();
 
-            if (!child.HasExited)
-            {
-
-                child.Kill(entireProcessTree: true);
-
-            }
-
+            KillIfRunning(child);
         }
+    }
 
+    /// <summary>
+    /// Backing off must not blind the supervisor to a descendant that appears later: the root's kqueue
+    /// fork event has to bring the per-tick scan back so the new process is tracked immediately.
+    /// <para>
+    /// The safety scan is stretched far beyond the test's lifetime, because at the real cadence it (and
+    /// the window a scan that finds a new process reopens) resumes scanning with no kqueue event at all,
+    /// which is how a test of this wiring once passed with <c>TrackKernelEvents</c> returning false. With
+    /// it out of the way the kernel event is the only thing that can end the quiet, so the scan count
+    /// rising is proof of the event-to-schedule wiring. The fork is released by the test, not by a timer,
+    /// so the quiet baseline is taken before it with no race.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Fork_event_resumes_per_tick_scanning()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        using System.Diagnostics.Process child = new();
+
+        // `read` is a builtin, so the shell does nothing (no fork, no exec) until the test writes a line;
+        // then it forks `sleep 30`, which is the event that has to wake the scan.
+        child.StartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            ArgumentList = { "-c", "read go; sleep 30 & wait" },
+        };
+
+        _ = child.Start();
+
+        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(
+            child.Id,
+            idleScanEveryTicks: int.MaxValue);
+
+        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+
+        try
+        {
+            // Well past the initial active window (DescendantScanSchedule.ActiveWindowTicks).
+            await WaitUntilAsync(
+                () => supervisor!.MonitorTickCount >= 200,
+                TimeSpan.FromSeconds(60),
+                "The monitor loop did not reach 200 ticks.");
+
+            long scansWhileQuiet = supervisor!.FullScanCount;
+
+            await WaitUntilAsync(
+                () => supervisor.MonitorTickCount >= 300,
+                TimeSpan.FromSeconds(60),
+                "The monitor loop did not reach 300 ticks.");
+
+            Assert.True(
+                scansWhileQuiet == supervisor.FullScanCount,
+                "The quiet baseline is not quiet: with the safety scan stretched and nothing forking, the "
+                + $"supervisor still scanned ({scansWhileQuiet} then {supervisor.FullScanCount}), so this test "
+                + "could not tell a kernel event from the cadence.");
+
+            await child.StandardInput.WriteLineAsync("go");
+
+            await child.StandardInput.FlushAsync();
+
+            // A full active window of per-tick scans, and nothing else can have started it.
+            await WaitUntilAsync(
+                () => supervisor.FullScanCount >= scansWhileQuiet + DescendantScanSchedule.ActiveWindowTicks - 5,
+                TimeSpan.FromSeconds(30),
+                "A fork in the tracked tree did not resume per-tick scanning: the kqueue event never reached "
+                + "the scan schedule.");
+        }
+        finally
+        {
+            await supervisor!.DisposeAsync();
+
+            KillIfRunning(child);
+        }
+    }
+
+    /// <summary>
+    /// A fault in the monitor loop is the supervisor's own failure, not an exception for its caller:
+    /// the runner stops and disposes the supervisor on every path, and one that rethrew the loop's
+    /// exception skipped the rest of the runner's teardown.
+    /// </summary>
+    [SkippableFact]
+    public async Task Monitor_fault_does_not_escape_dispose()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        using System.Diagnostics.Process child = StartSleepingChild();
+
+        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(
+            child.Id,
+            () => throw new InvalidOperationException("injected monitor fault"));
+
+        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+
+        try
+        {
+            await WaitUntilAsync(
+                () => supervisor!.MonitorFaulted,
+                TimeSpan.FromSeconds(30),
+                "The injected fault was never recorded.");
+
+            // Production order: stop, then dispose. Neither may throw.
+            _ = await supervisor!.StopKillAndVerifyAsync(TimeSpan.FromMilliseconds(200));
+
+            await supervisor.DisposeAsync();
+
+            Assert.NotNull(supervisor.MonitorFault);
+        }
+        finally
+        {
+            KillIfRunning(child);
+        }
+    }
+
+    /// <summary>
+    /// When a memory ceiling is set the monitor loop is the only thing enforcing it, so a faulted loop
+    /// must end the tree rather than leave an unmonitored child running.
+    /// </summary>
+    [SkippableFact]
+    public async Task Monitor_fault_with_a_memory_ceiling_kills_the_tree()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        using System.Diagnostics.Process child = StartSleepingChild();
+
+        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(
+            child.Id,
+            () => throw new InvalidOperationException("injected monitor fault"),
+            memoryLimitBytes: 64L * 1024 * 1024 * 1024);
+
+        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+
+        try
+        {
+            Assert.True(
+                child.WaitForExit(TimeSpan.FromSeconds(30)),
+                "The memory monitor faulted and left the child running with nothing enforcing its ceiling.");
+
+            Assert.True(supervisor!.MonitorFaulted);
+
+            await supervisor.DisposeAsync();
+        }
+        finally
+        {
+            KillIfRunning(child);
+        }
+    }
+
+    /// <summary>
+    /// A descendant whose footprint cannot be read is left out of the sum. That has to be visible — a
+    /// silent drop is a hole in the ceiling nobody can see.
+    /// </summary>
+    [SkippableFact]
+    public async Task Unreadable_descendant_footprint_is_counted_not_dropped_silently()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        using System.Diagnostics.Process child = new();
+
+        child.StartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            ArgumentList = { "-c", "sleep 30 & wait" },
+        };
+
+        _ = child.Start();
+
+        int rootPid = child.Id;
+
+        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(
+            rootPid,
+            memoryLimitBytes: 64L * 1024 * 1024 * 1024,
+            footprintReader: pid => pid == rootPid ? 1L : null);
+
+        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+
+        try
+        {
+            await WaitUntilAsync(
+                () => supervisor!.UnreadableFootprintCount >= 1,
+                TimeSpan.FromSeconds(30),
+                "A descendant whose footprint could not be read was never reported.");
+        }
+        finally
+        {
+            await supervisor!.DisposeAsync();
+
+            KillIfRunning(child);
+        }
     }
 
     /// <summary>
@@ -91,7 +260,6 @@ public sealed class MacOsDescendantSupervisorTests
     [SkippableFact]
     public async Task Disposal_waits_for_an_in_flight_monitor_tick_before_releasing_the_kqueue_buffer()
     {
-
         Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
 
         using System.Diagnostics.Process child = new();
@@ -115,11 +283,9 @@ public sealed class MacOsDescendantSupervisorTests
             child.Id,
             () =>
             {
-
                 _ = parked.TrySetResult();
 
                 return release.Task;
-
             });
 
         Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
@@ -128,7 +294,6 @@ public sealed class MacOsDescendantSupervisorTests
 
         try
         {
-
             // The loop is now inside a tick, exactly where it would be when a loaded host delays its
             // resumption past the bounded wait.
             await parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -148,35 +313,57 @@ public sealed class MacOsDescendantSupervisorTests
                 "DisposeAsync returned while a monitor tick was still in flight. It then frees the "
                 + "kevent buffer and closes the kqueue, so the next kevent(2) call in that tick "
                 + "writes kernel records into freed heap.");
-
         }
         finally
         {
-
             _ = release.TrySetResult();
 
             if (disposal is not null)
             {
-
                 await disposal.WaitAsync(TimeSpan.FromSeconds(30));
-
             }
             else
             {
-
                 await supervisor!.DisposeAsync();
-
             }
 
-            if (!child.HasExited)
-            {
-
-                child.Kill(entireProcessTree: true);
-
-            }
-
+            KillIfRunning(child);
         }
-
     }
 
+    private static System.Diagnostics.Process StartSleepingChild()
+    {
+        System.Diagnostics.Process child = new();
+
+        child.StartInfo = new ProcessStartInfo("/bin/sleep", "60")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        _ = child.Start();
+
+        return child;
+    }
+
+    private static void KillIfRunning(System.Diagnostics.Process child)
+    {
+        if (!child.HasExited)
+        {
+            child.Kill(entireProcessTree: true);
+        }
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout, string failure)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, failure);
+
+            await Task.Delay(20);
+        }
+    }
 }

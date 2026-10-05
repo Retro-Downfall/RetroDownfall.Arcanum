@@ -268,6 +268,15 @@ public sealed class ProcessResourceLimiterTests
                 $"Clause '{clause.Value}' is not followed by a fail-closed exit: {script}");
         }
 
+        // On a Linux host where a cgroups v2 scope was created the prelude also joins it, and that clause
+        // is held to the same rule (see Prelude_FailsClosed_WhenCgroupJoinRejected for the real shell).
+        foreach (Match join in Regex.Matches(script, "echo \\$\\$ > \"[^\"]+/cgroup\\.procs\""))
+        {
+            Assert.True(
+                script.AsSpan(join.Index + join.Length).StartsWith(" || exit 126; ", StringComparison.Ordinal),
+                $"The cgroup join is not followed by a fail-closed exit: {script}");
+        }
+
         Assert.EndsWith("exec \"$@\"", script, StringComparison.Ordinal);
 
         Assert.False(string.IsNullOrEmpty(result.PreExecFailureMarker));
@@ -312,6 +321,64 @@ public sealed class ProcessResourceLimiterTests
         Assert.DoesNotContain("target-ran", stdout, StringComparison.Ordinal);
 
         Assert.Contains(result.PreExecFailureMarker!, stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The Linux cgroup-join step is a prelude clause like any <c>ulimit</c>: a refused join (the scope
+    /// directory is gone, or delegation was revoked) must exit 126 before <c>exec</c> and leave the
+    /// per-run marker, never run the target outside its memory scope. The clause is built with a scope
+    /// path that cannot exist, so a plain shell proves the refusal on any Unix host.
+    /// </summary>
+    [SkippableFact]
+    public async Task Prelude_FailsClosed_WhenCgroupJoinRejected()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Unix-only behavior (the shell prelude); nothing to verify here.");
+
+        const string marker = "arcanum-resource-limit-not-applied-test";
+
+        string missingScope = Path.Combine(Path.GetTempPath(), "arcanum-missing-scope-" + Guid.NewGuid().ToString("N"));
+
+        string script = ProcessResourceLimiter.BuildUlimitPrelude(
+            new ResourceLimits { MaxFileDescriptors = 256 },
+            includeMemory: false,
+            cgroupPath: missingScope,
+            marker)!;
+
+        // Shape: the join precedes every ulimit and is followed by the same fail-closed exit.
+        Match join = Regex.Match(script, "echo \\$\\$ > \"[^\"]+/cgroup\\.procs\"");
+
+        Assert.True(join.Success, script);
+
+        Assert.True(
+            script.AsSpan(join.Index + join.Length).StartsWith(" || exit 126; ", StringComparison.Ordinal),
+            $"The cgroup join is not followed by a fail-closed exit: {script}");
+
+        // Behavior: a real shell cannot write into a scope directory that does not exist.
+        using System.Diagnostics.Process process = new();
+
+        process.StartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            ArgumentList = { "-c", script, "sh", "/bin/echo", "target-ran" },
+        };
+
+        Assert.True(process.Start());
+
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
+
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync();
+
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(126, process.ExitCode);
+
+        Assert.DoesNotContain("target-ran", await stdoutTask, StringComparison.Ordinal);
+
+        Assert.Contains(marker, await stderrTask, StringComparison.Ordinal);
     }
 
     /// <summary>
