@@ -206,6 +206,81 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Write_with_a_read_baseline_refuses_a_destination_edited_in_place_after_the_read()
+    {
+        string target = _workspace.WriteFile("edited.txt", "alpha beta gamma");
+
+        (string? content, McpToolsCallResultWire? readError, FileContentBaseline? baseline) =
+            await SandboxedFileIo.TryReadAllTextForEditAsync(
+                _workspace.Root,
+                target,
+                maxBytes: 4096,
+                CancellationToken.None);
+
+        Assert.Null(readError);
+
+        Assert.Equal("alpha beta gamma", content);
+
+        Assert.NotNull(baseline);
+
+        // Same inode, same length: only the content differs.
+        await using (FileStream stream = new(target, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
+        {
+            await stream.WriteAsync("alpha OMGA gamma"u8.ToArray());
+        }
+
+        (bool success, McpToolsCallResultWire? error) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            target,
+            "alpha BETA! gamma",
+            CancellationToken.None,
+            baseline);
+
+        Assert.False(success);
+
+        Assert.NotNull(error);
+
+        Assert.Contains(
+            "changed",
+            Assert.IsType<McpToolContentTextWire>(Assert.Single(error!.Content!)).Text!,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal("alpha OMGA gamma", await File.ReadAllTextAsync(target));
+
+        Assert.Empty(Directory.GetFiles(_workspace.Root, ".arcanum-*"));
+    }
+
+    [Fact]
+    public async Task Write_with_a_read_baseline_succeeds_when_the_destination_is_unchanged_and_ignores_the_preamble_reread()
+    {
+        string target = Path.Combine(_workspace.Root, "bom.txt");
+
+        await File.WriteAllBytesAsync(target, [0xEF, 0xBB, 0xBF, .. "alpha beta"u8.ToArray()]);
+
+        (string? content, _, FileContentBaseline? baseline) =
+            await SandboxedFileIo.TryReadAllTextForEditAsync(
+                _workspace.Root,
+                target,
+                maxBytes: 4096,
+                CancellationToken.None);
+
+        Assert.Equal("alpha beta", content);
+
+        (bool success, _) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+            _workspace.Root,
+            target,
+            "alpha BETA!",
+            CancellationToken.None,
+            baseline);
+
+        Assert.True(success);
+
+        Assert.Equal(
+            [0xEF, 0xBB, 0xBF, .. "alpha BETA!"u8.ToArray()],
+            await File.ReadAllBytesAsync(target));
+    }
+
+    [Fact]
     public async Task Write_to_an_existing_dot_git_file_leaves_its_content_untouched()
     {
         string config = _workspace.WriteFile(".git/config", "[core]\n");

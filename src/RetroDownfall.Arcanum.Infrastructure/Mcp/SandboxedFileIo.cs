@@ -102,11 +102,17 @@ internal static class SandboxedFileIo
         return true;
     }
 
+    /// <param name="expectedExistingContent">
+    /// For a read-modify-write caller: the baseline reported by <see cref="TryReadAllTextForEditAsync"/>. The
+    /// write is refused, leaving the destination untouched, when the destination is no longer exactly those
+    /// bytes. The preamble probe below is a separate re-read and never supplies this baseline.
+    /// </param>
     internal static async Task<(bool Success, McpToolsCallResultWire? Error)> TryWriteAllTextAtomicallyAsync(
         string workspaceRoot,
         string absolutePath,
         string content,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FileContentBaseline? expectedExistingContent = null)
     {
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
@@ -201,7 +207,8 @@ internal static class SandboxedFileIo
                 // opened handle is under the workspace, so a swapped destination is rejected here even
                 // if the move followed a symlink (platform-dependent).
                 afterReplace: () =>
-                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out _)).ConfigureAwait(false);
+                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out _),
+                expectedDestinationContent: expectedExistingContent).ConfigureAwait(false);
 
             if (replaceStatus == AtomicReplaceStatus.Succeeded)
             {
@@ -214,7 +221,12 @@ internal static class SandboxedFileIo
                     "Write replaced the file but post-move verification failed; destination left unverified."));
             }
 
-            return (false, ToolError(PathEscapesSandboxMessage));
+            return (
+                false,
+                ToolError(
+                    replaceStatus == AtomicReplaceStatus.Aborted && expectedExistingContent is not null
+                        ? FileChangedDuringEditMessage
+                        : PathEscapesSandboxMessage));
         }
         catch (UnauthorizedAccessException)
         {
@@ -271,9 +283,32 @@ internal static class SandboxedFileIo
         int maxBytes,
         CancellationToken cancellationToken)
     {
+        (string? content, McpToolsCallResultWire? error, _) =
+            await TryReadAllTextForEditAsync(
+                    workspaceRoot,
+                    absolutePath,
+                    maxBytes,
+                    cancellationToken,
+                    captureBaseline: false)
+                .ConfigureAwait(false);
+
+        return (content, error);
+    }
+
+    /// <summary>
+    /// <see cref="TryReadAllTextAsync"/> that also reports the length and SHA-256 of the exact bytes read, so
+    /// the caller's later write can prove the destination is still what the edit was computed from.
+    /// </summary>
+    internal static async Task<(string? Content, McpToolsCallResultWire? Error, FileContentBaseline? Baseline)> TryReadAllTextForEditAsync(
+        string workspaceRoot,
+        string absolutePath,
+        int maxBytes,
+        CancellationToken cancellationToken,
+        bool captureBaseline = true)
+    {
         if (!TryOpenForRead(workspaceRoot, absolutePath, out FileStream? stream, out McpToolsCallResultWire? error))
         {
-            return (null, error);
+            return (null, error, null);
         }
 
         await using (FileStream openedStream = stream!)
@@ -282,13 +317,14 @@ internal static class SandboxedFileIo
                 await SecureFileReader.ReadUtf8TextAsync(
                         openedStream,
                         maxBytes,
-                        cancellationToken)
+                        cancellationToken,
+                        captureBaseline)
                     .ConfigureAwait(false);
 
             if (readResult.Status is not SecureFileReadStatus.Success
                 || readResult.Text is null)
             {
-                return (null, ReadError(readResult.Status));
+                return (null, ReadError(readResult.Status), null);
             }
 
             if (!TryRevalidateOpenedHandle(
@@ -297,10 +333,10 @@ internal static class SandboxedFileIo
                     readResult.Metadata.Identity,
                     out McpToolsCallResultWire? revalidationError))
             {
-                return (null, revalidationError);
+                return (null, revalidationError, null);
             }
 
-            return (readResult.Text, null);
+            return (readResult.Text, null, readResult.Baseline);
         }
     }
 
@@ -379,6 +415,9 @@ internal static class SandboxedFileIo
 
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
+
+    private const string FileChangedDuringEditMessage =
+        "The file changed after it was read, or its state could not be verified, so nothing was written. Re-read the file and retry.";
 
     private const string ProtectedPathMessage =
         "That path is protected workspace metadata (.git or .arcanum) and cannot be written through the file tools, so the operation was not performed.";

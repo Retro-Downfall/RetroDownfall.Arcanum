@@ -17,6 +17,19 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
+    private static readonly AsyncLocal<Action<string>?> AfterReplaceTextBlockReadSeam = new();
+
+    /// <summary>
+    /// Deterministic test seam invoked with the absolute target path after <see cref="ReplaceTextBlockAsync"/>
+    /// has read the file and before it writes, so a test can change the destination at exactly that point.
+    /// Scoped to the current async flow, so it cannot leak into a concurrently running test.
+    /// </summary>
+    internal static Action<string>? AfterReplaceTextBlockReadForTests
+    {
+        get => AfterReplaceTextBlockReadSeam.Value;
+        set => AfterReplaceTextBlockReadSeam.Value = value;
+    }
+
     public async Task<Result<FileWriteResult>> WriteFileAsync(
         WorkspaceInfo workspace,
         string relativePath,
@@ -143,6 +156,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         bool hadBom;
 
+        FileContentBaseline readBaseline = default;
+
         try
         {
             await using (readStream)
@@ -160,6 +175,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 }
 
                 ReadOnlySpan<byte> bytes = readResult.Bytes.Span;
+
+                // The exact bytes the edit is computed from, taken from this read (BOM included); the
+                // replace aborts if the destination is no longer byte-for-byte this.
+                readBaseline = FileContentBaseline.Of(bytes);
 
                 hadBom = bytes.StartsWith(Utf8Bom);
 
@@ -216,7 +235,9 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         byte[] outputBytes = hadBom ? [.. Utf8Bom, .. replacedTextBytes] : replacedTextBytes;
 
-        Result writeResult = await WriteAtomicallyAsync(workspaceRoot, resolvedPath, outputBytes, ct).ConfigureAwait(false);
+        AfterReplaceTextBlockReadForTests?.Invoke(resolvedPath);
+
+        Result writeResult = await WriteAtomicallyAsync(workspaceRoot, resolvedPath, outputBytes, ct, readBaseline).ConfigureAwait(false);
 
         if (writeResult.IsFailure)
         {
@@ -444,7 +465,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string workspaceRoot,
         string absolutePath,
         byte[] contentBytes,
-        CancellationToken ct)
+        CancellationToken ct,
+        FileContentBaseline? expectedExistingContent = null)
     {
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
@@ -496,7 +518,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                     WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath)
                         && FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out expectedIdentity),
                 afterReplace: () =>
-                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity)).ConfigureAwait(false);
+                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity),
+                expectedDestinationContent: expectedExistingContent).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
@@ -513,6 +536,9 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             AtomicReplaceStatus.ReplacedButUnverified => new Error(
                 ErrorCodes.Workspace.WriteFailed,
                 "The file was replaced but post-move verification failed; the destination was left in an unverified state."),
+            AtomicReplaceStatus.Aborted when expectedExistingContent is not null => new Error(
+                ErrorCodes.Workspace.WriteFailed,
+                FileChangedDuringEditMessage),
             _ => new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage),
         };
     }
@@ -771,6 +797,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     private const string ReplaceTextBlockTooLargeMessage = "The combined size of oldString and newString exceeds the maximum replace text block size limit.";
 
     private const string SymlinkEscapeMessage = "The path resolves outside the workspace via a symbolic link.";
+
+    private const string FileChangedDuringEditMessage = "The file changed after it was read, or its state could not be verified, so nothing was written. Re-read the file and retry.";
 
     private const string IoWriteErrorMessage = "An I/O error occurred while writing the file. See server logs.";
 

@@ -417,6 +417,88 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReplaceTextBlockAsync_rejects_destination_modified_between_read_and_replace()
+    {
+        string target = _workspace.WriteFile("target.txt", "alpha beta gamma");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        // An in-place edit by someone else (same inode, same length) lands after our read and before
+        // the replace begins; identity-only revalidation cannot see it.
+        PhysicalFileSystemWriter.AfterReplaceTextBlockReadForTests = path =>
+        {
+            Assert.Equal(Path.GetFullPath(target), Path.GetFullPath(path));
+
+            using FileStream stream = new(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+
+            stream.Write("alpha OMGA gamma"u8);
+        };
+
+        try
+        {
+            Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+                workspace, "target.txt", "beta", "BETA!", null, CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Workspace.WriteFailed", result.Error.Code);
+
+            Assert.Contains("changed", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Equal("alpha OMGA gamma", await File.ReadAllTextAsync(target));
+
+            Assert.Empty(Directory.GetFiles(_workspace.Root, ".arcanum-*"));
+        }
+        finally
+        {
+            PhysicalFileSystemWriter.AfterReplaceTextBlockReadForTests = null;
+        }
+    }
+
+    [Fact]
+    public async Task ReplaceTextBlockAsync_rejects_destination_deleted_between_read_and_replace()
+    {
+        string target = _workspace.WriteFile("target.txt", "alpha beta gamma");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        PhysicalFileSystemWriter.AfterReplaceTextBlockReadForTests = path => File.Delete(path);
+
+        try
+        {
+            Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+                workspace, "target.txt", "beta", "BETA!", null, CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.False(File.Exists(target));
+        }
+        finally
+        {
+            PhysicalFileSystemWriter.AfterReplaceTextBlockReadForTests = null;
+        }
+    }
+
+    [Fact]
+    public async Task ReplaceTextBlockAsync_still_replaces_when_nothing_changed_after_the_read()
+    {
+        string target = _workspace.WriteFile("target.txt", "alpha beta gamma");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+            MakeWorkspace(), "target.txt", "beta", "BETA!", null, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("alpha BETA! gamma", await File.ReadAllTextAsync(target));
+    }
+
+    [Fact]
     public async Task ReplaceTextBlockAsync_returns_FileNotFound_when_file_does_not_exist()
     {
         PhysicalFileSystemWriter writer = CreateWriter();
