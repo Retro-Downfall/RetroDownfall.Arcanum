@@ -512,6 +512,94 @@ public sealed class IdentityOwnedFileSystemCleanupTests : IDisposable
     }
 
     [Fact]
+    public void TryQuarantine_CaptureFailure_RemovesQuarantineDirectory()
+    {
+        IdentityOwnedFileSystemArtifact artifact =
+            CreateCapturedFile("quarantine-transient-capture-failure.tmp");
+
+        int quarantineDirectoryLookups = 0;
+
+        FileHandleIdentityInterop
+            .TryGetPathMetadataNoFollowForTests = path =>
+            {
+                bool found = FileHandleIdentityInterop
+                    .TryGetPathMetadataNoFollowIgnoringTestSeam(
+                        path,
+                        out FileHandleMetadata realMetadata);
+
+                FileHandleMetadata? real = found ? realMetadata : null;
+
+                bool isQuarantineDirectory = Path
+                    .GetFileName(path)
+                    .StartsWith(".arcanum-cleanup-", StringComparison.Ordinal);
+
+                if (isQuarantineDirectory
+                    && Interlocked.Increment(ref quarantineDirectoryLookups) == 1)
+                {
+                    // The capture of the freshly created directory fails once; the follow-up kind check
+                    // sees the real directory again.
+                    return null;
+                }
+
+                return real;
+            };
+
+        Assert.False(
+            IdentityOwnedFileSystemCleanup.TryQuarantine(
+                artifact,
+                out IdentityOwnedFileSystemQuarantine quarantine));
+
+        Assert.Equal(default, quarantine);
+
+        Assert.True(File.Exists(artifact.Path));
+
+        Assert.Empty(
+            Directory.GetDirectories(
+                _root,
+                ".arcanum-cleanup-*"));
+    }
+
+    [Fact]
+    public void TryQuarantine_CaptureFailure_DoesNotDeleteAReplacementThatIsNotADirectory()
+    {
+        IdentityOwnedFileSystemArtifact artifact =
+            CreateCapturedFile("quarantine-replaced-capture-failure.tmp");
+
+        FileHandleIdentityInterop
+            .TryGetPathMetadataNoFollowForTests = path =>
+            {
+                bool found = FileHandleIdentityInterop
+                    .TryGetPathMetadataNoFollowIgnoringTestSeam(
+                        path,
+                        out FileHandleMetadata real);
+
+                if (!found)
+                {
+                    return null;
+                }
+
+                // A path that no longer names a directory (for example a swapped-in link) must be left alone.
+                return Path
+                    .GetFileName(path)
+                    .StartsWith(".arcanum-cleanup-", StringComparison.Ordinal)
+                    ? real with { Kind = FileSystemObjectKind.Other }
+                    : real;
+            };
+
+        Assert.False(
+            IdentityOwnedFileSystemCleanup.TryQuarantine(
+                artifact,
+                out _));
+
+        Assert.True(File.Exists(artifact.Path));
+
+        Assert.Single(
+            Directory.GetDirectories(
+                _root,
+                ".arcanum-cleanup-*"));
+    }
+
+    [Fact]
     public void TryDelete_removes_empty_quarantine_when_owner_only_verification_fails()
     {
         IdentityOwnedFileSystemArtifact artifact =
