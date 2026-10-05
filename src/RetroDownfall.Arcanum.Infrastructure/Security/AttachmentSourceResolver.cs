@@ -78,7 +78,6 @@ internal sealed class AttachmentSourceResolver(
             await using FileStream stream = OpenSource(candidate);
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -113,7 +112,6 @@ internal sealed class AttachmentSourceResolver(
                 cancellationToken).ConfigureAwait(false);
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -256,7 +254,6 @@ internal sealed class AttachmentSourceResolver(
             await using FileStream stream = OpenSource(candidate);
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -301,7 +298,6 @@ internal sealed class AttachmentSourceResolver(
             }
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -329,7 +325,6 @@ internal sealed class AttachmentSourceResolver(
                 cancellationToken).ConfigureAwait(false);
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -484,15 +479,12 @@ internal sealed class AttachmentSourceResolver(
             if (BeforeSourceOpenForTesting is not null)
 
             {
-
                 await BeforeSourceOpenForTesting(cancellationToken).ConfigureAwait(false);
-
             }
 
             await using FileStream stream = OpenSource(candidate);
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -534,7 +526,6 @@ internal sealed class AttachmentSourceResolver(
                 cancellationToken).ConfigureAwait(false);
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -684,15 +675,12 @@ internal sealed class AttachmentSourceResolver(
             if (BeforeSourceOpenForTesting is not null)
 
             {
-
                 await BeforeSourceOpenForTesting(cancellationToken).ConfigureAwait(false);
-
             }
 
             await using FileStream stream = OpenSource(candidate);
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -740,7 +728,6 @@ internal sealed class AttachmentSourceResolver(
             }
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -769,7 +756,6 @@ internal sealed class AttachmentSourceResolver(
                 cancellationToken).ConfigureAwait(false);
 
             if (!TryValidateOpenedSource(
-
                     root,
 
                     candidate,
@@ -887,9 +873,14 @@ internal sealed class AttachmentSourceResolver(
                 "The claimed registered workspace is unavailable.");
         }
 
+        // A claimed root is caller-asserted. Without a registry nothing can prove it names a registered
+        // workspace, so it is refused rather than trusted: trusting it would let any claim widen the
+        // containment root to an arbitrary directory.
         if (workspaceRegistry is null)
         {
-            return WorkspaceRootResolution.Success(claimedRoot, WorkspaceIdentity(claimedRoot));
+            return WorkspaceRootResolution.Failure(
+                AttachmentSourceStatus.Unsafe,
+                "The claimed workspace root cannot be verified without a workspace registry.");
         }
 
         WorkspaceInfo? matched = await FindRegisteredWorkspaceByPathAsync(
@@ -1028,11 +1019,16 @@ internal sealed class AttachmentSourceResolver(
 
         currentCanonicalPath = null;
 
+        // A hard link is a second name for bytes that may live outside the workspace, so containment of
+        // the path says nothing about the content: only a single-link regular file is admitted, the same
+        // rule SecureFileReader applies to every other secure read.
         return FileHandleIdentityInterop.TryGetPathIdentity(candidate, out FileHandleIdentity expected)
             && FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out identity)
+            && FileHandleIdentityInterop.TryGetHandleMetadata(stream.SafeFileHandle, out FileHandleMetadata opened)
+            && opened.Kind is FileSystemObjectKind.RegularFile
+            && opened.HardLinkCount == 1
             && FileHandleIdentity.IdentitiesMatch(expected, identity)
             && WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-
                 root,
 
                 candidate,
