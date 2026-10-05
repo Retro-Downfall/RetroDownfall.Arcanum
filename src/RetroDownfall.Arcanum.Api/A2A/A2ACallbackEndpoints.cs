@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.A2A;
 
@@ -33,20 +34,16 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 [ExcludeFromCodeCoverage] // Reason: thin HTTP glue; behavior covered via A2ASendingCallbackRegistry and A2A callback tests.
 internal static class A2ACallbackEndpoints
 {
-
     public static IEndpointRouteBuilder MapA2ACallbacks(
         this IEndpointRouteBuilder app,
         ArcanumSettings startupSettings,
         string? rateLimiterPolicyName)
     {
-
         ConclaveA2ASettings a2a = startupSettings.ResolveA2A();
 
         if (!startupSettings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.PushNotificationsEnabled)
         {
-
             return app;
-
         }
 
         RouteHandlerBuilder route = app.MapPost(
@@ -58,13 +55,10 @@ internal static class A2ACallbackEndpoints
 
         if (!string.IsNullOrWhiteSpace(rateLimiterPolicyName))
         {
-
             route.RequireRateLimiting(rateLimiterPolicyName);
-
         }
 
         return app;
-
     }
 
     private static async Task<IResult> HandleAsync(
@@ -76,25 +70,21 @@ internal static class A2ACallbackEndpoints
         HttpContext context,
         CancellationToken cancellationToken)
     {
-
         ConclaveA2ASettings current = settings.CurrentValue.ResolveA2A();
 
         if (!settings.CurrentValue.ResolveConclave().Enabled
             || !current.Enabled
             || !current.PushNotificationsEnabled)
         {
-
             // Routes are mapped from the boot snapshot but gated per call, like every other Conclave
             // surface: turning the feature off mid-run closes the door immediately.
             return Results.NotFound();
-
         }
 
         string token = context.Request.Headers[A2APushNotificationHeaders.NotificationToken].ToString();
 
         switch (callbacks.TrySignal(configId, token))
         {
-
             case A2ACallbackOutcome.Delivered:
 
                 return Results.Accepted();
@@ -114,9 +104,7 @@ internal static class A2ACallbackEndpoints
                         loggerFactory.CreateLogger(typeof(A2ACallbackEndpoints)),
                         cancellationToken)
                     .ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -127,24 +115,20 @@ internal static class A2ACallbackEndpoints
     /// remote task, and inventing a figure — or a zero — is exactly what issue #60 removed. The Sending
     /// shows up as unpriced delegated work, which is the honest description of it.
     /// </remarks>
-    private static async Task<IResult> SettleFromLedgerAsync(
+    internal static async Task<IResult> SettleFromLedgerAsync(
         string configId,
         string? token,
         IServiceScopeFactory scopeFactory,
         ILogger logger,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             if (scope.ServiceProvider.GetService<IA2ASendingLedger>() is not { } ledger)
             {
-
                 return Results.NotFound();
-
             }
 
             A2AOutboundCallback? recorded = await ledger
@@ -153,9 +137,7 @@ internal static class A2ACallbackEndpoints
 
             if (recorded is not { } callback || !A2ACallbackToken.Matches(token, callback.TokenHash))
             {
-
                 return Results.NotFound();
-
             }
 
             await ledger
@@ -168,17 +150,17 @@ internal static class A2ACallbackEndpoints
                 callback.TaskId);
 
             return Results.Accepted();
-
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not GrimoireMaintenanceUnavailableException)
         {
-
+            // A peer treats 404 as terminal and stops retrying, so a ledger that could not answer must not
+            // look like an id or token that was wrong. 503 says only that the ledger is unavailable, which
+            // is true for every caller and so is no oracle for a config id or a token. A maintenance window
+            // is deliberately excluded: it propagates to the exception handler, which answers the same 503
+            // everywhere else does.
             logger.LogWarning(ex, "A2A: could not settle a Sending from callback config {ConfigId}.", configId);
 
-            return Results.NotFound();
-
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
-
     }
-
 }
