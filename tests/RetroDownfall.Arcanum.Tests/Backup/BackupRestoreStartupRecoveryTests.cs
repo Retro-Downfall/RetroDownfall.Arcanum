@@ -32,11 +32,9 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </remarks>
 public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 {
-
     /// <summary>The four topology states a killed restore can leave inside the commit window.</summary>
     public enum RestoreCrashPoint
     {
-
         BeforeLiveRootDisplacement = 0,
 
         AfterLiveRootRenamedToRollback = 1,
@@ -44,7 +42,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         AfterStagedRootRenamedToLive = 2,
 
         AfterLiveParentFsync = 3,
-
     }
 
     private static readonly Guid OperationId = new("66666666-6666-4666-8666-666666666666");
@@ -65,28 +62,22 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 
     public BackupRestoreStartupRecoveryTests()
     {
-
         Directory.CreateDirectory(_root);
 
         _guarded = Path.Combine(_root, "arcanum");
 
         _lock = ArcanumMaintenanceLock.TryAcquire(_guarded)
             ?? throw new InvalidOperationException("The test could not take its own maintenance lock.");
-
     }
 
     public void Dispose()
     {
-
         _lock.Dispose();
 
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     // ---------------------------------------------------------------- physical topology
@@ -100,7 +91,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         RestoreCrashPoint crash,
         string expectedTree)
     {
-
         Interrupted interrupted = Interrupt(crash);
 
         Result<BackupRestorePhysicalRecoveryOutcome> recovered = await Recovery()
@@ -128,13 +118,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(File.Exists(interrupted.JournalPath));
 
         Assert.Equal(BackupRestoreJournalAnchorState.Active, ReadAnchor(interrupted).State);
-
     }
 
     [Fact]
     public async Task Physical_recovery_refuses_a_live_root_that_is_not_the_one_the_journal_names()
     {
-
         Interrupted interrupted = Interrupt(RestoreCrashPoint.AfterLiveRootRenamedToRollback);
 
         // A directory with the recorded name but a different durable identity. Renaming it back would
@@ -153,13 +141,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.Equal("impostor", File.ReadAllText(Path.Combine(_guarded, "marker.txt")));
 
         Assert.True(Directory.Exists(interrupted.DisplacedRoot));
-
     }
 
     [Fact]
     public async Task Physical_recovery_refuses_a_staged_root_that_is_not_the_one_the_journal_names()
     {
-
         Interrupted interrupted = Interrupt(RestoreCrashPoint.BeforeLiveRootDisplacement);
 
         // Allocated while the journaled directory is still alive, so the substitute cannot inherit the
@@ -178,13 +164,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(recovered.IsSuccess);
 
         Assert.Equal(BackupRestorePhysicalRecoveryOutcome.KeptClosed, recovered.Value);
-
     }
 
     [Fact]
     public async Task Physical_recovery_returns_no_active_journal_only_for_proven_absence()
     {
-
         Directory.CreateDirectory(_guarded);
 
         Result<BackupRestorePhysicalRecoveryOutcome> recovered = await Recovery()
@@ -193,13 +177,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(recovered.IsSuccess);
 
         Assert.Equal(BackupRestorePhysicalRecoveryOutcome.NoActiveJournal, recovered.Value);
-
     }
 
     [Fact]
     public async Task Physical_recovery_keeps_startup_closed_for_a_canonical_journal_with_no_anchor()
     {
-
         Directory.CreateDirectory(_guarded);
 
         string lookalike = Path.Combine(_root, BackupRestoreJournal.CreateStagingName());
@@ -218,7 +200,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(recovered.IsSuccess);
 
         Assert.Equal(BackupRestorePhysicalRecoveryOutcome.KeptClosed, recovered.Value);
-
     }
 
     /// <summary>
@@ -227,7 +208,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
     [Fact]
     public async Task Physical_recovery_keeps_startup_closed_for_an_indexed_journal_it_cannot_authenticate()
     {
-
         Directory.CreateDirectory(_guarded);
 
         string elsewhere = Path.Combine(_root, "another-destination");
@@ -248,13 +228,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(recovered.IsSuccess);
 
         Assert.Equal(BackupRestorePhysicalRecoveryOutcome.KeptClosed, recovered.Value);
-
     }
 
     [Fact]
     public async Task Physical_recovery_keeps_startup_closed_when_the_active_anchor_names_no_swept_root()
     {
-
         Interrupted interrupted = Interrupt(RestoreCrashPoint.BeforeLiveRootDisplacement);
 
         // The anchor still says an operation is in flight; the location it commits to is gone.
@@ -266,13 +244,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(recovered.IsSuccess);
 
         Assert.Equal(BackupRestorePhysicalRecoveryOutcome.KeptClosed, recovered.Value);
-
     }
 
     [Fact]
     public async Task Physical_recovery_alone_never_authorizes_admission()
     {
-
         Interrupted interrupted = Interrupt(RestoreCrashPoint.AfterStagedRootRenamedToLive);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
@@ -291,7 +267,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(resumed.IsFailure);
 
         Assert.Equal(BackupRestoreJournalAnchorState.Active, ReadAnchor(interrupted).State);
-
     }
 
     // ---------------------------------------------------------------- authority
@@ -299,7 +274,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
     [Fact]
     public async Task Authority_recovery_returns_no_active_journal_when_nothing_is_in_flight()
     {
-
         Directory.CreateDirectory(_guarded);
 
         Result<BackupRestoreStartupRecoveryOutcome> recovered = await Recovery()
@@ -308,13 +282,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(recovered.IsSuccess);
 
         Assert.Equal(BackupRestoreStartupRecoveryOutcome.NoActiveJournal, recovered.Value);
-
     }
 
     [Fact]
     public async Task Authority_recovery_rolls_back_a_proven_pre_swap_restore_under_the_resumed_owner()
     {
-
         Interrupted interrupted = Interrupt(RestoreCrashPoint.AfterLiveRootRenamedToRollback);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
@@ -352,13 +324,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
             Token);
 
         Assert.True(resumed.IsFailure);
-
     }
 
     [Fact]
     public async Task Authority_recovery_commits_a_post_swap_restore_only_through_the_authenticated_children()
     {
-
         ImmutableArray<Guid> children =
         [
             new Guid("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
@@ -411,13 +381,92 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.Equal(BackupRestoreJournalAnchorState.Closed, ReadAnchor(interrupted).State);
 
         Assert.False(Directory.Exists(interrupted.StagingRoot));
+    }
 
+    /// <summary>
+    /// A post-swap restore whose plain journal never reached <see cref="BackupRestorePhase.Reconcile"/>
+    /// keeps its staging, the displaced installation included, and keeps admission closed.
+    /// </summary>
+    /// <remarks>
+    /// The plain journal advances to <c>Reconcile</c> only after local secret protection was rebuilt
+    /// for the new generation. Short of that, nothing proves the live tree's database can be opened
+    /// with the secrets this machine now holds, and committing would delete <c>previous/</c> — the only
+    /// installation those secrets are known to open — and reopen admission over it.
+    /// </remarks>
+    [Fact]
+    public async Task Authority_recovery_keeps_staging_when_the_v1_journal_never_reached_Reconcile()
+    {
+        ImmutableArray<Guid> children =
+        [
+            new Guid("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            new Guid("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        ];
+
+        Interrupted interrupted = Interrupt(
+            RestoreCrashPoint.AfterStagedRootRenamedToLive,
+            children,
+            BackupRestorePhase.Commit);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        FakeCampaignPathMarkerLifecycle markers = new();
+
+        BackupRestoreRecovery recovery = Recovery(gate, markers);
+
+        _ = Value(await recovery.RecoverPhysicalTopologyBeforeDatabaseAsync(
+            _lock,
+            Token));
+
+        Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
+            .RecoverAuthorityBeforeReadinessAsync(_lock, Token);
+
+        Assert.True(recovered.IsSuccess);
+
+        Assert.Equal(BackupRestoreStartupRecoveryOutcome.KeptClosed, recovered.Value);
+
+        Assert.Equal(0, markers.ReconcileCalls);
+
+        Assert.Equal(BackupRestoreJournalAnchorState.Active, ReadAnchor(interrupted).State);
+
+        Assert.True(File.Exists(interrupted.JournalPath));
+
+        Assert.Equal("live", File.ReadAllText(Path.Combine(interrupted.DisplacedRoot, "marker.txt")));
+    }
+
+    /// <summary>
+    /// The same refusal when there is no plain journal to read at all: absence proves no rewrap.
+    /// </summary>
+    [Fact]
+    public async Task Authority_recovery_keeps_staging_when_no_v1_journal_proves_the_rewrap()
+    {
+        Interrupted interrupted = Interrupt(
+            RestoreCrashPoint.AfterStagedRootRenamedToLive,
+            ImmutableArray<Guid>.Empty,
+            legacyPhase: null);
+
+        FakeCampaignPathMarkerLifecycle markers = new();
+
+        BackupRestoreRecovery recovery = Recovery(CovenantOperationGateFixture.CreateGate(), markers);
+
+        _ = Value(await recovery.RecoverPhysicalTopologyBeforeDatabaseAsync(
+            _lock,
+            Token));
+
+        Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
+            .RecoverAuthorityBeforeReadinessAsync(_lock, Token);
+
+        Assert.Equal(BackupRestoreStartupRecoveryOutcome.KeptClosed, Value(recovered));
+
+        Assert.Equal(0, markers.ReconcileCalls);
+
+        Assert.Equal(BackupRestoreJournalAnchorState.Active, ReadAnchor(interrupted).State);
+
+        Assert.True(Directory.Exists(interrupted.DisplacedRoot));
     }
 
     [Fact]
     public async Task Authority_recovery_keeps_admission_closed_for_a_mismatched_owner()
     {
-
         Interrupted interrupted = Interrupt(RestoreCrashPoint.AfterStagedRootRenamedToLive);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
@@ -452,13 +501,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.True(File.Exists(interrupted.JournalPath));
 
         Assert.Equal(BackupRestoreJournalAnchorState.Active, ReadAnchor(interrupted).State);
-
     }
 
     [Fact]
     public async Task Authority_recovery_keeps_admission_closed_when_the_children_cannot_be_proven()
     {
-
         Interrupted interrupted = Interrupt(RestoreCrashPoint.AfterStagedRootRenamedToLive);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
@@ -494,13 +541,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.Equal(BackupRestoreJournalAnchorState.Active, ReadAnchor(interrupted).State);
 
         Assert.Equal("staged", File.ReadAllText(Path.Combine(_guarded, "marker.txt")));
-
     }
 
     [Fact]
     public async Task Authority_recovery_returns_recovered_ready_only_after_a_successful_commit_and_reopen()
     {
-
         Interrupted interrupted = Interrupt(RestoreCrashPoint.AfterStagedRootRenamedToLive);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
@@ -527,7 +572,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.Equal(BackupRestoreStartupRecoveryOutcome.KeptClosed, recovered.Value);
 
         Assert.Equal(BackupRestoreJournalAnchorState.Active, ReadAnchor(interrupted).State);
-
     }
 
     // ---------------------------------------------------------------- fixture
@@ -547,9 +591,16 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
     private Interrupted Interrupt(RestoreCrashPoint crash) =>
         Interrupt(crash, ImmutableArray<Guid>.Empty);
 
-    private Interrupted Interrupt(RestoreCrashPoint crash, ImmutableArray<Guid> children)
+    /// <param name="legacyPhase">
+    /// The phase of the plain journal <c>BackupRestoreService</c> writes beside the envelope, or null
+    /// for none. It reaches <see cref="BackupRestorePhase.Reconcile"/> only once local secret
+    /// protection was rebuilt, which is the default here: a restore that died after doing so.
+    /// </param>
+    private Interrupted Interrupt(
+        RestoreCrashPoint crash,
+        ImmutableArray<Guid> children,
+        BackupRestorePhase? legacyPhase = BackupRestorePhase.Reconcile)
     {
-
         BackupRestoreProfileNamespace profile = Value(
             BackupRestoreJournalAuthenticator.ResolveProfileNamespace(_guarded));
 
@@ -613,19 +664,37 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 
         BackupRestoreStagingIndex.Add(_guarded, stagingRoot);
 
+        if (legacyPhase is { } phase)
+        {
+            Assert.True(
+                FileHandleIdentityInterop.TryGetPathMetadataNoFollow(stagingRoot, out FileHandleMetadata staging),
+                "The test fixture could not read the identity of " + stagingRoot);
+
+            _ = BackupRestoreJournal.Write(
+                stagingRoot,
+                new BackupRestoreJournalRecord(
+                    BackupRestoreJournal.CurrentVersion,
+                    OperationId,
+                    BackupRestoreConflictMode.ReplaceInstallation,
+                    phase,
+                    _guarded,
+                    stagedRoot,
+                    displacedRoot,
+                    SafetyBackupPath: null,
+                    Path.Combine(_root, "source.arcbackup"),
+                    staging.Identity.VolumeId,
+                    staging.Identity.FileId));
+        }
+
         if (crash is not RestoreCrashPoint.BeforeLiveRootDisplacement)
         {
-
             Directory.Move(_guarded, displacedRoot);
-
         }
 
         if (crash is RestoreCrashPoint.AfterStagedRootRenamedToLive
             or RestoreCrashPoint.AfterLiveParentFsync)
         {
-
             Directory.Move(stagedRoot, _guarded);
-
         }
 
         return new Interrupted(
@@ -638,12 +707,10 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
                 OperationId,
                 CovenantExclusiveOperation.BackupRestore,
                 EffectDigest));
-
     }
 
     private BackupRestoreJournalAnchorV1 ReadAnchor(Interrupted interrupted)
     {
-
         BackupRestoreJournalAnchorStore anchors = new(
             _credentials,
             new BackupRestoreJournalKeyProvider(_credentials),
@@ -654,7 +721,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.NotNull(anchor);
 
         return anchor;
-
     }
 
     private static BackupRestoreDurableNodeIdentityV1 Node(string parent, string leaf, bool present) =>
@@ -669,7 +735,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 
     private static CovenantDigest Identity(string path)
     {
-
         Assert.True(
             FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out FileHandleMetadata metadata),
             "The test fixture could not read the durable identity of " + path);
@@ -677,16 +742,13 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         return BackupRestoreJournalAuthenticator.PhysicalIdentity(
             metadata.Identity.VolumeId,
             metadata.Identity.FileId);
-
     }
 
     private static void Write(string directory, string marker)
     {
-
         Directory.CreateDirectory(directory);
 
         File.WriteAllText(Path.Combine(directory, "marker.txt"), marker);
-
     }
 
     private static CovenantDigest EffectDigest => Digest(18);
@@ -696,13 +758,11 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(
             result.IsSuccess,
             result.IsFailure ? result.Error.Code + ": " + result.Error.Message : string.Empty);
 
         return result.Value;
-
     }
 
     private sealed record Interrupted(
@@ -712,7 +772,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         string JournalPath,
         BackupRestoreProfileNamespace Profile,
         CovenantExclusiveRecoveryOwner Owner);
-
 }
 
 /// <summary>
@@ -725,7 +784,6 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 /// </remarks>
 internal sealed class FakeCampaignPathMarkerLifecycle : ICampaignPathMarkerLifecycle
 {
-
     public Task<Result<CampaignPathFullInstallationResetInventory>>
         InventoryFullInstallationResetCleanupAsync(
             Guid ownerOperationId,
@@ -790,7 +848,6 @@ internal sealed class FakeCampaignPathMarkerLifecycle : ICampaignPathMarkerLifec
         ICovenantExclusiveOperationLease exclusiveLease,
         CancellationToken cancellationToken)
     {
-
         ReconcileCalls++;
 
         LastRequest = request;
@@ -800,16 +857,12 @@ internal sealed class FakeCampaignPathMarkerLifecycle : ICampaignPathMarkerLifec
                 ? Result<CampaignPathMarkerGateCompletion>.Failure(failure)
                 : Result<CampaignPathMarkerGateCompletion>.Success(
                     new CampaignPathMarkerGateCompletion(Outcome, Disposition, Finalizer)));
-
     }
 
     public ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)
     {
-
         ReleasedOwnerOperationId = ownerOperationId;
 
         return ValueTask.CompletedTask;
-
     }
-
 }
