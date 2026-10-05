@@ -75,6 +75,43 @@ public sealed class CovenantSearchFallbackTests
         Assert.Equal(CovenantSearchMatchClass.ExactKey, indexed.Hits[0].MatchClass);
     }
 
+    [Fact]
+    public async Task A_multi_term_query_never_classes_a_hit_as_an_exact_key_in_either_mode()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "marker",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Marker with a second term.",
+            Token);
+
+        CovenantSearchPage fallback = await SearchAsync(fixture, "marker second");
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, fallback.ExecutionMode);
+
+        await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        CovenantSearchPage indexed = await SearchAsync(fixture, "marker second");
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, indexed.ExecutionMode);
+
+        // The key is the first term and nothing more, so an exact-key comparison against the whole
+        // query matches no key: the head is found by its body and its key prefix, never as an exact key.
+        _ = Assert.Single(fallback.Hits);
+
+        _ = Assert.Single(indexed.Hits);
+
+        Assert.NotEqual(CovenantSearchMatchClass.ExactKey, fallback.Hits[0].MatchClass);
+
+        Assert.NotEqual(CovenantSearchMatchClass.ExactKey, indexed.Hits[0].MatchClass);
+
+        Assert.Equal(fallback.Hits[0].MatchClass, indexed.Hits[0].MatchClass);
+    }
+
     [Theory]
     [InlineData("A sport for everyone.", "sport", 1)]
     [InlineData("A sport for everyone.", "spor", 1)]
