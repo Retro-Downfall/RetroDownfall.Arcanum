@@ -61,7 +61,9 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         // Compare-deletes only host-process-tools-taint, and only against its exact digest.
         "src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsMarkerStore.cs",
 
-        // Purges only the superseded master-api-key after a failed OS write.
+        // Only master-api-key and file-encryption-master-key: the superseded master-api-key purge after
+        // a failed OS write, and DeleteApiKeyAsync / DeleteFileEncryptionSecretAsync, which a rolled-back
+        // restore calls to remove what it wrote over a capture that proved the account absent.
         "src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs",
 
         // Only inference-provider-{NAME}-api-key.
