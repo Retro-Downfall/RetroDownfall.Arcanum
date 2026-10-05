@@ -219,6 +219,12 @@ public sealed partial class ArcanumApiClient
                 ? Result<T>.Success(data)
                 : Result<T>.Failure(InvalidResponseError),
             cancellationToken,
+            // Every erasure route reaches the key store or the write-ahead log: an operating-system
+            // keychain approval waits for a person, and a checkpoint waits for readers. Neither has an
+            // Arcanum-owned duration, so none of these calls carries the short-call headers deadline,
+            // which would cut the call off while the host kept working and report the outcome as
+            // unknown. They go out on the unbounded client, like the other durable data applies.
+            StreamingHttpClientName,
             retryResponseBodyIOExceptionOnce: true,
             onResponseBodyRetry: onResent);
 }

@@ -11,6 +11,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class FileBatchApiClientTests
 {
+    /// <summary>Hang guard for every await on the deadline tests, never a behavioural bound.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     [Fact]
     public async Task Credential_storage_failure_remains_typed_without_sending_a_file_request()
     {
@@ -329,29 +332,51 @@ public sealed class FileBatchApiClientTests
 
     /// <summary>
     /// The deadline is for the response headers. A body that takes longer than the deadline to
-    /// arrive is a slow answer, not a hung host, and must not be cut off.
+    /// arrive is a slow answer, not a hung host, and must not be cut off: the clock passes the
+    /// deadline while the body is still being read, and the call still succeeds because the
+    /// deadline timer was disposed with the headers instead of staying armed behind the body.
     /// </summary>
     [Fact]
     public async Task Short_file_call_headers_deadline_does_not_bound_the_response_body()
     {
-        DelayedStartHandler handler = new(
-            TimeSpan.Zero,
-            TimeSpan.FromMilliseconds(400),
-            """{"object":"list","data":[],"has_more":false}""");
+        ManualTimerTimeProvider clock = new();
+
+        GatedBodyStream body = new(
+            Encoding.UTF8.GetBytes("""{"object":"list","data":[],"has_more":false}"""));
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(body),
+        });
 
         using ArcanumApiCredentialLease credentials =
             ArcanumApiCredentialLeaseTestFactory.Create("test-key");
+
+        TimeSpan deadline = TimeSpan.FromMinutes(5);
 
         FileBatchApiClient client = new(
             new FakeHttpClientFactory(handler),
             credentials)
         {
-            RequestResponseHeadersTimeout = TimeSpan.FromMilliseconds(100),
+            RequestResponseHeadersTimeout = deadline,
+            HeadersDeadlineClock = clock,
         };
 
-        var result = await client
-            .ListFilesAsync(purpose: null, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(10));
+        var call = client.ListFilesAsync(purpose: null, CancellationToken.None);
+
+        await body.ReadStarted.WaitAsync(HangGuard);
+
+        Assert.Equal(1, clock.TimersCreated);
+
+        Assert.Equal(0, clock.ActiveTimers);
+
+        clock.Advance(deadline + deadline);
+
+        Assert.False(call.IsCompleted);
+
+        body.Release();
+
+        var result = await call.WaitAsync(HangGuard);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : string.Empty);
     }

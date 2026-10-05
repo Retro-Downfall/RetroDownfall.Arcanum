@@ -47,6 +47,12 @@ public sealed partial class ArcanumApiClient(
     internal TimeSpan RequestResponseHeadersTimeout { get; init; } = DefaultRequestResponseHeadersTimeout;
 
     /// <summary>
+    /// The clock the response-headers deadline runs on. Production uses the system clock; a test
+    /// substitutes one it advances by hand so a deadline never depends on how fast a thread runs.
+    /// </summary>
+    internal TimeProvider HeadersDeadlineClock { get; init; } = TimeProvider.System;
+
+    /// <summary>
     /// The most characters one line of an NDJSON or Chronicle stream may hold before it is discarded
     /// with a diagnostic. Without it a stream that never ends a line grows the client without bound.
     /// </summary>
@@ -290,7 +296,8 @@ public sealed partial class ArcanumApiClient(
                         canReplayAfterUnauthorized: true,
                         ArcanumAuthenticatedHttpSender.PresenceProbeTimeout,
                         cancellationToken,
-                        ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout))
+                        ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout),
+                        HeadersDeadlineClock)
                     .ConfigureAwait(false);
 
                 if (!sent.IsAuthenticated)

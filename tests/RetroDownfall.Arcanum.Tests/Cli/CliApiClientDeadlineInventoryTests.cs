@@ -66,6 +66,11 @@ public sealed class CliApiClientDeadlineInventoryTests
         "InvokeToolAsync",
         "ReconcileOperationsAsync",
         "ResetDataMemoryAsync",
+
+        // The memory-erasure routes all reach the key store or the write-ahead log. An operating-system
+        // keychain approval waits for a person and a checkpoint waits for readers, so none of them has
+        // an Arcanum-owned duration; a deadline would report an erase that went on as "outcome unknown".
+        "SendErasureAsync",
     ];
 
     /// <summary>
@@ -195,7 +200,6 @@ public sealed class CliApiClientDeadlineInventoryTests
         SearchWebAsync
         SearchWorkspaceAsync
         SendCommLinkAlertAsync
-        SendErasureAsync
         SendSessionEntryMutationAsync
         SetCovenantAsync
         ShowLexiconAsync

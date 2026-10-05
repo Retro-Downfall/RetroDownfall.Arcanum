@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -808,11 +809,14 @@ public sealed class ArcanumApiClientTests
     /// <summary>
     /// Neither HttpClient the CLI registers has a timeout, so the "timed out" paths below the sender
     /// were unreachable and a hung local host wedged every short call. A request now carries its own
-    /// response-headers deadline, which maps to the same typed timeout.
+    /// response-headers deadline, which maps to the same typed timeout. The clock is advanced by hand,
+    /// so the five-minute default is pinned to the second without the test waiting for it.
     /// </summary>
     [Fact]
     public async Task Request_returns_timeout_error_when_host_never_responds_headers()
     {
+        ManualTimerTimeProvider clock = new();
+
         TaskCompletionSource<HttpResponseMessage> never = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -821,11 +825,21 @@ public sealed class ArcanumApiClientTests
 
         ArcanumApiClient client = CreateClientWithHeadersDeadline(
             handler,
-            TimeSpan.FromMilliseconds(100));
+            ArcanumApiClient.DefaultRequestResponseHeadersTimeout,
+            clock);
+
+        Task<Result<bool>> call = client.QuitServerAsync(CancellationToken.None);
+
+        await clock.FirstTimerCreated.WaitAsync(HangGuard);
+
+        clock.Advance(ArcanumApiClient.DefaultRequestResponseHeadersTimeout - TimeSpan.FromSeconds(1));
+
+        Assert.False(call.IsCompleted);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
 
         // Only the client's own deadline can finish this request; the outer bound is a hang guard.
-        Result<bool> result = await client.QuitServerAsync(CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(10));
+        Result<bool> result = await call.WaitAsync(HangGuard);
 
         Assert.True(result.IsFailure);
 
@@ -836,30 +850,95 @@ public sealed class ArcanumApiClientTests
 
     /// <summary>
     /// The deadline is for the response headers. A body that takes longer than the deadline to arrive
-    /// is a slow answer, not a hung host, and must not be cut off.
+    /// is a slow answer, not a hung host, and must not be cut off: the clock passes the deadline while
+    /// the body is still being read, and the call still succeeds because the deadline timer was
+    /// disposed with the headers instead of staying armed behind the body.
     /// </summary>
     [Fact]
     public async Task Request_headers_deadline_does_not_bound_the_response_body()
     {
+        ManualTimerTimeProvider clock = new();
+
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             new ApiResponse<bool>(true, true, null),
             ArcanumJsonContext.Default.ApiResponseBoolean);
 
+        GatedBodyStream body = new(json);
+
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StreamContent(new DelayedStartStream(json, TimeSpan.FromMilliseconds(400))),
+            Content = new StreamContent(body),
         });
 
-        ArcanumApiClient client = CreateClientWithHeadersDeadline(
-            handler,
-            TimeSpan.FromMilliseconds(100));
+        TimeSpan deadline = TimeSpan.FromMinutes(5);
 
-        Result<bool> result = await client.QuitServerAsync(CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(10));
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(handler, deadline, clock);
+
+        Task<Result<bool>> call = client.QuitServerAsync(CancellationToken.None);
+
+        await body.ReadStarted.WaitAsync(HangGuard);
+
+        Assert.Equal(1, clock.TimersCreated);
+
+        Assert.Equal(0, clock.ActiveTimers);
+
+        clock.Advance(deadline + deadline);
+
+        Assert.False(call.IsCompleted);
+
+        body.Release();
+
+        Result<bool> result = await call.WaitAsync(HangGuard);
 
         Assert.True(result.IsSuccess);
 
         Assert.True(result.Value);
+    }
+
+    /// <summary>
+    /// Every memory-erasure call can wait on something that has no Arcanum-owned duration: an
+    /// operating-system keychain approval, or a write-ahead-log checkpoint that waits for readers. A
+    /// deadline would cut the call off while the host kept working and report an outcome as unknown,
+    /// so none of them carries one: no timer is armed, and a clock that passes the deadline does
+    /// nothing to the call.
+    /// </summary>
+    [Fact]
+    public async Task Memory_erasure_calls_are_not_bounded_by_the_headers_deadline()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<MemoryErasureStatusDto>(
+                new MemoryErasureStatusDto(MemoryErasureKeyStatus.Present, [], 0),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureStatusDto);
+
+        GatedBodyStream body = new(json);
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(body),
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMinutes(5),
+            clock);
+
+        Task<Result<MemoryErasureStatusDto>> call = client.GetMemoryErasureStatusAsync(CancellationToken.None);
+
+        await body.ReadStarted.WaitAsync(HangGuard);
+
+        clock.Advance(TimeSpan.FromHours(1));
+
+        body.Release();
+
+        Result<MemoryErasureStatusDto> result = await call.WaitAsync(HangGuard);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(0, clock.TimersCreated);
     }
 
     /// <summary>
@@ -1677,7 +1756,8 @@ public sealed class ArcanumApiClientTests
 
     private static ArcanumApiClient CreateClientWithHeadersDeadline(
         HttpMessageHandler handler,
-        TimeSpan responseHeadersTimeout)
+        TimeSpan responseHeadersTimeout,
+        TimeProvider? clock = null)
     {
         FakeHttpClientFactory factory = new(handler, requestTimeout: null);
 
@@ -1686,8 +1766,12 @@ public sealed class ArcanumApiClientTests
             ArcanumApiCredentialLeaseTestFactory.Create("test-key"))
         {
             RequestResponseHeadersTimeout = responseHeadersTimeout,
+            HeadersDeadlineClock = clock ?? TimeProvider.System,
         };
     }
+
+    /// <summary>Hang guard for every await on the deadline tests, never a behavioural bound.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
 
     private static HttpResponseMessage CreatePromptResponse(ApiResponse<PromptResponseDto> envelope, HttpStatusCode status = HttpStatusCode.OK)
     {
@@ -1804,54 +1888,6 @@ public sealed class ArcanumApiClientTests
 
             return await _responder(request, cancellationToken).ConfigureAwait(false);
         }
-    }
-
-    private sealed class DelayedStartStream(byte[] payload, TimeSpan delay) : Stream
-    {
-        private readonly MemoryStream _inner = new(payload);
-
-        private bool _delayed;
-
-        public override bool CanRead => true;
-
-        public override bool CanSeek => false;
-
-        public override bool CanWrite => false;
-
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position
-        {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public override void Flush()
-        {
-        }
-
-        public override int Read(byte[] buffer, int offset, int count) =>
-            throw new NotSupportedException();
-
-        public override async ValueTask<int> ReadAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
-        {
-            if (!_delayed)
-            {
-                _delayed = true;
-
-                await Task.Delay(delay, cancellationToken);
-            }
-
-            return await _inner.ReadAsync(buffer, cancellationToken);
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class FaultingErrorBodyHandler : HttpMessageHandler

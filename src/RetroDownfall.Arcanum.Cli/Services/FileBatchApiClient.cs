@@ -34,6 +34,9 @@ public sealed class FileBatchApiClient(
     internal TimeSpan RequestResponseHeadersTimeout { get; init; } =
         ArcanumApiClient.DefaultRequestResponseHeadersTimeout;
 
+    /// <summary>The clock the response-headers deadline runs on; see <see cref="ArcanumApiClient.HeadersDeadlineClock"/>.</summary>
+    internal TimeProvider HeadersDeadlineClock { get; init; } = TimeProvider.System;
+
     public Task<Result<OpenAiFileListResponse>> ListFilesAsync(
         string? purpose,
         CancellationToken cancellationToken) =>
@@ -321,7 +324,8 @@ public sealed class FileBatchApiClient(
                     canReplayAfterUnauthorized: true,
                     ArcanumAuthenticatedHttpSender.PresenceProbeTimeout,
                     cancellationToken,
-                    ArcanumApiClient.ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout))
+                    ArcanumApiClient.ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout),
+                    HeadersDeadlineClock)
                 .ConfigureAwait(false);
 
             if (!sent.IsAuthenticated)
