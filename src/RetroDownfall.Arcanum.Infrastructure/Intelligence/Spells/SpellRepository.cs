@@ -55,7 +55,13 @@ internal sealed partial class SpellRepository : ISpellRepository
     /// </summary>
     internal Action? AfterSpellDirectoryPublishedForTests { get; set; }
 
-    private readonly IOptionsMonitor<ArcanumSettings> _settingsMonitor;
+    /// <summary>
+    /// Deterministic test seam invoked once per mutating call, immediately before its first write: after the
+    /// staging directory exists for create, clone and import, and before the in-place replace for update and
+    /// for version create and update. A test cancels the caller here, while nothing has been published or
+    /// replaced yet.
+    /// </summary>
+    internal Action? BeforeFirstSpellWriteForTests { get; set; }
 
     public SpellRepository(
         ILogger<SpellRepository> logger,
@@ -68,8 +74,6 @@ internal sealed partial class SpellRepository : ISpellRepository
         _scopeFactory = scopeFactory;
 
         _mcpManager = mcpManager;
-
-        _settingsMonitor = settingsMonitor;
 
         _searchService = new SpellSearchService(settingsMonitor);
     }
@@ -224,6 +228,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             Directory.CreateDirectory(stagingDir);
 
+            BeforeFirstSpellWriteForTests?.Invoke();
+
             await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
 
             if (hasStructured)
@@ -314,9 +320,15 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string content = SpellFileParser.FormatUpdate(workspaceSpell, request);
 
+        bool specReplaced = false;
+
         try
         {
+            BeforeFirstSpellWriteForTests?.Invoke();
+
             await SpellAtomicFile.WriteAllTextAsync(workspaceSpell.FilePath, content, ct).ConfigureAwait(false);
+
+            specReplaced = true;
 
             if (SkillJsonIO.HasStructuredFields(request) || workspaceSpell.SkillMetadata is not null)
             {
@@ -336,6 +348,13 @@ internal sealed partial class SpellRepository : ISpellRepository
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to update spell {SpellName} at {SpellPath}", trimmedName, workspaceSpell.FilePath);
+
+            // The caller is being told the update did not happen, so a SPELL.md that already holds the new
+            // content is put back rather than left disagreeing with the sidecar the failed write was to update.
+            if (specReplaced)
+            {
+                await RestoreSpellFileAsync(workspaceSpell.FilePath, workspaceSpell.FullContent).ConfigureAwait(false);
+            }
 
             return Result.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
@@ -588,15 +607,38 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         var scripts = new List<SpellExportScriptDto>();
 
+        // The files a bundle leaves out are named, so a caller can tell a complete bundle from a partial one.
+        // The list is bounded like the bundle itself; a spell with a directory full of unusable files still
+        // answers with a short list, not an unbounded one.
+        var omittedScripts = new List<string>();
+
         string scriptsDir = Path.Combine(dir, "scripts");
 
         if (Directory.Exists(scriptsDir))
         {
             long totalScriptBytes = 0;
 
-            foreach (string path in Directory.EnumerateFiles(scriptsDir))
+            // Ordinal file-name order, the order the scanner lists a spell's scripts in, so which scripts a
+            // capped bundle keeps does not depend on the order the filesystem hands them back in.
+            string[] paths = Directory
+                .EnumerateFiles(scriptsDir)
+                .OrderBy(static path => Path.GetFileName(path), StringComparer.Ordinal)
+                .ToArray();
+
+            bool stopped = false;
+
+            foreach (string path in paths)
             {
                 ct.ThrowIfCancellationRequested();
+
+                string fileName = Path.GetFileName(path);
+
+                if (stopped)
+                {
+                    RecordOmittedScript(omittedScripts, fileName);
+
+                    continue;
+                }
 
                 if (scripts.Count >= MaxSpellScriptCount)
                 {
@@ -605,7 +647,11 @@ internal sealed partial class SpellRepository : ISpellRepository
                         name,
                         MaxSpellScriptCount);
 
-                    break;
+                    stopped = true;
+
+                    RecordOmittedScript(omittedScripts, fileName);
+
+                    continue;
                 }
 
                 if (!TryGetExportableFileLength(path, workspaceRoot, out long fileLength))
@@ -614,6 +660,8 @@ internal sealed partial class SpellRepository : ISpellRepository
                         "Skipping non-regular script {ScriptPath} for spell {SpellName} export.",
                         path,
                         name);
+
+                    RecordOmittedScript(omittedScripts, fileName);
 
                     continue;
                 }
@@ -627,6 +675,8 @@ internal sealed partial class SpellRepository : ISpellRepository
                         fileLength,
                         perFileCap);
 
+                    RecordOmittedScript(omittedScripts, fileName);
+
                     continue;
                 }
 
@@ -639,7 +689,11 @@ internal sealed partial class SpellRepository : ISpellRepository
                         fileLength,
                         aggregateScriptCap);
 
-                    break;
+                    stopped = true;
+
+                    RecordOmittedScript(omittedScripts, fileName);
+
+                    continue;
                 }
 
                 // Scripts are binary, so the bytes go out as read: the secure read returns raw bytes and
@@ -656,16 +710,26 @@ internal sealed partial class SpellRepository : ISpellRepository
                         name,
                         scriptRead.Status);
 
+                    RecordOmittedScript(omittedScripts, fileName);
+
                     continue;
                 }
 
-                scripts.Add(new SpellExportScriptDto(Path.GetFileName(path), Convert.ToBase64String(scriptRead.Bytes.Span)));
+                scripts.Add(new SpellExportScriptDto(fileName, Convert.ToBase64String(scriptRead.Bytes.Span)));
 
                 totalScriptBytes += scriptRead.Bytes.Length;
             }
         }
 
-        return new SpellExportDto(metadata, fullContent, scripts);
+        return new SpellExportDto(metadata, fullContent, scripts, omittedScripts);
+    }
+
+    private static void RecordOmittedScript(List<string> omittedScripts, string fileName)
+    {
+        if (omittedScripts.Count < MaxSpellScriptCount)
+        {
+            omittedScripts.Add(fileName);
+        }
     }
 
     public async Task<Result<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken ct)
@@ -857,6 +921,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             Directory.CreateDirectory(stagingDir);
 
+            BeforeFirstSpellWriteForTests?.Invoke();
+
             await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
 
             if (source.SkillMetadata is not null)
@@ -878,14 +944,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             AfterSpellDirectoryPublishedForTests?.Invoke();
 
-            SpellSummary? summary = await ReadPublishedSummaryAsync(workspaceRoot, trimmedNewName).ConfigureAwait(false);
-
-            if (summary is null)
-            {
-                return Result<SpellSummary>.Failure(new Error("Spell.ImportFailed", "Spell was cloned but could not be listed."));
-            }
-
-            return Result<SpellSummary>.Success(summary);
+            return Result<SpellSummary>.Success(
+                await ReadPublishedSummaryAsync(workspaceRoot, trimmedNewName, content).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -949,6 +1009,8 @@ internal sealed partial class SpellRepository : ISpellRepository
             }
 
             string content = SpellFileParser.FormatWithBody(workspaceSpell, request.Body);
+
+            BeforeFirstSpellWriteForTests?.Invoke();
 
             await SpellAtomicFile.WriteAllTextAsync(versionPath, content, ct).ConfigureAwait(false);
 
@@ -1014,6 +1076,8 @@ internal sealed partial class SpellRepository : ISpellRepository
             }
 
             string content = SpellFileParser.FormatWithBody(workspaceSpell, request.Body);
+
+            BeforeFirstSpellWriteForTests?.Invoke();
 
             await SpellAtomicFile.WriteAllTextAsync(versionPath, content, ct).ConfigureAwait(false);
 
@@ -1168,6 +1232,13 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string versionPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(label));
 
+        // What a failure part-way through has to undo: the prior-content backup this call created (one that
+        // already existed is the archived snapshot of that label and is never removed) and SPELL.md once it holds
+        // the activated version.
+        string? createdBackupPath = null;
+
+        bool specReplaced = false;
+
         try
         {
             if (!File.Exists(versionPath))
@@ -1178,24 +1249,32 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             // The version file is read first, through the scanner's hardened path, so a version that is a FIFO or
             // a link out of the workspace fails before the backup is written rather than leaving it half done.
+            long maxSpellFileBytes = GetMaxSpellFileSizeBytes();
+
             string? newActiveContent = null;
+
+            string refusal = "is not inside the workspace";
 
             if (WorkspacePathPolicy.RevalidatePathBeforeIo(Path.GetFullPath(workspaceRoot), versionPath))
             {
                 SecureUtf8FileReadResult versionRead = await SecureFileReader
-                    .ReadUtf8TextAsync(versionPath, (int)Math.Min(GetMaxSpellFileSizeBytes(), int.MaxValue - 1), ct)
+                    .ReadUtf8TextAsync(versionPath, (int)Math.Min(maxSpellFileBytes, int.MaxValue - 1), ct)
                     .ConfigureAwait(false);
 
                 if (versionRead.Status is SecureFileReadStatus.Success)
                 {
                     newActiveContent = versionRead.Text;
                 }
+                else
+                {
+                    refusal = DescribeVersionFileRefusal(versionRead.Status, maxSpellFileBytes);
+                }
             }
 
             if (newActiveContent is null)
             {
                 return Result<SpellVersionDto>.Failure(
-                    new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" is not a readable regular file for spell \"{trimmedName}\"."));
+                    new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" of spell \"{trimmedName}\" {refusal}."));
             }
 
             string? recordedActiveVersion = workspaceSpell.SkillMetadata?.ActiveVersion;
@@ -1216,10 +1295,16 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             if (!backupAliasesRequestedVersion)
             {
+                bool backupExisted = File.Exists(previousBackupPath);
+
                 await SpellAtomicFile.WriteAllTextAsync(previousBackupPath, workspaceSpell.FullContent, ct).ConfigureAwait(false);
+
+                createdBackupPath = backupExisted ? null : previousBackupPath;
             }
 
             await SpellAtomicFile.WriteAllTextAsync(workspaceSpell.FilePath, newActiveContent, ct).ConfigureAwait(false);
+
+            specReplaced = true;
 
             SkillMetadata updatedMetadata = SkillJsonIO.SetActiveVersion(workspaceSpell, label);
 
@@ -1235,15 +1320,79 @@ internal sealed partial class SpellRepository : ISpellRepository
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            TryDeleteCreatedBackup(createdBackupPath);
+
             throw;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to activate version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
 
+            // The caller is being told the activation did not happen: SPELL.md goes back to the working copy it
+            // held, and the backup this call wrote of it is dropped so it cannot block a later activation.
+            if (specReplaced)
+            {
+                await RestoreSpellFileAsync(workspaceSpell.FilePath, workspaceSpell.FullContent).ConfigureAwait(false);
+            }
+
+            TryDeleteCreatedBackup(createdBackupPath);
+
             return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
+
+    /// <summary>
+    /// Puts a spell file back to the content it held before an update or activation replaced it, after the
+    /// sidecar write that completes the change failed. This is compensating work for a replace that already
+    /// happened, so it does not run on the caller's token; if it cannot finish either, the spell is left holding
+    /// the new content and the log says so.
+    /// </summary>
+    private async Task RestoreSpellFileAsync(string spellFilePath, string originalContent)
+    {
+        try
+        {
+            await SpellAtomicFile.WriteAllTextAsync(spellFilePath, originalContent, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Could not restore {SpellPath} after a failed spell write; it is left holding the new content while its sidecar still describes the old.",
+                spellFilePath);
+        }
+    }
+
+    private void TryDeleteCreatedBackup(string? backupPath)
+    {
+        if (backupPath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(backupPath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not remove the backup {BackupPath} a failed version activation wrote.", backupPath);
+        }
+    }
+
+    /// <summary>
+    /// Says why a version file could not be read for activation, so an oversize or non-UTF-8 file is not
+    /// reported as though it were a link or a FIFO. The spell scanner applies the same limits, so a file these
+    /// refuse is one the catalog could not load back after it had been activated.
+    /// </summary>
+    private static string DescribeVersionFileRefusal(SecureFileReadStatus status, long maxSpellFileBytes) =>
+        status switch
+        {
+            SecureFileReadStatus.TooLarge => $"is larger than the {maxSpellFileBytes}-byte spell file limit",
+            SecureFileReadStatus.InvalidUtf8 => "is not valid UTF-8 text",
+            SecureFileReadStatus.NotFound => "does not exist",
+            SecureFileReadStatus.Rejected => "is not a regular file inside the spell directory (a symbolic link, a hard-linked file, a FIFO or a device is refused)",
+            _ => "could not be read",
+        };
 
     /// <summary>
     /// Compares two spell file paths for filesystem identity. Version labels permit
@@ -1393,6 +1542,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             Directory.CreateDirectory(stagingDir);
 
+            BeforeFirstSpellWriteForTests?.Invoke();
+
             await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
 
             if (hasStructured)
@@ -1444,14 +1595,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             AfterSpellDirectoryPublishedForTests?.Invoke();
 
-            SpellSummary? summary = await ReadPublishedSummaryAsync(workspaceRoot, trimmedName).ConfigureAwait(false);
-
-            if (summary is null)
-            {
-                return Result<SpellSummary>.Failure(new Error("Spell.ImportFailed", "Spell was created but could not be listed."));
-            }
-
-            return Result<SpellSummary>.Success(summary);
+            return Result<SpellSummary>.Success(
+                await ReadPublishedSummaryAsync(workspaceRoot, trimmedName, content).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -1473,10 +1618,11 @@ internal sealed partial class SpellRepository : ISpellRepository
     /// Reads the summary of a spell whose directory has just been moved into place. The spell is on disk by
     /// now, so this does not run on the caller's token: a caller that cancels at this point has still created
     /// the spell and is told so, rather than that the write failed. The read is bounded by a token of its own
-    /// instead, and a read-back that cannot finish answers <c>null</c> (created but not listed), never a
-    /// failure of the write.
+    /// instead. A read-back that cannot finish, or that does not list the spell, never turns the write into a
+    /// failure: the summary is built from the content that was written, which is what the catalog would have
+    /// listed, and the log says the read-back could not confirm it.
     /// </summary>
-    private async Task<SpellSummary?> ReadPublishedSummaryAsync(string workspaceRoot, string spellName)
+    private async Task<SpellSummary> ReadPublishedSummaryAsync(string workspaceRoot, string spellName, string writtenContent)
     {
         using CancellationTokenSource bounded = new(PublishedSummaryReadTimeout);
 
@@ -1484,14 +1630,44 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             SpellSummary[] list = await ListAsync(workspaceRoot, bounded.Token).ConfigureAwait(false);
 
-            return list.FirstOrDefault(summary => string.Equals(summary.Name, spellName, StringComparison.OrdinalIgnoreCase));
+            SpellSummary? listed = list.FirstOrDefault(summary => string.Equals(summary.Name, spellName, StringComparison.OrdinalIgnoreCase));
+
+            if (listed is not null)
+            {
+                return listed;
+            }
+
+            _logger.LogWarning(
+                "Spell {SpellName} was written to {Workspace} but the catalog did not list it afterwards; answering from the written content.",
+                spellName,
+                workspaceRoot);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Spell {SpellName} was written but its summary could not be read back from {Workspace}.", spellName, workspaceRoot);
-
-            return null;
+            _logger.LogWarning(
+                ex,
+                "Spell {SpellName} was written to {Workspace} but its summary could not be read back; answering from the written content.",
+                spellName,
+                workspaceRoot);
         }
+
+        return SummarizeWrittenContent(writtenContent, spellName);
+    }
+
+    /// <summary>
+    /// The summary the catalog lists for a spell, derived from the SPELL.md text that was written: the same
+    /// frontmatter fields the metadata scan reads, with the spell's own name as the directory fallback.
+    /// </summary>
+    private static SpellSummary SummarizeWrittenContent(string writtenContent, string spellName)
+    {
+        SpellParseResult parsed = SpellFileParser.Parse(writtenContent, spellName);
+
+        return new SpellSummary(
+            parsed.Name,
+            string.IsNullOrEmpty(parsed.Description) ? null : parsed.Description,
+            SpellSource.Workspace,
+            parsed.Tags,
+            DeclaredTools: parsed.Tools is { Length: > 0 } tools ? tools : null);
     }
 
     private static void TryDeleteStagingDirectory(string? stagingDir)

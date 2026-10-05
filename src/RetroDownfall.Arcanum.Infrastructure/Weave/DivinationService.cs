@@ -527,13 +527,20 @@ internal sealed class DivinationService(
     {
         similarity = 0f;
 
+        // SQL NULL arrives as DBNull and is not a blob, so it is unreadable here rather than an exception per
+        // row; a null reference would otherwise view as an empty vector and be counted as another width.
+        if (embeddingColumn is not byte[] blob)
+        {
+            return RowScore.Unreadable;
+        }
+
         ReadOnlySpan<float> candidate;
 
         try
         {
-            candidate = EmbeddingBlobCodec.AsVector((byte[]?)embeddingColumn);
+            candidate = EmbeddingBlobCodec.AsVector(blob);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or InvalidCastException)
+        catch (InvalidOperationException)
         {
             return RowScore.Unreadable;
         }
