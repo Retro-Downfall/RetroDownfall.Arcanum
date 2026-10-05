@@ -28,46 +28,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </summary>
 public static class GrimoireDatabaseBootstrapper
 {
-    public static Task EnsureInitializedAsync(
-        ISecretStore secretStore,
-        IGrimoireDbPassphraseSource passphraseSource,
-        IServiceScopeFactory scopeFactory,
-        CancellationToken cancellationToken) =>
-        EnsureInitializedAsync(
-            secretStore,
-            passphraseSource,
-            scopeFactory,
-            heldInstallationLock: null,
-            expectedInstallationId: null,
-            cancellationToken);
-
-    /// <summary>
-    /// The same bootstrap, with the caller's already-held installation lock threaded through so
-    /// Covenant authority can be prepared under it.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="ArcanumMaintenanceLock"/> is internal, so this cannot be an overload of the public
-    /// entry point. The lock is optional rather than required because the CLI legitimately runs
-    /// alongside a host that already owns it; a null lock installs the schema and skips only the
-    /// authority preparation that needs exclusive ownership.
-    /// </remarks>
-    internal static Task EnsureInitializedAsync(
-        ISecretStore secretStore,
-        IGrimoireDbPassphraseSource passphraseSource,
-        IServiceScopeFactory scopeFactory,
-        ArcanumMaintenanceLock? heldInstallationLock,
-        Guid? expectedInstallationId,
-        CancellationToken cancellationToken) =>
-        EnsureInitializedAsync(
-            secretStore,
-            passphraseSource,
-            scopeFactory,
-            ArcanumPaths.GrimoireDatabaseFile,
-            ArcanumPaths.GrimoireDirectory,
-            heldInstallationLock,
-            expectedInstallationId,
-            cancellationToken);
-
     /// <summary>
     /// Runs <c>PRAGMA wal_checkpoint(TRUNCATE)</c> on a fresh connection at graceful shutdown
     /// so the <c>-wal</c>/<c>-shm</c> sidecar files do not persist across restarts. Best-effort:
@@ -138,30 +98,19 @@ public static class GrimoireDatabaseBootstrapper
         }
     }
 
+    /// <summary>
+    /// Bootstraps the Grimoire while the caller holds the installation maintenance lock. The lock is required:
+    /// both production callers (the host's start-up and the CLI's exclusive operations) own it before they
+    /// bootstrap, because Covenant authority preparation and topology recovery need exclusive ownership of
+    /// the guarded root.
+    /// </summary>
     internal static Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
         IServiceScopeFactory scopeFactory,
         string dbPath,
         string grimoireDirectory,
-        CancellationToken cancellationToken) =>
-        EnsureInitializedAsync(
-            secretStore,
-            passphraseSource,
-            scopeFactory,
-            dbPath,
-            grimoireDirectory,
-            heldInstallationLock: null,
-            expectedInstallationId: null,
-            cancellationToken);
-
-    internal static Task EnsureInitializedAsync(
-        ISecretStore secretStore,
-        IGrimoireDbPassphraseSource passphraseSource,
-        IServiceScopeFactory scopeFactory,
-        string dbPath,
-        string grimoireDirectory,
-        ArcanumMaintenanceLock? heldInstallationLock,
+        ArcanumMaintenanceLock heldInstallationLock,
         Guid? expectedInstallationId,
         CancellationToken cancellationToken) =>
         EnsureInitializedAsync(
@@ -170,19 +119,21 @@ public static class GrimoireDatabaseBootstrapper
             scopeFactory,
             dbPath,
             grimoireDirectory,
-            heldInstallationLock,
+            heldInstallationLock
+                ?? throw new ArgumentNullException(nameof(heldInstallationLock)),
             expectedInstallationId,
             postRestoreTopology: null,
             restoreDisclosureWriterAfterAuthenticatedTransition: false,
             cancellationToken);
 
+    /// <inheritdoc cref="EnsureInitializedAsync(ISecretStore, IGrimoireDbPassphraseSource, IServiceScopeFactory, string, string, ArcanumMaintenanceLock, Guid?, CancellationToken)"/>
     internal static Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
         IServiceScopeFactory scopeFactory,
         string dbPath,
         string grimoireDirectory,
-        ArcanumMaintenanceLock? heldInstallationLock,
+        ArcanumMaintenanceLock heldInstallationLock,
         Guid? expectedInstallationId,
         Func<CancellationToken, Task<MasterApiKeyBootstrapResult?>>?
             postRestoreTopology,
@@ -193,12 +144,61 @@ public static class GrimoireDatabaseBootstrapper
             scopeFactory,
             dbPath,
             grimoireDirectory,
-            heldInstallationLock,
+            heldInstallationLock
+                ?? throw new ArgumentNullException(nameof(heldInstallationLock)),
             expectedInstallationId,
             postRestoreTopology,
             restoreDisclosureWriterAfterAuthenticatedTransition: false,
             cancellationToken);
 
+    /// <summary>
+    /// Test-only: bootstraps with no installation maintenance lock, which installs the schema and skips only
+    /// the topology recovery and authority preparation that need exclusive ownership. No production code may
+    /// call this, and none passes a null lock to <c>EnsureInitializedAsync</c> either;
+    /// <c>GrimoireBootstrapLockCallSiteTests</c> fails the build of any <c>src/</c> call site that does.
+    /// </summary>
+    internal static Task EnsureInitializedWithoutInstallationLockForTestsAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        string dbPath,
+        string grimoireDirectory,
+        CancellationToken cancellationToken) =>
+        EnsureInitializedWithoutInstallationLockForTestsAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            dbPath,
+            grimoireDirectory,
+            restoreDisclosureWriterAfterAuthenticatedTransition: false,
+            cancellationToken);
+
+    /// <inheritdoc cref="EnsureInitializedWithoutInstallationLockForTestsAsync(ISecretStore, IGrimoireDbPassphraseSource, IServiceScopeFactory, string, string, CancellationToken)"/>
+    internal static Task EnsureInitializedWithoutInstallationLockForTestsAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        string dbPath,
+        string grimoireDirectory,
+        bool restoreDisclosureWriterAfterAuthenticatedTransition,
+        CancellationToken cancellationToken) =>
+        EnsureInitializedAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            dbPath,
+            grimoireDirectory,
+            heldInstallationLock: null,
+            expectedInstallationId: null,
+            postRestoreTopology: null,
+            restoreDisclosureWriterAfterAuthenticatedTransition,
+            cancellationToken);
+
+    /// <summary>
+    /// The one implementation behind every entry point above. <paramref name="heldInstallationLock"/> is
+    /// nullable only so the test-only seam can exercise the schema and key paths without a lock; every
+    /// production caller passes the lock it holds.
+    /// </summary>
     internal static async Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,

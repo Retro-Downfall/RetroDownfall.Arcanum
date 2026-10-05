@@ -132,7 +132,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         // which must surface as a recoverable MissingMasterApiKeyException (not Environment.FailFast).
 
         MissingMasterApiKeyException ex = await Assert.ThrowsAsync<MissingMasterApiKeyException>(() =>
-            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                 _secretStore,
                 _passphraseSource,
                 _scopeFactory,
@@ -148,7 +148,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -184,7 +184,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -220,7 +220,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         await CreateLegacyDatabaseAsync(legacyPassphrase);
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -260,7 +260,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         await CreateLegacyDatabaseAsync(legacyPassphrase);
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -299,7 +299,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         GrimoireDatabaseUnavailableException error =
             await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
-                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                     _secretStore,
                     _passphraseSource,
                     _scopeFactory,
@@ -336,7 +336,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         GrimoireDatabaseUnavailableException error =
             await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
-                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                     _secretStore,
                     _passphraseSource,
                     _scopeFactory,
@@ -373,7 +373,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         GrimoireDatabaseUnavailableException error =
             await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
-                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                     _secretStore,
                     _passphraseSource,
                     _scopeFactory,
@@ -407,7 +407,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Directory.CreateDirectory(GrimoireKdfSidecarFile.GetPendingSidecarPath(_dbPath));
 
         _ = await FilesystemRefusal.ThrowsAsync(() =>
-            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                 _secretStore,
                 _passphraseSource,
                 _scopeFactory,
@@ -449,7 +449,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         await CreateLegacyDatabaseAsync(
             GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecretLegacy(dedicatedSecret));
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -491,7 +491,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         // and only the pending sidecar exists.
         GrimoireKdfSidecarFile.WritePending(_dbPath, sidecar);
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -526,7 +526,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         GrimoireKdfSidecarFile.WritePending(_dbPath, stale);
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -561,7 +561,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -577,7 +577,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         GrimoireDatabaseUnavailableException error =
             await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
-                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                     withoutGrimoireKey,
                     new GrimoireDbPassphraseSource(),
                     _scopeFactory,
@@ -621,7 +621,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -636,7 +636,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         CancellingPassphraseSource passphrases = new(cancellation);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                 _secretStore,
                 passphrases,
                 _scopeFactory,
@@ -652,7 +652,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -664,7 +664,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         GrimoireDatabaseUnavailableException refusal =
             await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
-                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                     _secretStore,
                     new GrimoireDbPassphraseSource(),
                     _scopeFactory,
@@ -762,7 +762,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -835,7 +835,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -881,7 +881,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         LatchRecordingReadiness recorder = new(keyring);
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             CreateScopeFactory(_credentialStore, erasureKeys: keyring, readiness: recorder),
@@ -911,7 +911,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -2597,7 +2597,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         GrimoireDbPassphraseSource setupPassphrase = new();
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             setupPassphrase,
             setupScopes,
@@ -3224,15 +3224,12 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             provider.GetRequiredService<ICovenantDisclosureWriterLifecycle>());
 
         await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
-            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                 _secretStore,
                 _passphraseSource,
                 provider.GetRequiredService<IServiceScopeFactory>(),
                 _dbPath,
                 _tempDir,
-                heldInstallationLock: null,
-                expectedInstallationId: null,
-                postRestoreTopology: null,
                 restoreDisclosureWriterAfterAuthenticatedTransition: true,
                 CancellationToken.None));
 
@@ -3244,7 +3241,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     {
         _secretStore.SetApiKey("test-api-key");
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             _scopeFactory,
@@ -3321,7 +3318,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             _credentialStore,
             covenantEnabled: false);
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             _passphraseSource,
             scopes,
