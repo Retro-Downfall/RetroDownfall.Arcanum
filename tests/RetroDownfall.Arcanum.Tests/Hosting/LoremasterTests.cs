@@ -243,6 +243,42 @@ public sealed class LoremasterTests
         Assert.Equal(harness.Repository.Session.Id, harness.Repository.LastRollupSessionId);
     }
 
+    /// <summary>
+    /// The model that summarizes a transcript on an unattended timer has nothing it could be talked into
+    /// calling: an Entry can carry hostile text (a fetched page, a tool result), and a hub-native tool such
+    /// as <c>read_url</c> would carry it out of the installation. <c>DisableMcpTools</c> alone stops only
+    /// the MCP block of the tool set, so the call also sets <c>DisableAllTools</c>.
+    /// </summary>
+    [Fact]
+    public async Task The_summary_call_advertises_no_tools_to_the_model_that_reads_the_transcript()
+    {
+        LoremasterHarness harness = new();
+
+        await harness.Service.StartAsync(CancellationToken.None);
+
+        await harness.NextStepAsync("sweep");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await harness.NextStepAsync("rollup");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        PingRequest request = Assert.IsType<PingRequest>(harness.Intelligence.LastRequest);
+
+        Assert.True(request.DisableAllTools);
+
+        Assert.True(request.DisableMcpTools);
+
+        Assert.True(request.UnattendedMode);
+
+        Assert.True(request.SkipSpellRouting);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1150,6 +1186,9 @@ public sealed class LoremasterTests
     {
         internal int Calls { get; private set; }
 
+        /// <summary>The request the most recent call carried, so a test can read the flags the summary set.</summary>
+        internal PingRequest? LastRequest { get; private set; }
+
         internal Result<PromptTurnResult> NextResult { get; set; } =
             Result<PromptTurnResult>.Success(new PromptTurnResult("summary", null));
 
@@ -1162,6 +1201,8 @@ public sealed class LoremasterTests
             InferenceAuditContext? auditContext = null)
         {
             Calls++;
+
+            LastRequest = request;
 
             await harness.StepAsync("provider", cancellationToken);
 

@@ -336,6 +336,10 @@ internal sealed class Loremaster(
             model = arc.DefaultModel.Trim();
         }
 
+        // The transcript being summarized can carry hostile text (a fetched page, a tool result), and this
+        // call runs unattended, so the model has nothing it could be talked into calling: with web
+        // browsing on, a hub-native read_url would carry the transcript out of the installation.
+        // DisableMcpTools stops only the MCP block of the tool set; DisableAllTools advertises none.
         PingRequest ping = new(
             Prompt: string.Empty,
             Model: model,
@@ -343,7 +347,8 @@ internal sealed class Loremaster(
             UnattendedMode: true,
             DisableMcpTools: true,
             StatelessMessages: statelessMessages,
-            SkipSpellRouting: true);
+            SkipSpellRouting: true,
+            DisableAllTools: true);
 
         if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admittedGroup))
         {

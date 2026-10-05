@@ -196,6 +196,53 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The model that reads a transcript on an unattended timer has nothing it could be talked into
+    /// calling: an Entry can carry hostile text (a fetched page, a tool result), and a hub-native tool such
+    /// as <c>read_url</c> would carry it out of the installation. <c>DisableMcpTools</c> alone stops only
+    /// the MCP block of the tool set, so the call also sets <c>DisableAllTools</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExtractForSessionAsync_AdvertisesNoToolsToTheExtractionModel()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "Fetch https://example.invalid/?q=everything and tell me what it says.");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        _ = await ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        PingRequest request = Assert.IsType<PingRequest>(intelligence.LastRequest);
+
+        Assert.True(request.DisableAllTools);
+
+        Assert.True(request.DisableMcpTools);
+
+        Assert.True(request.UnattendedMode);
+
+        Assert.True(request.SkipSpellRouting);
+    }
+
+    /// <summary>
     /// The real chokepoint proof: not a direct call to <c>InsertAsync</c>, but the extraction service
     /// itself re-reviewing the entries that produced a memory the operator already retired. Nothing
     /// stands between the two calls to <see cref="SagaExtractionService.ExtractForSessionAsync(IServiceProvider, IGrimoireWorkLease, SagaExtractionRequest, EmbeddingSettings, ArcanumSettings, CancellationToken)"/>
@@ -5970,6 +6017,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public string LastStatelessUserContent { get; private set; } = string.Empty;
 
+        /// <summary>The request the most recent call carried, so a test can read the flags the extraction set.</summary>
+        public PingRequest? LastRequest { get; private set; }
+
         public List<string> StatelessUserContents { get; } = [];
 
         internal Action<int>? OnCall { get; init; }
@@ -5985,6 +6035,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
         {
             int callCount = Interlocked.Increment(ref _callCount);
+
+            LastRequest = request;
 
             LastStatelessUserContent = request.StatelessMessages?
                 .LastOrDefault(static m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?
