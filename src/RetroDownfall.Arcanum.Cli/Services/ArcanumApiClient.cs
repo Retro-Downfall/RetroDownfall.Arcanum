@@ -1014,13 +1014,34 @@ public sealed partial class ArcanumApiClient(
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<Result<bool>> TrustMcpWorkspaceAsync(
+    /// <summary>
+    /// Asks the host what trusting the workspace's <c>mcp.json</c> would allow, from the host's own copy of
+    /// the file, so the operator reads the bytes the host would bind trust to.
+    /// </summary>
+    public async Task<Result<McpWorkspaceTrustPreview>> PreviewMcpWorkspaceTrustAsync(
         OptionalWorkspaceRequest request,
         CancellationToken cancellationToken)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.OptionalWorkspaceRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/mcp/trust-workspace/preview",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseMcpWorkspaceTrustPreview,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<bool>> TrustMcpWorkspaceAsync(
+        McpTrustWorkspaceRequest request,
+        CancellationToken cancellationToken)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.McpTrustWorkspaceRequest);
 
         return await SendRequestAsync(
             HttpMethod.Post,

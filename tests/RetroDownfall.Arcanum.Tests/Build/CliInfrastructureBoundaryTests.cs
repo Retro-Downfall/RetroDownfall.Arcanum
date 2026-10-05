@@ -22,19 +22,16 @@ public sealed class CliInfrastructureBoundaryTests
 {
     /// <summary>
     /// The command-handler sources under <c>Commands</c> that name Infrastructure, each of them a verb
-    /// (or the plumbing of a verb) that works on the local installation without a running host, or the
-    /// local confirmation preview a server-backed verb shows before it calls the host.
+    /// (or the plumbing of a verb) that works on the local installation without a running host. The
+    /// server-backed <c>mcp trust</c> is not among them: its confirmation preview is the host's own reading
+    /// of its own <c>mcp.json</c> (<c>POST /api/mcp/trust-workspace/preview</c>), so the operator approves
+    /// the bytes the host will trust even when the host is on another machine, and the CLI reads no file.
     /// </summary>
     private static readonly string[] LocalOnlyHandlers =
     [
         "BackupCommands.cs",
         "CompletionCommands.cs",
         "Configuration/ConfigCommands.cs",
-
-        // The confirmation preview of the server-backed `mcp trust`: it reads the workspace's mcp.json
-        // on this machine through the host's own secure, size-capped reader, so the operator approves
-        // the bytes the host will trust, before anything reaches the host.
-        "Configuration/McpTrustPreview.cs",
         "Configuration/PresetCommands.cs",
         "DataEncryptionCommands.cs",
         "DoctorCommand.cs",

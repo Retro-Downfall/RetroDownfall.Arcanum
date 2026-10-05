@@ -367,6 +367,7 @@ public sealed class PromptTestEndpointTests : IDisposable
 
         public Task<Result> TrustWorkspaceAsync(
             string workingDirectory,
+            string? expectedConfigDigest = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
     }

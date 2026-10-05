@@ -506,7 +506,7 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
-        public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+        public Task<Result> TrustWorkspaceAsync(string workingDirectory, string? expectedConfigDigest = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
 
     }

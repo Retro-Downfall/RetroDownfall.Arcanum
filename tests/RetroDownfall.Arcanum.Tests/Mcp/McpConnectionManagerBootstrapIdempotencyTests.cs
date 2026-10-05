@@ -2699,7 +2699,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new TrustedMcpWorkspaceSnapshot(null, IsApproved: true));
 
-        public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+        public Task TrustAsync(string workspaceRootPath, string? expectedSourceDigest = null, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
 

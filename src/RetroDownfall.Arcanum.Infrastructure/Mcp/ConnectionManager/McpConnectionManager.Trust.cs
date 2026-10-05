@@ -16,53 +16,55 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 public sealed partial class McpConnectionManager
 {
-
     /// <inheritdoc />
-    public async Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default)
+    public async Task<Result> TrustWorkspaceAsync(
+        string workingDirectory,
+        string? expectedConfigDigest = null,
+        CancellationToken cancellationToken = default)
     {
-
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (string.IsNullOrWhiteSpace(workingDirectory))
         {
-
             return new Error(ErrorCodes.Mcp.MissingWorkspace, "workingDirectory is required to trust a workspace-local mcp.json.");
-
         }
 
         string normalized;
 
         try
         {
-
             normalized = TrustedMcpWorkspaceStore.NormalizeWorkspaceRoot(workingDirectory);
-
         }
         catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
         {
-
             return new Error("Mcp.InvalidWorkspace", "workingDirectory is not a valid path.");
-
         }
 
         string mcpPath = Path.Combine(normalized, "mcp.json");
 
         if (!File.Exists(mcpPath))
         {
-
             return new Error("Mcp.MissingConfig", "Workspace mcp.json was not found.");
-
         }
 
         try
         {
-
-            await trustedMcpWorkspaces.TrustAsync(normalized, cancellationToken).ConfigureAwait(false);
-
+            await trustedMcpWorkspaces.TrustAsync(normalized, expectedConfigDigest, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (McpWorkspaceConfigChangedException)
+        {
+            logger.LogWarning(
+                "Workspace MCP trust refused at {Workspace}: mcp.json no longer matches the previewed digest.",
+                normalized);
+
+            return new Error(
+                "Mcp.ConfigChanged",
+                "The workspace mcp.json changed after it was previewed, so nothing was trusted. "
+                + "Preview it again and approve what you are shown.");
         }
         catch (FileNotFoundException)
         {
@@ -76,19 +78,16 @@ public sealed partial class McpConnectionManager
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(ex, "Failed to trust workspace MCP config at {Workspace}.", normalized);
 
             return new Error(
                 "Mcp.TrustFailed",
                 "Could not record workspace MCP approval. Verify storage permissions and retry.");
-
         }
 
         logger.LogInformation("Workspace MCP config trusted at {Workspace}.", normalized);
 
         return Result.Success();
-
     }
 
     private async Task<bool> IsWorkspaceServerVisibleAsync(
