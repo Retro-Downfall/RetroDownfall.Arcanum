@@ -39,10 +39,6 @@ internal static class SessionEndpoints
 
     private static readonly byte[] SseLiveSentinel = "data: {\"type\":\"live\"}\n\n"u8.ToArray();
 
-    private static readonly byte[] SseDataPrefix = "data: "u8.ToArray();
-
-    private static readonly byte[] SseLineBreak = "\n\n"u8.ToArray();
-
     private const long AttachmentMultipartEnvelopeAllowanceBytes = 64L * 1024L;
 
     public static RouteGroupBuilder MapSessionEndpoints(this RouteGroupBuilder apiGroup)
@@ -1486,6 +1482,9 @@ internal static class SessionEndpoints
                 // reported as a Warning when it starts and again, with the count, once the client reads on.
                 LiveEventBuffer<Entry> liveBuffer = new(channelCapacity);
 
+                // One buffer and one JSON writer serve every frame of this connection.
+                SessionEntrySseStreamWriter entryWriter = new(httpContext);
+
                 ILogger logger = loggerFactory.CreateLogger(typeof(SessionEndpoints));
 
                 GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
@@ -1510,7 +1509,7 @@ internal static class SessionEndpoints
                             dropped);
                     }
 
-                    return WriteEntrySseAsync(httpContext, liveEntry, ct);
+                    return entryWriter.WriteEntryAsync(liveEntry, ct);
                 }
 
                 // The pump owns a SessionEventHub subscription that only its own cancellation
@@ -1543,7 +1542,7 @@ internal static class SessionEndpoints
 
                             replayIds.Add(entry.Id);
 
-                            await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
+                            await entryWriter.WriteEntryAsync(entry, httpContext.RequestAborted).ConfigureAwait(false);
                         }
                     }
                     else
@@ -1561,7 +1560,7 @@ internal static class SessionEndpoints
                                 break;
                             }
 
-                            await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
+                            await entryWriter.WriteEntryAsync(entry, httpContext.RequestAborted).ConfigureAwait(false);
                         }
                     }
 
@@ -2428,33 +2427,5 @@ internal static class SessionEndpoints
         Session? session = await repo.GetByIdAsync(id, ct).ConfigureAwait(false);
 
         return session?.CloneHeader();
-    }
-
-    private static async Task WriteEntrySseAsync(HttpContext httpContext, Entry entry, CancellationToken cancellationToken)
-    {
-        EntryDto dto = SessionMapping.ToEntryDto(entry);
-
-        ArrayBufferWriter<byte> buffer = new(SseDataPrefix.Length + 512 + SseLineBreak.Length);
-
-        buffer.Write(SseDataPrefix);
-
-        Utf8JsonWriter jsonWriter = new(buffer);
-
-        try
-        {
-            JsonSerializer.Serialize(jsonWriter, dto, ArcanumJsonContext.Default.EntryDto);
-
-            jsonWriter.Flush();
-
-            buffer.Write(SseLineBreak);
-
-            await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
-
-            await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            jsonWriter.Dispose();
-        }
     }
 }
