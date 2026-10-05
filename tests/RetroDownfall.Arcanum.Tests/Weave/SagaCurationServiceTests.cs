@@ -21,11 +21,9 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 /// <summary>RAG Phase 4 — <see cref="SagaCurationService"/>: embedding-before-transaction, outcome-to-error-code mapping, and eligibility composition.</summary>
 public sealed class SagaCurationServiceTests
 {
-
     [SkippableFact]
     public async Task Correction_is_refused_before_anything_is_written_when_the_substrate_cannot_embed()
     {
-
         // Refusing is the point. A correction that cannot re-embed would leave the row saying one thing and
         // the vector saying another, so retrieval would keep surfacing the sentence the operator rejected.
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
@@ -34,7 +32,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -50,13 +48,11 @@ public sealed class SagaCurationServiceTests
             "the operator prefers tabs",
             (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
                 .ConfigureAwait(false))!.Memory.Content);
-
     }
 
     [SkippableFact]
     public async Task A_retired_memory_reports_retired_rather_than_a_missing_embedding()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
@@ -67,19 +63,17 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaMemoryDetail> result = await service
             .ShowAsync("m-1", CancellationToken.None).ConfigureAwait(false);
 
         Assert.Equal(SagaRetrievalEligibility.Retired, result.Value.Eligibility);
-
     }
 
     [SkippableFact]
     public async Task A_memory_whose_ownership_never_resolved_reports_that_rather_than_eligible()
     {
-
         // Retrievable in no scope at all is a different answer from retired and a different answer from
         // broken, and the operator has to be able to tell the three apart. That is the answer only while
         // Campaign scoping is on; with it off a turn ranks this memory like any other.
@@ -92,26 +86,24 @@ public sealed class SagaCurationServiceTests
             orphan, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
         SagaCurationService service = new(
-            harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness, campaignScopedMemory: true));
+            harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness, campaignScopedMemory: true), harness.Options);
 
         Result<SagaMemoryDetail> result = await service
             .ShowAsync("m-1", CancellationToken.None).ConfigureAwait(false);
 
         Assert.Equal(SagaRetrievalEligibility.OwnershipUnresolved, result.Value.Eligibility);
-
     }
 
     [SkippableFact]
     public async Task A_memory_with_no_claim_is_shown_rather_than_refused()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: false).ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaMemoryDetail> result = await service
             .ShowAsync("m-1", CancellationToken.None).ConfigureAwait(false);
@@ -121,16 +113,14 @@ public sealed class SagaCurationServiceTests
         Assert.Null(result.Value.Claim);
 
         Assert.Empty(result.Value.History);
-
     }
 
     [SkippableFact]
     public async Task Showing_an_unknown_identity_fails_with_not_found()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaMemoryDetail> result = await service
             .ShowAsync("m-absent", CancellationToken.None).ConfigureAwait(false);
@@ -138,20 +128,18 @@ public sealed class SagaCurationServiceTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Saga.NotFound, result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task Correction_with_malformed_hex_is_refused_as_validation_rather_than_a_saga_code()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1", "not-a-valid-hex-string", "the operator prefers spaces", CancellationToken.None)
@@ -167,20 +155,18 @@ public sealed class SagaCurationServiceTests
             "the operator prefers tabs",
             (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
                 .ConfigureAwait(false))!.Memory.Content);
-
     }
 
     [SkippableFact]
     public async Task Correction_refuses_content_the_caller_did_not_read()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -191,13 +177,11 @@ public sealed class SagaCurationServiceTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Saga.StaleContent, result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task Correcting_a_retired_memory_is_refused_because_it_is_reinstated_before_it_is_corrected()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
@@ -208,7 +192,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -229,7 +213,6 @@ public sealed class SagaCurationServiceTests
             "the operator prefers tabs",
             (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
                 .ConfigureAwait(false))!.Memory.Content);
-
     }
 
     /// <summary>
@@ -242,7 +225,6 @@ public sealed class SagaCurationServiceTests
     [SkippableFact]
     public async Task Correcting_to_the_stored_text_succeeds_and_writes_nothing()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
@@ -262,7 +244,7 @@ public sealed class SagaCurationServiceTests
         // FakeWeaveService.Available always hands back an all-zero vector, distinct from harness.Embedding()'s
         // seeded random one above -- so a store write that used it would move the embedding bytes and this
         // test would catch it, even though the service still pays for the (wasted) embed call to get here.
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -303,7 +285,6 @@ public sealed class SagaCurationServiceTests
             revisionsBefore,
             (await harness.Annals.GetVersionsAsync(claimAfter.ClaimId, CancellationToken.None)
                 .ConfigureAwait(false)).Count);
-
     }
 
     /// <summary>
@@ -318,7 +299,6 @@ public sealed class SagaCurationServiceTests
     [SkippableFact]
     public async Task Correcting_to_the_stored_text_is_still_refused_when_the_substrate_cannot_embed()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true).ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
@@ -333,7 +313,7 @@ public sealed class SagaCurationServiceTests
         int revisionsBefore = (await harness.Annals
             .GetVersionsAsync(claimBefore.ClaimId, CancellationToken.None).ConfigureAwait(false)).Count;
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -360,13 +340,11 @@ public sealed class SagaCurationServiceTests
             revisionsBefore,
             (await harness.Annals.GetVersionsAsync(claimAfter.ClaimId, CancellationToken.None)
                 .ConfigureAwait(false)).Count);
-
     }
 
     [SkippableFact]
     public async Task Correction_returns_the_corrected_content_in_its_projection()
     {
-
         // ShowAsync's composition, reused: the caller sees the state its own call produced rather than
         // a stale read of what the row said before this call.
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
@@ -375,7 +353,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -388,20 +366,18 @@ public sealed class SagaCurationServiceTests
         Assert.Equal(SagaCurationOutcomeKind.Applied, result.Value.Outcome);
 
         Assert.Equal("the operator prefers spaces", result.Value.Detail.Memory.Content);
-
     }
 
     [SkippableFact]
     public async Task Reinstating_a_live_memory_reports_that_it_is_not_retired_rather_than_refusing()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
@@ -413,13 +389,11 @@ public sealed class SagaCurationServiceTests
         Assert.Equal(SagaCurationOutcomeKind.NotRetired, result.Value.Outcome);
 
         Assert.Null(result.Value.Detail.Lifecycle.RetiredAtUtc);
-
     }
 
     [SkippableFact]
     public async Task Reinstatement_is_refused_before_anything_is_written_when_the_substrate_cannot_embed()
     {
-
         // The mirror of the correction case: reinstating re-embeds the memory's surviving text, and a
         // reinstated memory with no vector would be retrievable-in-name-only.
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
@@ -432,7 +406,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
@@ -445,13 +419,11 @@ public sealed class SagaCurationServiceTests
 
         Assert.NotNull((await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
             .ConfigureAwait(false))!.Lifecycle.RetiredAtUtc);
-
     }
 
     [SkippableFact]
     public async Task Correction_is_refused_when_the_substrate_is_available_but_embedding_fails()
     {
-
         // Available and failing are distinct: IsAvailable being true only means EmbedOrRefuseAsync
         // reaches the provider call, not that the call succeeds. A service that dereferenced a failed
         // embed result unconditionally would only be caught by exercising this branch specifically.
@@ -461,7 +433,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.CorrectAsync(
             "m-1",
@@ -477,13 +449,11 @@ public sealed class SagaCurationServiceTests
             "the operator prefers tabs",
             (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
                 .ConfigureAwait(false))!.Memory.Content);
-
     }
 
     [SkippableFact]
     public async Task Reinstatement_is_refused_when_the_substrate_is_available_but_embedding_fails()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
@@ -494,7 +464,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.AvailableButEmbedFails, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.ReinstateAsync(
             "m-1",
@@ -507,13 +477,11 @@ public sealed class SagaCurationServiceTests
 
         Assert.NotNull((await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
             .ConfigureAwait(false))!.Lifecycle.RetiredAtUtc);
-
     }
 
     [SkippableFact]
     public async Task Retiring_when_the_embedding_substrate_is_unavailable_still_succeeds()
     {
-
         // Retiring never embeds. A courtesy IsAvailable check here would leave an operator unable to
         // retire a bad memory precisely when retrieval is already degraded.
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
@@ -522,7 +490,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service.RetireAsync(
             "m-1",
@@ -534,7 +502,99 @@ public sealed class SagaCurationServiceTests
         Assert.Equal(SagaCurationOutcomeKind.Applied, result.Value.Outcome);
 
         Assert.Equal(SagaRetrievalEligibility.Retired, result.Value.Detail.Eligibility);
+    }
 
+    /// <summary>
+    /// A provider that answers a vector of the wrong width must be refused as an unavailable substrate,
+    /// the same answer a failed embed gets, rather than reaching the store, whose dimension guard throws.
+    /// </summary>
+    [SkippableFact]
+    public async Task CorrectAsync_with_wrong_width_embedding_returns_failure_not_exception()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        SagaCurationService service = new(
+            harness.Store, FakeWeaveService.WrongWidth, harness.Annals, Scoping(harness), harness.Options);
+
+        Result<SagaCurationResult> result = await service.CorrectAsync(
+            "m-1",
+            Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
+            "the operator prefers spaces",
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Saga.EmbeddingUnavailable, result.Error.Code);
+
+        Assert.Equal(
+            "the operator prefers tabs",
+            (await harness.Store.ReadCurationRowAsync("m-1", CancellationToken.None)
+                .ConfigureAwait(false))!.Memory.Content);
+    }
+
+    [SkippableFact]
+    public async Task ReinstateAsync_with_wrong_width_embedding_returns_failure_not_exception()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await harness.Store.RetireAsync(
+            "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
+            DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+
+        SagaCurationService service = new(
+            harness.Store, FakeWeaveService.WrongWidth, harness.Annals, Scoping(harness), harness.Options);
+
+        Result<SagaCurationResult> result = await service.ReinstateAsync(
+            "m-1",
+            Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Saga.EmbeddingUnavailable, result.Error.Code);
+    }
+
+    /// <summary>
+    /// The retirement is committed by the time the request token is cancelled, so the answer is the
+    /// outcome the store reported, composed with the projection the commit produced, and not an
+    /// exception that tells the caller a change which is already durable did not happen.
+    /// </summary>
+    [SkippableFact]
+    public async Task RetireAsync_cancelled_after_commit_still_returns_the_outcome()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
+
+        await harness.Store.InsertAsync(
+            "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
+            null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
+
+        using CancellationTokenSource requestAborted = new();
+
+        CancelAfterCommitStore store = new(harness.Store, requestAborted);
+
+        SagaCurationService service = new(
+            store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
+
+        Result<SagaCurationResult> result = await service.RetireAsync(
+            "m-1",
+            Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")),
+            requestAborted.Token).ConfigureAwait(false);
+
+        Assert.True(requestAborted.IsCancellationRequested);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(SagaCurationOutcomeKind.Applied, result.Value.Outcome);
+
+        Assert.Equal(SagaRetrievalEligibility.Retired, result.Value.Detail.Eligibility);
     }
 
     /// <summary>
@@ -547,7 +607,6 @@ public sealed class SagaCurationServiceTests
     [SkippableFact]
     public async Task The_same_already_retired_outcome_is_a_success_for_retire_and_a_refusal_for_correct()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
 
         await harness.Store.InsertAsync(
@@ -558,7 +617,7 @@ public sealed class SagaCurationServiceTests
             "m-1", AnnalContentDigest.ForSagaMemory("the operator prefers tabs"),
             DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Available, harness.Annals, Scoping(harness), harness.Options);
 
         string hash = Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs"));
 
@@ -575,13 +634,11 @@ public sealed class SagaCurationServiceTests
         Assert.True(corrected.IsFailure);
 
         Assert.Equal(ErrorCodes.Saga.AlreadyRetired, corrected.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task Pinning_when_the_embedding_substrate_is_unavailable_still_succeeds()
     {
-
         // Pinning neither embeds nor takes a content hash, and must not be caught by the same
         // availability gate that guards correct/reinstate.
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync().ConfigureAwait(false);
@@ -590,7 +647,7 @@ public sealed class SagaCurationServiceTests
             "m-1", "the operator prefers tabs", DateTimeOffset.UtcNow,
             null, null, null, harness.Embedding(), CancellationToken.None).ConfigureAwait(false);
 
-        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness));
+        SagaCurationService service = new(harness.Store, FakeWeaveService.Unavailable, harness.Annals, Scoping(harness), harness.Options);
 
         Result<SagaCurationResult> result = await service
             .SetPinAsync("m-1", true, CancellationToken.None).ConfigureAwait(false);
@@ -600,7 +657,6 @@ public sealed class SagaCurationServiceTests
         Assert.Equal(SagaCurationOutcomeKind.Applied, result.Value.Outcome);
 
         Assert.NotNull(result.Value.Detail.Lifecycle.PinnedAtUtc);
-
     }
 
     /// <summary>
@@ -634,11 +690,9 @@ public sealed class SagaCurationServiceTests
     public void ClassifyEligibility_orders_retired_then_ownership_then_embedding_then_eligible(
         SagaMemoryScopeKind scopeKind, bool retired, bool hasEmbedding, SagaRetrievalEligibility expected)
     {
-
         SagaMemoryCurationRow row = BuildRow(scopeKind, retired, hasEmbedding);
 
         Assert.Equal(expected, SagaRetrievalEligibilityClassifier.Classify(row, campaignScopingEnforced: true));
-
     }
 
     /// <summary>
@@ -655,11 +709,9 @@ public sealed class SagaCurationServiceTests
     public void Classify_reports_unresolved_ownership_only_while_campaign_scoping_is_enforced(
         SagaMemoryScopeKind scopeKind, bool retired, bool hasEmbedding, SagaRetrievalEligibility expected)
     {
-
         SagaMemoryCurationRow row = BuildRow(scopeKind, retired, hasEmbedding);
 
         Assert.Equal(expected, SagaRetrievalEligibilityClassifier.Classify(row, campaignScopingEnforced: false));
-
     }
 
     /// <summary>
@@ -671,14 +723,12 @@ public sealed class SagaCurationServiceTests
     [Fact]
     public void Saga_eligibility_is_written_as_its_name_and_a_number_is_refused()
     {
-
         Assert.Equal(
             "\"Retired\"",
             JsonSerializer.Serialize(SagaRetrievalEligibility.Retired, ArcanumJsonContext.Default.SagaRetrievalEligibility));
 
         Assert.Throws<JsonException>(
             () => JsonSerializer.Deserialize("2", ArcanumJsonContext.Default.SagaRetrievalEligibility));
-
     }
 
     /// <summary>
@@ -693,7 +743,6 @@ public sealed class SagaCurationServiceTests
     [Fact]
     public void Only_the_core_classifier_decides_saga_eligibility()
     {
-
         string root = NativeSqlCipherTestPaths.RepositoryRoot();
 
         string[] files =
@@ -715,7 +764,6 @@ public sealed class SagaCurationServiceTests
         ];
 
         Assert.Equal(["src/RetroDownfall.Arcanum.Core/Weave/SagaCurationContracts.cs"], files);
-
     }
 
     /// <summary>
@@ -730,7 +778,6 @@ public sealed class SagaCurationServiceTests
 
     private static SagaMemoryCurationRow BuildRow(SagaMemoryScopeKind scopeKind, bool retired, bool hasEmbedding)
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         SagaMemoryDto memory = new(
@@ -740,13 +787,86 @@ public sealed class SagaCurationServiceTests
         SagaMemoryLifecycle lifecycle = new(retired ? now : null, PinnedAtUtc: null);
 
         return new SagaMemoryCurationRow(memory, lifecycle, hasEmbedding);
+    }
 
+    /// <summary>
+    /// A store that cancels the request the moment a retirement has committed and, like any real store,
+    /// refuses to start a read under a token that is already cancelled. Only the two calls the retire
+    /// path makes are implemented.
+    /// </summary>
+    private sealed class CancelAfterCommitStore(ISagaMemoryStore inner, CancellationTokenSource requestAborted) : ISagaMemoryStore
+    {
+        public async Task<SagaCurationOutcome> RetireAsync(
+            string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken)
+        {
+            SagaCurationOutcome outcome = await inner
+                .RetireAsync(id, expectedContentDigest, retiredAt, cancellationToken).ConfigureAwait(false);
+
+            await requestAborted.CancelAsync().ConfigureAwait(false);
+
+            return outcome;
+        }
+
+        public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return inner.ReadCurationRowAsync(id, cancellationToken);
+        }
+
+        public Task<SagaMemoryWriteOutcome> InsertAsync(
+            string id, string content, DateTimeOffset createdAt, Guid? sessionId, string? tags, string? source,
+            float[] embedding, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<int> CountAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaMemoryDto[]> ListAsync(
+            string? query, Guid? sessionId, MemoryScope scope, int limit, int offset,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
+            string? query, Guid? sessionId, MemoryScope scope, int limit, int offset,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(
+            IReadOnlyList<string> ids, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> ReinstateAsync(
+            string id, byte[] expectedContentDigest, float[] embedding, DateTimeOffset reinstatedAt,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> CorrectAsync(
+            string id, byte[] expectedContentDigest, string content, float[] embedding, DateTimeOffset correctedAt,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<SagaCurationOutcome> SetPinAsync(
+            string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task DeleteAllAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<SagaStats> GetStatsAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<DateTimeOffset?> GetWatermarkAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task SetWatermarkAsync(
+            Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     /// <summary>Hand-written, no Moq — matching every other double in this suite.</summary>
     private sealed class FakeWeaveService : IWeaveService
     {
-
         /// <summary>
         /// Matches <see cref="SagaStoreHarness"/>'s own embedding-dimension floor, so a successful embed
         /// never trips the store's dimension-validation guard.
@@ -757,11 +877,9 @@ public sealed class SagaCurationServiceTests
 
         private FakeWeaveService(bool isAvailable, Result<Embedding<float>> embedResult)
         {
-
             IsAvailable = isAvailable;
 
             _embedResult = embedResult;
-
         }
 
         public static FakeWeaveService Available { get; } =
@@ -784,6 +902,13 @@ public sealed class SagaCurationServiceTests
                 Result<Embedding<float>>.Failure(new Error(
                     ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding provider failure.")));
 
+        /// <summary>
+        /// Available and answering successfully, but with a vector narrower than the store's configured
+        /// width: the provider-side mismatch the store's own guard answers by throwing.
+        /// </summary>
+        public static FakeWeaveService WrongWidth { get; } =
+            new(true, Result<Embedding<float>>.Success(new Embedding<float>(new float[Dimensions / 2])));
+
         public bool IsAvailable { get; }
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
@@ -794,7 +919,5 @@ public sealed class SagaCurationServiceTests
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by SagaCurationService.");
-
     }
-
 }

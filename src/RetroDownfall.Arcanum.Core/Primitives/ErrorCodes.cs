@@ -686,6 +686,8 @@ public static class ErrorCodes
         public const string FeatureDisabled = "Embeddings.FeatureDisabled";
 
         public const string ConfirmationRequired = "Embeddings.ConfirmationRequired";
+
+        public const string DimensionMismatch = "Embeddings.DimensionMismatch";
     }
 
     /// <summary>Provider rows in <c>Arcanum:Providers</c>.</summary>
