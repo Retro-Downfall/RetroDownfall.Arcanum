@@ -1054,16 +1054,9 @@ internal sealed class InstallationResetService(
         {
             // The same answer the ordinary arms give: this arm reaches the credential sweep and the
             // terminal step, so a cancellation here is routinely past the point of no return, and the
-            // operator is owed a resumable result rather than a raw exception.
-            //
-            // The terminal step publishes straight through the store, so a cancellation that reached it
-            // after one of those publications leaves this writer holding an envelope the store has moved
-            // past, and progress holding a record without the step's evidence. The durable record is
-            // read back and adopted for that reason.
-            return await CheckpointAfterCancellationAsync(
-                writer,
-                progress,
-                adoptDurableRecord: true).ConfigureAwait(false);
+            // operator is owed a resumable result rather than a raw exception. The terminal step
+            // publishes straight through the store, which is why the checkpoint reads the record back.
+            return await CheckpointAfterCancellationAsync(writer, progress).ConfigureAwait(false);
         }
     }
 
@@ -1288,10 +1281,7 @@ internal sealed class InstallationResetService(
         }
         catch (OperationCanceledException)
         {
-            return await CheckpointAfterCancellationAsync(
-                writer,
-                progress,
-                adoptDurableRecord: false).ConfigureAwait(false);
+            return await CheckpointAfterCancellationAsync(writer, progress).ConfigureAwait(false);
         }
     }
 
@@ -1506,10 +1496,7 @@ internal sealed class InstallationResetService(
         }
         catch (OperationCanceledException)
         {
-            return await CheckpointAfterCancellationAsync(
-                writer,
-                progress,
-                adoptDurableRecord: false).ConfigureAwait(false);
+            return await CheckpointAfterCancellationAsync(writer, progress).ConfigureAwait(false);
         }
     }
 
@@ -1523,27 +1510,27 @@ internal sealed class InstallationResetService(
     /// return. What is written is the progress the apply last recorded in memory, so every step that
     /// takes an irreversible action updates that progress before the next call that could be cancelled.
     ///
-    /// <para>The arm that hands part of its work to a collaborator which publishes straight through the
-    /// store asks for the durable record to be read back first. That arm's writer holds an envelope the
-    /// store has moved past, and its progress holds a record without the collaborator's evidence, so
-    /// checkpointing the progress alone would write that evidence out of existence.</para>
+    /// <para>The durable record is read back first, in every arm. Each hands part of its work to a
+    /// collaborator that publishes straight through the store - the nested database transition writes
+    /// its own receipt into this record, and the attested arm's terminal step records each credential
+    /// removal - so a cancellation that reaches either after it has published finds the writer holding
+    /// an envelope the store has moved past, and the progress holding a record without the
+    /// collaborator's evidence. Checkpointing the progress alone would be refused as a revision conflict
+    /// and, were it accepted, would write that evidence out of existence. Only the fields this service
+    /// owns are carried onto what is durable.</para>
     /// </remarks>
     private static async Task<Result<InstallationResetResult>> CheckpointAfterCancellationAsync(
         IInstallationResetActiveWriter writer,
-        InstallationResetApplyProgress progress,
-        bool adoptDurableRecord)
+        InstallationResetApplyProgress progress)
     {
         InstallationResetActiveRecord current = progress.Active;
 
-        if (adoptDurableRecord)
-        {
-            Result<InstallationResetActiveRecord?> durable = await writer
-                .RereadAsync(CancellationToken.None).ConfigureAwait(false);
+        Result<InstallationResetActiveRecord?> durable = await writer
+            .RereadAsync(CancellationToken.None).ConfigureAwait(false);
 
-            if (durable.IsSuccess && durable.Value is { } published)
-            {
-                current = WithServiceOwnedProgress(published, current);
-            }
+        if (durable.IsSuccess && durable.Value is { } published)
+        {
+            current = WithServiceOwnedProgress(published, current);
         }
 
         InstallationResetActiveRecord cancelled = current with

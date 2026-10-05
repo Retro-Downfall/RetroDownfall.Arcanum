@@ -2325,6 +2325,79 @@ public sealed partial class InstallationResetServiceTests
     }
 
     [Fact]
+    public async Task Cancellation_during_the_nested_data_apply_is_checkpointed_on_top_of_what_the_nested_transition_published()
+    {
+        // The nested transition publishes its own receipt into this record straight through the store,
+        // so a cancellation that reaches the apply after it has done so finds the service's writer
+        // holding a publication the store has moved past. Checkpointing from it is a revision conflict,
+        // and the caller would be told the store failed rather than that the reset was cancelled - and
+        // the CLI exits 1 instead of 130 - although nothing is wrong with the record. The checkpoint has
+        // to build on what is durable and keep the receipt the nested transition published.
+        using CancellationTokenSource cancellation = new();
+
+        FakeActiveStore active = new() { RequireCurrentPublication = true };
+
+        FakeDataService data = new(CreateDataPlan("global-data"))
+        {
+            CancelDuringApply = cancellation,
+        };
+
+        data.BeforeApply = () =>
+        {
+            InstallationResetNestedTransitionReceiptV1 claimed = Assert.IsType<
+                InstallationResetNestedTransitionReceiptV1>(active.Record!.NestedTransitionReceipt);
+
+            active.Publish(active.Record with
+            {
+                NestedTransitionReceipt = claimed with
+                {
+                    Phase = InstallationResetNestedTransitionPhase.Completed,
+                    NestedEffectDigest = Digest(0x71),
+                    TerminalWinnerDigest = Digest(0x72),
+                },
+            });
+        };
+
+        InstallationResetService service = CreateService(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.True(result.Value.PointOfNoReturn);
+
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(result.Value.Verification.RemainingIssues).Code);
+
+        Assert.NotNull(active.Record);
+
+        Assert.Equal(
+            InstallationResetNestedTransitionPhase.Completed,
+            active.Record.NestedTransitionReceipt?.Phase);
+
+        Assert.True(active.Record.PointOfNoReturn);
+    }
+
+    [Fact]
     public async Task Resume_after_data_checkpoint_keeps_operation_and_skips_data_replay()
     {
         FakeDataService data = new(CreateDataPlan("global-data"));
@@ -4880,8 +4953,29 @@ public sealed partial class InstallationResetServiceTests
 
         public int RecoverCount { get; private set; }
 
+        private InstallationResetActiveRecord? _record;
+
+        private int _revision;
+
         /// <summary>Settable so a test can seed the durable state a resumed attempt would find.</summary>
-        public InstallationResetActiveRecord? Record { get; set; }
+        /// <remarks>Every assignment moves the revision, which is what a publication made by a collaborator does.</remarks>
+        public InstallationResetActiveRecord? Record
+        {
+            get => _record;
+            set
+            {
+                _record = value;
+
+                _revision++;
+            }
+        }
+
+        /// <summary>
+        /// Makes an advance from a publication the store has since moved past a conflict, as the real
+        /// store does. Off by default because most tests publish through the double without keeping
+        /// the writer's publication in step, and none of them depend on that being refused.
+        /// </summary>
+        public bool RequireCurrentPublication { get; set; }
 
         public List<InstallationResetActiveRecord> Writes { get; } = [];
 
@@ -4940,11 +5034,20 @@ public sealed partial class InstallationResetServiceTests
             ArcanumMaintenanceLock heldInstallationLock,
             InstallationResetActivePublication current,
             InstallationResetActiveRecord next,
-            CancellationToken cancellationToken = default) =>
-            WriteAuthenticatedAsync(
+            CancellationToken cancellationToken = default)
+        {
+            if (RequireCurrentPublication && !current.EnvelopeDigest.Equals(RevisionDigest()))
+            {
+                return Task.FromResult(Result<InstallationResetActivePublication>.Failure(new Error(
+                    ErrorCodes.Covenant.RevisionConflict,
+                    "The installation-reset active transition does not match the current publication.")));
+            }
+
+            return WriteAuthenticatedAsync(
                 heldInstallationLock,
                 next,
                 cancellationToken);
+        }
 
         public Task<Result<InstallationResetActiveRecoveryState>> InspectAsync(
             CancellationToken cancellationToken = default)
@@ -5154,14 +5257,27 @@ public sealed partial class InstallationResetServiceTests
             return true;
         }
 
-        private static InstallationResetActivePublication Publication(
+        /// <summary>
+        /// A publication of the current revision. The digest carries the revision, so a publication a
+        /// writer holds from before a collaborator published can be told from the current one.
+        /// </summary>
+        private InstallationResetActivePublication Publication(
             InstallationResetActiveRecord record) =>
             new(
                 Location: null!,
                 Envelope: null!,
-                EnvelopeDigest: default,
+                RevisionDigest(),
                 InstallationResetActivePayloadV3.FromRecord(record),
                 Anchor: null!);
+
+        private CovenantDigest RevisionDigest()
+        {
+            byte[] bytes = new byte[32];
+
+            BitConverter.TryWriteBytes(bytes, _revision);
+
+            return new CovenantDigest(bytes);
+        }
 
         private static Task<T> AuthenticatedSurfaceNotUsed<T>() =>
             throw new InvalidOperationException(
