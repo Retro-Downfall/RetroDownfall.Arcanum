@@ -18,3 +18,11 @@ CREATE TABLE IF NOT EXISTS tapestry_generations (
 );
 CREATE INDEX IF NOT EXISTS idx_tapestry_generations_scope
     ON tapestry_generations(ScopeKind, ScopeId, Status);
+
+-- Exactly one Complete generation per scope is what retrieval reads and what the publishing switch
+-- assumes. The switch supersedes the previous Complete row and promotes the new one in a single
+-- transaction, which keeps the invariant only for as long as every writer follows it; this index is what
+-- makes a second Complete row for one scope impossible rather than merely unexpected. It covers Complete
+-- rows alone, so any number of Building and Superseded generations can coexist with the current one.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tapestry_generations_complete_scope
+    ON tapestry_generations(ScopeKind, ScopeId) WHERE Status = 'Complete';

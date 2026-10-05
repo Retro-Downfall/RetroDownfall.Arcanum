@@ -1,5 +1,11 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -129,6 +135,22 @@ public sealed class TapestryStoreTests : IAsyncLifetime
                 TestDimensions,
                 DateTimeOffset.UtcNow),
             Vec(0f, 1f));
+
+    /// <summary>Every leaf of a scope, collected from the pages the store streams them in.</summary>
+    private async Task<IReadOnlyList<TapestryLeafSource>> EnumerateLeavesAsync(TapestryScope scope)
+    {
+        List<TapestryLeafSource> leaves = [];
+
+        await foreach (IReadOnlyList<TapestryLeafSource> page in _store!.EnumerateLeafPagesAsync(
+            scope,
+            TestDimensions,
+            CancellationToken.None))
+        {
+            leaves.AddRange(page);
+        }
+
+        return leaves;
+    }
 
     private async Task SeedWorkspaceChunkAsync(string chunkId, string content)
     {
@@ -318,6 +340,61 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(second, current!.GenerationId);
 
         Assert.Equal("corpus-2", current.CorpusFingerprint);
+    }
+
+    /// <summary>
+    /// The atomic switch is only atomic if it can tell that it did not switch. Publishing a generation
+    /// that is not <c>Building</c> — one already published, or one an abandonment removed — changes no
+    /// row in its own statement, so the supersede that ran first in the same transaction would otherwise
+    /// commit alone and leave the scope with no current generation at all.
+    /// </summary>
+    [SkippableFact]
+    public async Task PublishingANonBuildingGenerationThrowsAndLeavesTheCurrentOneComplete()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string published = await BeginAsync("corpus-1");
+
+        await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
+
+        await _store.PublishGenerationAsync(
+            published,
+            1,
+            1,
+            1,
+            TapestryTerminalReason.LeafOnly,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        // Publishing the same generation a second time: it is Complete, not Building.
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.PublishGenerationAsync(
+                published,
+                1,
+                1,
+                1,
+                TapestryTerminalReason.LeafOnly,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None));
+
+        Assert.Equal(published, (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))?.GenerationId);
+
+        // A generation that was abandoned and no longer exists.
+        string abandoned = await BeginAsync("corpus-2");
+
+        await _store.AbandonGenerationAsync(abandoned, CancellationToken.None);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.PublishGenerationAsync(
+                abandoned,
+                1,
+                1,
+                1,
+                TapestryTerminalReason.LeafOnly,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None));
+
+        Assert.Equal(published, (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))?.GenerationId);
     }
 
     [SkippableFact]
@@ -518,7 +595,8 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         string membership = TapestryHash.OfChildMembership(
             ["h1", "h2"],
             TapestryHash.SummaryRecipeVersion,
-            "fast");
+            "fast",
+            "embedding-model");
 
         await _store!.AppendNodesAsync(
             [Summary(generationId, "s1", "the summary", membership, 2)],
@@ -546,7 +624,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
         Assert.Null(await _store.TryGetReusableSummaryAsync(
             WorkspaceScope,
-            TapestryHash.OfChildMembership(["h1", "h3"], TapestryHash.SummaryRecipeVersion, "fast"),
+            TapestryHash.OfChildMembership(["h1", "h3"], TapestryHash.SummaryRecipeVersion, "fast", "embedding-model"),
             CancellationToken.None));
     }
 
@@ -789,11 +867,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             _ = await command.ExecuteNonQueryAsync();
         }
 
-        IReadOnlyList<TapestryLeafSource> leaves = await _store!.EnumerateLeafSourcesAsync(
-            WorkspaceScope,
-            TestDimensions,
-            includeEmbeddings: true,
-            CancellationToken.None);
+        IReadOnlyList<TapestryLeafSource> leaves = await EnumerateLeavesAsync(WorkspaceScope);
 
         TapestryLeafSource leaf = Assert.Single(leaves);
 
@@ -836,11 +910,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             _ = await command.ExecuteNonQueryAsync();
         }
 
-        IReadOnlyList<TapestryLeafSource> leaves = await _store!.EnumerateLeafSourcesAsync(
-            WorkspaceScope,
-            TestDimensions,
-            includeEmbeddings: true,
-            CancellationToken.None);
+        IReadOnlyList<TapestryLeafSource> leaves = await EnumerateLeavesAsync(WorkspaceScope);
 
         Assert.Null(Assert.Single(leaves).ExistingEmbedding);
     }
@@ -867,6 +937,165 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.DoesNotContain(withoutWorkspace, scope => scope.Kind == TapestryScopeKind.Workspace);
+    }
+
+    /// <summary>
+    /// A Session's own history tree is found by the scope retrieval builds for that Session.
+    /// </summary>
+    /// <remarks>
+    /// <c>Entries.SessionId</c> is guaranteed uppercase-dashed, so the sweep keys a Session-kind tree
+    /// under that spelling; <c>session_attachment_chunks.SessionId</c> is deliberately lowercase, so the
+    /// attachment kind is keyed under that one. The two kinds therefore disagree about how one Session
+    /// is spelled, and the scopes the turn builds have to agree with each kind separately. The Entry is
+    /// written through the object-relational writer production uses, and the scopes the turn reads are
+    /// built by the provider's own <c>BuildTapestryScopes</c>, so neither side is spelled by the test.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Session_scope_generation_is_found_by_the_scope_the_retrieval_path_builds()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await SeedSessionEntryAsync(sessionId, "the session history the tree summarizes");
+
+        await SeedAttachmentChunkAsync(sessionId.ToString("D"), "attachment-chunk", "attachment body");
+
+        IReadOnlyList<TapestryScope> discovered = await _store!.DiscoverScopesAsync(
+            includeWorkspace: false,
+            includeSessionAttachments: true,
+            includeSessions: true,
+            CancellationToken.None);
+
+        TapestryScope sessionScope = Assert.Single(discovered, static scope => scope.Kind == TapestryScopeKind.Session);
+
+        TapestryScope attachmentScope = Assert.Single(discovered, static scope => scope.Kind == TapestryScopeKind.SessionAttachment);
+
+        foreach (TapestryScope scope in new[] { sessionScope, attachmentScope })
+        {
+            string generationId = await _store.BeginGenerationAsync(
+                scope,
+                SphericalKMeans.AlgorithmVersion,
+                "settings-1",
+                "fast",
+                TapestryHash.SummaryRecipeVersion,
+                TestDimensions,
+                "corpus-1",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+
+            await _store.AppendNodesAsync(
+                [LeafIn(scope, generationId, $"node-{scope.Kind}", $"source-{scope.Kind}", "body")],
+                CancellationToken.None);
+
+            await _store.PublishGenerationAsync(
+                generationId,
+                1,
+                1,
+                1,
+                TapestryTerminalReason.LeafOnly,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+        }
+
+        TapestryEmbeddingSettings settings = new()
+        {
+            SessionTreesEnabled = true,
+            SessionAttachmentTreesEnabled = true,
+            WorkspaceTreesEnabled = false,
+        };
+
+        List<TapestryScope> retrievalScopes = WizardIntelligenceProvider.BuildTapestryScopes(
+            new PingRequest("hi", SessionId: sessionId),
+            settings,
+            new UnusedIndexingService());
+
+        Assert.Equal(2, retrievalScopes.Count);
+
+        foreach (TapestryScope retrieval in retrievalScopes)
+        {
+            TapestryGeneration? current = await _store.GetCurrentGenerationAsync(retrieval, CancellationToken.None);
+
+            Assert.True(
+                current is not null,
+                $"retrieval built {retrieval.Kind} scope '{retrieval.Id}' but the sweep keyed it under "
+                + $"'{(retrieval.Kind == TapestryScopeKind.Session ? sessionScope.Id : attachmentScope.Id)}'");
+        }
+
+        // The published nodes are counted for that Session too, per kind spelling.
+        Assert.Equal(2, await _store.CountPublishedNodesAsync(sessionId, CancellationToken.None));
+
+        Assert.Equal(2, (await _store.GetScopeStatusesAsync(sessionId, CancellationToken.None)).Count);
+    }
+
+    private static TapestryNodeWrite LeafIn(
+        TapestryScope scope,
+        string generationId,
+        string nodeId,
+        string sourceId,
+        string content) =>
+        new(
+            new TapestryNode(
+                nodeId,
+                generationId,
+                scope.Kind,
+                scope.Id,
+                0,
+                TapestryNodeKind.Leaf,
+                null,
+                scope.Kind == TapestryScopeKind.Session
+                    ? TapestryLeafSourceKind.Entry
+                    : TapestryLeafSourceKind.SessionAttachmentChunk,
+                sourceId,
+                "label",
+                null,
+                TapestryHash.OfContent(content),
+                null,
+                1,
+                0,
+                TapestryPartitionReason.None,
+                TestDimensions,
+                DateTimeOffset.UtcNow),
+            Vec(1f));
+
+    /// <summary>One Session with one Entry, written through the object-relational writer.</summary>
+    private async Task SeedSessionEntryAsync(Guid sessionId, string content)
+    {
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Status = "active",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        _db.Entries.Add(new Entry
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            Role = MessageRole.User,
+            Content = content,
+            ModelUsed = "test-model",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Sequence = 1,
+        });
+
+        _ = await _db.SaveChangesAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The scopes under test carry no working directory, so the indexing boundary must never be asked.
+    /// </summary>
+    private sealed class UnusedIndexingService : IWorkspaceIndexingService
+    {
+        public void RegisterWorkspace(string workspacePath) => throw new NotSupportedException();
+
+        public void UnregisterWorkspace(string workspacePath) => throw new NotSupportedException();
+
+        public string ResolveIndexedWorkspacePath(string workspacePath) => throw new NotSupportedException();
+
+        public Result<WorkspaceIndexQueueDisposition> QueueIndexNow(string workspacePath) =>
+            throw new NotSupportedException();
     }
 
     [SkippableFact]

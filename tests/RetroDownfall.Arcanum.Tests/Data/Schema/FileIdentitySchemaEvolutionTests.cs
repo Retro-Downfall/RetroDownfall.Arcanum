@@ -37,6 +37,7 @@ public sealed class FileIdentitySchemaEvolutionTests
                 "IX_Batches_OutputFileId",
                 "IX_Batches_ErrorFileId",
                 "IX_InferenceRuns_SessionId_Norm",
+                "ux_tapestry_generations_complete_scope",
             ])
         {
             Assert.Contains(name, fresh.Keys);

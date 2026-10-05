@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -10,6 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
@@ -73,8 +75,10 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
     private readonly CapturingLogger _logger = new();
 
+    private readonly TapestryBuildBackoff _backoff = new();
+
     private TapestryWeaver CreateWeaver() =>
-        new(_store!, _weave!, _summarizer!, TimeProvider.System, _logger);
+        new(_store!, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
 
     /// <summary>Surfaces the weaver's own diagnostics in assertion messages so a build failure is legible.</summary>
     private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger<TapestryWeaver>
@@ -100,11 +104,15 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         int maxTreeDepth = 5,
         int target = 2,
         int maxChildren = 3,
-        bool workspaceTrees = true) =>
+        bool workspaceTrees = true,
+        string? embeddingProvider = "local-embeddings",
+        string? embeddingModel = "embed-a") =>
         new()
         {
             Enabled = true,
             TapestryEnabled = true,
+            Provider = embeddingProvider,
+            Model = embeddingModel,
             Dimensions = TestDimensions,
             Tapestry = new TapestryEmbeddingSettings
             {
@@ -207,6 +215,52 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
             _ = await command.ExecuteNonQueryAsync();
         }
+    }
+
+    /// <summary>Adds <paramref name="count"/> distinctly named chunks to the scope in one statement.</summary>
+    private async Task SeedBulkChunksAsync(int count)
+    {
+        System.Data.Common.DbConnection connection =
+            Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(_db!.Database);
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < @count)
+            INSERT INTO workspace_file_chunks
+                (ChunkId, WorkspacePath, RelativePath, ChunkIndex, Content, CharOffset, CharLength,
+                 StartLine, EndLine, FileLastWriteTime, IndexedAt)
+            SELECT printf('bulk-%06d', i), '/repo', printf('bulk%d.cs', i % 7), 0, 'bulk body number ' || i, 0, 10, 1, 3,
+                   '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            FROM n
+            """;
+
+        AddParameter(command, "@count", count);
+
+        _ = await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<int> CountAsync(string sql)
+    {
+        System.Data.Common.DbConnection connection =
+            Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(_db!.Database);
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return Convert.ToInt32(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
@@ -337,6 +391,136 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.Equal(callsAfterFirst, _summarizer.CallCount);
     }
 
+    /// <summary>
+    /// An up-to-date tick is the overwhelmingly common one, and all it has to learn is that nothing changed.
+    /// The corpus fingerprint comes from the content hashes stored beside each leaf, so once the first weave
+    /// has stored them the tick never selects chunk text from the corpus table.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_UpToDateTickDoesNotReadChunkContent()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = CreateWeaver();
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        SqliteConnection connection = (SqliteConnection)Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(_db!.Database);
+
+        List<string> statements = [];
+
+        raw.sqlite3_trace(connection.Handle, (object _, string sql) => statements.Add(sql), null);
+
+        TapestryWeaveOutcome second;
+
+        try
+        {
+            second = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+        }
+        finally
+        {
+            raw.sqlite3_trace(connection.Handle, (strdelegate_trace)null!, null);
+        }
+
+        Assert.Equal(TapestryWeaveStatus.UpToDate, second.Status);
+
+        // The tick's fingerprint came from the stored hashes, and no statement it ran selects chunk text.
+        Assert.Contains(statements, static sql => sql.Contains("tapestry_leaf_hashes", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            statements,
+            static sql => sql.Contains("workspace_file_chunks", StringComparison.Ordinal)
+                && sql.Contains("\"Content\"", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A scope past the ceiling is refused by counting: nothing is read, hashed, embedded or summarized, no
+    /// generation is begun, and the outcome says why.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_ATooLargeScopeIsRefusedBeforeAnythingIsReadOrSpent()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedBulkChunksAsync(TapestryLimits.MaxLeavesPerScope + 1);
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.TooLarge, outcome.Status);
+
+        Assert.Null(outcome.GenerationId);
+
+        Assert.Equal(0, _summarizer!.CallCount);
+
+        Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM tapestry_generations"));
+
+        Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM tapestry_leaf_hashes"));
+
+        Assert.Contains("more than", _logger.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Growing past the ceiling stops the refresh, not the tree: the generation already published stays the
+    /// current one rather than being superseded by nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_AScopeThatGrowsPastTheCeilingKeepsItsPriorGenerationCurrent()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = CreateWeaver();
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        string published = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId;
+
+        await SeedBulkChunksAsync(TapestryLimits.MaxLeavesPerScope);
+
+        Assert.Equal(TapestryWeaveStatus.TooLarge, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        Assert.Equal(
+            published,
+            (await _store.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId);
+
+        Assert.Equal(1, await CountGenerationsWithStatusAsync("Complete"));
+    }
+
+    /// <summary>
+    /// Leaves arrive a page at a time, and a scope bigger than one page is still woven whole: every leaf,
+    /// from every page, is in the tree.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_BuildsOverMoreThanOnePageOfLeaves()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        int leafCount = TapestryStore.LeafPageSize + 20;
+
+        await SeedBulkChunksAsync(leafCount);
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
+            Scope,
+            Settings(maxTreeDepth: 3, target: 8, maxChildren: 24),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        Assert.Equal(leafCount, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
+
+        Assert.Equal(
+            TapestryWeaveStatus.UpToDate,
+            (await CreateWeaver().WeaveAsync(
+                Scope,
+                Settings(maxTreeDepth: 3, target: 8, maxChildren: 24),
+                CancellationToken.None)).Status);
+    }
+
     [SkippableFact]
     public async Task WeaveAsync_ALeafEditRebuildsTheWholeScopeButReusesUnchangedSummaries()
     {
@@ -368,6 +552,56 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.True(
             outcome.SummariesReused > 0,
             $"expected at least one reused summary, got {outcome.SummariesReused}");
+    }
+
+    /// <summary>
+    /// A tree's vectors are only comparable with the vectors of the model that produced them, so a tree
+    /// built under one embedding provider or model is not current under another, and its summaries and
+    /// their embeddings are not reused, even when the vector width is the same.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("local-embeddings", "embed-b")]
+    [InlineData("other-provider", "embed-a")]
+    public async Task WeaveAsync_RebuildsWhenTheEmbeddingModelChangesAtTheSameDimension(
+        string provider,
+        string model)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = CreateWeaver();
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        string firstGeneration = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId;
+
+        _summarizer!.ResetCounters();
+
+        TapestryWeaveOutcome changed = await weaver.WeaveAsync(
+            Scope,
+            Settings(embeddingProvider: provider, embeddingModel: model),
+            CancellationToken.None);
+
+        Assert.True(changed.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {changed.Status}. Log:\n{_logger}");
+
+        Assert.NotEqual(
+            firstGeneration,
+            (await _store.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId);
+
+        // Every summary vector in the new tree comes from the new model, so none of the old ones may be
+        // carried over by identity.
+        Assert.Equal(0, changed.SummariesReused);
+
+        Assert.True(changed.SummaryCallsMade > 0);
+
+        // And the same configuration again is current, so the new identity is stable.
+        Assert.Equal(
+            TapestryWeaveStatus.UpToDate,
+            (await weaver.WeaveAsync(
+                Scope,
+                Settings(embeddingProvider: provider, embeddingModel: model),
+                CancellationToken.None)).Status);
     }
 
     [SkippableFact]
@@ -602,6 +836,102 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.Equal(0, await _store.ReconcileGenerationsAsync(CancellationToken.None));
     }
 
+    /// <summary>
+    /// A build that fails part way has already paid for the summaries it wrote, and nothing remembers
+    /// them: the failed generation is abandoned, reuse reads only published generations, and the corpus
+    /// fingerprint has not moved, so the next attempt repeats the whole paid prefix. The record of the
+    /// failure is what stops that repeat until the wait has passed.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_ASummaryFailureDoesNotRebillEarlierClustersOnTheNextAttempt()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        FakeTimeProvider clock = new();
+
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, clock, _logger);
+
+        _summarizer!.FailOnCallNumber = 3;
+
+        TapestryWeaveOutcome first = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.Failed, first.Status);
+
+        int paidSoFar = _summarizer.CallCount;
+
+        Assert.Equal(3, paidSoFar);
+
+        // The corpus is unchanged, so an immediate second attempt must not pay for the same clusters.
+        TapestryWeaveOutcome second = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.BackingOff, second.Status);
+
+        Assert.Equal(paidSoFar, _summarizer.CallCount);
+
+        Assert.Null(await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None));
+
+        // Once a sweep interval has passed the same build is tried again, and a failure that was
+        // transient now succeeds.
+        clock.Advance(TimeSpan.FromMinutes(61));
+
+        TapestryWeaveOutcome third = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.True(third.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {third.Status}. Log:\n{_logger}");
+    }
+
+    [SkippableFact]
+    public async Task WeaveAsync_ABackedOffBuildIsAttemptedAgainAsSoonAsTheCorpusChanges()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, new FakeTimeProvider(), _logger);
+
+        _summarizer!.FailEverySummary = true;
+
+        Assert.Equal(TapestryWeaveStatus.Failed, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        Assert.Equal(
+            TapestryWeaveStatus.BackingOff,
+            (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        // A different corpus is a different build, and the failure of the old one says nothing about it.
+        await SeedChunksAsync(("c99", "new.cs", "a chunk that changes the corpus"));
+
+        int callsBefore = _summarizer.CallCount;
+
+        Assert.Equal(TapestryWeaveStatus.Failed, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        Assert.True(_summarizer.CallCount > callsBefore, "the changed corpus was not attempted");
+    }
+
+    /// <summary>
+    /// A build that fails before it spends anything — here, an embedding provider that is down — is not
+    /// a failure the record may punish: the next attempt after the provider returns must not wait.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_ABuildThatNeverStartedDoesNotBackOff()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, new FakeTimeProvider(), _logger);
+
+        _weave!.Available = false;
+
+        Assert.Equal(
+            TapestryWeaveStatus.EmbeddingUnavailable,
+            (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        _weave.Available = true;
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+    }
+
     [SkippableFact]
     public async Task WeaveAsync_EmbeddingProviderDownLeavesThePriorGenerationCurrent()
     {
@@ -680,6 +1010,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             _store!,
             ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService(),
             _summarizer!,
+            _backoff,
             TimeProvider.System,
             _logger);
 
@@ -791,6 +1122,65 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.NotEmpty(await _store.GetLayerNodesAsync(current.GenerationId, 1, CancellationToken.None));
     }
 
+    /// <summary>
+    /// A summary of one child says nothing the child did not, so a singleton cluster is carried to the
+    /// next layer unchanged — as a node too large to summarize already is — instead of costing a model
+    /// call to restate itself.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_DoesNotSummarizeASingleChildCluster()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // Three leaves pointing almost the same way fill one cluster to the child-count bound of three,
+        // so the orthogonal fourth has no sibling with room to be merged into and stays a singleton.
+        _weave!.VectorsByText["alpha body"] = Direction(0, (2, 0.01f));
+
+        _weave.VectorsByText["bravo body"] = Direction(0, (3, 0.01f));
+
+        _weave.VectorsByText["charlie body"] = Direction(0, (4, 0.01f));
+
+        _weave.VectorsByText["outlier body"] = Direction(1);
+
+        await SeedChunksAsync(
+            ("c00", "a.cs", "alpha body"),
+            ("c01", "b.cs", "bravo body"),
+            ("c02", "c.cs", "charlie body"),
+            ("c03", "d.cs", "outlier body"));
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
+            Scope,
+            Settings(target: 2, maxChildren: 3),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        Assert.DoesNotContain(1, _summarizer!.SummarizedChildCounts);
+
+        // The outlier is still part of the tree: the root claims it beside the cluster's summary.
+        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None);
+
+        Assert.Equal(4, leaves.Count);
+
+        Assert.All(leaves, leaf => Assert.NotNull(leaf.ParentNodeId));
+    }
+
+    private static float[] Direction(int axis, params (int Axis, float Weight)[] others)
+    {
+        float[] vector = new float[TestDimensions];
+
+        vector[axis] = 1f;
+
+        foreach ((int otherAxis, float weight) in others)
+        {
+            vector[otherAxis] = weight;
+        }
+
+        return vector;
+    }
+
     [SkippableFact]
     public async Task WeaveAsync_MergingAnUndersizedClusterNeverCrossesTheTokenBound()
     {
@@ -828,6 +1218,9 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         public bool Available { get; set; } = true;
 
         public float[]? ConstantVector { get; set; }
+
+        /// <summary>Exact text to the direction it embeds to, for cases that need a chosen geometry.</summary>
+        public Dictionary<string, float[]> VectorsByText { get; } = new(StringComparer.Ordinal);
 
         public string? PoisonContentSubstring { get; set; }
 
@@ -873,6 +1266,11 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
                 return poisoned;
             }
 
+            if (VectorsByText.TryGetValue(text, out float[]? chosen))
+            {
+                return [.. chosen];
+            }
+
             if (ConstantVector is { } constant)
             {
                 return [.. constant];
@@ -916,11 +1314,17 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public bool FailEverySummary { get; set; }
 
+        /// <summary>The one-based call that fails, once; every other call succeeds.</summary>
+        public int? FailOnCallNumber { get; set; }
+
         public bool AlwaysFits { get; set; }
 
         public string? OversizedContentSubstring { get; set; }
 
         public int CallCount { get; private set; }
+
+        /// <summary>The number of children each summary call was asked to summarize, in call order.</summary>
+        public List<int> SummarizedChildCounts { get; } = [];
 
         /// <summary>The largest child count any fit estimate was asked about.</summary>
         public int LargestFitEstimate { get; private set; }
@@ -965,6 +1369,8 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
             CallCount++;
 
+            SummarizedChildCounts.Add(request.ChildTexts.Count);
+
             // The real summarizer does not re-check the fit here: an over-budget request goes to the
             // provider, fails there, and fails the whole generation. Recording it is how a cluster
             // that escaped repartitioning becomes visible to a test.
@@ -974,7 +1380,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             }
 
             return Task.FromResult(
-                FailEverySummary
+                FailEverySummary || CallCount == FailOnCallNumber
                     ? Result<string>.Failure(new Error(
                         ErrorCodes.Embeddings.ProviderUnavailable,
                         "summary model unavailable"))

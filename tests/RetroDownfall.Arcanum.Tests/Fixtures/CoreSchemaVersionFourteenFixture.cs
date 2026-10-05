@@ -4,10 +4,11 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 /// <summary>The exact normalized Core version-14 tree before the file-identity indexes were added.</summary>
 /// <remarks>
-/// Version 15 appends three indexes to <c>Batches</c> and one to <c>InferenceRuns</c>, and changes nothing else in
-/// the tree. Those two files are frozen here byte for byte, because the version-13 reconstruction, and through it the
-/// version-12 one and the raw version-1 to version-5 fixtures, inherit every object they do not freeze through this
-/// one.
+/// Version 15 appends three indexes to <c>Batches</c>, one to <c>InferenceRuns</c> and one to
+/// <c>tapestry_generations</c>, and adds the <c>tapestry_leaf_hashes</c> table with the nine triggers that keep it
+/// honest, and changes nothing else in the tree. Those three files are frozen here byte for byte and the ten new
+/// objects are removed, because the version-13 reconstruction, and through it the version-12 one and the raw
+/// version-1 to version-5 fixtures, inherit every object they do not freeze through this one.
 /// </remarks>
 internal static class CoreSchemaVersionFourteenFixture
 {
@@ -65,14 +66,48 @@ internal static class CoreSchemaVersionFourteenFixture
 
         """;
 
+    // Version 15 appends ux_tapestry_generations_complete_scope.
+    private const string TapestryGenerationsSql =
+        """
+        CREATE TABLE IF NOT EXISTS tapestry_generations (
+            GenerationId TEXT PRIMARY KEY,
+            ScopeKind TEXT NOT NULL,
+            ScopeId TEXT NOT NULL,
+            Status TEXT NOT NULL,
+            AlgorithmVersion TEXT NOT NULL,
+            SettingsFingerprint TEXT NOT NULL,
+            SummaryModel TEXT,
+            SummaryRecipeVersion TEXT NOT NULL,
+            EmbeddingDimension INTEGER NOT NULL,
+            CorpusFingerprint TEXT NOT NULL,
+            LayerCount INTEGER NOT NULL DEFAULT 0,
+            NodeCount INTEGER NOT NULL DEFAULT 0,
+            RootNodeCount INTEGER NOT NULL DEFAULT 0,
+            TerminalReason TEXT,
+            StartedAt TEXT NOT NULL,
+            CompletedAt TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_tapestry_generations_scope
+            ON tapestry_generations(ScopeKind, ScopeId, Status);
+
+        """;
+
+    // Version 15 adds the leaf-hash table and, per corpus table, one trigger each for insert, update and delete.
+    private static bool IsVersionFifteenLeafHashObject(string name) =>
+        name == "tapestry_leaf_hashes"
+        || name.Contains("_drop_tapestry_leaf_hash_", StringComparison.Ordinal);
+
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
         .. GrimoireSchemaCatalog.CoreObjects
+            .Where(static definition => !IsVersionFifteenLeafHashObject(definition.Name))
             .Select(static definition => definition.Name switch
             {
                 "Batches" => definition with { Sql = BatchesSql.ReplaceLineEndings("\n") },
 
                 "InferenceRuns" => definition with { Sql = InferenceRunsSql.ReplaceLineEndings("\n") },
+
+                "tapestry_generations" => definition with { Sql = TapestryGenerationsSql.ReplaceLineEndings("\n") },
 
                 _ => definition,
             }),

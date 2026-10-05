@@ -28,6 +28,7 @@ internal sealed class TapestryWeaver(
     ITapestryStore store,
     IWeaveService weave,
     ITapestrySummarizer summarizer,
+    TapestryBuildBackoff backoff,
     TimeProvider clock,
     ILogger<TapestryWeaver> logger)
 {
@@ -55,21 +56,31 @@ internal sealed class TapestryWeaver(
 
         Bounds bounds = Bounds.From(embeddings);
 
-        // Fingerprint pass first, without the embedding join. The fingerprint decides whether this scope
-        // needs anything done at all, and it consumes only leaf ids and content hashes — so on the
-        // unchanged path (every sweep of a scope nobody has touched) this never reads or decodes a single
-        // embedding BLOB. The full corpus, embeddings included, is loaded below only once a rebuild is
-        // known to be necessary, where one extra pass is lost in the noise of clustering and model calls.
-        IReadOnlyList<TapestryLeafSource> fingerprintLeaves = await store
-            .EnumerateLeafSourcesAsync(scope, bounds.Dimensions, includeEmbeddings: false, cancellationToken)
+        // Identity pass first, from the content hashes the store keeps beside each leaf. The fingerprint
+        // decides whether this scope needs anything done at all, and it consumes only leaf ids and content
+        // hashes — so on the unchanged path (every sweep of a scope nobody has touched) this reads no chunk
+        // text and decodes no embedding BLOB. The corpus itself, embeddings included, is loaded below only
+        // once a rebuild is known to be necessary, where one extra pass is lost in the noise of clustering
+        // and model calls. A scope past the ceiling is refused here, by counting, before anything is loaded.
+        TapestryCorpusIdentity identity = await store
+            .GetCorpusIdentityAsync(scope, TapestryLimits.MaxLeavesPerScope, cancellationToken)
             .ConfigureAwait(false);
 
-        if (fingerprintLeaves.Count == 0)
+        if (identity.ExceedsCeiling)
         {
+            LogTooLarge(scope);
+
+            return new TapestryWeaveOutcome(TapestryWeaveStatus.TooLarge);
+        }
+
+        if (identity.LeafCount == 0)
+        {
+            backoff.RecordSuccess(scope);
+
             return new TapestryWeaveOutcome(TapestryWeaveStatus.NoCorpus);
         }
 
-        string corpusFingerprint = TapestryHash.OfCorpus(fingerprintLeaves);
+        string corpusFingerprint = identity.Fingerprint;
 
         string settingsFingerprint = TapestryHash.OfSettings(
             bounds.MaxTreeDepth,
@@ -77,7 +88,8 @@ internal sealed class TapestryWeaver(
             bounds.MaxChildrenPerSummary,
             bounds.MaxClustersPerLayer,
             bounds.MaxSummaryTokens,
-            bounds.Dimensions);
+            bounds.Dimensions,
+            bounds.EmbeddingModel);
 
         string? summaryModel = summarizer.ResolveSummaryModel();
 
@@ -87,6 +99,8 @@ internal sealed class TapestryWeaver(
 
         if (IsUpToDate(current, corpusFingerprint, settingsFingerprint, summaryModel, bounds))
         {
+            backoff.RecordSuccess(scope);
+
             return new TapestryWeaveOutcome(
                 TapestryWeaveStatus.UpToDate,
                 current!.GenerationId,
@@ -99,7 +113,7 @@ internal sealed class TapestryWeaver(
         // A corpus that needs any abstraction at all needs a summary model. Publishing a leaves-only
         // tree instead would add nothing over flat retrieval while still competing for the turn's
         // context budget, so the honest degradation is to contribute nothing.
-        if (summaryModel is null && fingerprintLeaves.Count > 1)
+        if (summaryModel is null && identity.LeafCount > 1)
         {
             logger.LogDebug(
                 "Tapestry weave skipped for {ScopeKind} {ScopeId}: no summary model is configured.",
@@ -114,11 +128,49 @@ internal sealed class TapestryWeaver(
             return new TapestryWeaveOutcome(TapestryWeaveStatus.EmbeddingUnavailable);
         }
 
-        // A rebuild is now certain, so pay for the full corpus — the same rows again, this time carrying
-        // each leaf's already-imprinted embedding so only genuinely new leaves cost an embedding call.
-        IReadOnlyList<TapestryLeafSource> leaves = await store
-            .EnumerateLeafSourcesAsync(scope, bounds.Dimensions, includeEmbeddings: true, cancellationToken)
-            .ConfigureAwait(false);
+        // Only now, once a rebuild is certain and nothing has been spent, so a scope that is merely
+        // current or merely unconfigured never consults the record. A build that already failed on this
+        // very corpus, under these settings and this model, has paid for its earlier summaries and
+        // discarded them; starting it again on every sweep repeats that spend for the same result.
+        TimeSpan sweepInterval = TimeSpan.FromMinutes(
+            ArcanumSettingClamps.EmbeddingsTapestryRebuildIntervalMinutes(
+                (embeddings.Tapestry ?? new TapestryEmbeddingSettings()).RebuildIntervalMinutes));
+
+        if (backoff.IsBackingOff(
+            scope,
+            BuildIdentity(corpusFingerprint, settingsFingerprint, summaryModel),
+            clock.GetUtcNow()))
+        {
+            logger.LogDebug(
+                "Tapestry weave skipped for {ScopeKind} {ScopeId}: this build failed recently and is backing off.",
+                scope.Kind,
+                scope.Id);
+
+            return new TapestryWeaveOutcome(TapestryWeaveStatus.BackingOff);
+        }
+
+        // A rebuild is now certain, so pay for the corpus's text — the same leaves again, this time carrying
+        // each one's already-imprinted embedding so only genuinely new leaves cost an embedding call. They
+        // arrive a page at a time, and the working set is bounded by the ceiling rather than by whatever the
+        // scope has grown to: clustering needs every vector and every summary prompt needs its leaves' text,
+        // so the ceiling is what keeps that in memory at all.
+        List<TapestryLeafSource> leaves = [];
+
+        await foreach (IReadOnlyList<TapestryLeafSource> page in store
+            .EnumerateLeafPagesAsync(scope, bounds.Dimensions, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            leaves.AddRange(page);
+
+            // The scope can grow between the identity pass and this one. Stop loading rather than holding
+            // more than the ceiling allows.
+            if (leaves.Count > TapestryLimits.MaxLeavesPerScope)
+            {
+                LogTooLarge(scope);
+
+                return new TapestryWeaveOutcome(TapestryWeaveStatus.TooLarge);
+            }
+        }
 
         if (leaves.Count == 0)
         {
@@ -143,6 +195,8 @@ internal sealed class TapestryWeaver(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        string buildIdentity = BuildIdentity(corpusFingerprint, settingsFingerprint, summaryModel);
+
         try
         {
             TapestryWeaveOutcome outcome = await BuildAsync(
@@ -151,6 +205,10 @@ internal sealed class TapestryWeaver(
                 leaves,
                 bounds,
                 cancellationToken).ConfigureAwait(false);
+
+            // Recorded before the cancellation check: a build that published must be forgotten, and one
+            // that failed must be remembered, whether or not the host is stopping as it returns.
+            RecordOutcome(scope, buildIdentity, outcome.Status, sweepInterval);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -179,7 +237,49 @@ internal sealed class TapestryWeaver(
 
             await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
+            RecordOutcome(scope, buildIdentity, TapestryWeaveStatus.Failed, sweepInterval);
+
             return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed);
+        }
+    }
+
+    private void LogTooLarge(TapestryScope scope) =>
+        logger.LogInformation(
+            "Tapestry weave skipped for {ScopeKind} {ScopeId}: the scope holds more than {Ceiling} leaves, so no tree is built or refreshed for it.",
+            scope.Kind,
+            scope.Id,
+            TapestryLimits.MaxLeavesPerScope);
+
+    /// <summary>
+    /// Identifies one build for the failure record: the corpus it covers, the tree-shaping settings, and
+    /// the model that writes the summaries. Anything that changes the outcome of a build is in it.
+    /// </summary>
+    private static string BuildIdentity(string corpusFingerprint, string settingsFingerprint, string? summaryModel) =>
+        TapestryHash.OfParts([corpusFingerprint, settingsFingerprint, summaryModel ?? string.Empty]);
+
+    private void RecordOutcome(
+        TapestryScope scope,
+        string buildIdentity,
+        TapestryWeaveStatus status,
+        TimeSpan sweepInterval)
+    {
+        switch (status)
+        {
+            case TapestryWeaveStatus.Woven:
+                backoff.RecordSuccess(scope);
+
+                break;
+
+            case TapestryWeaveStatus.Failed:
+                DateTimeOffset retryAfter = backoff.RecordFailure(scope, buildIdentity, clock.GetUtcNow(), sweepInterval);
+
+                logger.LogInformation(
+                    "Tapestry build failed for {ScopeKind} {ScopeId}; it will not be retried before {RetryAfter:O} unless the corpus, settings or summary model change.",
+                    scope.Kind,
+                    scope.Id,
+                    retryAfter);
+
+                break;
         }
     }
 
@@ -511,9 +611,9 @@ internal sealed class TapestryWeaver(
 
     /// <summary>
     /// Derives one layer's clusters, then repairs them deterministically: oversized or token-heavy
-    /// clusters are split again, and an undersized cluster is merged into its most similar sibling
-    /// that still has room. Every tie breaks on stable id, so the plan is a pure function of the
-    /// layer.
+    /// clusters are split again, an undersized cluster is merged into its most similar sibling that
+    /// still has room, and a singleton that finds none is carried up unsummarized. Every tie breaks on
+    /// stable id, so the plan is a pure function of the layer.
     /// </summary>
     private LayerPlan PlanLayer(
         TapestryScope scope,
@@ -564,20 +664,22 @@ internal sealed class TapestryWeaver(
 
         foreach (PlanCandidate candidate in candidates)
         {
-            // Every singleton below costs a whole-cluster concatenation and tokenization, so this loop is
-            // part of the same uninterrupted stretch the token was threaded into clustering for.
+            // This loop is the tail of the same uninterrupted synchronous stretch the token was threaded
+            // into clustering for, so it keeps observing a stop request between candidates.
             cancellationToken.ThrowIfCancellationRequested();
 
-            // A lone node whose own text exceeds one summary request cannot be partitioned further —
-            // Arcanum does not re-chunk source material to make a model call fit. Carrying it to the
-            // next layer keeps the whole scope's tree buildable instead of letting one oversized
-            // excerpt block every generation forever.
-            if (candidate.Members.Count == 1
-                && !summarizer.FitsOneRequest(
-                    new TapestrySummaryRequest(scope.Kind, scope.Id, layer, [candidate.Members[0].Content])))
+            // A lone node is carried up unchanged, never summarized. Two things lead here. One is a node
+            // whose own text exceeds one summary request, which cannot be partitioned further — Arcanum
+            // does not re-chunk source material to make a model call fit — so carrying it keeps the
+            // whole scope's tree buildable instead of letting one oversized excerpt block every
+            // generation forever. The other is a singleton with no sibling that has room: a summary of
+            // one child restates that child for the price of a model call and an embedding, and adds
+            // nothing it did not already say. A carried node keeps its own layer and re-enters the next
+            // round, where a later layer may claim it or it stays a root.
+            if (candidate.Members.Count == 1)
             {
                 logger.LogDebug(
-                    "Tapestry carried an unsummarizable node up from layer {Layer} for {ScopeKind} {ScopeId}: its own text exceeds one summary request.",
+                    "Tapestry carried a single-child cluster up from layer {Layer} for {ScopeKind} {ScopeId} without summarizing it.",
                     layer,
                     scope.Kind,
                     scope.Id);
@@ -700,8 +802,8 @@ internal sealed class TapestryWeaver(
     /// One deterministic rule for undersized clusters: merge a singleton into the sibling whose
     /// members it is most similar to, provided that sibling still has room — room being both the
     /// child-count bound and the selected model's real context estimate. A singleton with nowhere to
-    /// go stays as its own one-child summary and is recorded as a carry — it is never dropped and
-    /// never skips a layer.
+    /// go is recorded as a carry and the plan carries it to the next layer unsummarized — it is never
+    /// dropped, and a later layer may still claim it.
     /// </summary>
     /// <remarks>
     /// Takes the sweep's token for the same reason clustering does: this is O(singletons × candidates ×
@@ -747,8 +849,12 @@ internal sealed class TapestryWeaver(
                     continue;
                 }
 
+                // Scalar cosine over unit vectors, the arithmetic the clustering contract is stated in.
+                // The lane-width cosine Divination ranks with sums in a hardware-dependent order, so a
+                // near-tie between siblings could resolve differently on another machine and the same
+                // persisted vectors would stop producing the same memberships.
                 double similarity = candidates[other].Members.Max(
-                    member => (double)EmbeddingBlobCodec.CosineSimilarity(orphan.Embedding, member.Embedding));
+                    member => SphericalKMeans.DirectionCosine(orphan.Direction, member.Direction));
 
                 // Stable-id tie-break keeps the merge target reproducible when two siblings are
                 // equally close.
@@ -818,10 +924,14 @@ internal sealed class TapestryWeaver(
         Bounds bounds,
         CancellationToken cancellationToken)
     {
+        // The embedding model is part of the reuse identity: a reused summary brings its embedding with
+        // it, and one written under another model sits in a different vector space than the leaves and
+        // summaries around it, at the same width and with nothing to flag it.
         string membershipHash = TapestryHash.OfChildMembership(
             members.Select(static member => member.ContentHash),
             TapestryHash.SummaryRecipeVersion,
-            summarizer.ResolveSummaryModel());
+            summarizer.ResolveSummaryModel(),
+            bounds.EmbeddingModel);
 
         string stableKey = $"L{layer}\u001f{membershipHash}";
 
@@ -838,7 +948,8 @@ internal sealed class TapestryWeaver(
         string identityHash = TapestryHash.OfChildMembership(
             members.Select(static member => member.StableKey),
             TapestryHash.SummaryRecipeVersion,
-            summarizer.ResolveSummaryModel());
+            summarizer.ResolveSummaryModel(),
+            bounds.EmbeddingModel);
 
         stableKey = $"{stableKey}{StableKeyFieldSeparator}{identityHash}";
 
@@ -987,7 +1098,11 @@ internal sealed class TapestryWeaver(
         float[] Embedding,
         string Content,
         string ContentHash,
-        int DescendantLeafCount);
+        int DescendantLeafCount)
+    {
+        /// <summary>The unit vector of <see cref="Embedding"/>, computed once for the merge's comparisons.</summary>
+        public float[] Direction { get; } = SphericalKMeans.NormalizedDirection(Embedding);
+    }
 
     private sealed record PlanCandidate(List<WorkingNode> Members, TapestryPartitionReason Reason);
 
@@ -1005,7 +1120,8 @@ internal sealed class TapestryWeaver(
         int TargetChildrenPerSummary,
         int MaxChildrenPerSummary,
         int MaxClustersPerLayer,
-        int MaxSummaryTokens)
+        int MaxSummaryTokens,
+        string EmbeddingModel)
     {
         public static Bounds From(EmbeddingSettings embeddings)
         {
@@ -1024,7 +1140,8 @@ internal sealed class TapestryWeaver(
                     target,
                     ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary(tapestry.MaxChildrenPerSummary)),
                 ArcanumSettingClamps.EmbeddingsTapestryMaxClustersPerLayer(tapestry.MaxClustersPerLayer),
-                ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(tapestry.MaxSummaryTokens));
+                ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(tapestry.MaxSummaryTokens),
+                TapestryHash.OfEmbeddingModel(embeddings.Provider, embeddings.Model));
         }
     }
 }

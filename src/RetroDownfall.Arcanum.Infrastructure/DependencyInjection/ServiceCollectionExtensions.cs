@@ -1272,6 +1272,10 @@ public static class ServiceCollectionExtensions
         // unconditionally is free on the hot path. Registered after GrimoireDatabaseHostedService so
         // The Weave's schema is guaranteed ready before the first sweep.
         services.AddScoped<ITapestrySummarizer, TapestrySummarizer>();
+
+        // One record of failed builds for the whole process, because the weaver that consults it is
+        // created per sweep.
+        services.AddSingleton<TapestryBuildBackoff>();
         services.AddScoped<TapestryWeaver>();
         services.AddInstallationResetRecoveryAwareHostedService<TapestryWeavingService>();
 

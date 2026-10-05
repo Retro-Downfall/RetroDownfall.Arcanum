@@ -14,23 +14,19 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 /// </summary>
 public sealed class TapestryConfigurationTests
 {
-
     [Fact]
     public void ResolveEmbeddings_TapestryDefaultsOff()
     {
-
         EmbeddingSettings embeddings = new ArcanumSettings().ResolveEmbeddings();
 
         Assert.False(embeddings.TapestryEnabled);
 
         Assert.False(embeddings.Enabled);
-
     }
 
     [Fact]
     public void ResolveEmbeddings_TapestryGateDerivesTheEmbeddingSubstrate()
     {
-
         ArcanumSettings settings = new()
         {
             Features = new FeatureSettings { Tapestry = true },
@@ -41,13 +37,11 @@ public sealed class TapestryConfigurationTests
         Assert.True(embeddings.TapestryEnabled);
 
         Assert.True(embeddings.Enabled);
-
     }
 
     [Fact]
     public void ResolveEmbeddings_ProjectsOperatorRetrievalModeAndSummaryModel()
     {
-
         ArcanumSettings settings = new()
         {
             Features = new FeatureSettings { Tapestry = true },
@@ -69,13 +63,11 @@ public sealed class TapestryConfigurationTests
         Assert.Equal(TapestryRetrievalMode.TreeTraversal, tapestry.RetrievalMode);
 
         Assert.Equal("fast-model", tapestry.SummaryModel);
-
     }
 
     [Fact]
     public void ResolveEmbeddings_DefaultsToCollapsedTreeRetrieval()
     {
-
         ArcanumSettings settings = new()
         {
             Features = new FeatureSettings { Tapestry = true },
@@ -92,13 +84,11 @@ public sealed class TapestryConfigurationTests
         Assert.True(tapestry.SessionAttachmentTreesEnabled);
 
         Assert.True(tapestry.SessionTreesEnabled);
-
     }
 
     [Fact]
     public void Validation_RequiresProviderFactsWhenTapestryIsEnabled()
     {
-
         ArcanumSettings settings = new()
         {
             Features = new FeatureSettings { Tapestry = true },
@@ -115,7 +105,6 @@ public sealed class TapestryConfigurationTests
         Assert.Contains(
             result.Error.Details!,
             static error => error.Pointer == "integrations.embeddings.model");
-
     }
 
     [Theory]
@@ -126,7 +115,6 @@ public sealed class TapestryConfigurationTests
         string wire,
         TapestryRetrievalMode expected)
     {
-
         TapestryIntegrationSettings? tapestry = JsonSerializer.Deserialize(
             $$"""{"retrievalMode":"{{wire}}"}""",
             ConfigurationJsonContext.Default.TapestryIntegrationSettings);
@@ -134,7 +122,6 @@ public sealed class TapestryConfigurationTests
         Assert.NotNull(tapestry);
 
         Assert.Equal(expected, tapestry.RetrievalMode);
-
     }
 
     [Theory]
@@ -144,7 +131,6 @@ public sealed class TapestryConfigurationTests
         int wire,
         TapestryRetrievalMode expected)
     {
-
         TapestryIntegrationSettings? tapestry = JsonSerializer.Deserialize(
             $$"""{"retrievalMode":{{wire}}}""",
             ConfigurationJsonContext.Default.TapestryIntegrationSettings);
@@ -152,19 +138,16 @@ public sealed class TapestryConfigurationTests
         Assert.NotNull(tapestry);
 
         Assert.Equal(expected, tapestry.RetrievalMode);
-
     }
 
     [Fact]
     public void RetrievalMode_WritesTheDocumentedNamedValue()
     {
-
         string json = JsonSerializer.Serialize(
             new TapestryIntegrationSettings { RetrievalMode = TapestryRetrievalMode.TreeTraversal },
             ConfigurationJsonContext.Default.TapestryIntegrationSettings);
 
         Assert.Contains("\"TreeTraversal\"", json, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -184,7 +167,6 @@ public sealed class TapestryConfigurationTests
     [Fact]
     public void Clamps_BoundEveryTapestryMechanic()
     {
-
         Assert.Equal(2, ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary(0));
 
         Assert.Equal(256, ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary(int.MaxValue));
@@ -212,53 +194,83 @@ public sealed class TapestryConfigurationTests
         Assert.Equal(128, ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedTokens(0));
 
         Assert.Equal(1024 * 1024, ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedTokens(int.MaxValue));
-
     }
 
     [Fact]
     public void SettingsFingerprint_ChangesWithEveryTreeShapingBound()
     {
+        string embedding = TapestryHash.OfEmbeddingModel("local", "embed-a");
 
-        string baseline = TapestryHash.OfSettings(5, 8, 24, 256, 512, 768);
+        string baseline = TapestryHash.OfSettings(5, 8, 24, 256, 512, 768, embedding);
 
-        Assert.NotEqual(baseline, TapestryHash.OfSettings(6, 8, 24, 256, 512, 768));
+        Assert.NotEqual(baseline, TapestryHash.OfSettings(6, 8, 24, 256, 512, 768, embedding));
 
-        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 9, 24, 256, 512, 768));
+        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 9, 24, 256, 512, 768, embedding));
 
-        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 8, 25, 256, 512, 768));
+        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 8, 25, 256, 512, 768, embedding));
 
-        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 8, 24, 257, 512, 768));
+        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 8, 24, 257, 512, 768, embedding));
 
-        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 8, 24, 256, 513, 768));
+        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 8, 24, 256, 513, 768, embedding));
 
-        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 8, 24, 256, 512, 1_536));
+        Assert.NotEqual(baseline, TapestryHash.OfSettings(5, 8, 24, 256, 512, 1_536, embedding));
 
-        Assert.Equal(baseline, TapestryHash.OfSettings(5, 8, 24, 256, 512, 768));
+        // The width alone cannot tell two embedding models apart, so the model is in the fingerprint.
+        Assert.NotEqual(
+            baseline,
+            TapestryHash.OfSettings(5, 8, 24, 256, 512, 768, TapestryHash.OfEmbeddingModel("local", "embed-b")));
 
+        Assert.NotEqual(
+            baseline,
+            TapestryHash.OfSettings(5, 8, 24, 256, 512, 768, TapestryHash.OfEmbeddingModel("remote", "embed-a")));
+
+        Assert.Equal(baseline, TapestryHash.OfSettings(5, 8, 24, 256, 512, 768, embedding));
+    }
+
+    [Fact]
+    public void EmbeddingModelIdentity_IgnoresSurroundingWhitespaceAndSeparatesProviderFromModel()
+    {
+        Assert.Equal(
+            TapestryHash.OfEmbeddingModel("local", "embed-a"),
+            TapestryHash.OfEmbeddingModel("  local ", " embed-a  "));
+
+        Assert.NotEqual(
+            TapestryHash.OfEmbeddingModel("local", "embed-a"),
+            TapestryHash.OfEmbeddingModel("local-embed", "-a"));
+
+        Assert.Equal(TapestryHash.OfEmbeddingModel(null, null), TapestryHash.OfEmbeddingModel("", " "));
     }
 
     [Fact]
     public void ChildMembershipHash_IsOrderIndependentButModelAndRecipeSensitive()
     {
+        string embedding = TapestryHash.OfEmbeddingModel("local", "embed-a");
 
-        string forward = TapestryHash.OfChildMembership(["b", "a", "c"], TapestryHash.SummaryRecipeVersion, "fast");
+        string forward = TapestryHash.OfChildMembership(["b", "a", "c"], TapestryHash.SummaryRecipeVersion, "fast", embedding);
 
-        string reverse = TapestryHash.OfChildMembership(["c", "b", "a"], TapestryHash.SummaryRecipeVersion, "fast");
+        string reverse = TapestryHash.OfChildMembership(["c", "b", "a"], TapestryHash.SummaryRecipeVersion, "fast", embedding);
 
         Assert.Equal(forward, reverse);
 
-        Assert.NotEqual(forward, TapestryHash.OfChildMembership(["a", "b"], TapestryHash.SummaryRecipeVersion, "fast"));
+        Assert.NotEqual(forward, TapestryHash.OfChildMembership(["a", "b"], TapestryHash.SummaryRecipeVersion, "fast", embedding));
 
-        Assert.NotEqual(forward, TapestryHash.OfChildMembership(["a", "b", "c"], "tapestry-summary-v2", "fast"));
+        Assert.NotEqual(forward, TapestryHash.OfChildMembership(["a", "b", "c"], "tapestry-summary-v2", "fast", embedding));
 
-        Assert.NotEqual(forward, TapestryHash.OfChildMembership(["a", "b", "c"], TapestryHash.SummaryRecipeVersion, "slow"));
+        Assert.NotEqual(forward, TapestryHash.OfChildMembership(["a", "b", "c"], TapestryHash.SummaryRecipeVersion, "slow", embedding));
 
+        // A reused summary brings its embedding with it, so the embedding model is part of its identity.
+        Assert.NotEqual(
+            forward,
+            TapestryHash.OfChildMembership(
+                ["a", "b", "c"],
+                TapestryHash.SummaryRecipeVersion,
+                "fast",
+                TapestryHash.OfEmbeddingModel("local", "embed-b")));
     }
 
     [Fact]
     public void CorpusFingerprint_ReactsToEveryLeafEditAndIsOrderIndependent()
     {
-
         TapestryLeafSource[] leaves =
         [
             new("s1", "a.cs", "alpha", TapestryHash.OfContent("alpha"), null),
@@ -278,7 +290,6 @@ public sealed class TapestryConfigurationTests
             ]));
 
         Assert.NotEqual(baseline, TapestryHash.OfCorpus([leaves[0]]));
-
     }
 
     /// <summary>
@@ -289,7 +300,6 @@ public sealed class TapestryConfigurationTests
     [Fact]
     public void PartsFingerprint_DoesNotMaterializeTheWholeInputBeforeHashing()
     {
-
         string[] parts = [.. Enumerable.Range(0, 20_000).Select(index => $"s{index:D6}{index:D64}")];
 
         long partBytes = parts.Sum(static part => (long)Encoding.UTF8.GetByteCount(part) + 1);
@@ -306,7 +316,6 @@ public sealed class TapestryConfigurationTests
         Assert.True(
             hashingAllocation < partBytes / 2,
             $"Fingerprinting allocated {hashingAllocation} bytes for a {partBytes}-byte corpus.");
-
     }
 
     /// <summary>
@@ -316,7 +325,6 @@ public sealed class TapestryConfigurationTests
     [Fact]
     public void PartsFingerprint_MatchesTheConcatenatedEncoding()
     {
-
         string[][] cases =
         [
             [],
@@ -333,20 +341,14 @@ public sealed class TapestryConfigurationTests
 
         foreach (string[] parts in cases)
         {
-
             StringBuilder concatenated = new();
 
             foreach (string part in parts)
             {
-
                 concatenated.Append(part).Append('\u001f');
-
             }
 
             Assert.Equal(TapestryHash.OfContent(concatenated.ToString()), TapestryHash.OfParts(parts));
-
         }
-
     }
-
 }

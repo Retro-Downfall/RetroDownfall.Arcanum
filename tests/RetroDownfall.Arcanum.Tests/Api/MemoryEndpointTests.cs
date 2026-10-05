@@ -27,6 +27,8 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 
 using RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+
 using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -763,6 +765,123 @@ public sealed class MemoryEndpointTests
         Assert.True(EligibleSource(explainEnvelope.Data, "Pinned Entries"));
 
         Assert.True(EligibleSource(explainEnvelope.Data, "Campaign Summary"));
+    }
+
+    /// <summary>
+    /// A Session's Tapestry count includes the published nodes of both of its scope kinds, each under
+    /// the spelling its own writer keyed it by.
+    /// </summary>
+    /// <remarks>
+    /// <c>tapestry_generations.ScopeId</c> is filled from the corpus the sweep read, and the two Session
+    /// corpora spell one Session differently: <c>Entries.SessionId</c> is uppercase dashed and
+    /// <c>session_attachment_chunks.SessionId</c> is lowercase. One bound parameter can match only one of
+    /// them, so the count reported the other kind's nodes as absent. The generations are published
+    /// through the store, keyed by the spelling each corpus carries, and the status route is asked for
+    /// the Session by its ordinary lowercase identity.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_session_status_counts_the_published_tapestry_nodes_of_both_scope_kinds()
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            db.Sessions.Add(new Session
+            {
+                Id = sessionId,
+                Status = "active",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+
+            _ = await db.SaveChangesAsync();
+
+            ITapestryStore store = scope.ServiceProvider.GetRequiredService<ITapestryStore>();
+
+            await PublishOneNodeAsync(
+                store,
+                new TapestryScope(TapestryScopeKind.Session, sessionId.ToString("D").ToUpperInvariant()));
+
+            await PublishOneNodeAsync(
+                store,
+                new TapestryScope(TapestryScopeKind.SessionAttachment, sessionId.ToString("D")));
+        }
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync(
+            "/api/memory/status/" + sessionId.ToString("D"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemoryStatusDto>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.NotNull(envelope?.Data);
+
+        MemoryStoreStatusDto tapestry = Assert.Single(
+            envelope.Data.Stores,
+            static store => string.Equals(store.Name, "Tapestry", StringComparison.Ordinal));
+
+        Assert.Equal(2, tapestry.Count);
+    }
+
+    private static async Task PublishOneNodeAsync(ITapestryStore store, TapestryScope scope)
+    {
+        string generationId = await store.BeginGenerationAsync(
+            scope,
+            SphericalKMeans.AlgorithmVersion,
+            "settings",
+            "model",
+            TapestryHash.SummaryRecipeVersion,
+            8,
+            "corpus",
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        await store.AppendNodesAsync(
+            [
+                new TapestryNodeWrite(
+                    new TapestryNode(
+                        $"node-{scope.Kind}-{generationId}",
+                        generationId,
+                        scope.Kind,
+                        scope.Id,
+                        0,
+                        TapestryNodeKind.Leaf,
+                        null,
+                        scope.Kind == TapestryScopeKind.Session
+                            ? TapestryLeafSourceKind.Entry
+                            : TapestryLeafSourceKind.SessionAttachmentChunk,
+                        "source",
+                        "label",
+                        null,
+                        TapestryHash.OfContent("body"),
+                        null,
+                        1,
+                        0,
+                        TapestryPartitionReason.None,
+                        8,
+                        DateTimeOffset.UtcNow),
+                    new float[8]),
+            ],
+            CancellationToken.None);
+
+        await store.PublishGenerationAsync(
+            generationId,
+            1,
+            1,
+            1,
+            TapestryTerminalReason.LeafOnly,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
     }
 
     private static bool EligibleSource(MemoryExplainDto explain, string name) =>
