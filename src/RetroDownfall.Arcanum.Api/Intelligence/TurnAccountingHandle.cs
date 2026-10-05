@@ -238,9 +238,11 @@ internal sealed class TurnAccountingHandle
                 // The estimate plateaued, so nothing was raised, but the spend earlier rounds
                 // committed still counts: without this N rounds could each spend what one admission
                 // was sized for. A raise has already judged the local ledger, so after one this runs
-                // only to add the delegated work a raise cannot see. Committed spend holds every
-                // earlier round and the reservation is sized for the next call alone, so this checks
-                // accumulated actual spend and never multiplies an estimate by a call count.
+                // only to add the delegated work a raise cannot see. The days judged (the
+                // reservation's own and, once UTC midnight has passed, today) hold every earlier
+                // round's committed spend and the reservation is sized for the next call alone, so
+                // this checks accumulated actual spend and never multiplies an estimate by a call
+                // count.
                 if (!raise || delegatedUsd > 0m)
                 {
                     admitted = await budgetReservations

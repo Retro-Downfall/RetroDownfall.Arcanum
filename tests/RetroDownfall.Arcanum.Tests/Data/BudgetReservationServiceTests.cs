@@ -491,10 +491,8 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     /// <summary>
     /// The per-call recheck of a reservation that was not raised judges the ledger a raise judges:
     /// committed spend and outstanding reservations of the reservation's own budget period, this one
-    /// included, against the limit configured now. A turn admitted on one UTC day and still running
-    /// on the next is held to the day its reservation and its earlier rounds belong to, not to an
-    /// empty new day; known delegated spend is added on top; a settled reservation has nothing left
-    /// to check.
+    /// included, against the limit configured now. On the day the reservation was admitted, known
+    /// delegated spend (today's) is added on top; a settled reservation has nothing left to check.
     /// </summary>
     [SkippableFact]
     public async Task RecheckDailyLimitAsync_JudgesTheReservationsOwnPeriodAgainstTheLiveLimit()
@@ -520,6 +518,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
             DailyLimitUsd = 1m,
         };
         BudgetReservationService service = CreateService(policy);
+        service.UtcNowForTesting = () => admittedDay.AddHours(23).AddMinutes(30);
         BudgetReservation reservation = await ReserveAsync(service, 0.10m, admittedDay.AddDays(1), period);
 
         Result withinLimit = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
@@ -540,6 +539,121 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.True(underLoweredLimit.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, underLoweredLimit.Error.Code);
         Assert.True(settled.IsSuccess);
+    }
+
+    /// <summary>
+    /// A turn admitted before UTC midnight keeps running after it. Its reservation stays in the day
+    /// it was admitted on, but every round it finishes from then on is committed to the new day, so
+    /// judging the admitted day alone stopped the figure growing at midnight and let a plateaued
+    /// turn spend without limit on the next day. The recheck judges both days: the admitted day's
+    /// committed and outstanding spend, and the new day's with this reservation (sized for the next
+    /// call, whose spend lands there) and today's delegated spend added.
+    /// </summary>
+    [SkippableFact]
+    public async Task RecheckDailyLimitAsync_AfterUtcMidnight_JudgesTheNewDaysSpendAndStillTheAdmittedDay()
+    {
+        RequireSqlCipher();
+
+        DateTimeOffset admittedAt = new(2035, 2, 3, 23, 50, 0, TimeSpan.Zero);
+        DateTimeOffset nextDay = new(2035, 2, 4, 0, 0, 0, TimeSpan.Zero);
+        Guid runId = await StartRunAsync("budget-recheck-midnight", admittedAt);
+        await InsertBillableOperationAsync(runId, admittedAt.AddMinutes(-30), 2m);
+        BudgetPolicySettings policy = new()
+        {
+            Enabled = true,
+            DailyLimitUsd = 10m,
+        };
+        BudgetReservationService service = CreateService(policy);
+        service.UtcNowForTesting = () => admittedAt;
+        BudgetReservation reservation = await ReserveAsync(
+            service,
+            0.50m,
+            admittedAt.AddHours(1),
+            BudgetReservationService.UtcBudgetPeriod(admittedAt));
+        service.UtcNowForTesting = () => nextDay.AddHours(1);
+
+        // The admitted day still binds: $2.00 committed + $0.50 reserved is over a lowered limit
+        // while the new day holds only the reservation and the delegated spend.
+        policy.DailyLimitUsd = 2.40m;
+        Result admittedDayOver = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0.60m);
+        policy.DailyLimitUsd = 10m;
+
+        await InsertBillableOperationAsync(runId, nextDay.AddMinutes(10), 9m);
+        Result withinBothDays = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
+        Result withTodaysDelegated = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0.60m);
+
+        await InsertBillableOperationAsync(runId, nextDay.AddMinutes(20), 0.60m);
+        Result newDayOver = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
+
+        Assert.True(withinBothDays.IsSuccess, withinBothDays.IsFailure ? withinBothDays.Error.Message : null);
+        Assert.True(newDayOver.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, newDayOver.Error.Code);
+        Assert.Equal(
+            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved+delegated: $10.10 USD).",
+            newDayOver.Error.Message);
+        Assert.True(withTodaysDelegated.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, withTodaysDelegated.Error.Code);
+        Assert.Equal(
+            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved+delegated: $10.10 USD).",
+            withTodaysDelegated.Error.Message);
+        Assert.True(admittedDayOver.IsFailure);
+        Assert.Equal(
+            "Daily budget limit of $2.40 USD would be exceeded (committed+reserved+delegated: $2.50 USD).",
+            admittedDayOver.Error.Message);
+    }
+
+    /// <summary>
+    /// A raise after UTC midnight is what the turn's next call may spend, and that spend lands in the
+    /// new day, so the raise is judged against the new day's committed and outstanding spend as well
+    /// as the admitted day's. A refused raise leaves the reservation as it was.
+    /// </summary>
+    [SkippableFact]
+    public async Task AdjustAsync_AfterUtcMidnight_RefusesARaiseTheNewDayCannotCover()
+    {
+        RequireSqlCipher();
+
+        DateTimeOffset admittedAt = new(2035, 2, 3, 23, 50, 0, TimeSpan.Zero);
+        DateTimeOffset nextDay = new(2035, 2, 4, 0, 0, 0, TimeSpan.Zero);
+        Guid runId = await StartRunAsync("budget-adjust-midnight", admittedAt);
+        await InsertBillableOperationAsync(runId, admittedAt.AddMinutes(-30), 2m);
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
+        {
+            Enabled = true,
+            DailyLimitUsd = 10m,
+        });
+        service.UtcNowForTesting = () => admittedAt;
+        BudgetReservation reservation = await ReserveAsync(
+            service,
+            0.50m,
+            admittedAt.AddHours(1),
+            BudgetReservationService.UtcBudgetPeriod(admittedAt));
+        service.UtcNowForTesting = () => nextDay.AddHours(1);
+        await InsertBillableOperationAsync(runId, nextDay.AddMinutes(10), 9m);
+
+        Result raisedToTheLimit = await service.AdjustAsync(reservation.Id, 1.00m);
+        Result refused = await service.AdjustAsync(reservation.Id, 1.50m);
+
+        Assert.True(raisedToTheLimit.IsSuccess, raisedToTheLimit.IsFailure ? raisedToTheLimit.Error.Message : null);
+        Assert.True(refused.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, refused.Error.Code);
+        Assert.Equal(
+            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved: $10.00 USD).",
+            refused.Error.Message);
+        service.UtcNowForTesting = () => admittedAt;
+        Assert.Equal(1.00m, await service.GetTodayOutstandingReservationsAsync());
+    }
+
+    private async Task<Guid> StartRunAsync(string requestId, DateTimeOffset startedAt)
+    {
+        TurnRunWriter runs = new(_db!);
+
+        return await runs.StartRunAsync(new InferenceRunStart(
+            RequestId: requestId,
+            SessionId: null,
+            Surface: "test",
+            Purpose: "coverage",
+            IdempotencyClaimId: null,
+            StartedAt: startedAt));
     }
 
     private async Task ArrangeCancelOnWriteAsync(string triggerScope, CancellationTokenSource cancellation)

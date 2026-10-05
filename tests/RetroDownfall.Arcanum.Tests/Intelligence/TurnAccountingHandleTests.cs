@@ -480,7 +480,8 @@ public sealed class TurnAccountingHandleTests
     /// A turn admitted before UTC midnight keeps its reservation in the day it was admitted on. The
     /// plateau check read today's ledger, which after midnight holds neither that reservation nor the
     /// spend the turn's earlier rounds committed, so a turn that crossed midnight ran on unchecked. It
-    /// judges the ledger a raise judges: the reservation's own budget period.
+    /// judges the ledger a raise judges: the reservation's own budget period, and today's as well
+    /// (the service's own tests pin the rounds finished after midnight).
     /// </summary>
     [Fact]
     public async Task EnsureReservationForContextAsync_PlateauCheckJudgesTheDayTheReservationWasAdmittedOn()
@@ -1312,7 +1313,9 @@ public sealed class TurnAccountingHandleTests
 
         /// <summary>
         /// Committed spend in the reservation's own budget period, when that differs from today's (a
-        /// turn admitted before UTC midnight); <see cref="CommittedSpend"/> otherwise.
+        /// turn admitted before UTC midnight). Set, the recheck judges that day and today
+        /// (<see cref="CommittedSpend"/> plus <see cref="TodayOutstanding"/>) separately, as the
+        /// service does; unset, the two are one day.
         /// </summary>
         public Func<decimal>? ReservationPeriodCommittedSpend { get; init; }
 
@@ -1343,10 +1346,26 @@ public sealed class TurnAccountingHandleTests
                 return Task.FromResult(Result.Success());
             }
 
-            decimal committed = (ReservationPeriodCommittedSpend ?? CommittedSpend)?.Invoke() ?? 0m;
-            decimal spend = committed + OutstandingUsd + delegatedSpendUsd;
+            decimal todayCommitted = CommittedSpend?.Invoke() ?? 0m;
+            bool overLimit;
 
-            return Task.FromResult(spend > DailyLimitUsd
+            if (ReservationPeriodCommittedSpend is null)
+            {
+                overLimit = todayCommitted + OutstandingUsd + delegatedSpendUsd > DailyLimitUsd;
+            }
+            else
+            {
+                // The reservation's own day is not today: both days are judged, and the delegated
+                // spend (today's) and the next call count toward today.
+                decimal admittedDay = ReservationPeriodCommittedSpend() + OutstandingUsd;
+                decimal today = todayCommitted
+                    + (TodayOutstanding?.Invoke() ?? 0m)
+                    + OutstandingUsd
+                    + delegatedSpendUsd;
+                overLimit = admittedDay > DailyLimitUsd || today > DailyLimitUsd;
+            }
+
+            return Task.FromResult(overLimit
                 ? Result.Failure(new Error(ErrorCodes.Budget.Exceeded, "over the daily limit"))
                 : Result.Success());
         }

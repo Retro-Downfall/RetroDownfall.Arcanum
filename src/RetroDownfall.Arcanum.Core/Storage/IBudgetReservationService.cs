@@ -20,7 +20,9 @@ public interface IBudgetReservationService
 
     /// <summary>
     /// Raises an existing reservation after the materialized context has been estimated. The
-    /// implementation must apply the same atomic daily-limit check as initial acquisition.
+    /// implementation must apply the same atomic daily-limit check as initial acquisition, to the
+    /// reservation's own budget period and, when that is no longer today, to today's committed and
+    /// outstanding spend plus the raised amount, since the next call's spend lands in today.
     /// </summary>
     Task<Result> AdjustAsync(
         Guid reservationId,
@@ -30,14 +32,18 @@ public interface IBudgetReservationService
     /// <summary>
     /// Rechecks the daily limit for a still-<see cref="BudgetReservationStatus.Reserved"/> reservation
     /// without raising it: committed spend plus outstanding reservations (this one included) in the
-    /// reservation's own budget period, plus <paramref name="delegatedSpendUsd"/>, must not exceed the
-    /// limit. Fails with <c>Budget.Exceeded</c> when it would.
+    /// reservation's own budget period must not exceed the limit, and when that period is no longer
+    /// today, neither may today's committed spend plus today's outstanding reservations plus this
+    /// one. <paramref name="delegatedSpendUsd"/> is today's, so it is added to whichever of the two
+    /// is today. Fails with <c>Budget.Exceeded</c> when either would be exceeded.
     /// </summary>
     /// <remarks>
     /// The same ledger and the same limit source <see cref="AdjustAsync"/> judges a raise on, so a
     /// round that raises and a round that does not are held to one figure; a cheap read rather than a
-    /// write transaction. A reservation that is missing or no longer <c>Reserved</c> has nothing
-    /// outstanding to check and succeeds, as a raise of it would.
+    /// write transaction. Judging today as well is what keeps a turn admitted before UTC midnight
+    /// from spending unchecked after it: every round it finishes from then on is committed to today,
+    /// outside the reservation's own period. A reservation that is missing or no longer
+    /// <c>Reserved</c> has nothing outstanding to check and succeeds, as a raise of it would.
     /// </remarks>
     Task<Result> RecheckDailyLimitAsync(
         Guid reservationId,
