@@ -240,4 +240,19 @@ public sealed class ArcanumErrorMapperTests
 
         Assert.Equal(StatusCodes.Status500InternalServerError, actual);
     }
+
+    /// <summary>
+    /// A memory-review <c>apply</c> whose transaction could not commit is a storage fault with nothing
+    /// written (API section 8.23), and the review routes resolve through the bad-request default, which
+    /// would otherwise present it as the caller's own malformed request.
+    /// </summary>
+    [Theory]
+    [InlineData(ErrorCodes.Saga.WriteFailed)]
+    [InlineData(ErrorCodes.Covenant.WriteFailed)]
+    public void ResolveStatusCodeDefaultBadRequest_ReviewApplyWriteFailures_AreNotDowngradedTo400(string code)
+    {
+        int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(code);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, actual);
+    }
 }
