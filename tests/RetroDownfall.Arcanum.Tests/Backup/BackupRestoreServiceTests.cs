@@ -43,7 +43,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </summary>
 public sealed class BackupRestoreServiceTests : IDisposable
 {
-
     private const string Passphrase = "restore integration passphrase";
 
     private readonly string _root = Path.Combine(
@@ -56,7 +55,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     public BackupRestoreServiceTests()
     {
-
         _installation = Path.Combine(_root, "profile", "arcanum");
 
         _archives = Path.Combine(_root, "archives");
@@ -64,25 +62,19 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Directory.CreateDirectory(_installation);
 
         Directory.CreateDirectory(_archives);
-
     }
 
     public void Dispose()
     {
-
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task A_full_archive_restores_onto_a_clean_machine_without_the_source_credential_store()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("full.arcbackup");
@@ -117,7 +109,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
-
     }
 
     /// <summary>
@@ -140,7 +131,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task A_full_archive_carries_saga_retirement_evidence_and_the_key_that_binds_it()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("curation.arcbackup");
@@ -173,7 +163,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await ScalarAsync(
                 connection,
                 "SELECT CampaignId FROM saga_retirement_suppressions;"));
-
     }
 
     /// <summary>
@@ -193,7 +182,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task A_cancelled_restore_stops_composing_the_staged_tree()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("compose-cancel.arcbackup");
@@ -206,16 +194,12 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         BackupRestoreServiceOptions options = new()
         {
-
             BeforeStagedEntryComposeForTests = entry =>
             {
-
                 composed.Add(entry);
 
                 cancellation.Cancel();
-
             },
-
         };
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -225,7 +209,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 cancellation.Token));
 
         Assert.Single(composed);
-
     }
 
     /// <summary>
@@ -248,7 +231,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task An_archive_whose_entry_paths_differ_only_in_case_is_refused()
     {
-
         Fixture fixture = await CreateFixtureAsync(caseCollidingAttachment: true);
 
         string archive = await fixture.CreateBackupAsync("case-collision.arcbackup");
@@ -266,7 +248,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         // Refused before anything was laid down: the destination is as empty as the wipe left it.
         Assert.False(File.Exists(Path.Combine(_installation, "arcanum.db")));
-
     }
 
     /// <summary>
@@ -286,7 +267,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task A_restore_under_a_different_embedding_width_takes_the_vector_mirror_with_it()
     {
-
         Fixture fixture = await CreateFixtureAsync(mirroredEmbeddings: true);
 
         string archive = await fixture.CreateBackupAsync("embedding-width.arcbackup");
@@ -313,7 +293,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Equal(
             "0",
             await ScalarAsync(connection, "SELECT COUNT(*) FROM entry_embeddings_vec;"));
-
     }
 
     /// <summary>
@@ -334,7 +313,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task The_json_restore_document_names_dropped_vectors_without_claiming_a_rebuild()
     {
-
         Fixture fixture = await CreateFixtureAsync(mirroredEmbeddings: true);
 
         string archive = await fixture.CreateBackupAsync("embedding-width-json.arcbackup");
@@ -361,13 +339,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.False(
             reconciliation.TryGetProperty("embeddingsRebuilt", out _),
             "The restore document still claims it rebuilt the vectors it deleted.");
-
     }
 
     [Fact]
     public async Task Restored_attachment_snapshots_survive_a_workspace_that_no_longer_exists_and_stay_unrefreshable()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("provenance.arcbackup");
@@ -392,13 +368,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.True(
             File.Exists(
                 Path.Combine(_installation, "attachments", "session", "note.bin")));
-
     }
 
     [Fact]
     public async Task Cross_platform_mappings_rewrite_campaign_workspace_and_provenance_roots()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("mapped.arcbackup");
@@ -444,13 +418,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             result.Plan.PathMappings,
             static mapping => mapping.Kind == BackupPathMappingKind.CampaignRoot
                 && mapping.MatchedTargets > 0);
-
     }
 
     [Fact]
     public async Task A_dry_run_reports_the_plan_and_leaves_the_installation_untouched()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("dry.arcbackup");
@@ -477,13 +449,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
-
     }
 
     [Fact]
     public async Task Replacement_restore_publishes_the_client_blocker_before_its_first_mutation_and_retires_it_last()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("client-coordinated.arcbackup");
@@ -502,13 +472,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         {
             BeforeFirstRestoreMutationForTests = () =>
             {
-
                 Assert.True(File.Exists(blocker.BlockerPath));
 
                 Assert.Equal(
                     ArcanumClientMutationLockAcquisitionDisposition.Contended,
                     ArcanumClientMutationLock.AcquireDetailed(_installation).Disposition);
-
             },
         };
 
@@ -530,13 +498,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         using ArcanumClientMutationLock released = Assert.IsType<ArcanumClientMutationLock>(
             ArcanumClientMutationLock.AcquireDetailed(_installation).Lock);
-
     }
 
     [Fact]
     public async Task A_destructive_replacement_without_confirmation_is_refused()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("unconfirmed.arcbackup");
@@ -553,13 +519,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static issue => issue.Code == "backup.restore_confirmation_required");
 
         Assert.True(File.Exists(Path.Combine(_installation, "arcanum.db")));
-
     }
 
     [Fact]
     public async Task A_wrong_passphrase_is_refused_before_the_installation_changes()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("wrong.arcbackup");
@@ -578,13 +542,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static issue => issue.Code == "backup.authentication_failed");
 
         Assert.Equal(codexBefore, await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
-
     }
 
     [Fact]
     public async Task An_archive_without_portable_recovery_material_is_refused()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync(
@@ -603,13 +565,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static issue => issue.Code == "backup.restore_recovery_material_missing");
 
         Assert.True(File.Exists(Path.Combine(_installation, "arcanum.db")));
-
     }
 
     [Fact]
     public async Task A_newer_unsupported_format_is_refused_with_upgrade_guidance()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("newer.arcbackup");
@@ -634,13 +594,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Contains("upgrade", issue.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.True(File.Exists(Path.Combine(_installation, "arcanum.db")));
-
     }
 
     [Fact]
     public async Task Insufficient_destination_space_is_refused_before_staging()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("cramped.arcbackup");
@@ -666,13 +624,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
-
     }
 
     [Fact]
     public async Task A_fault_after_commit_returns_the_prior_installation_to_its_original_state()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("faulted.arcbackup");
@@ -685,19 +641,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 new RecordingSecretStore(),
                 new BackupRestoreServiceOptions
                 {
-
                     BeforePhaseForTests = phase =>
                     {
-
                         if (phase == BackupRestorePhase.Reconcile)
                         {
-
                             throw new IOException("injected post-commit fault");
-
                         }
-
                     },
-
                 })
             .RestoreAsync(
                 new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
@@ -717,13 +667,67 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
+    }
 
+    /// <summary>
+    /// A post-commit fault of a type no reversal catch names keeps the journal and the displaced
+    /// installation, rather than reaching a cleanup that deletes them while the new generation is live.
+    /// </summary>
+    /// <remarks>
+    /// Every other post-commit case injects an <see cref="IOException"/>, which the reversal catch
+    /// handles. An exception outside that hand-enumerated filter skips the reversal entirely, so the
+    /// only question left is what the cleanup does by default — and the default has to be retention
+    /// once the installation is displaced, or <c>previous/</c> is deleted with the staging root.
+    /// </remarks>
+    [Fact]
+    public async Task A_non_io_fault_after_commit_keeps_the_journal_and_displaced_installation()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unlisted-fault.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(
+            () => Restore(
+                    new RecordingSecretStore(),
+                    new BackupRestoreServiceOptions
+                    {
+                        BeforePhaseForTests = phase =>
+                        {
+                            if (phase == BackupRestorePhase.Reconcile)
+                            {
+                                throw new ArgumentException("injected");
+                            }
+                        },
+                    })
+                .RestoreAsync(
+                    new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                    Passphrase.AsMemory(),
+                    CancellationToken.None));
+
+        string staging = Assert.Single(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+        Assert.NotNull(BackupRestoreJournal.TryRead(staging));
+
+        string displaced = Path.Combine(staging, BackupRestoreJournal.DisplacedDirectoryName);
+
+        Assert.True(Directory.Exists(displaced));
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(displaced, "CODEX.md")));
     }
 
     [Fact]
     public async Task A_fault_before_commit_leaves_the_installation_unchanged()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("early-fault.arcbackup");
@@ -732,19 +736,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 new RecordingSecretStore(),
                 new BackupRestoreServiceOptions
                 {
-
                     BeforePhaseForTests = phase =>
                     {
-
                         if (phase == BackupRestorePhase.Validate)
                         {
-
                             throw new IOException("injected pre-commit fault");
-
                         }
-
                     },
-
                 })
             .RestoreAsync(
                 new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
@@ -760,13 +758,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
-
     }
 
     [Fact]
     public async Task The_data_protection_key_ring_and_existing_backups_survive_a_replacement()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("preserve.arcbackup");
@@ -793,7 +789,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Equal("<key/>", await File.ReadAllTextAsync(keyRing));
 
         Assert.Equal("older", await File.ReadAllTextAsync(existingBackup));
-
     }
 
     /// <summary>
@@ -805,7 +800,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task A_commit_that_fails_partway_through_preserving_still_returns_the_key_ring()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("partial-preserve.arcbackup");
@@ -832,21 +826,15 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 new RecordingSecretStore(),
                 new BackupRestoreServiceOptions
                 {
-
                     BeforePreservedEntryMoveForTests = name =>
                     {
-
                         if (name == "backups" && !faulted)
                         {
-
                             faulted = true;
 
                             throw new IOException("injected preserve fault");
-
                         }
-
                     },
-
                 })
             .RestoreAsync(
                 new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
@@ -870,7 +858,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
-
     }
 
     /// <summary>
@@ -881,7 +868,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task A_reversal_that_cannot_complete_keeps_the_journal_and_the_displaced_installation()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("stranded.arcbackup");
@@ -894,22 +880,16 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 new RecordingSecretStore(),
                 new BackupRestoreServiceOptions
                 {
-
                     BeforePhaseForTests = phase =>
                     {
-
                         if (phase == BackupRestorePhase.Reconcile)
                         {
-
                             throw new IOException("injected post-commit fault");
-
                         }
-
                     },
 
                     BeforeReversalRenameForTests =
                         static () => throw new IOException("injected reversal fault"),
-
                 })
             .RestoreAsync(
                 new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
@@ -940,13 +920,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Equal(
             "# the original codex",
             await File.ReadAllTextAsync(Path.Combine(journal.DisplacedRoot, "CODEX.md")));
-
     }
 
     [Fact]
     public async Task A_new_profile_root_restore_leaves_the_current_installation_and_its_secrets_alone()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("profile.arcbackup");
@@ -957,9 +935,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         RecordingSecretStore store = new()
         {
-
             GrimoireSecret = "the current machine secret",
-
         };
 
         string destination = Path.Combine(_root, "second-profile");
@@ -985,7 +961,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
 
         Assert.Equal("the current machine secret", store.GrimoireSecret);
-
     }
 
     /// <summary>
@@ -998,16 +973,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [SkippableFact]
     public async Task A_staging_root_that_cannot_be_created_is_a_typed_refusal_rather_than_an_exception()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         Fixture fixture = await CreateFixtureAsync();
@@ -1022,14 +994,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         try
         {
-
             if (CanCreateDirectoryIn(sealedParent))
             {
-
                 // A process that outranks the mode — root in a container, most often — cannot observe
                 // the refusal at all, so there is nothing here to assert.
                 return;
-
             }
 
             BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
@@ -1049,17 +1018,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
             Assert.Equal(
                 "# the archived codex",
                 await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
-
         }
         finally
         {
-
             File.SetUnixFileMode(
                 sealedParent,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
-
     }
 
     /// <summary>
@@ -1077,16 +1042,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [SkippableFact]
     public async Task An_undeletable_staging_root_is_left_without_a_journal_for_the_startup_sweep()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "The sealed staging root relies on Unix owner-only mode bits.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only call in the finally block below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         Fixture fixture = await CreateFixtureAsync();
@@ -1099,7 +1061,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         try
         {
-
             BackupRestoreResult result = await Restore(store).RestoreAsync(
                 new BackupRestoreRequest(
                     archive,
@@ -1117,27 +1078,21 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
             if (!Directory.Exists(store.SealedStagingRoot!))
             {
-
                 // A process that outranks the mode — root in a container, most often — deletes the
                 // staging root anyway, and there is no surviving directory to assert about.
                 return;
-
             }
 
             // The surviving directory is the whole point: it is the only state in which the journal's
             // presence still decides anything.
             Assert.Empty(BackupRestoreJournal.Discover(stagingParent));
-
         }
         finally
         {
-
             File.SetUnixFileMode(
                 stagingParent,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
-
     }
 
     /// <summary>
@@ -1148,7 +1103,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task Adopting_the_archived_master_api_key_outside_a_replacement_is_refused()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync(
@@ -1173,15 +1127,12 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static issue => issue.Code == "backup.restore_master_api_key_not_applicable");
 
         Assert.False(Directory.Exists(Path.Combine(_root, "adopting-profile")));
-
     }
 
     private static bool CanCreateDirectoryIn(string parent)
     {
-
         try
         {
-
             string probe = Path.Combine(parent, "probe-" + Guid.NewGuid().ToString("N"));
 
             Directory.CreateDirectory(probe);
@@ -1189,16 +1140,12 @@ public sealed class BackupRestoreServiceTests : IDisposable
             Directory.Delete(probe);
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -1210,7 +1157,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task A_new_profile_restore_records_its_distant_staging_root_for_startup_recovery()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("indexed-profile.arcbackup");
@@ -1223,20 +1169,14 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 new RecordingSecretStore(),
                 new BackupRestoreServiceOptions
                 {
-
                     BeforePhaseForTests = phase =>
                     {
-
                         if (phase == BackupRestorePhase.Commit)
                         {
-
                             recordedDuringRestore.AddRange(
                                 BackupRestoreStagingIndex.Read(_installation));
-
                         }
-
                     },
-
                 })
             .RestoreAsync(
                 new BackupRestoreRequest(
@@ -1258,13 +1198,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             BackupRestoreJournal.IsCanonicalStagingName(Path.GetFileName(staging)));
 
         Assert.Empty(BackupRestoreStagingIndex.Read(_installation));
-
     }
 
     [Fact]
     public async Task A_new_profile_root_must_be_empty_and_may_not_be_the_current_installation()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("profile-guard.arcbackup");
@@ -1296,13 +1234,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Contains(
             current.Issues,
             static issue => issue.Code == "backup.restore_destination_is_current");
-
     }
 
     [Fact]
     public async Task Selected_sessions_import_into_a_live_installation_without_replacing_it()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("import.arcbackup");
@@ -1313,9 +1249,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         RecordingSecretStore store = new()
         {
-
             GrimoireSecret = fixture.GrimoireSecret,
-
         };
 
         BackupRestoreResult result = await Restore(store).RestoreAsync(
@@ -1360,7 +1294,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 """
                 SELECT COUNT(*) FROM "SessionAttachments" WHERE "SourceStatus" = 'Refreshable';
                 """));
-
     }
 
     /// <summary>
@@ -1385,7 +1318,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task A_selective_import_refused_partway_reports_the_Sessions_it_already_committed()
     {
-
         Fixture fixture = await CreateFixtureAsync(refusableSessionTrio: true);
 
         string archive = await fixture.CreateBackupAsync("import-partial.arcbackup");
@@ -1466,13 +1398,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await ScalarAsync(
                 connection,
                 "SELECT COUNT(*) FROM \"Entries\" WHERE \"Content\" = 'ask A';"));
-
     }
 
     [Fact]
     public async Task Importing_a_session_the_archive_does_not_contain_is_refused()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("import-missing.arcbackup");
@@ -1494,13 +1424,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Contains(
             result.Issues,
             static issue => issue.Code == "backup.restore_import_session_absent");
-
     }
 
     [Fact]
     public async Task An_all_interfaces_acknowledgement_is_not_inherited_by_the_destination()
     {
-
         Fixture fixture = await CreateFixtureAsync(listenAny: true);
 
         string archive = await fixture.CreateBackupAsync("listen-any.arcbackup");
@@ -1522,13 +1450,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Contains(
             result.Plan.Warnings,
             static warning => warning.Contains("ListenAny", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public async Task Trusted_workspace_metadata_is_withheld_rather_than_inherited_as_authorization()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         await File.WriteAllTextAsync(
@@ -1554,13 +1480,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Contains(
             result.Plan.Warnings,
             static warning => warning.Contains("Re-approve", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public async Task The_master_api_key_is_adopted_only_on_explicit_request()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync(
@@ -1577,13 +1501,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             CancellationToken.None);
 
         Assert.Null(withoutRequest.ApiKey);
-
     }
 
     [Fact]
     public async Task A_restore_is_refused_while_another_process_holds_the_maintenance_lock()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("locked.arcbackup");
@@ -1610,13 +1532,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Contains("another process", issue.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("installation reset", issue.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task Unsafe_maintenance_lock_topology_is_reported_truthfully_without_staging_or_mutation()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("unsafe-lock.arcbackup");
@@ -1653,13 +1573,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
-
     }
 
     [Fact]
     public async Task An_older_supported_snapshot_converges_through_the_authoritative_schema_installer()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         await DropTableAsync(fixture, "Prompts");
@@ -1684,13 +1602,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await ScalarAsync(
                 connection,
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'Prompts';"));
-
     }
 
     [Fact]
     public async Task A_pre_restore_safety_backup_is_produced_before_the_destructive_step()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("safety.arcbackup");
@@ -1712,13 +1628,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Contains(
             result.Phases,
             static phase => phase.Phase == BackupRestorePhase.SafetyPoint);
-
     }
 
     [Fact]
     public async Task A_pre_restore_safety_backup_that_does_not_complete_stops_the_restore_before_the_destructive_step()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("safety-incomplete.arcbackup");
@@ -1756,13 +1670,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
-
     }
 
     [Fact]
     public async Task A_migrated_archive_is_rewritten_at_the_current_format_without_touching_the_source()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("migrate-source.arcbackup");
@@ -1792,13 +1704,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             CancellationToken.None);
 
         Assert.True(verified.IsValid);
-
     }
 
     [Fact]
     public async Task Migrating_onto_the_source_path_or_an_existing_output_is_refused()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("migrate-guard.arcbackup");
@@ -1826,13 +1736,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static issue => issue.Code == "backup.migrate_output_exists");
 
         Assert.Equal("existing", await File.ReadAllTextAsync(occupied));
-
     }
 
     [Fact]
     public async Task A_Campaign_mapping_naming_a_Campaign_this_machine_does_not_have_is_a_plan_blocker()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("import-mapping.arcbackup");
@@ -1854,13 +1762,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
         // Named, because "no such Campaign" without saying which one leaves an operator re-reading
         // their own command line to work out which half of which mapping was wrong.
         Assert.Contains(absent.ToString("D"), blocker.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_Campaign_mapping_naming_a_Campaign_this_machine_has_is_planned_without_a_blocker()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("import-mapping-ok.arcbackup");
@@ -1884,13 +1790,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             plan.Blockers,
             static issue =>
                 issue.Code == BackupRestoreCampaignMappingPolicy.DestinationMissingCode);
-
     }
 
     [Fact]
     public async Task A_destination_this_machine_cannot_read_refuses_no_Campaign_mapping()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("import-mapping-unreadable.arcbackup");
@@ -1909,13 +1813,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static issue => issue.Code.StartsWith(
                 "backup.restore_campaign_mapping",
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
     public async Task A_Campaign_mapping_on_a_restore_that_imports_nothing_is_refused_as_inapplicable()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("import-mapping-mode.arcbackup");
@@ -1940,13 +1842,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             plan.Blockers,
             static issue =>
                 issue.Code == BackupRestoreCampaignMappingPolicy.NotApplicableCode);
-
     }
 
     [Fact]
     public async Task A_Campaign_mapping_without_the_Covenant_import_arm_is_refused_rather_than_ignored()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("import-mapping-gate-off.arcbackup");
@@ -1965,13 +1865,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             plan.Blockers,
             static issue =>
                 issue.Code == BackupRestoreCampaignMappingPolicy.CovenantRequiredCode);
-
     }
 
     [Fact]
     public async Task A_selective_import_that_names_no_mapping_is_untouched_by_the_arm_being_absent()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         string archive = await fixture.CreateBackupAsync("import-no-mapping.arcbackup");
@@ -1991,13 +1889,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static issue => issue.Code.StartsWith(
                 "backup.restore_campaign_mapping",
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
     public async Task A_blocked_plan_never_opens_the_live_Grimoire_to_check_a_Campaign_mapping()
     {
-
         Fixture fixture = await CreateFixtureAsync();
 
         _ = await fixture.CreateBackupAsync("import-mapping-blocked.arcbackup");
@@ -2040,7 +1936,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         // number, so the assertion stays about the mapping read and not about how many other readers
         // this plan happens to have.
         Assert.Equal(withoutMapping.GrimoireSecretReads, withMapping.GrimoireSecretReads);
-
     }
 
     /// <summary>
@@ -2055,25 +1950,21 @@ public sealed class BackupRestoreServiceTests : IDisposable
     private static BackupRestoreServiceOptions ProtectedSelectiveImport() =>
         new()
         {
-
             SelectiveImport = new CovenantSelectiveImportServices(
                 new BackupSessionImporterTests.ProtectedTransferGate(),
                 new ProtectedArtifactTransferStore(
                     CovenantSqliteConnectionInitializer.Instance,
                     TimeProvider.System)),
-
         };
 
     private static BackupRestoreServiceOptions SelectiveImportEnabled() =>
         new()
         {
-
             // Only presence is read on the planning path — nothing here is invoked — but it is the one
             // thing that decides whether a Campaign mapping can be honoured at all.
             SelectiveImport = new CovenantSelectiveImportServices(
                 new CovenantRestoreStagingTests.RecordingExclusiveGate(),
                 new UnreachableTransferStore()),
-
         };
 
     private static BackupRestoreRequest ImportWithMapping(
@@ -2092,7 +1983,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     private sealed class UnreachableTransferStore : IProtectedArtifactTransferStore
     {
-
         public Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>>
             CommitImportedSessionAsync(
                 ImportedSessionTransferRequest request,
@@ -2101,7 +1991,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 ProtectedSessionImportDestination destination,
                 CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A restore plan commits no protected transfer.");
-
     }
 
     private BackupRestoreService Restore(
@@ -2129,20 +2018,16 @@ public sealed class BackupRestoreServiceTests : IDisposable
     private static BackupArchiveCodec Codec() =>
         new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
 
             ChunkSize = 64 * 1024,
-
         });
 
     private void WipeInstallation()
     {
-
         Directory.Delete(_installation, recursive: true);
 
         Directory.CreateDirectory(_installation);
-
     }
 
     private async Task<SqliteConnection> OpenRestoredAsync(string grimoireSecret) =>
@@ -2154,7 +2039,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     private static async Task<string?> ScalarAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -2162,12 +2046,10 @@ public sealed class BackupRestoreServiceTests : IDisposable
         object? value = await command.ExecuteScalarAsync();
 
         return value is null or DBNull ? null : Convert.ToString(value);
-
     }
 
     private static async Task DropTableAsync(Fixture fixture, string table)
     {
-
         await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
             fixture.DatabasePath,
             fixture.GrimoireSecret,
@@ -2179,7 +2061,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         command.CommandText = $"DROP TABLE IF EXISTS \"{table}\";";
 
         _ = await command.ExecuteNonQueryAsync();
-
     }
 
     private async Task<Fixture> CreateFixtureAsync(
@@ -2188,7 +2069,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         bool mirroredEmbeddings = false,
         bool caseCollidingAttachment = false)
     {
-
         Fixture fixture = new(_installation, _archives, Paths(), Codec());
 
         await fixture.BuildAsync(
@@ -2198,7 +2078,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
             caseCollidingAttachment);
 
         return fixture;
-
     }
 
     /// <summary>
@@ -2212,7 +2091,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         BackupStatePaths paths,
         BackupArchiveCodec codec)
     {
-
         public static readonly Guid SessionId =
             Guid.Parse("11111111-1111-1111-1111-111111111111");
 
@@ -2279,7 +2157,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
             bool mirroredEmbeddings = false,
             bool caseCollidingAttachment = false)
         {
-
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(installation);
 
             await File.WriteAllTextAsync(
@@ -2307,23 +2184,17 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
             if (refusableSessionTrio)
             {
-
                 await SeedRefusableSessionTrioAsync();
-
             }
 
             if (mirroredEmbeddings)
             {
-
                 await SeedMirroredEmbeddingAsync();
-
             }
 
             if (caseCollidingAttachment)
             {
-
                 await SeedCaseCollidingAttachmentAsync();
-
             }
 
             BackupService = new BackupService(
@@ -2333,7 +2204,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 codec,
                 new FixtureSecretReader(GrimoireSecret),
                 TimeProvider.System);
-
         }
 
         public async Task<string> CreateBackupAsync(
@@ -2341,7 +2211,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
             BackupScope scope = BackupScope.Full,
             BackupComponent[]? include = null)
         {
-
             string archive = Path.Combine(archives, name);
 
             BackupCreateResult created = await BackupService.CreateAsync(
@@ -2355,12 +2224,10 @@ public sealed class BackupRestoreServiceTests : IDisposable
             Assert.Equal(BackupCreateStatus.Complete, created.Status);
 
             return archive;
-
         }
 
         private async Task BuildDatabaseAsync()
         {
-
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(
                 GrimoireKeyDerivation.KdfVersion2);
 
@@ -2379,13 +2246,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
                 new SqliteConnectionStringBuilder
                 {
-
                     DataSource = DatabasePath,
 
                     Password = passphrase,
 
                     Pooling = false,
-
                 }.ToString(),
                 CancellationToken.None);
 
@@ -2450,7 +2315,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 """;
 
             _ = await curation.ExecuteNonQueryAsync();
-
         }
 
         /// <summary>
@@ -2469,7 +2333,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         /// </remarks>
         private async Task SeedRefusableSessionTrioAsync()
         {
-
             await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
                 DatabasePath,
                 GrimoireSecret,
@@ -2521,7 +2384,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 """;
 
             _ = await seed.ExecuteNonQueryAsync();
-
         }
 
         /// <summary>
@@ -2540,7 +2402,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         /// </remarks>
         private async Task SeedMirroredEmbeddingAsync()
         {
-
             await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
                 DatabasePath,
                 GrimoireSecret,
@@ -2563,7 +2424,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 """;
 
             _ = await seed.ExecuteNonQueryAsync();
-
         }
 
         /// <summary>
@@ -2584,7 +2444,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
         /// </remarks>
         private async Task SeedCaseCollidingAttachmentAsync()
         {
-
             string colliding = Path.Combine(installation, "attachments", "session", "NOTE.bin");
 
             Directory.CreateDirectory(Path.GetDirectoryName(colliding)!);
@@ -2612,7 +2471,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 """;
 
             _ = await seed.ExecuteNonQueryAsync();
-
         }
 
         public static readonly Guid MirroredEntryId =
@@ -2628,7 +2486,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         private sealed class FixtureSecretReader(string grimoireSecret) : IBackupSecretSnapshotReader
         {
-
             public Task<SecretStoreReadResult> ReadGrimoireSecretAsync() =>
                 Task.FromResult(SecretStoreReadResult.Ok(grimoireSecret));
 
@@ -2639,9 +2496,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
             public Task<SecretStoreReadResult> ReadMasterApiKeyAsync() =>
                 Task.FromResult(SecretStoreReadResult.Ok("archived-master-key"));
-
         }
-
     }
 
     /// <summary>
@@ -2651,7 +2506,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     /// </summary>
     private sealed class IncompleteBackupService : IBackupService
     {
-
         public Task<BackupPlan> PlanAsync(
             BackupPlanRequest request,
             CancellationToken cancellationToken = default) =>
@@ -2699,7 +2553,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
             string? directory,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     /// <summary>
@@ -2716,7 +2569,6 @@ public sealed class BackupRestoreServiceTests : IDisposable
     /// </remarks>
     private sealed class SealingSecretStore(string stagingParent) : ISecretStore
     {
-
         public bool Sealed { get; private set; }
 
         public string? SealedStagingRoot { get; private set; }
@@ -2730,16 +2582,13 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public Task<string?> GetGrimoireEncryptionSecretAsync()
         {
-
             IReadOnlyList<string> staged = BackupRestoreJournal.Discover(stagingParent);
 
             if (staged.Count == 0)
             {
-
                 // Earlier reads run before the journal exists; those must succeed or the restore never
                 // reaches the window this double exists to open.
                 return Task.FromResult<string?>("the current machine secret");
-
             }
 
             SealedStagingRoot = staged[0];
@@ -2748,22 +2597,17 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
             if (!OperatingSystem.IsWindows())
             {
-
                 File.SetUnixFileMode(stagingParent, UnixFileMode.UserRead | UnixFileMode.UserExecute);
-
             }
 
             throw new IOException("The staging parent became unwritable mid-preparation.");
-
         }
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class RecordingSecretStore : ISecretStore
     {
-
         public string? ApiKey { get; set; }
 
         public string? GrimoireSecret { get; set; }
@@ -2778,11 +2622,9 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public Task SaveApiKeyAsync(string apiKey)
         {
-
             ApiKey = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         /// <summary>How many times a caller asked for the secret that opens the live Grimoire.</summary>
@@ -2790,20 +2632,16 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public Task<string?> GetGrimoireEncryptionSecretAsync()
         {
-
             GrimoireSecretReads++;
 
             return Task.FromResult(GrimoireSecret);
-
         }
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
-
             GrimoireSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
 
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
@@ -2814,30 +2652,22 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
         {
-
             FileEncryptionSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
-
     }
 
     private sealed class ClearResetEvidenceProbe :
         IClientMutationResetEvidenceProbe
     {
-
         public Task<Result<ActiveInstallationReset?>> InspectAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(
                 Result<ActiveInstallationReset?>.Success(null));
-
         }
-
     }
-
 }

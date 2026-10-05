@@ -34,7 +34,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// </remarks>
 internal sealed partial class BackupRestoreService : IBackupRestoreService
 {
-
     private readonly BackupStatePaths _paths;
 
     private readonly BackupArchiveCodec _codec;
@@ -74,7 +73,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         BackupRestoreServiceOptions? options = null,
         InstallationMaintenanceCoordination? maintenanceCoordination = null)
     {
-
         _paths = paths;
 
         _codec = codec;
@@ -101,7 +99,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 CovenantSqliteConnectionInitializer.Instance,
                 _timeProvider)
             : null;
-
     }
 
     /// <summary>
@@ -129,11 +126,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// </remarks>
     private async Task<string> ResolveSchemaKeyMaterialAsync(string grimoireSecret)
     {
-
         string? masterApiKey = await _secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
         return string.IsNullOrWhiteSpace(masterApiKey) ? grimoireSecret : masterApiKey;
-
     }
 
     public async Task<BackupRestorePlan> PlanAsync(
@@ -141,7 +136,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArcanumMaintenanceLockAcquisitionResult acquisition =
@@ -154,7 +148,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             recoveryPassphrase,
             acquisition.Disposition,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<BackupRestoreResult> RestoreAsync(
@@ -162,7 +155,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Guid operationId = Guid.NewGuid();
@@ -191,7 +183,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (request.DryRun)
         {
-
             return new BackupRestoreResult(
                 plan.Blockers.Length == 0
                     ? BackupRestoreStatus.DryRunCompleted
@@ -206,19 +197,15 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 Reconciliation: null,
                 [.. phases],
                 plan.Blockers);
-
         }
 
         if (plan.Blockers.Length > 0)
         {
-
             return Rejected(operationId, plan, phases, plan.Blockers);
-
         }
 
         if (plan.RequiresConfirmation && !request.Confirmed)
         {
-
             return Rejected(
                 operationId,
                 plan,
@@ -229,7 +216,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         "This restore replaces the current installation. Re-run with explicit "
                         + "confirmation once a pre-restore safety backup is acceptable."),
                 ]);
-
         }
 
         // The one question the plan deliberately leaves open, asked here on the mutating path only: a
@@ -238,23 +224,18 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         if (BackupRestoreProtectedStatePolicy.EvaluateRequest(request, ReconcilesProtectedState(request))
             is { IsRefusal: true } unconfirmed)
         {
-
             return Rejected(operationId, plan, phases, [unconfirmed.Blocker!]);
-
         }
 
         InstallationMaintenanceCoordinationLease? coordinationLease = null;
 
         try
         {
-
             if (request.ConflictMode is BackupRestoreConflictMode.ReplaceInstallation
                 && _maintenanceCoordination is not null)
             {
-
                 if (maintenance is null)
                 {
-
                     return Rejected(
                         operationId,
                         plan,
@@ -264,7 +245,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                                 ErrorCodes.Data.ControlPathUnavailable,
                                 "Replacement restore requires the exact acquired maintenance lock before client coordination."),
                         ]);
-
                 }
 
                 InstallationMaintenanceCoordinationResult coordinated =
@@ -278,17 +258,14 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 if (coordinated.Disposition
                     is not InstallationMaintenanceCoordinationDisposition.Acquired)
                 {
-
                     return Rejected(
                         operationId,
                         plan,
                         phases,
                         [Issue(coordinated.Error)]);
-
                 }
 
                 coordinationLease = coordinated.BorrowAcquiredLease();
-
             }
 
             BackupRestoreResult restored = await ExecuteAsync(
@@ -303,39 +280,29 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             if (coordinationLease is not null
                 && restored.Status is not BackupRestoreStatus.ReconciliationRequired)
             {
-
                 Result removed = await coordinationLease
                     .RemoveBlockerIfSafeAsync(cancellationToken)
                     .ConfigureAwait(false);
 
                 if (removed.IsFailure)
                 {
-
                     restored = restored with
                     {
                         Status = BackupRestoreStatus.ReconciliationRequired,
                         Issues = [.. restored.Issues, Issue(removed.Error)],
                     };
-
                 }
-
             }
 
             return restored;
-
         }
         finally
         {
-
             if (coordinationLease is not null)
             {
-
                 await coordinationLease.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     public async Task<BackupMigrateResult> MigrateAsync(
@@ -343,7 +310,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         return await BackupArchiveMigrator.MigrateAsync(
@@ -351,7 +317,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             request,
             recoveryPassphrase,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<BackupRestorePlan> BuildPlanAsync(
@@ -360,7 +325,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         ArcanumMaintenanceLockAcquisitionDisposition maintenanceDisposition,
         CancellationToken cancellationToken)
     {
-
         DateTimeOffset generatedAt = _timeProvider.GetUtcNow();
 
         List<BackupVerifyIssue> blockers = [];
@@ -378,7 +342,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (!maintenanceAcquired)
         {
-
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_maintenance_unavailable",
                 maintenanceDisposition is ArcanumMaintenanceLockAcquisitionDisposition.Contended
@@ -389,17 +352,14 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         + "could not be validated safely. Inspect the installation path and its "
                         + "permissions before trying again; the current installation is unchanged.",
                 ArcanumMaintenanceLock.LockPathFor(_paths.GrimoireDirectory)));
-
         }
 
         if (archivePath.Length == 0 || !File.Exists(archivePath))
         {
-
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_archive_missing",
                 "The named backup archive does not exist.",
                 request.ArchivePath));
-
         }
 
         Guid[] sessionIds = [.. (request.SessionIds ?? []).Distinct().Order()];
@@ -407,21 +367,17 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         if (request.ConflictMode == BackupRestoreConflictMode.ImportSelectedSessions
             && sessionIds.Length == 0)
         {
-
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_sessions_required",
                 "Importing selected Sessions requires at least one Session id."));
-
         }
 
         if (request.ConflictMode != BackupRestoreConflictMode.ImportSelectedSessions
             && sessionIds.Length > 0)
         {
-
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_sessions_not_applicable",
                 "Session ids apply only to the import-selected-sessions conflict mode."));
-
         }
 
         // Refused rather than ignored. Adoption happens inside the re-wrap, and only a replacement
@@ -431,13 +387,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         if (request.RestoreMasterApiKey
             && request.ConflictMode != BackupRestoreConflictMode.ReplaceInstallation)
         {
-
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_master_api_key_not_applicable",
                 "Adopting the archived master API key applies only to the replace-installation "
                 + "conflict mode, which is the only one that rebuilds local secret protection.",
                 BackupArchivePaths.MasterApiKey));
-
         }
 
         BackupPathRemapValidation mapping = BackupPathRemapper.Create(
@@ -468,13 +422,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             && await ReadDestinationCampaignIdsAsync(cancellationToken).ConfigureAwait(false)
                 is { } destinationCampaigns)
         {
-
             blockers.AddRange(
                 BackupRestoreCampaignMappingPolicy.EvaluateDestination(
                     request,
                     covenantImportArmActive,
                     destinationCampaigns));
-
         }
 
         // Applicability only. The confirmation arm belongs to the mutating path, because this plan is
@@ -484,9 +436,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 .EvaluateRequestShape(request, ReconcilesProtectedState(request))
             is { IsRefusal: true } shape)
         {
-
             blockers.Add(shape.Blocker!);
-
         }
 
         BackupManifest? manifest = null;
@@ -495,10 +445,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (archivePath.Length > 0 && File.Exists(archivePath))
         {
-
             try
             {
-
                 BackupInspectResult inspection = await _codec
                     .InspectAsync(archivePath, recoveryPassphrase, cancellationToken)
                     .ConfigureAwait(false);
@@ -506,18 +454,15 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 formatVersion = inspection.FormatVersion;
 
                 manifest = inspection.Manifest;
-
             }
             catch (Exception exception) when (
                 exception is System.Security.Cryptography.CryptographicException)
             {
-
                 blockers.Add(new BackupVerifyIssue(
                     "backup.authentication_failed",
                     "The backup passphrase is wrong or authenticated archive bytes were changed. The "
                     + "current installation was not modified.",
                     archivePath));
-
             }
             catch (Exception exception) when (
                 exception is InvalidDataException
@@ -527,7 +472,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     or UnauthorizedAccessException
                     or System.Text.Json.JsonException)
             {
-
                 formatVersion = await TryPeekFormatVersionAsync(archivePath, cancellationToken)
                     .ConfigureAwait(false);
 
@@ -538,17 +482,13 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         "The backup archive is malformed, incomplete, unsupported, or unreadable. The "
                         + "current installation was not modified.",
                         archivePath));
-
             }
-
         }
 
         if (manifest is not null
             && BackupRestoreFormatCatalog.Classify(manifest.FormatVersion) is BackupVerifyIssue format)
         {
-
             blockers.Add(format);
-
         }
 
         BackupComponent[] components = [];
@@ -561,7 +501,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (manifest is not null)
         {
-
             components =
             [
                 .. manifest.Components
@@ -576,10 +515,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             foreach (BackupManifestEntry entry in manifest.Entries)
             {
-
                 if (!BackupRestoreLayout.TryResolve(entry.Path, out BackupRestorePlacementDecision? decision))
                 {
-
                     blockers.Add(new BackupVerifyIssue(
                         "backup.restore_unknown_entry",
                         "The archive contains an entry this build does not know how to place. A full "
@@ -587,45 +524,36 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         entry.Path));
 
                     continue;
-
                 }
 
                 if (decision.Placement == BackupRestorePlacement.WithheldByPolicy
                     && decision.Reason is string reason)
                 {
-
                     warnings.Add($"{entry.Path}: {reason}");
-
                 }
-
             }
 
             if (!manifest.Entries.Any(
                     static entry => entry.Component == BackupComponent.GrimoireDatabase)
                 && request.ConflictMode != BackupRestoreConflictMode.NewProfileRoot)
             {
-
                 blockers.Add(new BackupVerifyIssue(
                     "backup.restore_database_absent",
                     "This archive carries no Grimoire snapshot, so it cannot replace an installation. "
                     + "Restore it into a new profile root instead."));
-
             }
 
             if (!manifest.Entries.Any(
                     static entry => entry.Component == BackupComponent.PortableRecoveryKeys))
             {
-
                 blockers.Add(new BackupVerifyIssue(
                     "backup.restore_recovery_material_missing",
                     "This archive carries no portable recovery material, so its Grimoire cannot be "
                     + "unlocked on this machine.",
                     BackupArchivePaths.PortableRecoveryKeys));
-
             }
 
             warnings.AddRange(manifest.SecurityWarnings);
-
         }
 
         long displacedBytes = request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
@@ -640,9 +568,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (capacity.Issue is not null)
         {
-
             blockers.Add(capacity.Issue);
-
         }
 
         string destinationSchema = await ReadDestinationSchemaAsync(cancellationToken)
@@ -656,19 +582,15 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation && maintenanceAcquired)
         {
-
             BackupRestoreErasureEvidence erasure = await ReadDestinationErasureEvidenceAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (erasure.Refusal is { } refusal)
             {
-
                 blockers.Add(refusal);
-
             }
 
             destinationErasure = erasure.ToSummary();
-
         }
 
         bool safetyBackupPlanned =
@@ -681,16 +603,13 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             && !safetyBackupPlanned
             && File.Exists(_paths.DatabasePath))
         {
-
             warnings.Add(
                 "A pre-restore safety backup was declined. The displaced installation is retained in "
                 + "the restore staging root until cleanup, and nowhere else.");
-
         }
 
         if (request.ConflictMode == BackupRestoreConflictMode.NewProfileRoot)
         {
-
             warnings.Add(
                 "A new-profile restore installs data only. Local secret protection is not written for "
                 + "another root, so adopt this generation with a replace-installation restore before "
@@ -700,19 +619,14 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             // removed from the generation it installs there.
             if (NewProfileRootErasureWarningFor() is { } erasureWarning)
             {
-
                 warnings.Add(erasureWarning);
-
             }
-
         }
 
         if (request.RestoreMasterApiKey)
         {
-
             warnings.Add(
                 "The archived master API key will be adopted on this machine, replacing the current key.");
-
         }
 
         Result<BackupRestoreDisclosureExposure?> disclosure =
@@ -722,9 +636,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         // refuses on the same read, so the plan blocks with that refusal and previews no exposure at all.
         if (disclosure.IsFailure)
         {
-
             blockers.Add(new BackupVerifyIssue(disclosure.Error.Code, disclosure.Error.Message));
-
         }
 
         BackupRestoreDisclosureExposure? exposure = disclosure.IsSuccess ? disclosure.Value : null;
@@ -761,7 +673,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             request.ProtectedStateMode,
             exposure,
             destinationErasure);
-
     }
 
     /// <summary>
@@ -782,13 +693,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         BackupRestoreRequest request,
         CancellationToken cancellationToken)
     {
-
         if (request.ProtectedStateMode is BackupProtectedStateMode.Reject
             || !ReconcilesProtectedState(request))
         {
-
             return Result<BackupRestoreDisclosureExposure?>.Success(null);
-
         }
 
         Result<BackupCovenantRestoreDestinationState> destination =
@@ -796,14 +704,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (destination.IsFailure)
         {
-
             return destination.Error;
-
         }
 
         return Result<BackupRestoreDisclosureExposure?>.Success(
             BackupRestoreProtectedStateInspector.Exposure(destination.Value.DisclosureBuckets));
-
     }
 
     private async Task<BackupRestoreResult> ExecuteAsync(
@@ -815,7 +720,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         ArcanumMaintenanceLock? maintenance,
         CancellationToken cancellationToken)
     {
-
         string liveRoot = Path.GetFullPath(_paths.GrimoireDirectory);
 
         string stagingParent = Path.GetDirectoryName(
@@ -849,7 +753,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         try
         {
-
             _options.BeforeFirstRestoreMutationForTests?.Invoke();
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(stagingParent);
@@ -889,15 +792,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     staging.FileId));
 
             priorSecrets = await rewrapper.CaptureAsync().ConfigureAwait(false);
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
             if (createdStaging is not null)
             {
-
                 // Journal first, exactly as the outer finally does. This catch is reachable with the
                 // journal already written, and BackupRestoreJournal.Discover adopts a staging root only
                 // while it still holds one — so a TryDelete that fails would otherwise leave the startup
@@ -905,14 +805,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 BackupRestoreJournal.Delete(createdStaging.Path);
 
                 _ = createdStaging.TryDelete();
-
             }
 
             if (indexedStagingPath is not null)
             {
-
                 BackupRestoreStagingIndex.Remove(liveRoot, indexedStagingPath);
-
             }
 
             return Rejected(
@@ -927,7 +824,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         + exception.GetType().Name,
                         stagingParent),
                 ]);
-
         }
 
         CommitOutcome? commit = null;
@@ -936,6 +832,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         // below must not run: the journal plus the staging root are the operator's only recovery
         // point until BackupRestoreRecovery resolves them at the next start.
         bool retainStagingForReconciliation = false;
+
+        // Set only once the journal has advanced to Cleanup. Until then a displaced installation keeps
+        // staging by default (see the finally below), so an exit no catch here anticipated can never
+        // delete previous/ while the new generation is live.
+        bool reachedCleanup = false;
 
         BackupRestorePlan effectivePlan = plan;
 
@@ -957,7 +858,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         try
         {
-
             _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Stage);
 
             // Read again rather than trusted from the plan, and before any extraction directory exists:
@@ -968,7 +868,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
             {
-
                 erasure = await ReadDestinationErasureEvidenceAsync(cancellationToken).ConfigureAwait(false);
 
                 // The result reports what this read found, not what the plan had proven before it.
@@ -976,16 +875,13 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 if (erasure.Refusal is { } refusal)
                 {
-
                     return Rejected(operationId, effectivePlan, phases, [refusal]);
-
                 }
 
                 Record(
                     phases,
                     BackupRestorePhase.Stage,
                     $"Destination erasure evidence: {erasure.ToSummary().Status}.");
-
             }
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(stagedRoot);
@@ -1005,9 +901,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (extraction.Manifest is null)
             {
-
                 return Rejected(operationId, effectivePlan, phases, extraction.Issues);
-
             }
 
             // Before the staged generation is composed, and before any owner is acquired. The archive
@@ -1022,9 +916,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (protectedState.IsRefusal)
             {
-
                 return Rejected(operationId, effectivePlan, phases, [protectedState.Blocker!]);
-
             }
 
             BackupVerifyIssue[] placement = ComposeStagedTree(
@@ -1035,9 +927,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (placement.Length > 0)
             {
-
                 return Rejected(operationId, effectivePlan, phases, placement);
-
             }
 
             Record(
@@ -1060,24 +950,19 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
             {
-
                 Result<BackupCovenantRestoreDestinationState> read = await ReadDestinationCovenantStateAsync(cancellationToken)
                     .ConfigureAwait(false);
 
                 if (read.IsFailure)
                 {
-
                     return Rejected(operationId, effectivePlan, phases, [Issue(read.Error)]);
-
                 }
 
                 destination = read.Value;
-
             }
 
             if (ReconcilesProtectedState(request) && maintenance is not null)
             {
-
                 Result<BackupRestoreCovenantSession> begun = await _covenant!.BeginAsync(
                     maintenance,
                     liveRoot,
@@ -1090,13 +975,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 if (begun.IsFailure)
                 {
-
                     return Rejected(operationId, effectivePlan, phases, [Issue(begun.Error)]);
-
                 }
 
                 covenant = begun.Value;
-
             }
 
             StageResult staged = await PrepareStagedGenerationAsync(
@@ -1116,16 +998,13 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (staged.Issues.Length > 0)
             {
-
                 return Rejected(operationId, effectivePlan, phases, staged.Issues);
-
             }
 
             effectivePlan = staged.Plan;
 
             if (request.ConflictMode == BackupRestoreConflictMode.ImportSelectedSessions)
             {
-
                 return await ImportSelectedSessionsAsync(
                     request,
                     operationId,
@@ -1134,12 +1013,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     extractRoot,
                     stagedRoot,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             if (effectivePlan.SafetyBackupPlanned)
             {
-
                 _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.SafetyPoint);
 
                 BackupCreateResult? safety = await CreateSafetyBackupAsync(
@@ -1152,7 +1029,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 if (safety is not { Status: BackupCreateStatus.Complete, ArchivePath: { } archived }
                     || string.IsNullOrWhiteSpace(archived))
                 {
-
                     Record(
                         phases,
                         BackupRestorePhase.SafetyPoint,
@@ -1171,13 +1047,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                     if (safety is not null)
                     {
-
                         safetyIssues.AddRange(safety.Issues);
-
                     }
 
                     return Rejected(operationId, effectivePlan, phases, safetyIssues);
-
                 }
 
                 safetyBackupPath = archived;
@@ -1190,7 +1063,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     phases,
                     BackupRestorePhase.SafetyPoint,
                     $"Pre-restore safety backup written to {safetyBackupPath}.");
-
             }
 
             _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Commit);
@@ -1209,9 +1081,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         covenantTopology)
                     is { IsFailure: true } advanced)
             {
-
                 return Rejected(operationId, effectivePlan, phases, [Issue(advanced.Error)]);
-
             }
 
             commit = Commit(
@@ -1225,10 +1095,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (!commit.Succeeded)
             {
-
                 if (commit.Reversal is { Restored: false } commitReversal)
                 {
-
                     retainStagingForReconciliation = true;
 
                     RetainForReconciliation(staging.Path, journal, phases);
@@ -1240,7 +1108,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         safetyBackupPath,
                         staging.Path,
                         commitReversal);
-
                 }
 
                 return RolledBack(
@@ -1249,7 +1116,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     phases,
                     safetyBackupPath,
                     commit.Issue!);
-
             }
 
             Record(
@@ -1259,7 +1125,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
             {
-
                 BackupSecretRewrapResult rewrap = await rewrapper
                     .RewrapAsync(
                         Path.Combine(
@@ -1271,7 +1136,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 if (!rewrap.GrimoireSecretWritten)
                 {
-
                     ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
                     await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
@@ -1282,7 +1146,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                     if (!reversal.Restored)
                     {
-
                         retainStagingForReconciliation = true;
 
                         RetainForReconciliation(staging.Path, journal, phases);
@@ -1294,7 +1157,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                             safetyBackupPath,
                             staging.Path,
                             reversal);
-
                     }
 
                     return RolledBack(
@@ -1306,7 +1168,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         ?? new BackupVerifyIssue(
                             "backup.restore_rewrap_failed",
                             "Local secret protection could not be rebuilt; the prior installation was restored."));
-
                 }
 
                 Record(
@@ -1317,16 +1178,13 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 effectivePlan = effectivePlan with
                 {
-
                     Warnings =
                     [
                         .. effectivePlan.Warnings
                             .Concat(rewrap.Issues.Select(static issue => issue.Message))
                             .Distinct(StringComparer.Ordinal),
                     ],
-
                 };
-
             }
 
             journal = BackupRestoreJournal.Advance(staging.Path, journal, BackupRestorePhase.Reconcile);
@@ -1355,7 +1213,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             // database they are now part of, and only a committed aggregate spends the disposition.
             if (covenant is not null)
             {
-
                 Result published = _covenant!.Advance(
                     covenant,
                     maintenance!,
@@ -1372,7 +1229,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 if (reopened.IsFailure)
                 {
-
                     // The replacement is in place and healthy enough to have been reconciled, but
                     // admission stays shut and the journal stays active, so the next start resumes
                     // this same operation rather than restarting it.
@@ -1396,12 +1252,14 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         reconciliation,
                         [.. phases],
                         [Issue(reopened.Error)]);
-
                 }
-
             }
 
             journal = BackupRestoreJournal.Advance(staging.Path, journal, BackupRestorePhase.Cleanup);
+
+            // After the advance, never before it: the inverted default below would otherwise retain
+            // staging on every successful restore.
+            reachedCleanup = true;
 
             Record(phases, BackupRestorePhase.Cleanup, "Removed protected restore staging.");
 
@@ -1419,14 +1277,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 reconciliation,
                 [.. phases],
                 []);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             if (commit is { Succeeded: true })
             {
-
                 ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
                 await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
@@ -1435,17 +1290,13 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 if (!reversal.Restored)
                 {
-
                     retainStagingForReconciliation = true;
 
                     RetainForReconciliation(staging.Path, journal, phases);
-
                 }
-
             }
 
             throw;
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -1456,10 +1307,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 or System.Security.Cryptography.CryptographicException
                 or InvalidOperationException)
         {
-
             if (commit is { Succeeded: true })
             {
-
                 ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
                 await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
@@ -1468,7 +1317,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 if (!reversal.Restored)
                 {
-
                     retainStagingForReconciliation = true;
 
                     RetainForReconciliation(staging.Path, journal, phases);
@@ -1480,7 +1328,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         safetyBackupPath,
                         staging.Path,
                         reversal);
-
                 }
 
                 return RolledBack(
@@ -1492,7 +1339,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         "backup.restore_commit_failed",
                         "The restore failed after commit and the prior installation was returned to "
                         + "its original state. Diagnostics: " + exception.GetType().Name));
-
             }
 
             return Rejected(
@@ -1505,17 +1351,14 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         "The restore failed before any destructive step; the current installation is "
                         + "unchanged. Diagnostics: " + exception.GetType().Name),
                 ]);
-
         }
         finally
         {
-
             // One disposition per lease, and only where the filesystem proves nothing durable can have
             // happened. Everything else disposes without one, which is exactly KeepClosed: the closure
             // and the adoptable owner survive for the next start.
             if (covenant is { Dispositioned: false } && maintenance is not null)
             {
-
                 _ = await _covenant!
                     .AbortAsync(
                         covenant,
@@ -1524,22 +1367,22 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         provenPreSwap: !durablyDisplaced,
                         CancellationToken.None)
                     .ConfigureAwait(false);
-
             }
 
-            if (!retainStagingForReconciliation)
+            // Retention is the default once the installation is displaced. Staging — the journal and
+            // previous/ with it — is deleted only where the evidence proves it is no longer needed:
+            // nothing was displaced, a reversal was verified, or the restore reached Cleanup. An exception
+            // outside every catch filter above proves none of those, so it keeps everything for
+            // BackupRestoreRecovery instead of deleting the displaced installation (§5.4.9).
+            if (!retainStagingForReconciliation && (!durablyDisplaced || reachedCleanup))
             {
-
                 BackupRestoreJournal.Delete(staging.Path);
 
                 _ = staging.TryDelete();
 
                 BackupRestoreStagingIndex.Remove(liveRoot, staging.Path);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -1561,14 +1404,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         List<BackupRestorePhaseRecord> phases,
         CancellationToken cancellationToken)
     {
-
         if (!ReconcilesProtectedState(request))
         {
-
             return BackupRestoreProtectedStatePolicy.EvaluateArchive(
                 request.ProtectedStateMode,
                 BackupRestoreProtectedStateInventory.None);
-
         }
 
         BackupRestoreProtectedStateInventory inventory = await BackupRestoreProtectedStateInspector
@@ -1589,7 +1429,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             + $". Protected-state mode: {request.ProtectedStateMode}.");
 
         return decision;
-
     }
 
     /// <summary>
@@ -1606,7 +1445,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         BackupRestoreJournalRecord journal,
         List<BackupRestorePhaseRecord> phases)
     {
-
         _ = BackupRestoreJournal.Advance(stagingRoot, journal, BackupRestorePhase.Commit);
 
         Record(
@@ -1614,7 +1452,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             BackupRestorePhase.Cleanup,
             "The reversal could not be verified, so the restore journal and the displaced "
             + $"installation were retained under {stagingRoot} for reconciliation at the next start.");
-
     }
 
     private async Task<StageResult> PrepareStagedGenerationAsync(
@@ -1632,7 +1469,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
-
         string recoveryPath = Path.Combine(
             extractRoot,
             BackupArchivePaths.PortableRecoveryKeys.Replace('/', Path.DirectorySeparatorChar));
@@ -1641,21 +1477,18 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 recoveryPath,
                 out string? grimoireSecret))
         {
-
             return StageResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_recovery_material_invalid",
                     "The portable recovery material could not be read, so the staged Grimoire cannot "
                     + "be opened.",
                     BackupArchivePaths.PortableRecoveryKeys));
-
         }
 
         string stagedDatabase = Path.Combine(stagedRoot, "arcanum.db");
 
         if (!File.Exists(stagedDatabase))
         {
-
             // Nothing staged, so nothing to reconcile: a replacement reports that it applied nothing.
             return new StageResult(
                 plan,
@@ -1666,7 +1499,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
                     ? BackupRestoreErasureApplicationReceipt.None
                     : null);
-
         }
 
         _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Migrate);
@@ -1701,7 +1533,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         try
         {
-
             migrated = await BackupRestoreDatabaseWorker
                 .MigrateAsync(
                     connection,
@@ -1710,23 +1541,19 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     schemaContext,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception exception) when (
             joinsErasureEvidence
             && exception is InvalidOperationException or SqliteException)
         {
-
             // A Core refusal is a GrimoireSchemaRefusedException, which is an InvalidOperationException:
             // an archive journaled toward an older head, for one. Without evidence it stays the generic
             // failure it has always been; with evidence it is the typed refusal, before anything else.
             return StageResult.Failed(Issue(BackupRestoreSchemaDrain.Unjoinable(exception.GetType().Name)));
-
         }
 
         if (joinsErasureEvidence)
         {
-
             // Before the staged Covenant reconcile, the safety backup and the commit: a drain that cannot
             // finish leaves nothing displaced and nothing reconciled. The operator cancelling it leaves as
             // a cancellation, exactly as one during the migration above does.
@@ -1743,22 +1570,17 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (drained.IsFailure)
             {
-
                 return StageResult.Failed(Issue(drained.Error));
-
             }
 
             if (drained.Value.Passes > 0)
             {
-
                 Record(
                     phases,
                     BackupRestorePhase.Migrate,
                     $"Drained staged schema transitions: {drained.Value.Passes} passes, "
                     + $"{drained.Value.BatchesRun} batches, {drained.Value.RowsProcessed} rows.");
-
             }
-
         }
 
         string afterSchema = await BackupRestoreDatabaseWorker
@@ -1779,7 +1601,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
         {
-
             Result<BackupRestoreErasureApplicationReceipt> applied = await ReconcileStagedMemoryEvidenceAsync(
                 connection,
                 erasure,
@@ -1788,9 +1609,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (applied.IsFailure)
             {
-
                 return StageResult.Failed(Issue(applied.Error));
-
             }
 
             erasureReceipt = applied.Value;
@@ -1801,7 +1620,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 $"Applied destination erasure evidence: removed {erasureReceipt.SagaMemoriesRemoved} Saga, "
                 + $"{erasureReceipt.LexiconEntriesRemoved} Lexicon and {erasureReceipt.CovenantEntriesRemoved} "
                 + "Covenant items.");
-
         }
 
         // Immediately after the three tiers converge and before any staged validation or destination
@@ -1811,7 +1629,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         // been published as live (§10.19.9).
         if (covenant is not null)
         {
-
             Result reconciled = await _covenant!.ReconcileStagedAsync(
                 covenant,
                 maintenance!,
@@ -1825,9 +1642,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (reconciled.IsFailure)
             {
-
                 return StageResult.Failed(Issue(reconciled.Error));
-
             }
 
             Record(
@@ -1840,7 +1655,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         + "staging before replacement; the destination's own taint and disclosure "
                         + "evidence were preserved."
                     : string.Empty));
-
         }
 
         _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.RemapPaths);
@@ -1888,9 +1702,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (validation.Length > 0)
         {
-
             return StageResult.Failed(validation[0]);
-
         }
 
         Record(
@@ -1901,7 +1713,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         return new StageResult(
             plan with
             {
-
                 DestinationSchemaIdentity = afterSchema,
 
                 SchemaMigrationRequired = !string.Equals(
@@ -1913,11 +1724,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 [
                     .. plan.PathMappings.Select(candidate => candidate with
                     {
-
                         MatchedTargets = remap.MatchesByKind.TryGetValue(candidate.Kind, out long matched)
                             ? matched
                             : 0,
-
                     }),
                 ],
 
@@ -1929,14 +1738,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         .Concat(configuration.Warnings)
                         .Distinct(StringComparer.Ordinal),
                 ],
-
             },
             grimoireSecret,
             embeddings,
             pending,
             [],
             erasureReceipt);
-
     }
 
     /// <summary>
@@ -1948,7 +1755,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         string stagedRoot,
         CancellationToken cancellationToken)
     {
-
         IReadOnlyList<string> referenced = await BackupRestoreDatabaseWorker
             .ReadReferencedAttachmentPathsAsync(connection, cancellationToken)
             .ConfigureAwait(false);
@@ -1959,7 +1765,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         foreach (string relative in referenced)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string candidate = Path.GetFullPath(
@@ -1969,19 +1774,16 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     attachmentsRoot + Path.DirectorySeparatorChar,
                     StringComparison.Ordinal))
             {
-
                 issues.Add(new BackupVerifyIssue(
                     "backup.restore_attachment_escapes",
                     "A restored attachment row points outside the attachment root.",
                     relative));
 
                 break;
-
             }
 
             if (!File.Exists(candidate))
             {
-
                 issues.Add(new BackupVerifyIssue(
                     "backup.restore_attachment_missing",
                     "The restored database references attachment bytes the archive does not carry. A "
@@ -1989,13 +1791,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     relative));
 
                 break;
-
             }
-
         }
 
         return [.. issues];
-
     }
 
     /// <summary>
@@ -2018,34 +1817,28 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         string stagedRoot,
         CancellationToken cancellationToken)
     {
-
         List<BackupVerifyIssue> issues = [];
 
         foreach (BackupManifestEntry entry in manifest.Entries)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _options.BeforeStagedEntryComposeForTests?.Invoke(entry.Path);
 
             if (!BackupRestoreLayout.TryResolve(entry.Path, out BackupRestorePlacementDecision? decision))
             {
-
                 issues.Add(new BackupVerifyIssue(
                     "backup.restore_unknown_entry",
                     "The archive contains an entry this build does not know how to place.",
                     entry.Path));
 
                 break;
-
             }
 
             if (decision.Placement != BackupRestorePlacement.Install
                 || decision.RelativeDestination is null)
             {
-
                 continue;
-
             }
 
             string source = Path.Combine(
@@ -2058,14 +1851,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (!File.Exists(source))
             {
-
                 issues.Add(new BackupVerifyIssue(
                     "backup.restore_entry_missing",
                     "An authenticated archive entry did not materialize during staging.",
                     entry.Path));
 
                 break;
-
             }
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(
@@ -2074,11 +1865,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             File.Copy(source, destination, overwrite: true);
 
             SecureFilePermissions.ApplyOwnerOnlyFile(destination);
-
         }
 
         return [.. issues];
-
     }
 
     /// <summary>
@@ -2092,51 +1881,39 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         string stagedRoot,
         string displacedRoot)
     {
-
         try
         {
-
             if (mode == BackupRestoreConflictMode.NewProfileRoot)
             {
-
                 if (Directory.Exists(destinationRoot))
                 {
-
                     Directory.Delete(destinationRoot);
-
                 }
 
                 Directory.Move(stagedRoot, destinationRoot);
 
                 return new CommitOutcome(true, Issue: null);
-
             }
 
             bool displaced = Directory.Exists(liveRoot);
 
             if (displaced)
             {
-
                 Directory.Move(liveRoot, displacedRoot);
-
             }
 
             Directory.Move(stagedRoot, liveRoot);
 
             if (displaced)
             {
-
                 PreserveMachineLocalEntries(displacedRoot, liveRoot);
-
             }
 
             return new CommitOutcome(true, Issue: null);
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
             // A rename failed partway. Undo whatever landed here and now, rather than leaving the
             // live root missing for the journal to repair at the next start.
             ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
@@ -2148,9 +1925,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     "The restored generation could not be committed atomically; the prior installation "
                     + "was returned to its original state."),
                 reversal);
-
         }
-
     }
 
     /// <summary>
@@ -2169,10 +1944,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         string stagedRoot,
         string displacedRoot)
     {
-
         try
         {
-
             bool stagedStillPresent = Directory.Exists(stagedRoot);
 
             // Filesystem evidence, not a success flag: any preserved entry that already reached the
@@ -2180,34 +1953,25 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             // preserving. Otherwise a half-preserved key ring rides into staging and is deleted.
             if (Directory.Exists(displacedRoot))
             {
-
                 PreserveMachineLocalEntries(liveRoot, displacedRoot);
-
             }
 
             _options.BeforeReversalRenameForTests?.Invoke();
 
             if (!stagedStillPresent && Directory.Exists(liveRoot))
             {
-
                 Directory.Move(liveRoot, stagedRoot);
-
             }
 
             if (!Directory.Exists(liveRoot) && Directory.Exists(displacedRoot))
             {
-
                 Directory.Move(displacedRoot, liveRoot);
-
             }
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
             return new ReversalOutcome(Restored: false, exception.GetType().Name);
-
         }
 
         // The displaced tree is gone only when every part of it landed back in the live root. While
@@ -2215,7 +1979,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         return Directory.Exists(displacedRoot)
             ? new ReversalOutcome(Restored: false, "the displaced installation is still in staging")
             : new ReversalOutcome(Restored: true, Diagnostics: null);
-
     }
 
     /// <summary>
@@ -2225,27 +1988,21 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// </summary>
     private void PreserveMachineLocalEntries(string from, string to)
     {
-
         foreach (string name in BackupRestoreLayout.PreservedFromCurrentInstallation)
         {
-
             string source = Path.Combine(from, name);
 
             string destination = Path.Combine(to, name);
 
             if (!Directory.Exists(source) || Directory.Exists(destination))
             {
-
                 continue;
-
             }
 
             _options.BeforePreservedEntryMoveForTests?.Invoke(name);
 
             Directory.Move(source, destination);
-
         }
-
     }
 
     private async Task<BackupRestoreResult> ImportSelectedSessionsAsync(
@@ -2257,7 +2014,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         string stagedRoot,
         CancellationToken cancellationToken)
     {
-
         SecretStoreReadResult destinationSecret = await _secretStore
             .GetGrimoireEncryptionSecretReadResultAsync()
             .ConfigureAwait(false);
@@ -2266,7 +2022,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             || string.IsNullOrEmpty(destinationSecret.Value)
             || !File.Exists(_paths.DatabasePath))
         {
-
             return Rejected(
                 operationId,
                 plan,
@@ -2276,7 +2031,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         "backup.restore_import_destination_unavailable",
                         "Importing Sessions requires an initialized local Grimoire this machine can open."),
                 ]);
-
         }
 
         BackupSecretRewrapResult merged = await new BackupSecretRewrapper(_secretStore)
@@ -2289,9 +2043,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (merged.Issues.Length > 0)
         {
-
             return Rejected(operationId, plan, phases, merged.Issues);
-
         }
 
         _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Commit);
@@ -2324,14 +2076,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         if (import.Issues.Length > 0)
         {
-
             // Rejected means the destination was never mutated, so it is only available while nothing
             // committed. A protected import commits Session by Session, and once one has landed the
             // truthful outcome is a committed installation that still needs an operator.
             return import.Committed.Length == 0
                 ? Rejected(operationId, plan, phases, import.Issues)
                 : PartiallyImported(operationId, request, plan, phases, import);
-
         }
 
         Record(
@@ -2368,7 +2118,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             reconciliation,
             [.. phases],
             []);
-
     }
 
     /// <summary>
@@ -2393,7 +2142,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         List<BackupRestorePhaseRecord> phases,
         BackupSessionImportResult import)
     {
-
         string pairs = string.Join(
             ", ",
             import.Committed.Select(
@@ -2441,7 +2189,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     + "Remove the imported Sessions, or re-run naming only the Sessions that did not "
                     + "land."),
             ]);
-
     }
 
     private static string ReadStagedSecret(string extractRoot) =>
@@ -2471,7 +2218,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         StagedErasure? erasure,
         CancellationToken cancellationToken)
     {
-
         string databasePath = Path.Combine(destinationRoot, "arcanum.db");
 
         bool proves = erasure is { Destination.Kind: BackupRestoreErasureEvidenceKind.Present };
@@ -2479,7 +2225,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         if (request.ConflictMode == BackupRestoreConflictMode.NewProfileRoot
             || !File.Exists(databasePath))
         {
-
             return new BackupRestoreReconciliation(
                 0,
                 0,
@@ -2489,12 +2234,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 pendingCleared,
                 [],
                 erasure is null ? null : ErasureApplication(erasure, committedClean: !proves));
-
         }
 
         try
         {
-
             await using SqliteConnection connection = await BackupRestoreDatabaseWorker
                 .OpenAsync(databasePath, grimoireSecret, readOnly: true, cancellationToken)
                 .ConfigureAwait(false);
@@ -2517,7 +2260,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 pendingCleared,
                 unproven is null ? [] : [unproven],
                 erasure is null ? null : ErasureApplication(erasure, committedClean: unproven is null));
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -2525,7 +2267,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return new BackupRestoreReconciliation(
                 0,
                 0,
@@ -2538,9 +2279,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     + "post-commit reconciliation.",
                 ],
                 erasure is null ? null : ErasureApplication(erasure, committedClean: !proves));
-
         }
-
     }
 
     /// <summary>
@@ -2552,12 +2291,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken)
     {
-
         if (_safetyBackupFactory is null)
         {
-
             return null;
-
         }
 
         string path = Path.Combine(
@@ -2573,40 +2309,32 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 recoveryPassphrase,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private string ResolveDestinationRoot(
         BackupRestoreRequest request,
         List<BackupVerifyIssue> blockers)
     {
-
         if (request.ConflictMode != BackupRestoreConflictMode.NewProfileRoot)
         {
-
             if (!string.IsNullOrWhiteSpace(request.DestinationRoot))
             {
-
                 blockers.Add(new BackupVerifyIssue(
                     "backup.restore_destination_not_applicable",
                     "A destination root applies only to the new-profile-root conflict mode."));
-
             }
 
             return Path.GetFullPath(_paths.GrimoireDirectory);
-
         }
 
         if (string.IsNullOrWhiteSpace(request.DestinationRoot)
             || !Path.IsPathFullyQualified(request.DestinationRoot))
         {
-
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_destination_required",
                 "Restoring into a new profile root requires a fully qualified destination path."));
 
             return Path.GetFullPath(_paths.GrimoireDirectory);
-
         }
 
         string destination = Path.TrimEndingDirectorySeparator(
@@ -2616,12 +2344,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             || (Directory.Exists(destination)
                 && Directory.EnumerateFileSystemEntries(destination).Any()))
         {
-
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_destination_not_empty",
                 "The new profile root must be an empty or absent directory.",
                 destination));
-
         }
 
         if (string.Equals(
@@ -2631,41 +2357,32 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     ? StringComparison.OrdinalIgnoreCase
                     : StringComparison.Ordinal))
         {
-
             blockers.Add(new BackupVerifyIssue(
                 "backup.restore_destination_is_current",
                 "The new profile root may not be the current installation root. Use the "
                 + "replace-installation conflict mode instead.",
                 destination));
-
         }
 
         return destination;
-
     }
 
     private async Task<string> ReadDestinationSchemaAsync(CancellationToken cancellationToken)
     {
-
         if (!File.Exists(_paths.DatabasePath))
         {
-
             return "absent";
-
         }
 
         try
         {
-
             SecretStoreReadResult secret = await _secretStore
                 .GetGrimoireEncryptionSecretReadResultAsync()
                 .ConfigureAwait(false);
 
             if (secret.Status != SecretStoreReadStatus.Ok || string.IsNullOrEmpty(secret.Value))
             {
-
                 return "unreadable";
-
             }
 
             await using SqliteConnection connection = await BackupRestoreDatabaseWorker
@@ -2675,7 +2392,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             return await BackupRestoreDatabaseWorker
                 .ReadSchemaIdentityAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -2684,11 +2400,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 or UnauthorizedAccessException
                 or System.Security.Cryptography.CryptographicException)
         {
-
             return "unreadable";
-
         }
-
     }
 
     /// <summary>
@@ -2704,26 +2417,20 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     private async Task<IReadOnlyCollection<Guid>?> ReadDestinationCampaignIdsAsync(
         CancellationToken cancellationToken)
     {
-
         if (!File.Exists(_paths.DatabasePath))
         {
-
             return null;
-
         }
 
         try
         {
-
             SecretStoreReadResult secret = await _secretStore
                 .GetGrimoireEncryptionSecretReadResultAsync()
                 .ConfigureAwait(false);
 
             if (secret.Status != SecretStoreReadStatus.Ok || string.IsNullOrEmpty(secret.Value))
             {
-
                 return null;
-
             }
 
             await using SqliteConnection connection = await BackupRestoreDatabaseWorker
@@ -2733,7 +2440,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             return await BackupRestoreDatabaseWorker
                 .ReadCampaignIdsAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         // Wider than the sibling readers above, because opening the destination starts at the KDF
         // sidecar: an unsupported version, malformed JSON, or an unusable salt are all "this machine
@@ -2749,27 +2455,21 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 or System.Text.Json.JsonException
                 or System.Security.Cryptography.CryptographicException)
         {
-
             return null;
-
         }
-
     }
 
     private static async Task<int> TryPeekFormatVersionAsync(
         string archivePath,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             BackupInspectResult inspection = await new BackupArchiveCodec()
                 .InspectAsync(archivePath, passphrase: null, cancellationToken)
                 .ConfigureAwait(false);
 
             return inspection.FormatVersion;
-
         }
         catch (Exception exception) when (
             exception is InvalidDataException
@@ -2778,13 +2478,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return await BackupArchiveHeaderPeek
                 .TryReadFormatVersionAsync(archivePath, cancellationToken)
                 .ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -2804,34 +2501,27 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     private async Task<Result<BackupCovenantRestoreDestinationState>> ReadDestinationCovenantStateAsync(
         CancellationToken cancellationToken)
     {
-
         if (!File.Exists(_paths.DatabasePath))
         {
-
             return BackupCovenantRestoreDestinationState.None;
-
         }
 
         SqliteConnection connection;
 
         try
         {
-
             SecretStoreReadResult secret = await _secretStore
                 .GetGrimoireEncryptionSecretReadResultAsync()
                 .ConfigureAwait(false);
 
             if (secret.Status != SecretStoreReadStatus.Ok || string.IsNullOrEmpty(secret.Value))
             {
-
                 return BackupCovenantRestoreDestinationState.None;
-
             }
 
             connection = await BackupRestoreDatabaseWorker
                 .OpenAsync(_paths.DatabasePath, secret.Value, readOnly: true, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -2840,21 +2530,16 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 or UnauthorizedAccessException
                 or System.Security.Cryptography.CryptographicException)
         {
-
             return BackupCovenantRestoreDestinationState.None;
-
         }
 
         await using (connection.ConfigureAwait(false))
         {
-
             try
             {
-
                 return await BackupCovenantRestoreDestinationState
                     .ReadAsync(connection, cancellationToken)
                     .ConfigureAwait(false);
-
             }
             catch (Exception exception) when (
                 exception is SqliteException
@@ -2864,7 +2549,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     or ArgumentException
                     or OverflowException)
             {
-
                 return new Error(
                     BackupRestoreErasureCodes.VerificationFailed,
                     "This installation's Grimoire opened, but its Covenant authority and disclosure state "
@@ -2873,11 +2557,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     + "stopped before committing anything and the current installation is unchanged. Repair the "
                     + "Grimoire's Covenant state and retry, or perform a full installation reset. Diagnostics: "
                     + exception.GetType().Name);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -3016,7 +2697,6 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         BackupVerifyIssue[] Issues,
         BackupRestoreErasureApplicationReceipt? Erasure = null)
     {
-
         public static StageResult Failed(BackupVerifyIssue issue) =>
             new(
                 null!,
@@ -3024,7 +2704,5 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 0,
                 0,
                 [issue]);
-
     }
-
 }
