@@ -8,30 +8,25 @@ namespace RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 internal enum InstallationMaintenanceCoordinationDisposition : byte
 {
-
     Unsafe,
 
     Contended,
 
     Acquired,
-
 }
 
 internal readonly record struct InstallationMaintenanceCoordinationResult
 {
-
     private InstallationMaintenanceCoordinationResult(
         InstallationMaintenanceCoordinationDisposition disposition,
         InstallationMaintenanceCoordinationLease? lease,
         Error error)
     {
-
         Disposition = disposition;
 
         Lease = lease;
 
         Error = error;
-
     }
 
     internal InstallationMaintenanceCoordinationDisposition Disposition { get; }
@@ -66,12 +61,10 @@ internal readonly record struct InstallationMaintenanceCoordinationResult
             ? acquired
             : throw new InvalidOperationException(
                 "This installation-maintenance coordination result has no acquired lease.");
-
 }
 
 internal sealed class InstallationMaintenanceCoordinationLease : IAsyncDisposable
 {
-
     private ArcanumClientMutationLock? _held;
 
     private readonly string _guardedRoot;
@@ -90,7 +83,6 @@ internal sealed class InstallationMaintenanceCoordinationLease : IAsyncDisposabl
         IClientMutationResetEvidenceProbe resetEvidence,
         IClientMutationRestoreEvidenceProbe restoreEvidence)
     {
-
         _guardedRoot = guardedRoot;
 
         _held = held;
@@ -102,7 +94,6 @@ internal sealed class InstallationMaintenanceCoordinationLease : IAsyncDisposabl
         _resetEvidence = resetEvidence;
 
         _restoreEvidence = restoreEvidence;
-
     }
 
     internal ClientMutationBlockerPublication Publication { get; }
@@ -110,7 +101,6 @@ internal sealed class InstallationMaintenanceCoordinationLease : IAsyncDisposabl
     internal async Task<Result> RemoveBlockerIfSafeAsync(
         CancellationToken cancellationToken)
     {
-
         ArcanumClientMutationLock? held = _held;
 
         ObjectDisposedException.ThrowIf(held is null, this);
@@ -123,18 +113,14 @@ internal sealed class InstallationMaintenanceCoordinationLease : IAsyncDisposabl
 
         if (reset.IsFailure)
         {
-
             return Result.Failure(reset.Error);
-
         }
 
         if (reset.Value is not null)
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Data.RecoveryRequired,
                 "The client-mutation blocker remains required by installation-reset evidence."));
-
         }
 
         Result<ActiveReplacementRestore?> restore = await _restoreEvidence
@@ -143,29 +129,23 @@ internal sealed class InstallationMaintenanceCoordinationLease : IAsyncDisposabl
 
         if (restore.IsFailure)
         {
-
             return Result.Failure(restore.Error);
-
         }
 
         if (restore.Value is not null)
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Data.RecoveryRequired,
                 "The client-mutation blocker remains required by replacement-restore evidence."));
-
         }
 
         return await _blockerStore
             .RemoveAsync(held, Publication, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public ValueTask DisposeAsync()
     {
-
         ArcanumClientMutationLock? held = _held;
 
         _held = null;
@@ -173,37 +153,30 @@ internal sealed class InstallationMaintenanceCoordinationLease : IAsyncDisposabl
         held?.Dispose();
 
         return ValueTask.CompletedTask;
-
     }
-
 }
 
 internal enum InstallationStartupCoordinationDisposition : byte
 {
-
     Unsafe,
 
     Contended,
 
     Acquired,
-
 }
 
 internal readonly record struct InstallationStartupCoordinationResult
 {
-
     private InstallationStartupCoordinationResult(
         InstallationStartupCoordinationDisposition disposition,
         InstallationStartupCoordinationLease? lease,
         Error error)
     {
-
         Disposition = disposition;
 
         Lease = lease;
 
         Error = error;
-
     }
 
     internal InstallationStartupCoordinationDisposition Disposition { get; }
@@ -238,12 +211,10 @@ internal readonly record struct InstallationStartupCoordinationResult
             ? acquired
             : throw new InvalidOperationException(
                 "This installation-startup coordination result has no acquired lease.");
-
 }
 
 internal sealed class InstallationStartupCoordinationLease : IDisposable, IAsyncDisposable
 {
-
     private ArcanumClientMutationLock? _held;
 
     private readonly string _guardedRoot;
@@ -264,7 +235,6 @@ internal sealed class InstallationStartupCoordinationLease : IDisposable, IAsync
         IClientMutationResetEvidenceProbe resetEvidence,
         IClientMutationRestoreEvidenceProbe restoreEvidence)
     {
-
         _guardedRoot = guardedRoot;
 
         _held = held;
@@ -280,7 +250,6 @@ internal sealed class InstallationStartupCoordinationLease : IDisposable, IAsync
         _resetEvidence = resetEvidence;
 
         _restoreEvidence = restoreEvidence;
-
     }
 
     internal ClientMutationBlockerPublication? Publication { get; }
@@ -305,7 +274,6 @@ internal sealed class InstallationStartupCoordinationLease : IDisposable, IAsync
     internal async Task<Result> RemoveBlockerIfSafeAsync(
         CancellationToken cancellationToken)
     {
-
         ArcanumClientMutationLock? held = _held;
 
         ObjectDisposedException.ThrowIf(held is null, this);
@@ -314,9 +282,7 @@ internal sealed class InstallationStartupCoordinationLease : IDisposable, IAsync
 
         if (Publication is not { } publication)
         {
-
             return Result.Success();
-
         }
 
         Result<ActiveInstallationReset?> reset = await _resetEvidence
@@ -325,9 +291,7 @@ internal sealed class InstallationStartupCoordinationLease : IDisposable, IAsync
 
         if (reset.IsFailure)
         {
-
             return Result.Failure(reset.Error);
-
         }
 
         Result<ActiveReplacementRestore?> restore = await _restoreEvidence
@@ -336,51 +300,40 @@ internal sealed class InstallationStartupCoordinationLease : IDisposable, IAsync
 
         if (restore.IsFailure)
         {
-
             return Result.Failure(restore.Error);
-
         }
 
         if (reset.Value is not null || restore.Value is not null)
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Data.RecoveryRequired,
                 "The client-mutation blocker remains required by installation maintenance evidence."));
-
         }
 
         return await _blockerStore
             .RemoveAsync(held, publication, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public ValueTask DisposeAsync()
     {
-
         Dispose();
 
         return ValueTask.CompletedTask;
-
     }
 
     public void Dispose()
     {
-
         ArcanumClientMutationLock? held = _held;
 
         _held = null;
 
         held?.Dispose();
-
     }
-
 }
 
 internal sealed class InstallationMaintenanceCoordination
 {
-
     private readonly string _guardedRoot;
 
     private readonly ClientMutationBlockerStore _blockerStore;
@@ -400,7 +353,6 @@ internal sealed class InstallationMaintenanceCoordination
         IClientMutationRestoreEvidenceProbe restoreEvidence,
         Func<string, ArcanumClientMutationLockAcquisitionResult>? acquire = null)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedRoot);
 
         _guardedRoot = Path.TrimEndingDirectorySeparator(
@@ -416,7 +368,6 @@ internal sealed class InstallationMaintenanceCoordination
             ?? throw new ArgumentNullException(nameof(restoreEvidence));
 
         _acquire = acquire ?? ArcanumClientMutationLock.AcquireDetailed;
-
     }
 
     internal Task<InstallationMaintenanceCoordinationResult>
@@ -426,17 +377,14 @@ internal sealed class InstallationMaintenanceCoordination
             Guid? operationId,
             CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(planId);
 
         if (scope is not InstallationResetScope.Global
             and not InstallationResetScope.All)
         {
-
             throw new ArgumentOutOfRangeException(
                 nameof(scope),
                 "A durable client-mutation blocker is reserved for global and all installation reset scopes.");
-
         }
 
         return AcquireAsync(
@@ -448,7 +396,6 @@ internal sealed class InstallationMaintenanceCoordination
                 planId,
                 operationId),
             cancellationToken);
-
     }
 
     internal Task<InstallationMaintenanceCoordinationResult>
@@ -457,16 +404,13 @@ internal sealed class InstallationMaintenanceCoordination
             Guid operationId,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldMaintenanceLock);
 
         if (operationId == Guid.Empty)
         {
-
             throw new ArgumentException(
                 "A replacement restore requires a nonempty operation identity.",
                 nameof(operationId));
-
         }
 
         heldMaintenanceLock.AssertHeldFor(_guardedRoot);
@@ -480,7 +424,6 @@ internal sealed class InstallationMaintenanceCoordination
                 PlanId: null,
                 operationId),
             cancellationToken);
-
     }
 
     internal async Task<InstallationStartupCoordinationResult>
@@ -488,7 +431,6 @@ internal sealed class InstallationMaintenanceCoordination
             ArcanumMaintenanceLock heldMaintenanceLock,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldMaintenanceLock);
 
         heldMaintenanceLock.AssertHeldFor(_guardedRoot);
@@ -501,27 +443,22 @@ internal sealed class InstallationMaintenanceCoordination
         if (acquisition.Disposition
             is ArcanumClientMutationLockAcquisitionDisposition.Contended)
         {
-
             return InstallationStartupCoordinationResult.Contended(
                 "Another client mutation or installation maintenance operation owns the client-mutation mutex.");
-
         }
 
         if (acquisition.Disposition
             is ArcanumClientMutationLockAcquisitionDisposition.Unsafe)
         {
-
             return InstallationStartupCoordinationResult.Unsafe(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The client-mutation mutex could not be acquired safely."));
-
         }
 
         ArcanumClientMutationLock held = acquisition.BorrowAcquiredLock();
 
         try
         {
-
             Result<ClientMutationBlockerPublication?> inspected =
                 await _blockerStore
                     .InspectAsync(cancellationToken)
@@ -529,12 +466,10 @@ internal sealed class InstallationMaintenanceCoordination
 
             if (inspected.IsFailure)
             {
-
                 held.Dispose();
 
                 return InstallationStartupCoordinationResult.Unsafe(
                     inspected.Error);
-
             }
 
             Result<ActiveInstallationReset?> reset = await _resetEvidence
@@ -543,11 +478,9 @@ internal sealed class InstallationMaintenanceCoordination
 
             if (reset.IsFailure)
             {
-
                 held.Dispose();
 
                 return InstallationStartupCoordinationResult.Unsafe(reset.Error);
-
             }
 
             Result<ActiveReplacementRestore?> restore = await _restoreEvidence
@@ -556,29 +489,24 @@ internal sealed class InstallationMaintenanceCoordination
 
             if (restore.IsFailure)
             {
-
                 held.Dispose();
 
                 return InstallationStartupCoordinationResult.Unsafe(restore.Error);
-
             }
 
             if (reset.Value is not null && restore.Value is not null)
             {
-
                 held.Dispose();
 
                 return InstallationStartupCoordinationResult.Unsafe(new Error(
                     ErrorCodes.Data.RecoveryRequired,
                     "Installation reset and replacement restore evidence are both active."));
-
             }
 
             ClientMutationBlockerPublication? publication = inspected.Value;
 
             if (publication is { } existing)
             {
-
                 bool belongsToActiveReset = reset.Value is { } active
                     && BlockerMatchesReset(existing.Record, active);
 
@@ -590,16 +518,13 @@ internal sealed class InstallationMaintenanceCoordination
 
                 if (!belongsToActiveReset && !belongsToActiveRestore)
                 {
-
                     if (reset.Value is not null || restore.Value is not null)
                     {
-
                         held.Dispose();
 
                         return InstallationStartupCoordinationResult.Unsafe(new Error(
                             ErrorCodes.Data.RecoveryRequired,
                             "The durable client-mutation blocker does not match active installation maintenance evidence."));
-
                     }
 
                     Result removed = await _blockerStore
@@ -608,24 +533,19 @@ internal sealed class InstallationMaintenanceCoordination
 
                     if (removed.IsFailure)
                     {
-
                         held.Dispose();
 
                         return InstallationStartupCoordinationResult.Unsafe(
                             removed.Error);
-
                     }
 
                     publication = null;
-
                 }
-
             }
             else if (reset.Value is { } active
                      && active.Scope is InstallationResetScope.Global
                          or InstallationResetScope.All)
             {
-
                 Result<ClientMutationBlockerPublication> published =
                     await _blockerStore
                         .PublishAsync(
@@ -642,20 +562,16 @@ internal sealed class InstallationMaintenanceCoordination
 
                 if (published.IsFailure)
                 {
-
                     held.Dispose();
 
                     return InstallationStartupCoordinationResult.Unsafe(
                         published.Error);
-
                 }
 
                 publication = published.Value;
-
             }
             else if (restore.Value is { } activeRestore)
             {
-
                 Result<ClientMutationBlockerPublication> published =
                     await _blockerStore
                         .PublishAsync(
@@ -672,20 +588,17 @@ internal sealed class InstallationMaintenanceCoordination
 
                 if (published.IsFailure)
                 {
-
                     held.Dispose();
 
                     return InstallationStartupCoordinationResult.Unsafe(
                         published.Error);
-
                 }
 
                 publication = published.Value;
-
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-
+            // No cancellation check from here: a blocker published above is durable, and throwing would
+            // strand it without an owner. The caller observes cancellation at its next checkpoint.
             return InstallationStartupCoordinationResult.Acquired(
                 new InstallationStartupCoordinationLease(
                     _guardedRoot,
@@ -696,24 +609,19 @@ internal sealed class InstallationMaintenanceCoordination
                     _blockerStore,
                     _resetEvidence,
                     _restoreEvidence));
-
         }
         catch
         {
-
             held.Dispose();
 
             throw;
-
         }
-
     }
 
     private async Task<InstallationMaintenanceCoordinationResult> AcquireAsync(
         ClientMutationBlockerRecord requested,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         ArcanumClientMutationLockAcquisitionResult acquisition =
@@ -722,27 +630,22 @@ internal sealed class InstallationMaintenanceCoordination
         if (acquisition.Disposition
             is ArcanumClientMutationLockAcquisitionDisposition.Contended)
         {
-
             return InstallationMaintenanceCoordinationResult.Contended(
                 "Another client mutation or installation maintenance operation owns the client-mutation mutex.");
-
         }
 
         if (acquisition.Disposition
             is ArcanumClientMutationLockAcquisitionDisposition.Unsafe)
         {
-
             return InstallationMaintenanceCoordinationResult.Unsafe(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The client-mutation mutex could not be acquired safely."));
-
         }
 
         ArcanumClientMutationLock held = acquisition.BorrowAcquiredLock();
 
         try
         {
-
             Result<ClientMutationBlockerPublication?> inspected =
                 await _blockerStore
                     .InspectAsync(cancellationToken)
@@ -750,12 +653,10 @@ internal sealed class InstallationMaintenanceCoordination
 
             if (inspected.IsFailure)
             {
-
                 held.Dispose();
 
                 return InstallationMaintenanceCoordinationResult.Unsafe(
                     inspected.Error);
-
             }
 
             Result<ActiveInstallationReset?> reset = await _resetEvidence
@@ -764,35 +665,28 @@ internal sealed class InstallationMaintenanceCoordination
 
             if (reset.IsFailure)
             {
-
                 held.Dispose();
 
                 return InstallationMaintenanceCoordinationResult.Unsafe(
                     reset.Error);
-
             }
 
             ClientMutationBlockerPublication publication;
 
             if (inspected.Value is { } existing)
             {
-
                 if (!CanAdopt(existing.Record, requested, reset.Value))
                 {
-
                     held.Dispose();
 
                     return InstallationMaintenanceCoordinationResult.Contended(
                         "A different installation maintenance operation owns the durable client-mutation blocker.");
-
                 }
 
                 publication = existing;
-
             }
             else
             {
-
                 bool resetIdentityRefused = requested.Kind
                     is ClientMutationBlockerKind.InstallationReset
                     ? reset.Value is { } active
@@ -802,12 +696,10 @@ internal sealed class InstallationMaintenanceCoordination
 
                 if (resetIdentityRefused)
                 {
-
                     held.Dispose();
 
                     return InstallationMaintenanceCoordinationResult.Contended(
                         "The requested reset identity does not match the exact active installation reset evidence.");
-
                 }
 
                 Result<ActiveReplacementRestore?> restore = await _restoreEvidence
@@ -816,22 +708,18 @@ internal sealed class InstallationMaintenanceCoordination
 
                 if (restore.IsFailure)
                 {
-
                     held.Dispose();
 
                     return InstallationMaintenanceCoordinationResult.Unsafe(
                         restore.Error);
-
                 }
 
                 if (restore.Value is not null)
                 {
-
                     held.Dispose();
 
                     return InstallationMaintenanceCoordinationResult.Contended(
                         "A replacement restore is active for this installation.");
-
                 }
 
                 Result<ClientMutationBlockerPublication> published =
@@ -841,20 +729,17 @@ internal sealed class InstallationMaintenanceCoordination
 
                 if (published.IsFailure)
                 {
-
                     held.Dispose();
 
                     return InstallationMaintenanceCoordinationResult.Unsafe(
                         published.Error);
-
                 }
 
                 publication = published.Value;
-
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-
+            // No cancellation check from here: a blocker published above is durable, and throwing would
+            // strand it without an owner. The caller observes cancellation at its next checkpoint.
             return InstallationMaintenanceCoordinationResult.Acquired(
                 new InstallationMaintenanceCoordinationLease(
                     _guardedRoot,
@@ -863,17 +748,13 @@ internal sealed class InstallationMaintenanceCoordination
                     _blockerStore,
                     _resetEvidence,
                     _restoreEvidence));
-
         }
         catch
         {
-
             held.Dispose();
 
             throw;
-
         }
-
     }
 
     private static bool CanAdopt(
@@ -911,5 +792,4 @@ internal sealed class InstallationMaintenanceCoordination
         && active.OperationId != Guid.Empty
         && (blocker.OperationId is null
             || blocker.OperationId == active.OperationId);
-
 }

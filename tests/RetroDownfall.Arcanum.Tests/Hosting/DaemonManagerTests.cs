@@ -1,11 +1,237 @@
 using System.Globalization;
 using System.Reflection;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
-public sealed class DaemonManagerTests
+public sealed class DaemonManagerTests : IDisposable
 {
+    private readonly string _directory = Path.Combine(
+        Path.GetTempPath(),
+        "arcanum-daemon-manager-" + Guid.NewGuid().ToString("N"));
+
+    public DaemonManagerTests() => Directory.CreateDirectory(_directory);
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_directory))
+        {
+            Directory.Delete(_directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(3, "Boot-out failed: 3: No such process")]
+    [InlineData(5, "Boot-out failed: 5: Input/output error")]
+    [InlineData(36, "")]
+    [InlineData(113, "Could not find specified service")]
+    [InlineData(1, "Boot-out failed: No such process")]
+    public async Task MacOs_uninstall_deletes_plist_when_bootout_reports_service_not_found(int exitCode, string stderr)
+    {
+        string plist = Path.Combine(_directory, "com.retrodownfall.arcanum.plist");
+
+        await File.WriteAllTextAsync(plist, "<plist/>");
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) => arguments[0] == "bootout"
+                ? ScriptedDaemonProcessRunner.Exit(exitCode, stderr: stderr)
+                : ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"));
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result result = await manager.UninstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(File.Exists(plist));
+
+        Assert.Contains(runner.Calls, static call => call.Contains("bootout", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task MacOs_uninstall_keeps_the_plist_when_bootout_fails_for_another_reason()
+    {
+        string plist = Path.Combine(_directory, "com.retrodownfall.arcanum.plist");
+
+        await File.WriteAllTextAsync(plist, "<plist/>");
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) => arguments[0] == "bootout"
+                ? ScriptedDaemonProcessRunner.Exit(1, stderr: "Operation not permitted")
+                : ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"));
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result result = await manager.UninstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonBootout", result.Error.Code);
+
+        Assert.True(File.Exists(plist));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(113)]
+    public async Task MacOs_install_boots_out_the_label_before_bootstrapping(int bootoutExitCode)
+    {
+        string plist = Path.Combine(_directory, "LaunchAgents", "com.retrodownfall.arcanum.plist");
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) => arguments[0] switch
+            {
+                "bootout" => ScriptedDaemonProcessRunner.Exit(
+                    bootoutExitCode,
+                    stderr: bootoutExitCode == 0 ? string.Empty : "Could not find specified service"),
+                "bootstrap" => ScriptedDaemonProcessRunner.Exit(0),
+                _ => ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"),
+            });
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result result = await manager.InstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        int bootout = runner.Calls.FindIndex(static call => call.Contains("bootout", StringComparison.Ordinal));
+
+        int bootstrap = runner.Calls.FindIndex(static call => call.Contains("bootstrap", StringComparison.Ordinal));
+
+        Assert.True(bootout >= 0, "A loaded label must be booted out before bootstrap.");
+
+        Assert.True(bootout < bootstrap, string.Join(" | ", runner.Calls));
+
+        Assert.True(File.Exists(plist));
+    }
+
+    [Fact]
+    public async Task Windows_install_refuses_a_localsystem_service_and_directs_to_a_per_user_scheduled_task()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonWindowsServiceUnsupported", result.Error.Code);
+
+        Assert.Empty(runner.Calls);
+
+        Assert.Contains("LocalSystem", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("Task Scheduler", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("schtasks /Create", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains(" serve", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Windows_real_runner_install_refuses_without_starting_sc_exe()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Exercises the real Windows process start path.");
+
+        WindowsDaemonManager manager = new(
+            DaemonProcessRunner.Default,
+            Path.Combine(_directory, "missing-sc.exe"));
+
+        Result result = await manager.InstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonWindowsServiceUnsupported", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task Windows_manager_reports_elevation_when_the_runner_reports_access_denied()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => new DaemonProcessOutcome(-1, string.Empty, string.Empty, null, AccessDenied: true));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.UninstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonElevationRequired", result.Error.Code);
+
+        Assert.Single(runner.Calls);
+    }
+
+    [Fact]
+    public async Task Windows_uninstall_continues_to_delete_when_the_service_is_not_active()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "stop"
+                ? ScriptedDaemonProcessRunner.Exit(1062)
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.UninstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(["sc.exe stop ArcanumDaemon", "sc.exe delete ArcanumDaemon"], runner.Calls);
+    }
+
+    [Fact]
+    public async Task Windows_status_reports_a_missing_service_as_not_installed()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(1060));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(WindowsDaemonManager.NotInstalledMessage, result.Value);
+    }
+
+    [SkippableFact]
+    public async Task Windows_real_runner_reports_a_start_failure_for_a_missing_sc_exe_as_a_fatal_error()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Exercises the real Windows process start path.");
+
+        WindowsDaemonManager manager = new(
+            DaemonProcessRunner.Default,
+            Path.Combine(_directory, "missing-sc.exe"));
+
+        Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+    }
+
+    [Fact]
+    public async Task MacOs_install_fails_when_the_pre_bootstrap_bootout_fails_for_another_reason()
+    {
+        string plist = Path.Combine(_directory, "LaunchAgents", "com.retrodownfall.arcanum.plist");
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) => arguments[0] switch
+            {
+                "bootout" => ScriptedDaemonProcessRunner.Exit(1, stderr: "Operation not permitted"),
+                _ => ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"),
+            });
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result result = await manager.InstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonBootout", result.Error.Code);
+
+        Assert.DoesNotContain(runner.Calls, static call => call.Contains("bootstrap", StringComparison.Ordinal));
+    }
 
     [Theory]
     [InlineData("        STATE              : 4  RUNNING", 4, true)]
@@ -16,7 +242,6 @@ public sealed class DaemonManagerTests
     [InlineData("STATE : abc", 0, false)]
     public void TryParseServiceStateCode_ParsesExpectedStateCode(string stdout, int expectedCode, bool expectedResult)
     {
-
         MethodInfo? method = typeof(WindowsDaemonManager).GetMethod(
             "TryParseServiceStateCode",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -30,7 +255,6 @@ public sealed class DaemonManagerTests
         Assert.Equal(expectedResult, result);
 
         Assert.Equal(expectedCode, args[1]);
-
     }
 
     [Theory]
@@ -40,7 +264,6 @@ public sealed class DaemonManagerTests
     [InlineData("/path\"with\"quote/arcanum", "\"/path\\\"with\\\"quote/arcanum\" serve")]
     public void FormatExecStartArgument_FormatsExpectedValue(string executablePath, string expected)
     {
-
         MethodInfo? method = typeof(LinuxDaemonManager).GetMethod(
             "FormatExecStartArgument",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -50,51 +273,11 @@ public sealed class DaemonManagerTests
         string result = (string)method.Invoke(null, [executablePath])!;
 
         Assert.Equal(expected, result);
-
-    }
-
-    [Fact]
-    public async Task LinuxRunProcessAsync_MissingExecutable_ReturnsFatalErrorInsteadOfThrowing()
-    {
-
-        string missing = "arcanum-missing-" + Guid.NewGuid().ToString("N");
-
-        DaemonProcessOutcome outcome = await LinuxDaemonManager.RunProcessAsync(
-            missing,
-            [],
-            CancellationToken.None);
-
-        Assert.True(outcome.FatalError.HasValue);
-
-        Assert.Equal("DaemonProcessStart", outcome.FatalError.Value.Code);
-
-        Assert.Contains(missing, outcome.FatalError.Value.Message, StringComparison.Ordinal);
-
-    }
-
-    [Fact]
-    public async Task MacOsRunProcessAsync_MissingExecutable_ReturnsFatalErrorInsteadOfThrowing()
-    {
-
-        string missing = "arcanum-missing-" + Guid.NewGuid().ToString("N");
-
-        DaemonProcessOutcome outcome = await MacOsDaemonManager.RunProcessAsync(
-            missing,
-            [],
-            CancellationToken.None);
-
-        Assert.True(outcome.FatalError.HasValue);
-
-        Assert.Equal("DaemonProcessStart", outcome.FatalError.Value.Code);
-
-        Assert.Contains(missing, outcome.FatalError.Value.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void FormatStateMessage_RunningState_ReturnsRunningMessage()
     {
-
         MethodInfo? method = typeof(WindowsDaemonManager).GetMethod(
             "FormatStateMessage",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -104,13 +287,11 @@ public sealed class DaemonManagerTests
         string result = (string)method.Invoke(null, [4])!;
 
         Assert.Equal("ArcanumDaemon is running.", result);
-
     }
 
     [Fact]
     public void FormatStateMessage_UnexpectedState_ReturnsUnexpectedMessage()
     {
-
         MethodInfo? method = typeof(WindowsDaemonManager).GetMethod(
             "FormatStateMessage",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -122,7 +303,5 @@ public sealed class DaemonManagerTests
         Assert.Equal(
             string.Create(CultureInfo.InvariantCulture, $"ArcanumDaemon reports an unexpected service state code {99}."),
             result);
-
     }
-
 }

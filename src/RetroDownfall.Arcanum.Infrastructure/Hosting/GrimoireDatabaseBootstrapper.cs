@@ -28,46 +28,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </summary>
 public static class GrimoireDatabaseBootstrapper
 {
-    public static Task EnsureInitializedAsync(
-        ISecretStore secretStore,
-        IGrimoireDbPassphraseSource passphraseSource,
-        IServiceScopeFactory scopeFactory,
-        CancellationToken cancellationToken) =>
-        EnsureInitializedAsync(
-            secretStore,
-            passphraseSource,
-            scopeFactory,
-            heldInstallationLock: null,
-            expectedInstallationId: null,
-            cancellationToken);
-
-    /// <summary>
-    /// The same bootstrap, with the caller's already-held installation lock threaded through so
-    /// Covenant authority can be prepared under it.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="ArcanumMaintenanceLock"/> is internal, so this cannot be an overload of the public
-    /// entry point. The lock is optional rather than required because the CLI legitimately runs
-    /// alongside a host that already owns it; a null lock installs the schema and skips only the
-    /// authority preparation that needs exclusive ownership.
-    /// </remarks>
-    internal static Task EnsureInitializedAsync(
-        ISecretStore secretStore,
-        IGrimoireDbPassphraseSource passphraseSource,
-        IServiceScopeFactory scopeFactory,
-        ArcanumMaintenanceLock? heldInstallationLock,
-        Guid? expectedInstallationId,
-        CancellationToken cancellationToken) =>
-        EnsureInitializedAsync(
-            secretStore,
-            passphraseSource,
-            scopeFactory,
-            ArcanumPaths.GrimoireDatabaseFile,
-            ArcanumPaths.GrimoireDirectory,
-            heldInstallationLock,
-            expectedInstallationId,
-            cancellationToken);
-
     /// <summary>
     /// Runs <c>PRAGMA wal_checkpoint(TRUNCATE)</c> on a fresh connection at graceful shutdown
     /// so the <c>-wal</c>/<c>-shm</c> sidecar files do not persist across restarts. Best-effort:
@@ -138,30 +98,19 @@ public static class GrimoireDatabaseBootstrapper
         }
     }
 
+    /// <summary>
+    /// Bootstraps the Grimoire while the caller holds the installation maintenance lock. The lock is required:
+    /// both production callers (the host's start-up and the CLI's exclusive operations) own it before they
+    /// bootstrap, because Covenant authority preparation and topology recovery need exclusive ownership of
+    /// the guarded root.
+    /// </summary>
     internal static Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
         IServiceScopeFactory scopeFactory,
         string dbPath,
         string grimoireDirectory,
-        CancellationToken cancellationToken) =>
-        EnsureInitializedAsync(
-            secretStore,
-            passphraseSource,
-            scopeFactory,
-            dbPath,
-            grimoireDirectory,
-            heldInstallationLock: null,
-            expectedInstallationId: null,
-            cancellationToken);
-
-    internal static Task EnsureInitializedAsync(
-        ISecretStore secretStore,
-        IGrimoireDbPassphraseSource passphraseSource,
-        IServiceScopeFactory scopeFactory,
-        string dbPath,
-        string grimoireDirectory,
-        ArcanumMaintenanceLock? heldInstallationLock,
+        ArcanumMaintenanceLock heldInstallationLock,
         Guid? expectedInstallationId,
         CancellationToken cancellationToken) =>
         EnsureInitializedAsync(
@@ -170,19 +119,21 @@ public static class GrimoireDatabaseBootstrapper
             scopeFactory,
             dbPath,
             grimoireDirectory,
-            heldInstallationLock,
+            heldInstallationLock
+                ?? throw new ArgumentNullException(nameof(heldInstallationLock)),
             expectedInstallationId,
             postRestoreTopology: null,
             restoreDisclosureWriterAfterAuthenticatedTransition: false,
             cancellationToken);
 
+    /// <inheritdoc cref="EnsureInitializedAsync(ISecretStore, IGrimoireDbPassphraseSource, IServiceScopeFactory, string, string, ArcanumMaintenanceLock, Guid?, CancellationToken)"/>
     internal static Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
         IServiceScopeFactory scopeFactory,
         string dbPath,
         string grimoireDirectory,
-        ArcanumMaintenanceLock? heldInstallationLock,
+        ArcanumMaintenanceLock heldInstallationLock,
         Guid? expectedInstallationId,
         Func<CancellationToken, Task<MasterApiKeyBootstrapResult?>>?
             postRestoreTopology,
@@ -193,12 +144,61 @@ public static class GrimoireDatabaseBootstrapper
             scopeFactory,
             dbPath,
             grimoireDirectory,
-            heldInstallationLock,
+            heldInstallationLock
+                ?? throw new ArgumentNullException(nameof(heldInstallationLock)),
             expectedInstallationId,
             postRestoreTopology,
             restoreDisclosureWriterAfterAuthenticatedTransition: false,
             cancellationToken);
 
+    /// <summary>
+    /// Test-only: bootstraps with no installation maintenance lock, which installs the schema and skips only
+    /// the topology recovery and authority preparation that need exclusive ownership. No production code may
+    /// call this, and none passes a null lock to <c>EnsureInitializedAsync</c> either;
+    /// <c>GrimoireBootstrapLockCallSiteTests</c> fails the build of any <c>src/</c> call site that does.
+    /// </summary>
+    internal static Task EnsureInitializedWithoutInstallationLockForTestsAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        string dbPath,
+        string grimoireDirectory,
+        CancellationToken cancellationToken) =>
+        EnsureInitializedWithoutInstallationLockForTestsAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            dbPath,
+            grimoireDirectory,
+            restoreDisclosureWriterAfterAuthenticatedTransition: false,
+            cancellationToken);
+
+    /// <inheritdoc cref="EnsureInitializedWithoutInstallationLockForTestsAsync(ISecretStore, IGrimoireDbPassphraseSource, IServiceScopeFactory, string, string, CancellationToken)"/>
+    internal static Task EnsureInitializedWithoutInstallationLockForTestsAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        string dbPath,
+        string grimoireDirectory,
+        bool restoreDisclosureWriterAfterAuthenticatedTransition,
+        CancellationToken cancellationToken) =>
+        EnsureInitializedAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            dbPath,
+            grimoireDirectory,
+            heldInstallationLock: null,
+            expectedInstallationId: null,
+            postRestoreTopology: null,
+            restoreDisclosureWriterAfterAuthenticatedTransition,
+            cancellationToken);
+
+    /// <summary>
+    /// The one implementation behind every entry point above. <paramref name="heldInstallationLock"/> is
+    /// nullable only so the test-only seam can exercise the schema and key paths without a lock; every
+    /// production caller passes the lock it holds.
+    /// </summary>
     internal static async Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
@@ -273,7 +273,12 @@ public static class GrimoireDatabaseBootstrapper
 
                 _ = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // A host stopping mid-probe says nothing about the key.
+                throw;
+            }
+            catch (Exception ex) when (IndicatesKeyMismatchOrCorruption(ex))
             {
                 Log.Fatal(
                     ex,
@@ -282,6 +287,19 @@ public static class GrimoireDatabaseBootstrapper
 
                 throw new GrimoireDatabaseUnavailableException(
                     "Arcanum Grimoire database key verification failed. See logs for recovery steps.");
+            }
+            catch (Exception ex)
+            {
+                // Busy, locked, an I/O failure or a failing disk: the probe never reached a verdict on the key,
+                // so reporting tampering would send the operator after the wrong cause.
+                Log.Fatal(
+                    ex,
+                    "Grimoire database exists at {DbPath} but could not be read to verify the derived key (the database may be busy or the disk failing); this is not evidence of a key mismatch. Arcanum will exit.",
+                    dbPath);
+
+                throw new GrimoireDatabaseUnavailableException(
+                    "Arcanum could not read the Grimoire database to verify its key; the database may be busy or the disk failing. See logs.",
+                    ex);
             }
         }
 
@@ -1469,7 +1487,19 @@ public static class GrimoireDatabaseBootstrapper
         }
     }
 
-    private static async Task<bool> CanOpenDatabaseAsync(
+    private const int SqliteCorrupt = 11;
+
+    private const int SqliteNotADatabase = 26;
+
+    /// <summary>
+    /// SQLCipher answers a wrong key as "file is not a database" (26), and a damaged file as corrupt (11).
+    /// Those are the only failures that are a verdict on the key or the file; busy, locked, I/O and
+    /// cannot-open mean the probe never got that far.
+    /// </summary>
+    internal static bool IndicatesKeyMismatchOrCorruption(Exception exception) =>
+        exception is SqliteException { SqliteErrorCode: SqliteNotADatabase or SqliteCorrupt };
+
+    internal static async Task<bool> CanOpenDatabaseAsync(
         string dbPath,
         string passphrase,
         CancellationToken cancellationToken)
@@ -1499,9 +1529,21 @@ public static class GrimoireDatabaseBootstrapper
 
             return true;
         }
-        catch (Exception)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IndicatesKeyMismatchOrCorruption(ex))
         {
             return false;
+        }
+        catch (Exception ex)
+        {
+            // Not a verdict on this candidate key: the next candidate would fail the same way, and "none of
+            // the keys opened it" would be false.
+            throw new GrimoireDatabaseUnavailableException(
+                "Arcanum could not read the Grimoire database to verify its key; the database may be busy or the disk failing. See logs.",
+                ex);
         }
     }
 }

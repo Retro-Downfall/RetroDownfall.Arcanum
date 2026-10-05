@@ -1,5 +1,7 @@
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -13,14 +15,12 @@ namespace RetroDownfall.Arcanum.Tests.Coordination;
 [Collection("WorkspacePathPolicy")]
 public sealed class ClientMutationBlockerStoreTests : IDisposable
 {
-
     private readonly string _container;
 
     private readonly string _guardedRoot;
 
     public ClientMutationBlockerStoreTests()
     {
-
         _container = Path.Combine(
             Path.GetTempPath(),
             "arcanum-client-blocker-" + Guid.NewGuid().ToString("N"));
@@ -28,27 +28,21 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
         _guardedRoot = Path.Combine(_container, "arcanum");
 
         Directory.CreateDirectory(_guardedRoot);
-
     }
 
     public void Dispose()
     {
-
         SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
 
         if (Directory.Exists(_container))
         {
-
             Directory.Delete(_container, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task An_unowned_or_directory_blocker_is_unsafe_not_absent()
     {
-
         ClientMutationBlockerStore store = new(_guardedRoot);
 
         ClientMutationBlockerRecord record = Record();
@@ -57,9 +51,7 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
             .AcquireDetailed(_guardedRoot)
             .BorrowAcquiredLock())
         {
-
             _ = (await store.PublishAsync(held, record)).Value;
-
         }
 
         SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
@@ -74,13 +66,11 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
         Directory.CreateDirectory(store.BlockerPath);
 
         Assert.True((await store.InspectAsync()).IsFailure);
-
     }
 
     [SkippableFact]
     public async Task A_hard_link_blocker_is_unsafe_and_its_target_is_unchanged()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS()
                 && !OperatingSystem.IsLinux()
@@ -93,9 +83,7 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
             .AcquireDetailed(_guardedRoot)
             .BorrowAcquiredLock())
         {
-
             _ = (await store.PublishAsync(held, Record())).Value;
-
         }
 
         byte[] payload = File.ReadAllBytes(store.BlockerPath);
@@ -111,13 +99,11 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
         Assert.True((await store.InspectAsync()).IsFailure);
 
         Assert.Equal(payload, File.ReadAllBytes(sentinel));
-
     }
 
     [Fact]
     public async Task Publishing_under_the_exact_client_lock_is_durable_and_idempotent()
     {
-
         ClientMutationBlockerStore store = new(_guardedRoot);
 
         ClientMutationBlockerRecord record = Record();
@@ -152,13 +138,11 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
                 _container,
                 ".arcanum-client-mutation-arcanum.blocked.json"),
             store.BlockerPath);
-
     }
 
     [Fact]
     public async Task A_different_owner_cannot_replace_or_remove_the_durable_blocker()
     {
-
         ClientMutationBlockerStore store = new(_guardedRoot);
 
         ClientMutationBlockerRecord firstRecord = Record();
@@ -187,13 +171,11 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
         Assert.True((await store.RemoveAsync(held, first)).IsSuccess);
 
         Assert.Null((await store.InspectAsync()).Value);
-
     }
 
     [Fact]
     public async Task Cancellation_after_the_temp_is_flushed_but_before_publication_leaves_no_evidence()
     {
-
         using CancellationTokenSource cancelled = new();
 
         ClientMutationBlockerStore store = new(
@@ -215,13 +197,42 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
         Assert.DoesNotContain(
             Directory.GetFileSystemEntries(_container),
             static path => Path.GetFileName(path).Contains(".tmp.", StringComparison.Ordinal));
+    }
 
+    [Fact]
+    public async Task Cancellation_after_publication_still_returns_the_published_blocker()
+    {
+        using CancellationTokenSource cancelled = new();
+
+        ClientMutationBlockerStore store = new(
+            _guardedRoot,
+            new ClientMutationBlockerStoreOptions
+            {
+                AfterPublishMoveBeforeVerifyForTests = cancelled.Cancel,
+            });
+
+        ClientMutationBlockerRecord record = Record();
+
+        using ArcanumClientMutationLock held = ArcanumClientMutationLock
+            .AcquireDetailed(_guardedRoot)
+            .BorrowAcquiredLock();
+
+        Result<ClientMutationBlockerPublication> published = await store
+            .PublishAsync(held, record, cancelled.Token);
+
+        // The blocker is durable, so the caller must receive the publication it now has to own.
+        Assert.True(published.IsSuccess, published.IsFailure ? published.Error.Message : null);
+
+        Assert.Equal(record, published.Value.Record);
+
+        Assert.Equal(
+            record,
+            (await store.InspectAsync()).Value!.Record);
     }
 
     [Fact]
     public async Task A_failure_after_the_atomic_move_retains_one_complete_crash_blocker()
     {
-
         ClientMutationBlockerStore store = new(
             _guardedRoot,
             new ClientMutationBlockerStoreOptions
@@ -248,22 +259,18 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
         Assert.DoesNotContain(
             Directory.GetFileSystemEntries(_container),
             static path => Path.GetFileName(path).Contains(".tmp.", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public async Task A_preexisting_symlink_blocker_is_never_followed_or_overwritten()
     {
-
         ClientMutationBlockerStore store = new(_guardedRoot);
 
         using (ArcanumClientMutationLock held = ArcanumClientMutationLock
             .AcquireDetailed(_guardedRoot)
             .BorrowAcquiredLock())
         {
-
             _ = (await store.PublishAsync(held, Record())).Value;
-
         }
 
         byte[] validPayload = File.ReadAllBytes(store.BlockerPath);
@@ -283,13 +290,11 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
         Assert.True((await store.PublishAsync(reacquired, Record())).IsFailure);
 
         Assert.Equal(validPayload, File.ReadAllBytes(sentinel));
-
     }
 
     [Fact]
     public async Task A_valid_blocker_appearing_after_initial_inspection_is_not_replaced()
     {
-
         ClientMutationBlockerRecord competing = Record();
 
         byte[] competingBytes = JsonSerializer.SerializeToUtf8Bytes(
@@ -304,13 +309,11 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
             {
                 BeforeAtomicPublishForTests = () =>
                 {
-
                     File.WriteAllBytes(store!.BlockerPath, competingBytes);
 
                     Assert.True(SecureFilePermissions.TryApplyOwnerOnlyFileStrict(
                         store.BlockerPath,
                         logFailure: false));
-
                 },
             });
 
@@ -323,7 +326,6 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
         Assert.Equal(competingBytes, File.ReadAllBytes(store.BlockerPath));
 
         Assert.Equal(competing, (await store.InspectAsync()).Value!.Record);
-
     }
 
     private static ClientMutationBlockerRecord Record() =>
@@ -334,5 +336,4 @@ public sealed class ClientMutationBlockerStoreTests : IDisposable
             InstallationResetScope.All,
             "accepted-plan",
             OperationId: null);
-
 }

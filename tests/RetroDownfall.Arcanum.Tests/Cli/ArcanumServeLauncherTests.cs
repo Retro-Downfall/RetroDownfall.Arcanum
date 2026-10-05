@@ -9,15 +9,47 @@ using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("ProcessEnvironment")]
-public sealed class ArcanumServeLauncherTests
+public sealed class ArcanumServeLauncherTests : IDisposable
 {
     private const string ApiKey = "launcher-test-key";
+
+    // The launcher holds a retained file lock and writes its bootstrap log under the installation
+    // directory, so every test (xUnit builds one instance per test) gets its own redirected home.
+    private readonly ArcanumTestHomeScope _home = new("arcanum-serve-launcher-tests");
+
+    public void Dispose() => _home.Dispose();
+
+    [Fact]
+    public void Launch_lock_and_bootstrap_log_resolve_inside_a_redirected_test_home()
+    {
+        // The launcher takes and holds a real file lock under the installation directory. Without a
+        // redirected home every test in this class would create, chmod and hold the developer's own
+        // arcanum.serve.lock, and would fail whenever a real client held it.
+        Assert.False(
+            TestHomeGuard.AmbientHomeIsUnredirected(),
+            "The launcher tests would write the real installation directory.");
+
+        Assert.StartsWith(_home.Root, ArcanumServeLauncher.LaunchLockPath, StringComparison.Ordinal);
+
+        Assert.False(
+            TestHomeGuard.IsUnderRealDirectory(
+                ArcanumServeLauncher.LaunchLockPath,
+                TestProcessPaths.OriginalUserProfile,
+                TestProcessPaths.OriginalApplicationData));
+
+        Assert.False(
+            TestHomeGuard.IsUnderRealDirectory(
+                ArcanumServeLauncher.BootstrapLogPath,
+                TestProcessPaths.OriginalUserProfile,
+                TestProcessPaths.OriginalApplicationData));
+    }
 
     [Fact]
     public async Task Verified_running_host_uses_the_mirror_once_and_does_not_spawn()
@@ -273,28 +305,11 @@ public sealed class ArcanumServeLauncherTests
         string? originalAck = global::System.Environment.GetEnvironmentVariable(
             ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable);
 
-        string? originalDotnet = global::System.Environment.GetEnvironmentVariable(
-            "DOTNET_ENVIRONMENT");
-
-        string? originalAspNet = global::System.Environment.GetEnvironmentVariable(
-            "ASPNETCORE_ENVIRONMENT");
-
-        string? originalHome = global::System.Environment.GetEnvironmentVariable(
-            "ARCANUM_TEST_HOME");
-
-        string testHome = Path.Combine(
-            Path.GetTempPath(),
-            $"arcanum-launcher-listen-any-{Guid.NewGuid():N}");
-
         try
         {
             global::System.Environment.SetEnvironmentVariable(
                 ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable,
                 null);
-
-            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
-            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", testHome);
 
             PresenceSequenceHandler handler = new(
                 _ => throw ConnectionRefused());
@@ -336,15 +351,6 @@ public sealed class ArcanumServeLauncherTests
             global::System.Environment.SetEnvironmentVariable(
                 ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable,
                 originalAck);
-
-            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", originalDotnet);
-            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", originalAspNet);
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", originalHome);
-
-            if (Directory.Exists(testHome))
-            {
-                Directory.Delete(testHome, recursive: true);
-            }
         }
     }
 
@@ -412,6 +418,170 @@ public sealed class ArcanumServeLauncherTests
         {
             ArcanumServeLauncher.TestPollDeadline = originalDeadline;
         }
+    }
+
+    [Fact]
+    public async Task Concurrent_launch_waits_for_the_other_launcher_and_adopts_the_host_it_started()
+    {
+        PresenceSequenceHandler handler = new(
+            _ => throw ConnectionRefused(),
+            request => ValidProof(request, ApiKey));
+
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+            new RecordingReader(SecretStoreReadResult.Missing()));
+
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        RetainedExclusiveFileLockAcquisitionResult other =
+            RetainedExclusiveFileLock.Acquire(ArcanumServeLauncher.LaunchLockPath);
+
+        Assert.Equal(
+            RetainedExclusiveFileLockAcquisitionDisposition.Acquired,
+            other.Disposition);
+
+        Task<ServeLaunchResult> launching = launcher
+            .EnsureRunningAsync(CancellationToken.None);
+
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(600));
+
+            // Another launcher owns probe-and-spawn, so this one must not have spawned a second host.
+            Assert.False(launching.IsCompleted);
+            Assert.Equal(0, process.StartCount);
+        }
+        finally
+        {
+            other.Lock!.Dispose();
+        }
+
+        ServeLaunchResult result = await launching.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(ServeLaunchStatus.AlreadyRunning, result.Status);
+        Assert.Equal(0, process.StartCount);
+        Assert.Equal(2, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task Concurrent_launch_spawns_when_the_other_launcher_left_no_host_behind()
+    {
+        PresenceSequenceHandler handler = new(
+            _ => throw ConnectionRefused());
+
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+            new RecordingReader(SecretStoreReadResult.Missing()));
+
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        TimeSpan? originalDeadline = ArcanumServeLauncher.TestPollDeadline;
+
+        RetainedExclusiveFileLockAcquisitionResult other =
+            RetainedExclusiveFileLock.Acquire(ArcanumServeLauncher.LaunchLockPath);
+
+        try
+        {
+            ArcanumServeLauncher.TestPollDeadline = TimeSpan.FromSeconds(5);
+
+            Task<ServeLaunchResult> launching = launcher
+                .EnsureRunningAsync(CancellationToken.None);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(400));
+
+            Assert.Equal(0, process.StartCount);
+
+            other.Lock!.Dispose();
+
+            ArcanumServeLauncher.TestPollDeadline = TimeSpan.FromMilliseconds(100);
+
+            ServeLaunchResult result = await launching.WaitAsync(TimeSpan.FromSeconds(20));
+
+            Assert.Equal(1, process.StartCount);
+            Assert.Equal(ServeLaunchStatus.Failed, result.Status);
+        }
+        finally
+        {
+            other.Lock?.Dispose();
+
+            ArcanumServeLauncher.TestPollDeadline = originalDeadline;
+        }
+    }
+
+    [Fact]
+    public async Task Launch_gives_up_on_a_lock_that_is_never_released_without_spawning()
+    {
+        PresenceSequenceHandler handler = new(
+            _ => throw ConnectionRefused());
+
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+            new RecordingReader(SecretStoreReadResult.Missing()));
+
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        TimeSpan? originalDeadline = ArcanumServeLauncher.TestPollDeadline;
+
+        RetainedExclusiveFileLockAcquisitionResult other =
+            RetainedExclusiveFileLock.Acquire(ArcanumServeLauncher.LaunchLockPath);
+
+        try
+        {
+            ArcanumServeLauncher.TestPollDeadline = TimeSpan.FromMilliseconds(300);
+
+            ServeLaunchResult result = await launcher
+                .EnsureRunningAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(20));
+
+            Assert.Equal(ServeLaunchStatus.Failed, result.Status);
+            Assert.Equal(0, process.StartCount);
+            Assert.Contains(
+                "another",
+                result.Guidance ?? string.Empty,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            other.Lock?.Dispose();
+
+            ArcanumServeLauncher.TestPollDeadline = originalDeadline;
+        }
+    }
+
+    [Fact]
+    public async Task Launch_releases_the_lock_when_it_finishes()
+    {
+        PresenceSequenceHandler handler = new(
+            _ => throw ConnectionRefused(),
+            request => ValidProof(request, ApiKey));
+
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+            new RecordingReader(SecretStoreReadResult.Missing()));
+
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
+
+        Assert.Equal(ServeLaunchStatus.Started, result.Status);
+
+        RetainedExclusiveFileLockAcquisitionResult next =
+            RetainedExclusiveFileLock.Acquire(ArcanumServeLauncher.LaunchLockPath);
+
+        Assert.Equal(
+            RetainedExclusiveFileLockAcquisitionDisposition.Acquired,
+            next.Disposition);
+
+        next.Lock!.Dispose();
     }
 
     private static ArcanumServeLauncher CreateLauncher(

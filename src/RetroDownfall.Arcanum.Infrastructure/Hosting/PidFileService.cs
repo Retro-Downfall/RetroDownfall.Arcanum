@@ -1,7 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Text;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -9,25 +10,45 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 [ExcludeFromCodeCoverage] // Reason: IHostedService PID file lifecycle
 public sealed class PidFileService : IHostedService
 {
+    /// <summary>
+    /// A claim loses a few races (a stale file removed by another starter, a competing claim still being
+    /// written, a file that vanished between the check and the read) before it is reported rather than
+    /// retried forever.
+    /// </summary>
+    private const int MaxClaimAttempts = 10;
+
+    private static readonly TimeSpan ClaimInProgressDelay = TimeSpan.FromMilliseconds(50);
 
     private readonly string? _path;
 
     private readonly ILogger<PidFileService> _logger;
 
-    public PidFileService(IOptionsMonitor<ArcanumSettings> settings, ILogger<PidFileService> logger)
-    {
-        _path = ArcanumRuntimeDefaults.Server.PidFilePath;
+    private readonly Func<int, PidFileOwnerProcess?> _lookUp;
 
-        _logger = logger;
+    public PidFileService(ILogger<PidFileService> logger)
+        : this(ArcanumRuntimeDefaults.Server.PidFilePath, logger, PidFileOwnership.LookUp)
+    {
     }
 
-    public Task StartAsync(CancellationToken ct)
+    internal PidFileService(
+        string? path,
+        ILogger<PidFileService> logger,
+        Func<int, PidFileOwnerProcess?> lookUp)
+    {
+        _path = path;
+
+        _logger = logger;
+
+        _lookUp = lookUp;
+    }
+
+    public async Task StartAsync(CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_path))
         {
             _logger.LogDebug("PID file is disabled.");
 
-            return Task.CompletedTask;
+            return;
         }
 
         string directory = Path.GetDirectoryName(_path)!;
@@ -37,25 +58,48 @@ public sealed class PidFileService : IHostedService
             Directory.CreateDirectory(directory);
         }
 
-        if (File.Exists(_path))
+        for (int attempt = 1; attempt <= MaxClaimAttempts; attempt++)
         {
-            string existingText = File.ReadAllText(_path).Trim();
-
-            if (int.TryParse(existingText, out int existingPid) && IsProcessRunning(existingPid))
+            if (TryClaim(_path))
             {
-                _logger.LogError("Another Arcanum process is already running (PID {Pid}).", existingPid);
+                _logger.LogInformation("Wrote PID {Pid} to {Path}.", Environment.ProcessId, _path);
 
-                throw new InvalidOperationException($"Another Arcanum process is already running (PID {existingPid}).");
+                return;
             }
 
-            _logger.LogWarning("Removing stale PID file at {Path}.", _path);
+            PidFileClaim existing = Inspect(_path);
+
+            if (existing.Kind is PidFileClaimKind.InProgress)
+            {
+                // Another starter created the file a moment ago and has not finished writing its PID. Deleting
+                // it as "malformed" would steal that claim, so wait and read it again.
+                await Task.Delay(ClaimInProgressDelay, ct).ConfigureAwait(false);
+
+                continue;
+            }
+
+            if (existing.Kind is PidFileClaimKind.Live)
+            {
+                _logger.LogError(
+                    "Another Arcanum process is already running (PID {Pid}); PID file {Path}.",
+                    existing.Pid,
+                    _path);
+
+                throw new InvalidOperationException(
+                    $"Another Arcanum process is already running (PID {existing.Pid}). "
+                    + $"If no Arcanum process owns PID {existing.Pid}, remove the PID file at '{_path}' and start again.");
+            }
+
+            if (existing.Kind is PidFileClaimKind.Replaceable)
+            {
+                _logger.LogWarning("Removing stale PID file at {Path}.", _path);
+
+                TryDelete(_path);
+            }
         }
 
-        File.WriteAllText(_path, Environment.ProcessId.ToString());
-
-        _logger.LogInformation("Wrote PID {Pid} to {Path}.", Environment.ProcessId, _path);
-
-        return Task.CompletedTask;
+        throw new InvalidOperationException(
+            $"Could not claim the PID file at '{_path}': another Arcanum process is starting at the same time. Start again.");
     }
 
     public Task StopAsync(CancellationToken ct)
@@ -94,18 +138,97 @@ public sealed class PidFileService : IHostedService
         return Task.CompletedTask;
     }
 
-    private static bool IsProcessRunning(int pid)
+    /// <summary>
+    /// Creates the PID file only if it does not exist (an atomic exclusive create), holding it closed to
+    /// readers until the PID is written so a competing starter reads the whole claim or none of it.
+    /// </summary>
+    private static bool TryClaim(string path)
     {
+        FileStream stream;
+
         try
         {
-            using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(pid);
-
-            return !process.HasExited;
+            stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         }
-        catch
+        catch (IOException) when (File.Exists(path))
         {
             return false;
         }
+
+        using (stream)
+        {
+            stream.Write(
+                Encoding.ASCII.GetBytes(
+                    Environment.ProcessId.ToString(CultureInfo.InvariantCulture)));
+
+            stream.Flush(flushToDisk: true);
+        }
+
+        return true;
     }
 
+    /// <summary>
+    /// Classifies the file that blocked a claim: a live Arcanum owner, a claim another starter is still
+    /// writing, or something that no longer names a live owner (malformed, a dead process, a recycled id).
+    /// </summary>
+    private PidFileClaim Inspect(string path)
+    {
+        string text;
+
+        DateTimeOffset writtenAt;
+
+        try
+        {
+            text = File.ReadAllText(path).Trim();
+
+            writtenAt = File.GetLastWriteTimeUtc(path);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return new PidFileClaim(PidFileClaimKind.Vanished, 0);
+        }
+        catch (IOException)
+        {
+            // A sharing violation: the competing starter still holds the file open while it writes.
+            return new PidFileClaim(PidFileClaimKind.InProgress, 0);
+        }
+
+        if (text.Length == 0)
+        {
+            // An empty file is a claim between create and write when it is fresh, and crash residue when it is not.
+            return DateTimeOffset.UtcNow - writtenAt <= PidFileOwnership.ClockTolerance
+                ? new PidFileClaim(PidFileClaimKind.InProgress, 0)
+                : new PidFileClaim(PidFileClaimKind.Replaceable, 0);
+        }
+
+        return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pid)
+            && PidFileOwnership.IsLiveOwner(pid, writtenAt, _lookUp)
+                ? new PidFileClaim(PidFileClaimKind.Live, pid)
+                : new PidFileClaim(PidFileClaimKind.Replaceable, 0);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A competing starter may have removed or replaced it already; the next attempt re-reads.
+        }
+    }
+
+    private enum PidFileClaimKind
+    {
+        Vanished,
+
+        InProgress,
+
+        Live,
+
+        Replaceable,
+    }
+
+    private readonly record struct PidFileClaim(PidFileClaimKind Kind, int Pid);
 }

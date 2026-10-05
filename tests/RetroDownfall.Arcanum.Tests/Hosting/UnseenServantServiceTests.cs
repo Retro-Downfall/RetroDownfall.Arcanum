@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
@@ -173,5 +175,42 @@ public sealed class UnseenServantServiceTests
         Assert.True(published.IsCompleted);
 
         Assert.Same(replacement, activeJobTasks[taskId]);
+    }
+
+    [Fact]
+    public async Task Watermark_is_saved_when_shutdown_is_requested_immediately_after_the_job_completes()
+    {
+        await using UnseenServantAdmissionHarness harness = new();
+
+        UnseenServantJob job = await harness.ConfigureDueJobAsync();
+
+        using CancellationTokenSource shutdown = new();
+
+        harness.OnStep = (step, token) =>
+        {
+            if (step.StartsWith("runner:", StringComparison.Ordinal))
+            {
+                // The job body has done its external work; the host stops one instruction later.
+                shutdown.Cancel();
+            }
+
+            if (step == "watermark")
+            {
+                // A real store observes the token it is given.
+                token.ThrowIfCancellationRequested();
+            }
+
+            return Task.CompletedTask;
+        };
+
+        harness.Dispatch(shutdown.Token);
+
+        await Task.WhenAll(harness.ActiveTasks).WaitAsync(TimeSpan.FromSeconds(10));
+
+        UnseenServantWatermark saved = Assert.Single(harness.Store.Rows);
+
+        Assert.Equal(UnseenServantJobTracker.JobTrackingKey(job), saved.JobKey);
+
+        Assert.Equal(harness.Clock.GetUtcNow(), saved.LastRunAt);
     }
 }

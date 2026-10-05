@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 internal sealed class DaemonExecutionRecord
 {
-
     public required string Id { get; init; }
 
     public required string DaemonId { get; init; }
@@ -31,7 +30,6 @@ internal sealed class DaemonExecutionRecord
 
     public DaemonExecutionDetail ToDetail(LogEntry[] logs) =>
         new(Id, DaemonId, DaemonName, Status, StartedAt, CompletedAt, ErrorMessage, logs);
-
 }
 
 public sealed class InMemoryDaemonExecutionRepository(
@@ -40,7 +38,6 @@ public sealed class InMemoryDaemonExecutionRepository(
     IDaemonExecutionRepository,
     IDaemonExecutionMutationGate
 {
-
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     private readonly ConcurrentDictionary<string, List<DaemonExecutionRecord>> _history = new(StringComparer.Ordinal);
@@ -121,25 +118,19 @@ public sealed class InMemoryDaemonExecutionRepository(
         // Single-flight: refuse to overwrite an existing in-flight slot for this daemon.
         if (!_inFlightByDaemon.TryAdd(daemonId, executionId))
         {
-
             throw new InvalidOperationException(
                 $"Daemon job '{daemonId}' already has a running execution.");
-
         }
 
         try
         {
-
             CreateRecord(daemonId, daemonName, executionId, ct);
-
         }
         catch
         {
-
             _ = _inFlightByDaemon.TryRemove(daemonId, out _);
 
             throw;
-
         }
 
         return executionId;
@@ -166,24 +157,18 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         if (!_inFlightByDaemon.TryAdd(daemonId, executionId))
         {
-
             return false;
-
         }
 
         try
         {
-
             CreateRecord(daemonId, daemonName, executionId, ct);
-
         }
         catch
         {
-
             _ = _inFlightByDaemon.TryRemove(daemonId, out _);
 
             throw;
-
         }
 
         return true;
@@ -192,13 +177,11 @@ public sealed class InMemoryDaemonExecutionRepository(
     public async ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
         CancellationToken cancellationToken = default)
     {
-
         await _mutationGate
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
         return new MutationLease(_mutationGate);
-
     }
 
     private DaemonExecutionRecord CreateRecord(string daemonId, string daemonName, string executionId, CancellationToken ct)
@@ -293,31 +276,38 @@ public sealed class InMemoryDaemonExecutionRepository(
 
     public Task ReportDrainedAsync(string executionId, CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!_byId.TryGetValue(executionId, out DaemonExecutionRecord? record))
         {
-
             // A drain report comes from a catch arm, which can run after history trimming evicted the
             // record. There is nothing left to release, and nothing to complain about.
             return Task.CompletedTask;
-
         }
 
         lock (GetLock(record.DaemonId))
         {
-
             ReleaseDrainedExecution(record, executionId);
-
         }
 
         return Task.CompletedTask;
-
     }
 
     public bool HasRunningExecution(string daemonId) =>
         _inFlightByDaemon.ContainsKey(daemonId);
+
+    public bool IsAwaitingDrain(string executionId)
+    {
+        if (!_byId.TryGetValue(executionId, out DaemonExecutionRecord? record))
+        {
+            return false;
+        }
+
+        lock (GetLock(record.DaemonId))
+        {
+            return HoldsInFlightSlot(record);
+        }
+    }
 
     public Task<bool> TryDeleteTerminalAsync(
         string executionId,
@@ -332,19 +322,15 @@ public sealed class InMemoryDaemonExecutionRepository(
         DateTimeOffset completedAtCutoff,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!_byId.TryGetValue(executionId, out DaemonExecutionRecord? record))
         {
-
             return Task.FromResult(false);
-
         }
 
         lock (GetLock(record.DaemonId))
         {
-
             if (!_byId.TryGetValue(executionId, out DaemonExecutionRecord? current)
                 || !ReferenceEquals(record, current)
                 || current.Status is not (
@@ -352,11 +338,13 @@ public sealed class InMemoryDaemonExecutionRepository(
                     or DaemonJobStatus.Failed
                     or DaemonJobStatus.Cancelled)
                 || current.CompletedAt is not DateTimeOffset completedAt
-                || completedAt > completedAtCutoff)
+                || completedAt > completedAtCutoff
+                || HoldsInFlightSlot(current))
             {
-
+                // A cancelled execution whose body has not drained still owns its daemon's single-flight
+                // slot. Deleting the record would make the runner's drain report a no-op and strand the
+                // slot for the life of the host.
                 return Task.FromResult(false);
-
             }
 
             if (!_history.TryGetValue(
@@ -364,17 +352,13 @@ public sealed class InMemoryDaemonExecutionRepository(
                     out List<DaemonExecutionRecord>? history)
                 || !history.Remove(current))
             {
-
                 return Task.FromResult(false);
-
             }
 
             _ = _byId.TryRemove(executionId, out _);
 
             return Task.FromResult(true);
-
         }
-
     }
 
     public CancellationTokenSource? GetCancellationTokenSource(string executionId)
@@ -389,6 +373,13 @@ public sealed class InMemoryDaemonExecutionRepository(
             return record.Cancellation;
         }
     }
+
+    // Caller holds the daemon lock. Only a cancelled execution can hold the slot while terminal:
+    // Complete/Fail release it in the same transition.
+    private bool HoldsInFlightSlot(DaemonExecutionRecord record) =>
+        record.Status != DaemonJobStatus.Running
+        && _inFlightByDaemon.TryGetValue(record.DaemonId, out string? currentId)
+        && string.Equals(currentId, record.Id, StringComparison.Ordinal);
 
     private DaemonExecutionSummary UpdateStatus(string executionId, DaemonJobStatus status, string? errorMessage)
     {
@@ -428,11 +419,9 @@ public sealed class InMemoryDaemonExecutionRepository(
     /// </summary>
     private void ReleaseDrainedExecution(DaemonExecutionRecord record, string executionId)
     {
-
         DisposeCancellation(record);
 
         RemoveInFlightIfMatch(record.DaemonId, executionId);
-
     }
 
     // W3.3 Fix 4: id-matched removal. Only evict the in-flight slot when the
@@ -444,15 +433,11 @@ public sealed class InMemoryDaemonExecutionRepository(
     // remove, and StartAsync overwrites are handled because the comparison guards.
     private void RemoveInFlightIfMatch(string daemonId, string executionId)
     {
-
         if (_inFlightByDaemon.TryGetValue(daemonId, out string? currentId)
             && string.Equals(currentId, executionId, StringComparison.Ordinal))
         {
-
             _ = _inFlightByDaemon.TryRemove(daemonId, out _);
-
         }
-
     }
 
     private void TrimHistory(string daemonId, List<DaemonExecutionRecord> list)
@@ -468,23 +453,17 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             for (int i = 0; i < list.Count; i++)
             {
-
                 if (list[i].Status != DaemonJobStatus.Running)
                 {
-
                     removeAt = i;
 
                     break;
-
                 }
-
             }
 
             if (removeAt < 0)
             {
-
                 break;
-
             }
 
             DaemonExecutionRecord removed = list[removeAt];
@@ -508,23 +487,16 @@ public sealed class InMemoryDaemonExecutionRepository(
 
     private sealed class MutationLease(SemaphoreSlim gate) : IAsyncDisposable
     {
-
         private int _released;
 
         public ValueTask DisposeAsync()
         {
-
             if (Interlocked.Exchange(ref _released, 1) == 0)
             {
-
                 _ = gate.Release();
-
             }
 
             return ValueTask.CompletedTask;
-
         }
-
     }
-
 }

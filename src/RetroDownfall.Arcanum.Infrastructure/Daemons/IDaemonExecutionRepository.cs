@@ -4,7 +4,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 public interface IDaemonExecutionRepository
 {
-
     Task<DaemonExecutionSummary[]> GetHistoryAsync(string? daemonId, CancellationToken ct);
 
     Task<DaemonExecutionDetail?> GetAsync(string executionId, CancellationToken ct);
@@ -58,14 +57,18 @@ public interface IDaemonExecutionRepository
 
     bool HasRunningExecution(string daemonId);
 
-    CancellationTokenSource? GetCancellationTokenSource(string executionId);
+    /// <summary>
+    /// <see langword=true/> while a cancelled execution still holds its daemon's in-flight slot because the
+    /// runner has not yet reported that <c>job.RunAsync</c> returned. Such a record must not be deleted: its
+    /// drain report is the only thing that frees the slot, and a missing record turns that report into a no-op.
+    /// </summary>
+    bool IsAwaitingDrain(string executionId);
 
+    CancellationTokenSource? GetCancellationTokenSource(string executionId);
 }
 
 internal interface IDaemonExecutionMutationGate
 {
-
     ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
         CancellationToken cancellationToken = default);
-
 }

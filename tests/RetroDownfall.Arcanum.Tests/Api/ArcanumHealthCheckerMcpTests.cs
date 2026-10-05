@@ -13,11 +13,9 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class ArcanumHealthCheckerMcpTests
 {
-
     [Fact]
     public async Task BuildReportAsync_all_mcp_servers_down_is_unhealthy()
     {
-
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
             new AlwaysOkLiveness(),
@@ -33,13 +31,11 @@ public sealed class ArcanumHealthCheckerMcpTests
         Assert.Equal(HealthStatus.Unhealthy, mcp.Status);
 
         Assert.Equal(HealthStatus.Unhealthy, report.Status);
-
     }
 
     [Fact]
     public async Task BuildReportAsync_on_demand_mcp_server_stopped_is_healthy()
     {
-
         // alwaysOn: false servers are deliberately never started at bootstrap (DESIGN §1800), so a
         // correctly configured on-demand server sitting in Stopped must not drag health down.
         ArcanumHealthChecker checker = new(
@@ -64,13 +60,11 @@ public sealed class ArcanumHealthCheckerMcpTests
         Assert.NotEqual(HealthStatus.Unhealthy, report.Status);
 
         Assert.Contains("on-demand", mcp.Detail, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task BuildReportAsync_mixed_mcp_scope_counts_always_on_only()
     {
-
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
             new AlwaysOkLiveness(),
@@ -90,13 +84,11 @@ public sealed class ArcanumHealthCheckerMcpTests
         Assert.Equal(HealthStatus.Healthy, mcp.Status);
 
         Assert.Contains("1/1 always-on running", mcp.Detail, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task BuildReportAsync_failed_always_on_mcp_server_is_unhealthy_despite_on_demand_peers()
     {
-
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
             new AlwaysOkLiveness(),
@@ -116,13 +108,11 @@ public sealed class ArcanumHealthCheckerMcpTests
         Assert.Equal(HealthStatus.Unhealthy, mcp.Status);
 
         Assert.Contains("eager: boom", mcp.Detail, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task BuildReportAsync_includes_tool_child_sandbox_component()
     {
-
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
             new AlwaysOkLiveness(),
@@ -145,13 +135,11 @@ public sealed class ArcanumHealthCheckerMcpTests
         Assert.True(
             sandbox.Status is HealthStatus.Healthy or HealthStatus.Degraded,
             $"unexpected status {sandbox.Status}");
-
     }
 
     [Fact]
     public async Task BuildReportAsync_includes_workspace_check_unavailable_reason()
     {
-
         StubWorkspaceCheckCapability capability = new(
             new WorkspaceCheckCapabilityStatus(
                 false,
@@ -199,7 +187,6 @@ public sealed class ArcanumHealthCheckerMcpTests
 
     private sealed class ReadyGrimoire : IGrimoireDbReadiness
     {
-
         public bool IsReady => true;
 
         public void MarkReady()
@@ -211,7 +198,6 @@ public sealed class ArcanumHealthCheckerMcpTests
         public void MarkFailed(Exception exception)
         {
         }
-
     }
 
     private sealed class AlwaysOkLiveness : IGrimoireLivenessProbe
@@ -222,7 +208,6 @@ public sealed class ArcanumHealthCheckerMcpTests
 
     private sealed class EmptyMcpManager : IMcpConnectionManager
     {
-
         public Task<McpServerInfo[]> GetAllStatusesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(Array.Empty<McpServerInfo>());
 
@@ -262,12 +247,10 @@ public sealed class ArcanumHealthCheckerMcpTests
 
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
-
     }
 
     private sealed class AllDownMcpManager : IMcpConnectionManager
     {
-
         public Task<McpServerInfo[]> GetAllStatusesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<McpServerInfo[]>(
             [
@@ -321,12 +304,10 @@ public sealed class ArcanumHealthCheckerMcpTests
 
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
-
     }
 
     private sealed class StubMcpManager(McpServerInfo[] servers) : IMcpConnectionManager
     {
-
         public Task<McpServerInfo[]> GetAllStatusesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(servers);
 
@@ -366,7 +347,6 @@ public sealed class ArcanumHealthCheckerMcpTests
 
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
-
     }
 
     private sealed class AlwaysHealthyTracker : RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker
@@ -387,6 +367,11 @@ public sealed class ArcanumHealthCheckerMcpTests
         {
         }
 
+        public void Remove(string providerName)
+
+        {
+        }
+
         public IReadOnlyList<RetroDownfall.Arcanum.Core.Resilience.ProviderHealthStatus> GetAllStatuses() => [];
     }
 
@@ -394,12 +379,10 @@ public sealed class ArcanumHealthCheckerMcpTests
         WorkspaceCheckCapabilityStatus status)
         : IWorkspaceCheckCapabilityReporter
     {
-
         public bool IsCurrentlyEligible => status.IsAvailable;
 
         public WorkspaceCheckCapabilityStatus GetStatus(
             string? workspaceRoot = null) =>
             status;
     }
-
 }

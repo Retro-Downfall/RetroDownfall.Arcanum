@@ -4954,8 +4954,10 @@ internal sealed partial class DataRetentionService(
         return
         [
             .. history
-                .Where(static execution => execution.Status is
-                    DaemonJobStatus.Pending or DaemonJobStatus.Running)
+                .Where(execution => execution.Status is
+                    DaemonJobStatus.Pending or DaemonJobStatus.Running
+                    // A cancelled execution whose body has not drained still owns the daemon's single-flight slot.
+                    || daemonExecutions.IsAwaitingDrain(execution.Id))
                 .Select(static execution => new DataRetentionConflict(
                     "Data.DaemonExecutionActive",
                     execution.Id,

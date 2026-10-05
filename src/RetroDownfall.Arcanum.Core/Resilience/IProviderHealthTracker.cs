@@ -7,7 +7,6 @@ namespace RetroDownfall.Arcanum.Core.Resilience;
 /// </summary>
 public interface IProviderHealthTracker
 {
-
     /// <summary>
     /// Returns <c>true</c> when the named provider is healthy or degraded (below the code-owned
     /// failure threshold), or when the provider has not yet been observed. Returns <c>false</c> once
@@ -34,9 +33,14 @@ public interface IProviderHealthTracker
     IReadOnlyList<ProviderHealthStatus> GetAllStatuses();
 
     /// <summary>
+    /// Forgets the named provider, for a provider that is no longer configured. An unobserved or already
+    /// removed name is a no-op. Raises no <see cref="HealthChanged"/>: the provider is gone, not recovered.
+    /// </summary>
+    void Remove(string providerName);
+
+    /// <summary>
     /// Raised after a provider's health status changes. No subscribers today — reserved for future SSE
     /// observability.
     /// </summary>
     event Action<ProviderHealthStatus>? HealthChanged;
-
 }

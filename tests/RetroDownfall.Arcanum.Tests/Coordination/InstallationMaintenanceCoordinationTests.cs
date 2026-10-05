@@ -11,14 +11,12 @@ namespace RetroDownfall.Arcanum.Tests.Coordination;
 [Collection("WorkspacePathPolicy")]
 public sealed class InstallationMaintenanceCoordinationTests : IDisposable
 {
-
     private readonly string _container;
 
     private readonly string _guardedRoot;
 
     public InstallationMaintenanceCoordinationTests()
     {
-
         _container = Path.Combine(
             Path.GetTempPath(),
             "arcanum-installation-coordination-" + Guid.NewGuid().ToString("N"));
@@ -26,25 +24,19 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
         _guardedRoot = Path.Combine(_container, "arcanum");
 
         Directory.CreateDirectory(_container);
-
     }
 
     public void Dispose()
     {
-
         if (Directory.Exists(_container))
         {
-
             Directory.Delete(_container, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Reset_owner_publishes_the_durable_blocker_under_the_retained_mutex()
     {
-
         InstallationMaintenanceCoordination coordinator = Coordinator();
 
         InstallationMaintenanceCoordinationResult acquired = await coordinator
@@ -75,13 +67,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
             publication.Record.Kind);
 
         Assert.Equal("accepted-plan", publication.Record.PlanId);
-
     }
 
     [Fact]
     public async Task Matching_durable_reset_blocker_is_reauthenticated_and_adopted_on_resume()
     {
-
         MutableResetProbe reset = new(active: null);
 
         InstallationMaintenanceCoordination coordinator = Coordinator(
@@ -100,9 +90,7 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
         await using (InstallationMaintenanceCoordinationLease lease =
                      first.BorrowAcquiredLease())
         {
-
             expected = lease.Publication.Record;
-
         }
 
         Guid operationId = Guid.NewGuid();
@@ -128,13 +116,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
             resumed.BorrowAcquiredLease();
 
         Assert.Equal(expected, resumedLease.Publication.Record);
-
     }
 
     [Fact]
     public async Task Conflicting_blocker_is_never_replaced_or_adopted()
     {
-
         InstallationMaintenanceCoordination coordinator = Coordinator();
 
         InstallationMaintenanceCoordinationResult first = await coordinator
@@ -149,9 +135,7 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
         await using (InstallationMaintenanceCoordinationLease lease =
                      first.BorrowAcquiredLease())
         {
-
             expected = lease.Publication.Record;
-
         }
 
         InstallationMaintenanceCoordinationResult conflicting = await coordinator
@@ -169,13 +153,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
             expected,
             (await new ClientMutationBlockerStore(_guardedRoot)
                 .InspectAsync()).Value!.Record);
-
     }
 
     [Fact]
     public async Task Blocker_is_removed_only_after_both_reset_and_restore_evidence_are_clear()
     {
-
         MutableResetProbe reset = new(active: null);
 
         MutableRestoreProbe restore = new(active: false);
@@ -215,13 +197,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
 
         Assert.Null((await new ClientMutationBlockerStore(_guardedRoot)
             .InspectAsync()).Value);
-
     }
 
     [Fact]
     public async Task Missing_blocker_is_synthesized_only_for_the_exact_active_reset_identity()
     {
-
         Guid operationId = Guid.NewGuid();
 
         MutableResetProbe reset = new(
@@ -264,13 +244,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
             exact.BorrowAcquiredLease();
 
         Assert.Equal(operationId, held.Publication.Record.OperationId);
-
     }
 
     [Fact]
     public async Task Transitional_null_operation_blocker_requires_exact_active_identity_before_adoption()
     {
-
         MutableResetProbe reset = new(active: null);
 
         InstallationMaintenanceCoordination coordinator = Coordinator(
@@ -317,13 +295,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
             exact.Disposition);
 
         await exact.BorrowAcquiredLease().DisposeAsync();
-
     }
 
     [Fact]
     public async Task Host_startup_removes_blocker_left_before_active_reset_publication_under_both_locks()
     {
-
         MutableResetProbe reset = new(active: null);
 
         InstallationMaintenanceCoordination coordinator = Coordinator(
@@ -362,13 +338,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
         Assert.Equal(
             ArcanumClientMutationLockAcquisitionDisposition.Contended,
             ArcanumClientMutationLock.AcquireDetailed(_guardedRoot).Disposition);
-
     }
 
     [Fact]
     public async Task Host_startup_removes_blocker_left_after_active_reset_retirement_under_both_locks()
     {
-
         Guid operationId = Guid.NewGuid();
 
         MutableResetProbe reset = new(
@@ -416,13 +390,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
         Assert.Equal(
             ArcanumClientMutationLockAcquisitionDisposition.Contended,
             ArcanumClientMutationLock.AcquireDetailed(_guardedRoot).Disposition);
-
     }
 
     [Fact]
     public async Task Host_startup_refuses_a_restore_blocker_for_a_different_active_operation()
     {
-
         Guid blockerOperation = Guid.NewGuid();
 
         MutableRestoreProbe restore = new(operationId: null);
@@ -457,13 +429,11 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
             blockerOperation,
             (await new ClientMutationBlockerStore(_guardedRoot)
                 .InspectAsync()).Value!.Record.OperationId);
-
     }
 
     [Fact]
     public async Task Host_startup_reauthenticates_the_exact_restore_operation_identity()
     {
-
         Guid operationId = Guid.NewGuid();
 
         MutableRestoreProbe restore = new(operationId: null);
@@ -500,7 +470,98 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
         Assert.True(lease.RequiresRecovery);
 
         Assert.Equal(operationId, lease.Publication!.Record.OperationId);
+    }
 
+    [Fact]
+    public async Task Cancellation_requested_during_publish_does_not_strand_the_blocker()
+    {
+        using CancellationTokenSource cancelled = new();
+
+        ClientMutationBlockerStore store = new(
+            _guardedRoot,
+            new ClientMutationBlockerStoreOptions
+            {
+                AfterPublishMoveBeforeVerifyForTests = cancelled.Cancel,
+            });
+
+        InstallationMaintenanceCoordination coordinator = new(
+            _guardedRoot,
+            store,
+            new MutableResetProbe(active: null),
+            new MutableRestoreProbe(active: false));
+
+        InstallationMaintenanceCoordinationResult acquired = await coordinator
+            .AcquireInstallationResetAsync(
+                InstallationResetScope.All,
+                "accepted-plan",
+                operationId: null,
+                cancelled.Token);
+
+        // The blocker is already durable, so the caller gets the lease that owns it instead of an
+        // exception that would leave a blocker no live operation can remove.
+        Assert.Equal(
+            InstallationMaintenanceCoordinationDisposition.Acquired,
+            acquired.Disposition);
+
+        await using InstallationMaintenanceCoordinationLease lease =
+            acquired.BorrowAcquiredLease();
+
+        Assert.Equal(
+            lease.Publication.Record,
+            (await store.InspectAsync()).Value!.Record);
+
+        Assert.Equal(
+            ArcanumClientMutationLockAcquisitionDisposition.Contended,
+            ArcanumClientMutationLock.AcquireDetailed(_guardedRoot).Disposition);
+    }
+
+    [Fact]
+    public async Task Host_startup_cancellation_requested_during_publish_does_not_strand_the_blocker()
+    {
+        using CancellationTokenSource cancelled = new();
+
+        ClientMutationBlockerStore store = new(
+            _guardedRoot,
+            new ClientMutationBlockerStoreOptions
+            {
+                AfterPublishMoveBeforeVerifyForTests = cancelled.Cancel,
+            });
+
+        MutableResetProbe reset = new(
+            new ActiveInstallationReset(
+                Scope: InstallationResetScope.Global,
+                WorkspaceRoot: null,
+                PlanId: "accepted-plan",
+                OperationId: Guid.NewGuid()));
+
+        InstallationMaintenanceCoordination coordinator = new(
+            _guardedRoot,
+            store,
+            reset,
+            new MutableRestoreProbe(active: false));
+
+        using ArcanumMaintenanceLock maintenance = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(_guardedRoot));
+
+        InstallationStartupCoordinationResult startup = await coordinator
+            .AcquireHostStartupAsync(
+                maintenance,
+                cancelled.Token);
+
+        Assert.Equal(
+            InstallationStartupCoordinationDisposition.Acquired,
+            startup.Disposition);
+
+        await using InstallationStartupCoordinationLease lease =
+            startup.BorrowAcquiredLease();
+
+        Assert.Equal(
+            lease.Publication!.Record,
+            (await store.InspectAsync()).Value!.Record);
+
+        Assert.Equal(
+            ArcanumClientMutationLockAcquisitionDisposition.Contended,
+            ArcanumClientMutationLock.AcquireDetailed(_guardedRoot).Disposition);
     }
 
     private InstallationMaintenanceCoordination Coordinator(
@@ -515,26 +576,21 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
     private sealed class MutableResetProbe(ActiveInstallationReset? active) :
         IClientMutationResetEvidenceProbe
     {
-
         internal ActiveInstallationReset? Active { get; set; } = active;
 
         public Task<Result<ActiveInstallationReset?>> InspectAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(
                 Result<ActiveInstallationReset?>.Success(Active));
-
         }
-
     }
 
     private sealed class MutableRestoreProbe(Guid? operationId) :
         IClientMutationRestoreEvidenceProbe
     {
-
         private static readonly Guid LegacyTestOperationId = new(
             "c8318cb9-583a-4a73-b293-5fd3f5ff9b7f");
 
@@ -548,7 +604,6 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
         public Task<Result<ActiveReplacementRestore?>> InspectAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(
@@ -556,9 +611,6 @@ public sealed class InstallationMaintenanceCoordinationTests : IDisposable
                     OperationId is { } active
                         ? new ActiveReplacementRestore(active)
                         : null));
-
         }
-
     }
-
 }

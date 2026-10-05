@@ -1475,6 +1475,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public IReadOnlyList<ProviderHealthStatus> GetAllStatuses() =>
             _statuses.Values.ToArray();
+
+        public void Remove(string providerName) => _ = _statuses.Remove(providerName);
     }
 
     private sealed class NoopWeaveService : IWeaveService

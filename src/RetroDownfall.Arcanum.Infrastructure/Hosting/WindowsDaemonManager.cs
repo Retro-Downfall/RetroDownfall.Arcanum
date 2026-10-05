@@ -1,5 +1,3 @@
-using System.ComponentModel;
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using RetroDownfall.Arcanum.Core.Hosting;
@@ -34,63 +32,45 @@ public sealed class WindowsDaemonManager : IDaemonManager
     private static readonly Error ElevationError = new(
         "DaemonElevationRequired",
         "Administrator privileges are required to manage Windows Services.");
-    private static string ScExePath => Path.Combine(
+    private static string DefaultScExePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.System),
         "sc.exe");
-    public async Task<Result> InstallAsync(CancellationToken cancellationToken)
+    private readonly IDaemonProcessRunner _runner;
+
+    private readonly string _scExePath;
+
+    public WindowsDaemonManager()
+        : this(DaemonProcessRunner.Default, DefaultScExePath)
     {
-        string? processPath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(processPath))
-        {
-            return Result.Failure(new Error("DaemonProcessPath", "Could not resolve the current executable path."));
-        }
+    }
 
-        string binPathArgument = string.Create(
+    internal WindowsDaemonManager(IDaemonProcessRunner runner, string scExePath)
+    {
+        _runner = runner;
+        _scExePath = scExePath;
+    }
+
+    /// <summary>
+    /// Refuses to register a Windows Service. <c>sc create</c> without an <c>obj=</c> account runs the service as
+    /// LocalSystem, whose profile, API key and data directory are not the invoking user's, and a named account would
+    /// need its password on the <c>sc.exe</c> command line. The remedy is a per-user Task Scheduler entry, which runs
+    /// as the user with no stored credential. No <c>sc.exe</c> process is started.
+    /// </summary>
+    public Task<Result> InstallAsync(CancellationToken cancellationToken)
+    {
+        string processPath = string.IsNullOrWhiteSpace(Environment.ProcessPath)
+            ? "<path to arcanum.exe>"
+            : Environment.ProcessPath;
+        string message = string.Create(
             CultureInfo.InvariantCulture,
-            $"binPath= \"\\\"{processPath}\\\" serve\"");
-        RunOutcome createOutcome = await RunScAsync(
-            ["create", ServiceName, binPathArgument, "start= auto"],
-            cancellationToken).ConfigureAwait(false);
-        if (createOutcome.FatalError is { } fatalCreate)
-        {
-            return Result.Failure(fatalCreate);
-        }
+            $"Arcanum does not install a Windows Service: one created without a user account runs as LocalSystem, whose profile, API key and data directory are not yours, so your own arcanum commands could not reach it. Register a per-user Task Scheduler task that runs the host as you at logon instead (Task Scheduler, or: schtasks /Create /TN Arcanum /SC ONLOGON /RL LIMITED /TR \"\\\"{processPath}\\\" serve\"). A service created by an earlier version is still reported by 'arcanum daemon status' and removed by 'arcanum daemon uninstall'.");
 
-        if (IndicatesElevationDenied(createOutcome.ExitCode, createOutcome.StdErr))
-        {
-            return Result.Failure(ElevationError);
-        }
-
-        if (createOutcome.ExitCode != 0)
-        {
-            return Result.Failure(
-                ToolError("DaemonScCreate", "sc create failed.", createOutcome.StdErr, createOutcome.ExitCode));
-        }
-        RunOutcome startOutcome = await RunScAsync(
-            ["start", ServiceName],
-            cancellationToken).ConfigureAwait(false);
-        if (startOutcome.FatalError is { } fatalStart)
-        {
-            return Result.Failure(fatalStart);
-        }
-
-        if (IndicatesElevationDenied(startOutcome.ExitCode, startOutcome.StdErr))
-        {
-            return Result.Failure(ElevationError);
-        }
-
-        if (startOutcome.ExitCode != 0)
-        {
-            return Result.Failure(
-                ToolError("DaemonScStart", "sc start failed.", startOutcome.StdErr, startOutcome.ExitCode));
-        }
-
-        return Result.Success();
+        return Task.FromResult(Result.Failure(new Error("DaemonWindowsServiceUnsupported", message)));
     }
 
     public async Task<Result> UninstallAsync(CancellationToken cancellationToken)
     {
-        RunOutcome stopOutcome = await RunScAsync(
+        DaemonProcessOutcome stopOutcome = await RunScAsync(
             ["stop", ServiceName],
             cancellationToken).ConfigureAwait(false);
         if (stopOutcome.FatalError is { } fatalStop)
@@ -111,7 +91,7 @@ public sealed class WindowsDaemonManager : IDaemonManager
             return Result.Failure(
                 ToolError("DaemonScStop", "sc stop failed.", stopOutcome.StdErr, stopOutcome.ExitCode));
         }
-        RunOutcome deleteOutcome = await RunScAsync(
+        DaemonProcessOutcome deleteOutcome = await RunScAsync(
             ["delete", ServiceName],
             cancellationToken).ConfigureAwait(false);
         if (deleteOutcome.FatalError is { } fatalDelete)
@@ -140,7 +120,7 @@ public sealed class WindowsDaemonManager : IDaemonManager
 
     public async Task<Result<string>> GetStatusAsync(CancellationToken cancellationToken)
     {
-        RunOutcome queryOutcome = await RunScAsync(
+        DaemonProcessOutcome queryOutcome = await RunScAsync(
             ["query", ServiceName],
             cancellationToken).ConfigureAwait(false);
         if (queryOutcome.FatalError is { } fatal)
@@ -265,64 +245,13 @@ public sealed class WindowsDaemonManager : IDaemonManager
         return new Error(code, $"{message} {suffix}".Trim());
     }
 
-    private static async Task<RunOutcome> RunScAsync(string[] arguments, CancellationToken cancellationToken)
+    private async Task<DaemonProcessOutcome> RunScAsync(string[] arguments, CancellationToken cancellationToken)
     {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = ScExePath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        foreach (string argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process();
-        process.StartInfo = startInfo;
-        try
-        {
-            process.Start();
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return new RunOutcome(-1, string.Empty, string.Empty, ElevationError);
-        }
-        catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorAccessDenied)
-        {
-            return new RunOutcome(-1, string.Empty, string.Empty, ElevationError);
-        }
-        catch (Win32Exception ex)
-        {
-            return new RunOutcome(
-                -1,
-                string.Empty,
-                string.Empty,
-                new Error("DaemonScStart", ex.Message));
-        }
-
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        Task exitTask = process.WaitForExitAsync(cancellationToken);
-        try
-        {
-            await Task.WhenAll(exitTask, stdoutTask, stderrTask).ConfigureAwait(false);
-        }
-        catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorAccessDenied)
-        {
-            return new RunOutcome(-1, string.Empty, string.Empty, ElevationError);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return new RunOutcome(-1, string.Empty, string.Empty, ElevationError);
-        }
-
-        string stdout = await stdoutTask.ConfigureAwait(false);
-        string stderr = await stderrTask.ConfigureAwait(false);
-        return new RunOutcome(process.ExitCode, stdout, stderr, null);
+        DaemonProcessOutcome outcome = await _runner
+            .RunAsync(_scExePath, arguments, cancellationToken)
+            .ConfigureAwait(false);
+        return outcome.AccessDenied
+            ? outcome with { FatalError = ElevationError }
+            : outcome;
     }
-
-    private sealed record RunOutcome(int ExitCode, string StdOut, string StdErr, Error? FatalError);
 }

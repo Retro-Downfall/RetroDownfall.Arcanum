@@ -145,7 +145,7 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
                     _credentials,
                     covenantEnabled: true);
 
-            await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                 _secrets,
                 _passphrase,
                 scopes,
