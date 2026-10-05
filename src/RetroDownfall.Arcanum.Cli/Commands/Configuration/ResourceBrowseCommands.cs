@@ -227,19 +227,29 @@ public sealed class McpCommands(
         string workspace = scope.Path ?? Environment.CurrentDirectory;
 
         // Trust lets the file's commands run, so the operator sees what the file names before the host
-        // binds trust to its bytes, and nothing reaches the host unless they approve it.
-        McpTrustPreviewResult preview = await McpTrustPreview
-            .DescribeAsync(workspace, cancellationToken)
+        // binds trust to its bytes. The preview is the host's own reading of its own copy (a host on another
+        // machine is previewed, not the working directory here), and the approval below carries the digest
+        // of exactly those bytes, so the host refuses if the file is no longer what was shown. Nothing
+        // reaches the trust route unless they approve it.
+        Result<McpWorkspaceTrustPreview> preview = await apiClient
+            .PreviewMcpWorkspaceTrustAsync(
+                new OptionalWorkspaceRequest(workspace),
+                cancellationToken)
             .ConfigureAwait(false);
 
-        foreach (string line in preview.Lines)
+        if (preview.IsFailure)
+        {
+            return WriteError(preview.Error);
+        }
+
+        foreach (string line in preview.Value.Lines)
         {
             dispatcher.WriteDiagnostic(line);
         }
 
         // Approval has to be for text the operator was shown. A field the preview had to cut short could
         // carry the part that matters past the cut, so it is never approved, not even with --yes.
-        if (preview.Truncated)
+        if (preview.Value.Truncated)
         {
             dispatcher.WriteDiagnostic(
                 "A field in this mcp.json is too long to show in full, so it cannot be reviewed. "
@@ -251,7 +261,7 @@ public sealed class McpCommands(
 
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync(
-                    $"Trust the MCP configuration in {McpTrustPreview.Display(workspace)}? Its servers will be allowed to run the commands listed above.",
+                    $"Trust the MCP configuration in {preview.Value.Workspace}? Its servers will be allowed to run the commands listed above.",
                     cancellationToken)
                 .ConfigureAwait(false))
         {
@@ -262,7 +272,7 @@ public sealed class McpCommands(
 
         Result<bool> result = await apiClient
             .TrustMcpWorkspaceAsync(
-                new OptionalWorkspaceRequest(workspace),
+                new McpTrustWorkspaceRequest(workspace, preview.Value.ConfigDigest),
                 cancellationToken)
             .ConfigureAwait(false);
 

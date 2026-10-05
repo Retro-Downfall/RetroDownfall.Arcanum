@@ -1631,6 +1631,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ITrustedMcpWorkspaceStore, TrustedMcpWorkspaceStore>();
 
+        services.AddSingleton<IMcpWorkspaceTrustPreviewer, McpWorkspaceTrustPreviewer>();
+
         services.AddHttpClient(
             McpConnectionManager.McpHttpClientName,
             static client => client.Timeout = Timeout.InfiniteTimeSpan)

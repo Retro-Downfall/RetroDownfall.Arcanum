@@ -506,25 +506,49 @@ internal static class ConfigEditor
     /// Ends the editor and its children and waits a bounded time for it to go, on its own clock because
     /// the caller's token is the one that was just cancelled.
     /// </summary>
-    private static async Task TerminateAsync(Process process)
+    private static Task TerminateAsync(Process process) =>
+        TerminateAsync(
+            () => process.HasExited,
+            () => process.Kill(entireProcessTree: true),
+            process.WaitForExitAsync,
+            TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// <see cref="TerminateAsync(Process)"/> over the three things it needs from a process, so the
+    /// failures a real kill can raise can be raised in a test.
+    /// </summary>
+    /// <param name="hasExited">Whether the editor is already gone.</param>
+    /// <param name="killTree">Ends the editor and its children.</param>
+    /// <param name="waitForExit">Completes when the editor has exited.</param>
+    /// <param name="grace">How long to wait for it to go after the kill.</param>
+    internal static async Task TerminateAsync(
+        Func<bool> hasExited,
+        Action killTree,
+        Func<CancellationToken, Task> waitForExit,
+        TimeSpan grace)
     {
         try
         {
-            if (!process.HasExited)
+            if (!hasExited())
             {
-                process.Kill(entireProcessTree: true);
+                killTree();
             }
 
-            using CancellationTokenSource grace = new(TimeSpan.FromSeconds(5));
+            using CancellationTokenSource graceSource = new(grace);
 
-            await process.WaitForExitAsync(grace.Token).ConfigureAwait(false);
+            await waitForExit(graceSource.Token).ConfigureAwait(false);
         }
         catch (Exception exception) when (
             exception is InvalidOperationException
             or System.ComponentModel.Win32Exception
-            or OperationCanceledException)
+            or OperationCanceledException
+            // Killing a whole process tree raises this when part of the tree cannot be signalled (a child
+            // already gone, or one this user does not own). The editor is being abandoned either way, and
+            // letting it through would replace the cancellation in flight with a generic failure.
+            or AggregateException)
         {
-            // Already gone, not ours to signal, or slow to die: the caller is unwinding either way.
+            // Already gone, not ours to signal, partly signalled, or slow to die: the caller is unwinding
+            // either way.
         }
     }
 

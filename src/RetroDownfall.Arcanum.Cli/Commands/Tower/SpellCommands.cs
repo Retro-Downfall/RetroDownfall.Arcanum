@@ -56,7 +56,7 @@ public sealed class SpellCommands(
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
@@ -89,8 +89,7 @@ public sealed class SpellCommands(
     /// <param name="workspace">Workspace ID, name, or server path used to scope the lookup.</param>
     public async Task<int> Get(string? name, string? workspace = null, CancellationToken cancellationToken = default)
     {
-        if (resourceCatalog is not null
-            && !string.IsNullOrWhiteSpace(workspace))
+        if (!string.IsNullOrWhiteSpace(workspace))
         {
             ResourceSelectionResult<WorkspaceInfo> workspaceSelection =
                 await resourceCatalog
@@ -117,31 +116,24 @@ public sealed class SpellCommands(
             workspace = workspaceSelection.Value!.Path;
         }
 
-        if (resourceCatalog is not null)
-        {
-            ResourceSelectionResult<SpellSummary> selection = await resourceCatalog
-                .SelectSpellAsync(name, workspace, cancellationToken)
-                .ConfigureAwait(false);
-            if (selection.Status == ResourceSelectionStatus.Cancelled)
-            {
-                return 0;
-            }
+        ResourceSelectionResult<SpellSummary> selection = await resourceCatalog
+            .SelectSpellAsync(name, workspace, cancellationToken)
+            .ConfigureAwait(false);
 
-            if (selection.Status == ResourceSelectionStatus.Error)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-                return CliFailureExit.ExitCode(selection.ErrorCode);
-            }
-
-            name = selection.Value!.Name;
-        }
-        else if (string.IsNullOrWhiteSpace(name))
+        if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<NAME> is required.")));
-            return 1;
+            return 0;
         }
 
-        Result<SpellDetail> result = await apiClient.GetSpellAsync(name!, workspace, cancellationToken).ConfigureAwait(false);
+        if (selection.Status == ResourceSelectionStatus.Error)
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            return CliFailureExit.ExitCode(selection.ErrorCode);
+        }
+
+        name = selection.Value!.Name;
+
+        Result<SpellDetail> result = await apiClient.GetSpellAsync(name, workspace, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -603,6 +595,15 @@ public sealed class SpellCommands(
         string? output = null,
         CancellationToken cancellationToken = default)
     {
+        ExportDestination destination = await CliOutputFile
+            .PlanExportAsync(output, confirmationPrompt, themePalette, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!destination.Proceed)
+        {
+            return destination.ExitCode;
+        }
+
         Result<SpellExportDto> result = await apiClient
             .ExportSpellAsync(name, workspace, cancellationToken)
             .ConfigureAwait(false);
@@ -621,9 +622,8 @@ public sealed class SpellCommands(
         return await CliOutputFile
             .WriteExportAsync(
                 json,
-                output,
+                destination,
                 "Spell exported to:",
-                confirmationPrompt,
                 themePalette,
                 cancellationToken)
             .ConfigureAwait(false);

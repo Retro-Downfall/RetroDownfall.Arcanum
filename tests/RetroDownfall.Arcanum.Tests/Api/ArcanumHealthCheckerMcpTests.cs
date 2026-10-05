@@ -245,7 +245,7 @@ public sealed class ArcanumHealthCheckerMcpTests
         public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
-        public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+        public Task<Result> TrustWorkspaceAsync(string workingDirectory, string? expectedConfigDigest = null, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
     }
 
@@ -302,7 +302,7 @@ public sealed class ArcanumHealthCheckerMcpTests
         public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
-        public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+        public Task<Result> TrustWorkspaceAsync(string workingDirectory, string? expectedConfigDigest = null, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
     }
 
@@ -345,7 +345,7 @@ public sealed class ArcanumHealthCheckerMcpTests
         public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
-        public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+        public Task<Result> TrustWorkspaceAsync(string workingDirectory, string? expectedConfigDigest = null, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
     }
 

@@ -306,20 +306,170 @@ public sealed class FileBatchCommandTests
     }
 
     /// <summary>
-    /// R-341: the client preflight shares the host's batch-line rules (endpoint, method, per-record
-    /// limit) instead of restating them, and no longer buffers a record of unknown size to inspect it.
+    /// R-341: the preflight judges a record's method by the host's own rule, so it cannot refuse a line
+    /// the host would process. The host compares the method without regard to case, so a lower-case
+    /// <c>post</c> passes both, and a method that is not POST fails both.
+    /// </summary>
+    [Theory]
+
+    [InlineData("POST", true)]
+
+    [InlineData("post", true)]
+
+    [InlineData("Post", true)]
+
+    [InlineData("PUT", false)]
+
+    [InlineData("GET", false)]
+
+    public async Task Batch_preflight_applies_the_hosts_method_rule(
+        string method,
+        bool accepted)
+    {
+        string path = WriteJsonl(
+            $"{{\"custom_id\":\"a\",\"method\":\"{method}\",\"url\":\"/v1/chat/completions\",\"body\":{{}}}}\n");
+
+        try
+        {
+            FileBatchCommands.BatchPreflightResult result = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                BatchJsonlRules.MaxRecordBytes,
+                CancellationToken.None);
+
+            Assert.Equal(accepted, result.Success);
+
+            if (!accepted)
+            {
+                Assert.Contains("line 1", result.Message, StringComparison.Ordinal);
+
+                Assert.Contains("method must be POST", result.Message, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// R-341: a record is measured in the bytes the host measures. An emoji is four UTF-8 bytes, so a
+    /// line made of them that fits the limit exactly is accepted rather than counted as six bytes each and
+    /// refused at two thirds of the host's limit.
     /// </summary>
     [Fact]
 
-    public void Batch_preflight_shares_the_hosts_batch_line_rules()
+    public async Task Batch_preflight_counts_a_surrogate_pair_as_four_bytes()
     {
-        Assert.Equal("/v1/chat/completions", BatchJsonlRules.SupportedEndpoint);
+        string line =
+            "{\"custom_id\":\"a\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"p\":\""
+            + string.Concat(Enumerable.Repeat("\U0001F600", 64))
+            + "\"}}";
 
-        Assert.Equal("POST", BatchJsonlRules.RequiredMethod);
+        long exactBytes = Encoding.UTF8.GetByteCount(line);
 
-        Assert.Equal(
-            BatchJsonlRecordReader.MaxRecordBytes,
-            BatchJsonlRules.MaxRecordBytes);
+        string path = WriteJsonl(line + "\n");
+
+        try
+        {
+            FileBatchCommands.BatchPreflightResult atTheLimit = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                maxRecordBytes: exactBytes,
+                CancellationToken.None);
+
+            Assert.True(atTheLimit.Success, atTheLimit.Message);
+
+            FileBatchCommands.BatchPreflightResult oneByteOver = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                maxRecordBytes: exactBytes - 1,
+                CancellationToken.None);
+
+            Assert.False(oneByteOver.Success);
+
+            Assert.Contains("line 1", oneByteOver.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// R-341: cancellation is observed inside a very long line, not only between lines, so Ctrl+C does not
+    /// wait for a 64 MiB record to finish scanning.
+    /// </summary>
+    [Fact]
+
+    public void Batch_preflight_observes_cancellation_inside_a_long_line()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        using CancelsAfterReadsStream stream = new(cancellation, readsBeforeCancel: 2);
+
+        using StreamReader reader = new(stream, Encoding.UTF8);
+
+        _ = Assert.ThrowsAny<OperationCanceledException>(
+            () => FileBatchCommands.ReadBoundedLine(
+                reader,
+                maxRecordBytes: long.MaxValue,
+                cancellation.Token));
+
+        Assert.True(stream.Reads >= 2);
+    }
+
+    /// <summary>
+    /// A long run of non-newline bytes (a quarter of a megabyte, then end of input) that cancels a token
+    /// once it has been read a few times, so a scan that ignores the token ends instead of hanging.
+    /// </summary>
+    private sealed class CancelsAfterReadsStream(
+        CancellationTokenSource cancellation,
+        int readsBeforeCancel) : Stream
+    {
+        private const int MaxReads = 64;
+
+        public int Reads { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (Reads >= MaxReads)
+            {
+                return 0;
+            }
+
+            Reads++;
+
+            if (Reads >= readsBeforeCancel)
+            {
+                cancellation.Cancel();
+            }
+
+            Array.Fill(buffer, (byte)'a', offset, count);
+
+            return count;
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     [Fact]

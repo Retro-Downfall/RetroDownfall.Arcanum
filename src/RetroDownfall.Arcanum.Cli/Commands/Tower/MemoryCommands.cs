@@ -32,7 +32,7 @@ public sealed partial class MemoryCommands(
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     public async Task<int> Status(
         string? sessionIdentifier,
@@ -546,13 +546,6 @@ public sealed partial class MemoryCommands(
         if (Guid.TryParse(identifier, out Guid parsedId))
         {
             return new SessionResolution(true, false, parsedId);
-        }
-
-        if (resourceCatalog is null)
-        {
-            dispatcher.WriteDiagnostic("<SESSION> must be a valid GUID.");
-
-            return default;
         }
 
         ResourceSelectionResult<SessionSummaryDto> selection = await resourceCatalog

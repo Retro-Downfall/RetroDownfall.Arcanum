@@ -77,7 +77,8 @@ public sealed class MemoryReviewCommandTests
             themePalette: null!,
             dispatcher,
             new FixedConfirmation(confirmed: false),
-            Options.Create(new ArcanumSettings()));
+            Options.Create(new ArcanumSettings()),
+            resourceCatalog: null!);
 
         string requestPath = Path.Combine(Path.GetTempPath(), $"arcanum-review-{Guid.NewGuid():N}.json");
 
@@ -530,7 +531,8 @@ public sealed class MemoryReviewCommandTests
             themePalette: null!,
             new ConsoleDispatcher(output, error, options),
             new FixedConfirmation(confirmed: false),
-            Options.Create(new ArcanumSettings()));
+            Options.Create(new ArcanumSettings()),
+            resourceCatalog: null!);
     }
 
     private static void AssertJsonInputError(

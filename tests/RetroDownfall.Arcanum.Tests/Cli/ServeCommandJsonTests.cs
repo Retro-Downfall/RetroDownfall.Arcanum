@@ -52,6 +52,71 @@ public sealed class ServeCommandJsonTests
         }
     }
 
+    /// <summary>
+    /// R-334 (wiring): the guard is not only correct, it is the first thing <c>Run</c> does. Under
+    /// <c>--json</c> the host is never started, so the generated master API key cannot be buffered behind a
+    /// capture that waits for the host to exit. The host is a recording stand-in, so deleting the guard
+    /// fails this test at once rather than starting a Kestrel host in the test process.
+    /// </summary>
+    [Fact]
+    public async Task Run_under_json_returns_the_refusal_without_starting_the_host()
+    {
+        TextWriter priorError = Console.Error;
+
+        Console.SetError(new StringWriter());
+
+        try
+        {
+            ServeCommand command = CreateCommand();
+
+            bool hostStarted = false;
+
+            using IDisposable invocation = CliInvocationContext.Push(
+                new CliInvocationOptions(Json: true, Plain: false, Yes: false));
+
+            int exitCode = await command.Run(
+                CancellationToken.None,
+                _ =>
+                {
+                    hostStarted = true;
+
+                    return Task.FromResult(0);
+                });
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, exitCode);
+
+            Assert.False(hostStarted, "serve --json started the host.");
+        }
+        finally
+        {
+            Console.SetError(priorError);
+        }
+    }
+
+    [Fact]
+    public async Task Run_without_json_starts_the_host_and_returns_its_exit_code()
+    {
+        ServeCommand command = CreateCommand();
+
+        bool hostStarted = false;
+
+        using IDisposable invocation = CliInvocationContext.Push(
+            new CliInvocationOptions(Json: false, Plain: false, Yes: false));
+
+        int exitCode = await command.Run(
+            CancellationToken.None,
+            _ =>
+            {
+                hostStarted = true;
+
+                return Task.FromResult(7);
+            });
+
+        Assert.True(hostStarted);
+
+        Assert.Equal(7, exitCode);
+    }
+
     [Fact]
     public void Text_output_is_allowed_to_start_the_host()
     {

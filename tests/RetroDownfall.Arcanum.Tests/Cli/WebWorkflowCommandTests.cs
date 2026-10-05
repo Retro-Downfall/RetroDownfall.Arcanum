@@ -8,11 +8,15 @@ using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using RetroDownfall.Arcanum.Cli.Commands;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Core.Security;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -683,6 +687,113 @@ public sealed class WebWorkflowCommandTests
             StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// R-067: a Ctrl+C that lands after the billed answer came back must not discard it. The answer exists
+    /// only in memory at that point, so the save still happens and the answer is still printed, whatever
+    /// the state of the caller's token.
+    /// </summary>
+    [Fact]
+
+    public async Task A_cancel_that_lands_after_the_answer_still_saves_and_prints_it()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-cancel-after-answer-{Guid.NewGuid():N}.md");
+
+        try
+        {
+            using CancellationTokenSource cancellation = new();
+
+            // The token is cancelled when the response is disposed, which is after the client has parsed
+            // the answer and before the command goes on to save it.
+            RecordingHandler handler = new(
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new CancelsWhenDisposedContent(
+                        """
+                        {"data":{"answer":"Paid for answer.","citations":[],"provider":"perplexity","model":"sonar","truncated":false,"usage":{"totalTokens":4,"searchQueries":1}},"isSuccess":true,"error":null,"traceId":"test"}
+                        """,
+                        cancellation),
+                });
+
+            using ArcanumApiCredentialLease credentials =
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key");
+
+            ArcanumApiClient apiClient = new(new FakeHttpClientFactory(handler), credentials);
+
+            StringWriter output = new();
+
+            StringWriter error = new();
+
+            WebWorkflowCommands commands = new(
+                apiClient,
+                new ConsoleDispatcher(output, error, new CliInvocationOptions(Json: false, Plain: false, Yes: false)),
+                new RecordingPrompt(answer: true),
+                resources: null!);
+
+            int exitCode = await commands.Search(
+                "saved facts",
+                count: 3,
+                freshness: null,
+                includeDomains: [],
+                excludeDomains: [],
+                save: path,
+                attachToSession: null,
+                cancellation.Token);
+
+            Assert.True(cancellation.IsCancellationRequested);
+
+            Assert.Equal(0, exitCode);
+
+            Assert.Contains("Paid for answer.", File.ReadAllText(path), StringComparison.Ordinal);
+
+            Assert.Contains("Paid for answer.", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// R-067: a mistyped <c>--format</c> is found before the operator is asked whether to overwrite the
+    /// <c>--save</c> file, so the question is never put for a command that cannot run.
+    /// </summary>
+    [Fact]
+
+    public void Research_rejects_a_bad_format_before_asking_about_an_overwrite()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-format-first-{Guid.NewGuid():N}.md");
+
+        File.WriteAllText(path, "original");
+
+        try
+        {
+            RecordingPrompt prompt = new(answer: true);
+
+            RecordingHandler handler = new();
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["research", "What changed?", "--format", "bogus", "--save", path],
+                prompt);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Empty(prompt.Questions);
+
+            Assert.Empty(handler.Requests);
+
+            Assert.Equal("original", File.ReadAllText(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
 
     public void Research_rejects_an_undocumented_format_without_calling_the_api()
@@ -698,6 +809,24 @@ public sealed class WebWorkflowCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--format", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A JSON body that cancels a token when the response that carries it is disposed.
+    /// </summary>
+    private sealed class CancelsWhenDisposedContent(
+        string json,
+        CancellationTokenSource cancellation) : StringContent(json, Encoding.UTF8, "application/json")
+    {
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                cancellation.Cancel();
+            }
+
+            base.Dispose(disposing);
+        }
     }
 
     private static HttpResponseMessage JsonResponse(

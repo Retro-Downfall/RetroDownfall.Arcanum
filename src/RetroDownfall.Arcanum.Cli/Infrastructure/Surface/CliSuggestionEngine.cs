@@ -63,6 +63,20 @@ internal static class CliSuggestionEngine
         // verb meant `arcanum campain list` asked whether `list` was a root command instead of
         // whether `campain` was. Both fell through to System.CommandLine's full help dump, which
         // this diagnostic exists to replace.
+        string matched = MatchedPath(parseResult);
+
+        // The credential verbs never take their value as an argument (`key set` once did). Anything left
+        // unmatched after them may be a credential, whether it is a bare word or an option-shaped token
+        // such as `--api-key=sk-...`, so the refusal names the supported routes and never repeats the
+        // token: System.CommandLine's generic "unrecognized argument" line would print the secret back
+        // into terminal scrollback and CI logs. This runs before the bare-token filter below for that
+        // reason, since an option-shaped credential is exactly what that filter drops.
+        if (matched is "key set" or "key provider set"
+            && parseResult.UnmatchedTokens.Count > 0)
+        {
+            return CredentialVerbRefusal(matched);
+        }
+
         // An unknown option is not a naming problem this engine can answer, so only bare tokens are
         // considered; if nothing but options went unmatched there is no command to suggest.
         string? unrecognized = parseResult.UnmatchedTokens
@@ -74,19 +88,6 @@ internal static class CliSuggestionEngine
             // missing argument, a rejected value — and System.CommandLine's own message names it
             // better than a spelling guess could.
             return null;
-        }
-
-        string matched = MatchedPath(parseResult);
-
-        // The credential verbs never take their value as an argument (`key set` once did). A leftover
-        // value is a credential, so the refusal names the supported routes and never repeats the token:
-        // the generic "unrecognized argument" line would print the secret back into terminal scrollback
-        // and CI logs.
-        if (matched is "key set" or "key provider set")
-        {
-            return $"`arcanum {matched}` does not take the credential as an argument, because a "
-                + "command-line value is recorded in shell history and visible in the process list. "
-                + "Pipe the value on stdin or run it in a terminal for the hidden prompt.";
         }
 
         string typed = matched.Length == 0
@@ -121,6 +122,24 @@ internal static class CliSuggestionEngine
         return suggestion is null
             ? null
             : $"`{unrecognized}` is not an {prefix} command. Did you mean `{prefix} {suggestion}`?";
+    }
+
+    /// <summary>
+    /// The refusal for text left over after a credential verb. It is true of a mistyped word as much as of
+    /// a credential, so it states what the verb takes and that the leftover text is withheld, instead of
+    /// asserting that what was typed was a credential.
+    /// </summary>
+    private static string CredentialVerbRefusal(string verb)
+    {
+        string accepts = verb == "key provider set"
+            ? "takes only the provider name as an argument"
+            : "takes no argument";
+
+        return $"`arcanum {verb}` {accepts}, and part of the command line was not recognised; that text is "
+            + "not repeated here in case it is a credential. A credential is never accepted as an argument "
+            + "or an option value, because a command-line value is recorded in shell history and visible in "
+            + "the process list. Pipe the value on stdin or run it in a terminal for the hidden prompt; "
+            + $"`arcanum {verb} --help` lists the options it does take.";
     }
 
     /// <summary>

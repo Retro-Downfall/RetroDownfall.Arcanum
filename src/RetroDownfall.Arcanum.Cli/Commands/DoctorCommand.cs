@@ -92,17 +92,30 @@ public sealed class DoctorCommand(
 
         bool cancelled = false;
 
+        // True once the loop has gone through every selected repair without being stopped, so a Ctrl+C
+        // that lands afterwards (while the exclusive lease is released) is not described as a stop that
+        // left repairs unrun.
+        bool everyRepairFinished = false;
+
         if (report.IsSuccess && mutates)
         {
             try
             {
                 cancelled = await initialization
                     .RunExclusiveAsync(
-                        (_, token) => ApplyRequestedRepairsAsync(
-                            request,
-                            fixPermissions,
-                            appliedResults,
-                            token),
+                        async (_, token) =>
+                        {
+                            bool stopped = await ApplyRequestedRepairsAsync(
+                                    request,
+                                    fixPermissions,
+                                    appliedResults,
+                                    token)
+                                .ConfigureAwait(false);
+
+                            everyRepairFinished = !stopped;
+
+                            return stopped;
+                        },
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -117,9 +130,12 @@ public sealed class DoctorCommand(
             if (cancelled)
             {
                 consoleDispatcher.WriteDiagnostic(
-                    $"Cancelled. {appliedResults.Count(static repair => repair.State == DoctorRepairState.Applied)} "
-                    + "repair(s) had been applied before the stop and the rest were not run; the report "
-                    + "shows what changed. Re-run 'arcanum doctor' to see what remains.");
+                    everyRepairFinished
+                        ? "Cancelled while the installation lock was being released, after every requested "
+                            + "repair had finished; the report shows what changed."
+                        : $"Cancelled. {appliedResults.Count(static repair => repair.State == DoctorRepairState.Applied)} "
+                            + "repair(s) had been applied before the stop and the rest were not run; the report "
+                            + "shows what changed. Re-run 'arcanum doctor' to see what remains.");
             }
         }
 
@@ -284,11 +300,15 @@ public sealed class DoctorCommand(
 
         foreach (DoctorRepairResult planned in report.Repairs ?? [])
         {
+            // The permissions repair is moved to the end of the report once it has a result. When it never
+            // got one (a stop landed before the loop reached it) its plan stays where it was, rather than
+            // the repair vanishing from the report.
             if (fixPermissions
                 && string.Equals(
                     planned.RepairId,
                     PermissionApplyOwnerOnlyRepair.RepairId,
-                    StringComparison.Ordinal))
+                    StringComparison.Ordinal)
+                && replacements.ContainsKey(planned.RepairId))
             {
                 continue;
             }

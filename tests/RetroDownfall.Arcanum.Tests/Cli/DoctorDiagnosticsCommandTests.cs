@@ -378,6 +378,210 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
         Assert.Equal(0, second.ApplyCount);
     }
 
+    /// <summary>
+    /// R-338: a repair interrupted part-way may have changed something, so it is recorded as failed with
+    /// the cancellation named rather than dropped, and the repair that never started stays a plan.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_while_a_repair_runs_records_it_as_failed_and_stops_the_loop()
+    {
+        CancellableInitialization initialization = new();
+
+        ScriptedRepair interrupted = new(
+            "paths.interrupted_mid_apply",
+            initialization.Cancel,
+            throwWhenCancelledInApply: true);
+
+        ScriptedRepair never = new("paths.never_started", afterApply: null);
+
+        CliTestResult result = await RunScriptedRepairsAsync(initialization, interrupted, never);
+
+        Assert.Equal((int)CliExitCode.Cancelled, result.ExitCode);
+
+        DoctorReport report = Deserialize(result.Output);
+
+        DoctorRepairResult failed = Assert.Single(
+            report.Repairs ?? [],
+            repair => repair.RepairId == interrupted.Id);
+
+        Assert.Equal(DoctorRepairState.Failed, failed.State);
+
+        Assert.Contains("Cancelled while the repair was running", failed.Summary, StringComparison.Ordinal);
+
+        Assert.Equal(nameof(OperationCanceledException), failed.Failure);
+
+        Assert.False(report.Healthy);
+
+        DoctorRepairResult untouched = Assert.Single(
+            report.Repairs ?? [],
+            repair => repair.RepairId == never.Id);
+
+        Assert.Equal(DoctorRepairState.Planned, untouched.State);
+
+        Assert.Equal(0, never.ApplyCount);
+    }
+
+    /// <summary>
+    /// R-338: cancelling while a repair is being revalidated under the lease changes nothing, so that
+    /// repair simply stays the plan it was and is never applied.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_during_revalidation_leaves_the_repair_a_plan_and_applies_nothing()
+    {
+        CancellableInitialization initialization = new();
+
+        ScriptedRepair revalidating = new(
+            "paths.cancelled_while_revalidating",
+            initialization.Cancel,
+            cancelDuringPlanWhen: () => initialization.HoldsExclusiveLease);
+
+        CliTestResult result = await RunScriptedRepairsAsync(initialization, revalidating);
+
+        Assert.Equal((int)CliExitCode.Cancelled, result.ExitCode);
+
+        DoctorRepairResult plan = Assert.Single(Deserialize(result.Output).Repairs ?? []);
+
+        Assert.Equal(DoctorRepairState.Planned, plan.State);
+
+        Assert.Equal(0, revalidating.ApplyCount);
+
+        // Planned for the confirmation, for the report, and then cancelled while revalidating.
+        Assert.True(revalidating.PlanCount >= 3, $"Planned {revalidating.PlanCount} times.");
+    }
+
+    /// <summary>
+    /// R-338: when the stop lands after every requested repair finished (while the lease is being
+    /// released), the report and the message say so instead of claiming the rest were not run.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_while_the_lease_is_released_says_every_repair_had_finished()
+    {
+        using CancellationTokenSource caller = new();
+
+        ScriptedRepair only = new("paths.finishes_before_release", afterApply: null);
+
+        ServiceCollection services = BuildServices(new ReleaseCancelsInitialization(caller));
+
+        services.AddSingleton<IDoctorRepair>(only);
+
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton<IConfirmationPrompt>(new StubConfirmationPrompt(true));
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        TextWriter priorOut = Console.Out;
+
+        TextWriter priorError = Console.Error;
+
+        StringWriter output = new();
+
+        StringWriter error = new();
+
+        Console.SetOut(output);
+
+        Console.SetError(error);
+
+        int exitCode;
+
+        try
+        {
+            exitCode = await provider.GetRequiredService<RetroDownfall.Arcanum.Cli.Commands.DoctorCommand>().Run(
+                new DoctorRunRequest([], [], false, [only.Id], true, false),
+                fixPermissions: false,
+                json: true,
+                caller.Token);
+        }
+        finally
+        {
+            Console.SetOut(priorOut);
+
+            Console.SetError(priorError);
+        }
+
+        Assert.Equal((int)CliExitCode.Cancelled, exitCode);
+
+        DoctorRepairResult applied = Assert.Single(Deserialize(output.ToString()).Repairs ?? []);
+
+        Assert.Equal(DoctorRepairState.Applied, applied.State);
+
+        Assert.Contains("every requested repair had finished", error.ToString(), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("were not run", error.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-338: a cancellation that lands before <c>--fix-permissions</c> reached its repair must not erase
+    /// that repair from the report; it stays the plan it was.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_before_the_permissions_repair_ran_keeps_it_in_the_report_as_a_plan()
+    {
+        CancellableInitialization initialization = new();
+
+        ScriptedRepair first = new("paths.cancels_before_permissions", initialization.Cancel);
+
+        ServiceCollection services = BuildServices(initialization);
+
+        services.AddSingleton<IDoctorRepair>(first);
+
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton<IConfirmationPrompt>(new StubConfirmationPrompt(true));
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "doctor",
+                "--json",
+                "--fix-permissions",
+                "--apply",
+                "--repair",
+                first.Id,
+                "--repair",
+                "permissions.apply_owner_only",
+            ]);
+
+        Assert.Equal((int)CliExitCode.Cancelled, result.ExitCode);
+
+        DoctorReport report = Deserialize(result.Output);
+
+        Assert.Contains(
+            report.Repairs ?? [],
+            repair => repair.RepairId == first.Id && repair.State == DoctorRepairState.Applied);
+
+        DoctorRepairResult permissions = Assert.Single(
+            report.Repairs ?? [],
+            repair => repair.RepairId == "permissions.apply_owner_only");
+
+        Assert.NotEqual(DoctorRepairState.Applied, permissions.State);
+    }
+
+    private async Task<CliTestResult> RunScriptedRepairsAsync(
+        CancellableInitialization initialization,
+        params ScriptedRepair[] repairs)
+    {
+        ServiceCollection services = BuildServices(initialization);
+
+        foreach (ScriptedRepair repair in repairs)
+        {
+            services.AddSingleton<IDoctorRepair>(repair);
+        }
+
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton<IConfirmationPrompt>(new StubConfirmationPrompt(true));
+
+        return await CliTestHarness.RunAsync(
+            services,
+            [
+                "doctor",
+                "--json",
+                .. repairs.SelectMany(static repair => (string[])["--repair", repair.Id]),
+                "--apply",
+            ]);
+    }
+
     [Fact]
     public async Task A_repair_does_not_report_its_own_exclusive_lock_as_external_contention()
     {
@@ -732,6 +936,9 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
     {
         private CancellationTokenSource? _source;
 
+        /// <summary>True while an exclusive operation is running, as it is during the revalidation and apply.</summary>
+        public bool HoldsExclusiveLease { get; private set; }
+
         public void Cancel() => _source?.Cancel();
 
         public async Task<T> RunExclusiveAsync<T>(
@@ -743,7 +950,16 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
 
             _source = source;
 
-            return await operation(this, source.Token).ConfigureAwait(false);
+            HoldsExclusiveLease = true;
+
+            try
+            {
+                return await operation(this, source.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                HoldsExclusiveLease = false;
+            }
         }
 
         public Task<T> RunExclusiveWithBootstrapAsync<T>(
@@ -754,9 +970,53 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
         public object? GetService(Type serviceType) => null;
     }
 
-    private sealed class ScriptedRepair(string id, Action? afterApply) : IDoctorRepair
+    /// <summary>
+    /// Runs the repairs, then reports a cancellation as Ctrl+C would while the lease is being released: after
+    /// the operation returned, on the caller's own token.
+    /// </summary>
+    private sealed class ReleaseCancelsInitialization(CancellationTokenSource caller) : IGrimoireCliInitialization, IServiceProvider
+    {
+        public async Task<T> RunExclusiveAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken)
+        {
+            T result = await operation(this, cancellationToken).ConfigureAwait(false);
+
+            await caller.CancelAsync().ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return result;
+        }
+
+        public Task<T> RunExclusiveWithBootstrapAsync<T>(
+            Func<IServiceProvider, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Doctor repairs do not bootstrap the Grimoire.");
+
+        public object? GetService(Type serviceType) => null;
+    }
+
+    /// <param name="id">The repair id.</param>
+    /// <param name="afterApply">Runs inside the apply (and inside a plan call selected by <paramref name="cancelDuringPlanWhen"/>), typically to cancel.</param>
+    /// <param name="throwWhenCancelledInApply">
+    /// When true the apply throws <see cref="OperationCanceledException"/> after <paramref name="afterApply"/>
+    /// if its token was cancelled, as a repair that is interrupted part-way would.
+    /// </param>
+    /// <param name="cancelDuringPlanWhen">
+    /// Decides, per plan call, whether that call cancels and throws. The report is planned more than once
+    /// (the confirmation preview, the report, the revalidation under the exclusive lease), so a test selects
+    /// the revalidation by asking whether the exclusive lease is held rather than by counting calls.
+    /// </param>
+    private sealed class ScriptedRepair(
+        string id,
+        Action? afterApply,
+        bool throwWhenCancelledInApply = false,
+        Func<bool>? cancelDuringPlanWhen = null) : IDoctorRepair
     {
         public int ApplyCount { get; private set; }
+
+        public int PlanCount { get; private set; }
 
         public string Id => id;
 
@@ -766,20 +1026,39 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
 
         public string Description => "Scripted repair for cancellation tests.";
 
-        public Task<DoctorRepairResult> PlanAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(
+        public Task<DoctorRepairResult> PlanAsync(CancellationToken cancellationToken)
+        {
+            PlanCount++;
+
+            if (cancelDuringPlanWhen?.Invoke() == true)
+            {
+                afterApply?.Invoke();
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            return Task.FromResult(
                 new DoctorRepairResult(
                     id,
                     DoctorRepairState.Planned,
                     "Would do the scripted work.",
                     [new DoctorRepairStep("scripted", "pending", "done")],
                     null));
+        }
 
         public Task<DoctorRepairResult> ApplyAsync(CancellationToken cancellationToken)
         {
             ApplyCount++;
 
-            afterApply?.Invoke();
+            if (cancelDuringPlanWhen is null)
+            {
+                afterApply?.Invoke();
+            }
+
+            if (throwWhenCancelledInApply)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
 
             return Task.FromResult(
                 new DoctorRepairResult(

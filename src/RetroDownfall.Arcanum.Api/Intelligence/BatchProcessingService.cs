@@ -1030,7 +1030,7 @@ internal sealed class BatchProcessingService(
         bool repeatedCustomId = !string.IsNullOrWhiteSpace(request.CustomId)
             && customIds.IsRepeat(request.CustomId);
 
-        if (!string.Equals(request.Method, "POST", StringComparison.OrdinalIgnoreCase))
+        if (!BatchJsonlRules.IsRequiredMethod(request.Method))
         {
             return "Line method must be POST.";
         }

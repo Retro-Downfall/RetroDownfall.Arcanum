@@ -323,6 +323,7 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
 
         public Task TrustAsync(
             string workspaceRootPath,
+            string? expectedSourceDigest = null,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }

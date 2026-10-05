@@ -177,6 +177,61 @@ public sealed class KeyCommandTests
         Assert.Contains("stdin", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// R-328: a credential typed as an option value (<c>--api-key=sk_...</c>) is the same leak as one typed
+    /// as a bare argument. System.CommandLine's own "unrecognized argument" line would print it back, so the
+    /// refusal covers an option-shaped token too and never repeats it.
+    /// </summary>
+    [Theory]
+    [InlineData("key", "set", "--api-key=arc_option_valued_0123456789")]
+    [InlineData("key", "set", "--api-key", "arc_option_valued_0123456789")]
+    [InlineData("key", "provider", "set", "alpha", "--api-key=arc_option_valued_0123456789")]
+    public async Task A_credential_typed_as_an_option_value_is_refused_without_being_echoed(params string[] arguments)
+    {
+        const string Credential = "arc_option_valued_0123456789";
+
+        FakeSecretStore secrets = new();
+
+        FakeProviderCredentialStore providers = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(providers, secretStore: secrets),
+            arguments);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, secrets.WriteCount);
+
+        Assert.Equal(0, providers.WriteCount);
+
+        Assert.DoesNotContain(Credential, result.Output + result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("stdin", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// R-328: the refusal is true of anything left over after <c>key set</c>, a mistyped word included, so
+    /// it says the verb takes no argument and that the unrecognised text is withheld rather than asserting
+    /// that what was typed was a credential.
+    /// </summary>
+    [Fact]
+    public async Task The_refusal_does_not_claim_that_an_unrecognised_word_was_a_credential()
+    {
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(),
+            ["key", "set", "prvoider"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.DoesNotContain("prvoider", result.Output + result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("does not take the credential", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("takes no argument", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("not repeated", result.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Set_still_stores_a_key_read_from_redirected_stdin()
     {

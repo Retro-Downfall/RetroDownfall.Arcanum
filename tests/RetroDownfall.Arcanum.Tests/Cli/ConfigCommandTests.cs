@@ -478,6 +478,86 @@ public sealed class ConfigCommandTests
             script,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
+        await AssertCancellingTerminatesTheEditorAsync(script, directory, pidFile);
+    }
+
+    /// <summary>
+    /// R-339 on Windows: <c>Process.Kill(entireProcessTree: true)</c> is the Windows half of the same
+    /// behaviour, so the same cancellation is exercised against a PowerShell editor. Not run on the macOS
+    /// development host; it runs on the Windows lane.
+    /// </summary>
+    [SkippableFact]
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+
+    public async Task Cancelling_the_edit_terminates_the_spawned_editor_on_Windows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The fake editor is a PowerShell script.");
+
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-editor-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        string pidFile = Path.Combine(directory, "editor.pid");
+
+        string script = Path.Combine(directory, "editor.ps1");
+
+        await File.WriteAllTextAsync(
+            script,
+            $"$PID | Set-Content -Path '{pidFile}'\r\nStart-Sleep -Seconds 60\r\n");
+
+        await AssertCancellingTerminatesTheEditorAsync(
+            $"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\"",
+            directory,
+            pidFile);
+    }
+
+    /// <summary>
+    /// R-339: a kill that can only signal part of the tree (an <see cref="AggregateException"/>, which is
+    /// what <c>Kill(entireProcessTree: true)</c> raises) must not replace the cancellation in flight.
+    /// </summary>
+    [Fact]
+
+    public async Task A_partly_failed_kill_of_the_editor_tree_is_absorbed()
+    {
+        await ConfigEditor.TerminateAsync(
+            hasExited: () => false,
+            killTree: () => throw new AggregateException(new InvalidOperationException("A child had already exited.")),
+            waitForExit: static _ => Task.CompletedTask,
+            grace: TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+
+    public async Task An_editor_that_already_exited_is_not_killed()
+    {
+        await ConfigEditor.TerminateAsync(
+            hasExited: () => true,
+            killTree: () => throw new InvalidOperationException("The kill must not be attempted."),
+            waitForExit: static _ => Task.CompletedTask,
+            grace: TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+
+    public async Task An_editor_that_will_not_go_is_abandoned_after_the_grace_period()
+    {
+        Task terminating = ConfigEditor.TerminateAsync(
+            hasExited: () => false,
+            killTree: static () => { },
+            waitForExit: static cancellationToken => Task.Delay(Timeout.Infinite, cancellationToken),
+            grace: TimeSpan.FromMilliseconds(50));
+
+        await terminating.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    private static async Task AssertCancellingTerminatesTheEditorAsync(
+        string editorCommand,
+        string directory,
+        string pidFile)
+    {
         int? editorPid = null;
 
         try
@@ -485,7 +565,7 @@ public sealed class ConfigCommandTests
             using CancellationTokenSource cancellation = new();
 
             Task<Result> run = ConfigEditor.RunAsync(
-                script,
+                editorCommand,
                 Path.Combine(directory, "arcanum.json"),
                 cancellation.Token);
 
@@ -498,7 +578,7 @@ public sealed class ConfigCommandTests
 
             Assert.True(File.Exists(pidFile), "The fake editor never started.");
 
-            // The script writes its pid and then execs, so wait until the file is complete.
+            // The editor writes its pid and then carries on, so wait until the file is complete.
             string pidText = string.Empty;
 
             while (string.IsNullOrWhiteSpace(pidText) && DateTime.UtcNow < deadline)

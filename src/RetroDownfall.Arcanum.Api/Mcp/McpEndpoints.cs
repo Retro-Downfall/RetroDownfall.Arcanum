@@ -13,10 +13,8 @@ namespace RetroDownfall.Arcanum.Api.Mcp;
 
 internal static class McpEndpoints
 {
-
     public static RouteGroupBuilder MapMcpEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapPost("/mcp/reload", async (OptionalWorkspaceRequest? body, IMcpConnectionManager mcp, HttpContext httpContext, CancellationToken ct) =>
         {
             string workingDirectory = body?.WorkingDirectory ?? string.Empty;
@@ -126,29 +124,58 @@ internal static class McpEndpoints
         })
         .WithName("RestartMcpServer");
 
-        apiGroup.MapPost("/mcp/trust-workspace", async (OptionalWorkspaceRequest? body, IMcpConnectionManager manager, HttpContext httpContext, CancellationToken ct) =>
+        apiGroup.MapPost("/mcp/trust-workspace", async (McpTrustWorkspaceRequest? body, IMcpConnectionManager manager, HttpContext httpContext, CancellationToken ct) =>
         {
-
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
             if (body is null || string.IsNullOrWhiteSpace(body.WorkingDirectory))
             {
-
                 return Results.BadRequest(
                     ApiResponse<bool>.FromResult(
                         Result<bool>.Failure(new Error(ErrorCodes.Mcp.MissingWorkspace, "workingDirectory is required.")),
                         traceId));
-
             }
 
-            Result result = await manager.TrustWorkspaceAsync(body.WorkingDirectory!, httpContext.RequestAborted).ConfigureAwait(false);
+            Result result = await manager
+                .TrustWorkspaceAsync(
+                    body.WorkingDirectory!,
+                    string.IsNullOrWhiteSpace(body.ExpectedConfigDigest) ? null : body.ExpectedConfigDigest,
+                    httpContext.RequestAborted)
+                .ConfigureAwait(false);
 
             return result.IsSuccess
                 ? Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId))
                 : MapLifecycleFailure(result.Error, traceId);
-
         })
         .WithName("TrustMcpWorkspace");
+
+        apiGroup.MapPost("/mcp/trust-workspace/preview", async (OptionalWorkspaceRequest? body, IMcpWorkspaceTrustPreviewer previewer, HttpContext httpContext, CancellationToken ct) =>
+        {
+            string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            if (body is null || string.IsNullOrWhiteSpace(body.WorkingDirectory))
+            {
+                return Results.Json(
+                    ApiResponse<McpWorkspaceTrustPreview>.FromResult(
+                        Result<McpWorkspaceTrustPreview>.Failure(
+                            new Error(ErrorCodes.Mcp.MissingWorkspace, "workingDirectory is required.")),
+                        traceId),
+                    ArcanumJsonContext.Default.ApiResponseMcpWorkspaceTrustPreview,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            Result<McpWorkspaceTrustPreview> preview = await previewer
+                .PreviewAsync(body.WorkingDirectory!, httpContext.RequestAborted)
+                .ConfigureAwait(false);
+
+            return Results.Json(
+                ApiResponse<McpWorkspaceTrustPreview>.FromResult(preview, traceId),
+                ArcanumJsonContext.Default.ApiResponseMcpWorkspaceTrustPreview,
+                statusCode: preview.IsSuccess
+                    ? StatusCodes.Status200OK
+                    : ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(preview.Error.Code));
+        })
+        .WithName("PreviewMcpWorkspaceTrust");
 
         return apiGroup;
     }
@@ -160,12 +187,9 @@ internal static class McpEndpoints
     /// </summary>
     private static IResult MapLifecycleFailure(Error error, string traceId)
     {
-
         return Results.Json(
             ApiResponse<bool>.FromResult(Result<bool>.Failure(error), traceId),
             ArcanumJsonContext.Default.ApiResponseBoolean,
             statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(error.Code));
-
     }
-
 }

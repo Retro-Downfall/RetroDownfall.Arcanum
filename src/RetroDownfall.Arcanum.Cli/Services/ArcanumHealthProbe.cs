@@ -174,7 +174,10 @@ internal static class ArcanumHealthProbe
                             && !cancellationToken.IsCancellationRequested))
                 {
                     // The status line already said unhealthy; a body that stalls or is cut short must
-                    // not turn that into a timeout verdict, which auto-serve treats differently.
+                    // not turn that into a timeout verdict. `arcanum doctor` reads the difference as a
+                    // failing host (UnhealthyStatus) versus one that merely did not answer (Timeout: an
+                    // unavailable finding and an API-health warning), so a lost body would otherwise
+                    // quietly downgrade a failure to a warning.
                     unhealthyComponents = null;
                 }
             }

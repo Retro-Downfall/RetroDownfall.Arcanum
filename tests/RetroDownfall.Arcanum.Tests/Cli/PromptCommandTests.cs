@@ -373,12 +373,17 @@ public sealed class PromptCommandTests
         {
             RecordingPrompt declined = new(answer: false);
 
+            RecordingHandler declinedHandler = new(_ => PromptExportResponse());
+
             CliTestResult refused = RunCommand(
-                new RecordingHandler(_ => PromptExportResponse()),
+                declinedHandler,
                 ["prompt", "export", SampleId.ToString(), "--output", output],
                 services => UsePrompt(services, declined));
 
             Assert.Equal(0, refused.ExitCode);
+
+            // The overwrite question is settled before the export is fetched, so a refusal costs no request.
+            Assert.Empty(declinedHandler.Requests);
 
             Assert.Equal("original", File.ReadAllText(output));
 

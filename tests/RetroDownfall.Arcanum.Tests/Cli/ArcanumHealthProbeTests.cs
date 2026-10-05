@@ -236,6 +236,139 @@ public sealed class ArcanumHealthProbeTests
         Assert.Equal(HealthProbeState.Healthy, probe.State);
     }
 
+    /// <summary>
+    /// R-069: a host that answers 503 is unhealthy whatever happens to the body that follows. A body that
+    /// ends early must keep the status-only verdict. <c>arcanum doctor</c> reports that verdict as a
+    /// failing host, where a timeout would read as a host that merely did not answer.
+    /// </summary>
+    [Fact]
+    public async Task A_503_whose_body_is_cut_short_keeps_the_unhealthy_status()
+    {
+        HealthProbeResult probe = await ProbeWithBodyAsync(
+            static _ => throw new IOException("The response ended prematurely."),
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        Assert.Equal(HealthProbeState.UnhealthyStatus, probe.State);
+
+        Assert.Equal(503, probe.StatusCode);
+
+        Assert.Null(probe.Components);
+    }
+
+    /// <summary>
+    /// R-069: a 503 body that never finishes is cut off by the probe's own deadline, which is not the
+    /// operator cancelling, so it keeps the status-only verdict instead of becoming a timeout.
+    /// </summary>
+    [Fact]
+    public async Task A_503_whose_body_stalls_past_the_probe_deadline_keeps_the_unhealthy_status()
+    {
+        HealthProbeResult probe = await ProbeWithBodyAsync(
+            static async cancellationToken =>
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+
+                return 0;
+            },
+            TimeSpan.FromMilliseconds(200),
+            CancellationToken.None);
+
+        Assert.Equal(HealthProbeState.UnhealthyStatus, probe.State);
+
+        Assert.Equal(503, probe.StatusCode);
+
+        Assert.Null(probe.Components);
+    }
+
+    /// <summary>
+    /// R-069: the operator's own cancellation is still honoured while the 503 body is read; only the
+    /// probe's deadline and a broken body are absorbed.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_while_a_503_body_is_read_still_cancels_the_probe()
+    {
+        using CancellationTokenSource caller = new();
+
+        Task<HealthProbeResult> probe = ProbeWithBodyAsync(
+            static async cancellationToken =>
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+
+                return 0;
+            },
+            TimeSpan.FromSeconds(30),
+            caller.Token);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        await caller.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => probe);
+    }
+
+    private static async Task<HealthProbeResult> ProbeWithBodyAsync(
+        Func<CancellationToken, ValueTask<int>> read,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        using ArcanumApiCredentialLease credentials =
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key");
+
+        RecordingHandler handler = new(
+            _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StreamContent(new ScriptedReadStream(read)),
+            });
+
+        using HttpClient client = new(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5001/"),
+        };
+
+        return await ArcanumHealthProbe.ProbeAuthenticatedAsync(
+            client,
+            new Uri("http://localhost:5001/api/health"),
+            credentials,
+            timeout,
+            cancellationToken);
+    }
+
+    /// <summary>A readable stream whose every read is the supplied function.</summary>
+    private sealed class ScriptedReadStream(Func<CancellationToken, ValueTask<int>> read) : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            read(cancellationToken);
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            read(CancellationToken.None).AsTask().GetAwaiter().GetResult();
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     private sealed class RecordingHandler(
         Func<int, HttpResponseMessage> responseFactory) : HttpMessageHandler
     {

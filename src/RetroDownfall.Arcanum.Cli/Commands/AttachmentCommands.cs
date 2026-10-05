@@ -472,11 +472,8 @@ internal sealed class AttachmentCommands(
 
         bool overwrite = File.Exists(destination);
 
-        if (overwrite
-            && !await confirmationPrompt
-                .PromptForConfirmationAsync(
-                    $"Overwrite existing file {destination}?",
-                    cancellationToken)
+        if (!await CliOutputFile
+                .ConfirmOverwriteAsync(confirmationPrompt, destination, cancellationToken)
                 .ConfigureAwait(false))
         {
             dispatcher.WriteDiagnostic(

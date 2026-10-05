@@ -667,6 +667,15 @@ public sealed class PromptCommands(
         (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : resolveExitCode;
 
+        ExportDestination destination = await CliOutputFile
+            .PlanExportAsync(output, confirmationPrompt, themePalette, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!destination.Proceed)
+        {
+            return destination.ExitCode;
+        }
+
         Result<PromptExportDto> result = await apiClient.ExportPromptAsync(promptId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -683,9 +692,8 @@ public sealed class PromptCommands(
         return await CliOutputFile
             .WriteExportAsync(
                 json,
-                output,
+                destination,
                 "Prompt exported to:",
-                confirmationPrompt,
                 themePalette,
                 cancellationToken)
             .ConfigureAwait(false);

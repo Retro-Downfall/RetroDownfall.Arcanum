@@ -184,7 +184,7 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(default(TrustedMcpWorkspaceSnapshot));
 
-        public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+        public Task TrustAsync(string workspaceRootPath, string? expectedSourceDigest = null, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
 

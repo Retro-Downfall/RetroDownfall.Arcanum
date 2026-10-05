@@ -171,6 +171,7 @@ public sealed class CliApiClientDeadlineInventoryTests
         PostCovenantAsync
         PostReviewAsync
         PreviewContextAsync
+        PreviewMcpWorkspaceTrustAsync
         PutCampaignCodexAsync
         QuerySessionsAsync
         QuitServerAsync

@@ -124,7 +124,17 @@ public sealed class ServeCommand(
     /// Hosts the Arcanum Minimal API (default http://localhost:5001/; set Arcanum:Host:Port in arcanum.json).
     /// When ListenAny / ARCANUM_HOST_ANY is effective, binds HTTPS-only on Arcanum:Host:Https:Port.
     /// </summary>
-    public async Task<int> Run(CancellationToken cancellationToken)
+    public Task<int> Run(CancellationToken cancellationToken) =>
+        Run(cancellationToken, RunHostAsync);
+
+    /// <summary>
+    /// The gate in front of the host: a cancelled token and <c>--json</c> are settled here, before anything
+    /// reads configuration or builds a host. <paramref name="startHost"/> is the host itself, passed in so a
+    /// test can prove the gate holds without starting a Kestrel host in the test process.
+    /// </summary>
+    internal async Task<int> Run(
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<int>> startHost)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -135,6 +145,11 @@ public sealed class ServeCommand(
             return jsonRefusal.Value;
         }
 
+        return await startHost(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> RunHostAsync(CancellationToken cancellationToken)
+    {
         ConfigurationManager probeConfig = new();
 
         probeConfig.AddArcanumConfiguration();
