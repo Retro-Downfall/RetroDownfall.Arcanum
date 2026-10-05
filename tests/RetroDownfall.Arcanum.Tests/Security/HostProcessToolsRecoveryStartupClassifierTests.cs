@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Security;
 
 /// <summary>The recovery-only host-tools decision over one marker sample and one durable row.</summary>
@@ -110,6 +112,9 @@ public sealed class HostProcessToolsRecoveryStartupClassifierTests(GrimoireFixtu
 
         Assert.True(wrongInstallation.IsFailure);
 
+        // Disagreement is evidence, not an outage: it stays the manual-recovery refusal.
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, wrongInstallation.Error.Code);
+
         markers.SeedForeignMarker();
 
         HostProcessToolsRecoveryMarkerSnapshot foreign = classifier.CaptureMarker().Value;
@@ -121,6 +126,36 @@ public sealed class HostProcessToolsRecoveryStartupClassifierTests(GrimoireFixtu
             CancellationToken.None);
 
         Assert.True(mismatch.IsFailure);
+    }
+
+    /// <summary>
+    /// A catalog another connection holds exclusively is an outage, not evidence. The identity read
+    /// meets SQLITE_BUSY, wrapped in the bootstrapper's unavailable exception, and the start is
+    /// retryable once the lock clears; the terminal finisher reports the same read the same way.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_catalog_during_the_identity_read_is_an_outage_not_manual_recovery()
+    {
+        Guid installationId = Guid.NewGuid();
+
+        await using ExclusivelyLockedCatalog locked = await ExclusivelyLockedCatalog.CreateAsync(
+            installationId,
+            CancellationToken.None);
+
+        HostProcessToolsRecoveryStartupClassifier classifier = new(
+            new FakeHostProcessToolsMarkerStore(),
+            new FakeHostProcessToolsEnvironmentProbe { EscapeHatchOptIn = false },
+            new HostProcessToolsMarkerPairJoiner());
+
+        Result<IHostProcessToolsRuntimePolicy> classified = await classifier.ClassifyAsync(
+            locked.RecoveryConnection,
+            installationId,
+            classifier.CaptureMarker().Value,
+            CancellationToken.None);
+
+        Assert.True(classified.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, classified.Error.Code);
     }
 
     [SkippableFact]

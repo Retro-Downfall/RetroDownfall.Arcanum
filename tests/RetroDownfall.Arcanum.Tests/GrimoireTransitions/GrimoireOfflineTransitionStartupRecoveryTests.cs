@@ -1,3 +1,7 @@
+using System.Data;
+
+using Microsoft.Data.Sqlite;
+
 using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -6,9 +10,13 @@ using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
@@ -19,6 +27,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Security;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -405,6 +415,50 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         Assert.Equal(["marker", "unlock", "terminal", "close"], harness.Steps);
     }
 
+    /// <summary>
+    /// The host-tools arm, driven through the production classifier. A recovery connection whose
+    /// installation-identity read meets SQLITE_BUSY is an outage, as the terminal finisher already
+    /// reports the same read on the same connection; it is not durable evidence that disagrees.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_catalog_during_host_tools_classification_is_reported_unavailable_not_manual_recovery()
+    {
+        using Harness harness = Create("host-tools-outage");
+
+        await using ExclusivelyLockedCatalog locked = await ExclusivelyLockedCatalog.CreateAsync(
+            harness.Journal.InstallationId,
+            Token);
+
+        GrimoireOfflineTransitionStartupRecovery recovery = new(
+            new LockedCatalogUnlock(locked.RecoveryConnection),
+            new HostProcessToolsRecoveryStartupClassifier(
+                new FakeHostProcessToolsMarkerStore(),
+                new FakeHostProcessToolsEnvironmentProbe { EscapeHatchOptIn = false },
+                new HostProcessToolsMarkerPairJoiner()),
+            harness.Unlock,
+            harness.Unlock,
+            harness.Unlock);
+
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await recovery
+            .RecoverBeforeBootstrapAsync(
+                harness.Lock,
+                harness.Root,
+                harness.DatabasePath,
+                InstallationResetNestedTransitionEvidenceOutcome.NestedBound,
+                harness.Journal,
+                Token);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+        // The nonterminal answer came back, then the production classifier refused; nothing loaded
+        // authority or dispatched, and the probe was closed on the way out.
+        Assert.Equal(["terminal"], harness.Steps);
+
+        Assert.NotEqual(ConnectionState.Open, locked.RecoveryConnection.State);
+    }
+
     private static void AssertRefused(Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered)
     {
         Assert.True(recovered.IsFailure);
@@ -467,6 +521,18 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             SlotEpoch: 1,
             Revision: 3,
             digest);
+    }
+
+    /// <summary>A recovery-only unlock that hands out one already-open connection.</summary>
+    private sealed class LockedCatalogUnlock(SqliteConnection connection) : IGrimoireRecoveryOnlyUnlock
+    {
+        public Task<Result<GrimoireRecoveryUnlockedCatalog>> OpenExistingAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            string guardedDirectory,
+            string databasePath,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<GrimoireRecoveryUnlockedCatalog>.Success(
+                new GrimoireRecoveryUnlockedCatalog(connection)));
     }
 
     /// <summary>A journal store whose credential store is locked: every recovery read is an outage.</summary>

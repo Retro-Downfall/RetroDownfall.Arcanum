@@ -732,6 +732,47 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 new IOException("disk went away")));
     }
 
+    /// <summary>
+    /// The one outage predicate pre-bootstrap transition recovery shares between its arms. An I/O
+    /// error, busy and locked count wherever they sit in the chain, including inside the
+    /// unavailable exception the identity check wraps a SQLite failure in; corruption, a file that
+    /// is not a database, and a file that cannot be opened do not.
+    /// </summary>
+    [Theory]
+    [InlineData(5, true)]
+    [InlineData(6, true)]
+    [InlineData(10, true)]
+    [InlineData(11, false)]
+    [InlineData(14, false)]
+    [InlineData(26, false)]
+    public void Only_io_busy_and_locked_sqlite_failures_are_catalog_outages(
+        int sqliteErrorCode,
+        bool expected)
+    {
+        SqliteException failure = new("synthetic", sqliteErrorCode);
+
+        Assert.Equal(expected, GrimoireDatabaseBootstrapper.IsCatalogOutage(failure));
+
+        Assert.Equal(
+            expected,
+            GrimoireDatabaseBootstrapper.IsCatalogOutage(
+                new GrimoireDatabaseUnavailableException("identity unreadable", failure)));
+    }
+
+    [Fact]
+    public void An_io_exception_is_a_catalog_outage_and_a_disagreeing_identity_is_not()
+    {
+        Assert.True(GrimoireDatabaseBootstrapper.IsCatalogOutage(new IOException("disk went away")));
+
+        Assert.False(
+            GrimoireDatabaseBootstrapper.IsCatalogOutage(
+                new GrimoireDatabaseUnavailableException("identity disagrees")));
+
+        Assert.False(
+            GrimoireDatabaseBootstrapper.IsCatalogOutage(
+                new OperationCanceledException("cancelled", new SqliteException("synthetic", 5))));
+    }
+
     private sealed class CancellingPassphraseSource(CancellationTokenSource cancellation)
         : IGrimoireDbPassphraseSource
     {

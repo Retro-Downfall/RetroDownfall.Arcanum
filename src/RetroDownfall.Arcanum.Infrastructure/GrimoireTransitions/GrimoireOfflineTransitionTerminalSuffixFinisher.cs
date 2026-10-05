@@ -646,7 +646,7 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
     internal static bool IsOutage(Error error) => error.Code == ErrorCodes.Covenant.Unavailable;
 
     private static bool IsOutage(Exception exception) =>
-        exception is IOException || SqliteBusyRetry.IsBusyOrLocked(exception);
+        GrimoireDatabaseBootstrapper.IsCatalogOutage(exception);
 
     private static Result<T> RefusalUnlessOutage<T>(Error error) =>
         IsOutage(error) ? Result<T>.Failure(error) : Refusal<T>();
