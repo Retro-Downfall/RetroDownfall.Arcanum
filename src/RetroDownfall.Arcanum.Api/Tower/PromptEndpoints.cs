@@ -530,27 +530,40 @@ internal static class PromptEndpoints
 
                 // A supplied workingDirectory is the codex containment root for a global prompt and the MCP
                 // workspace partition key for every prompt, so it must satisfy the same
-                // Arcanum:Security:SpellWorkspaceRoots allowlist as prompt execute, spell execute and ping.
-                // An unlisted directory is refused (403 Spell.PathNotAllowed) rather than quietly skipping the
-                // codex read and the tool listing: a silent skip would answer 200 for a request the
-                // other routes refuse. A blank workingDirectory is never resolved, so a test without one
-                // keeps working on an installation whose roots list is empty.
+                // Arcanum:Security:SpellWorkspaceRoots allowlist as prompt execute, spell execute and ping
+                // before it is used as either. A request that also names a codexPath is refused (403
+                // Spell.PathNotAllowed) rather than quietly dropping the file it asked to read. A request
+                // without a codexPath only previews the prompt, and the shipping CLI (arcanum prompt test)
+                // sends its own current directory with no codexPath on every call, which is outside the
+                // empty allowlist of a stock installation: an unlisted directory is then not used as a
+                // workspace (no containment root, global tools only) instead of failing the preview. Any other
+                // resolution failure (a directory that does not exist or cannot be normalized) is still refused,
+                // and a blank workingDirectory is never resolved.
                 if (!string.IsNullOrWhiteSpace(workingDirectory))
                 {
                     Result<string?> workingDirectoryResult = workspaceResolver.Resolve(workingDirectory);
 
-                    IResult? workingDirectoryFailure = SpellApiResults.MapOptionalWorkspaceFailure<PromptTestResultDto>(
-                        workingDirectoryResult,
-                        traceId,
-                        ArcanumJsonContext.Default.ApiResponsePromptTestResultDto,
-                        out string? resolvedWorkingDirectory);
-
-                    if (workingDirectoryFailure is not null)
+                    if (workingDirectoryResult.IsFailure
+                        && workingDirectoryResult.Error.Code == ErrorCodes.Spell.PathNotAllowed
+                        && string.IsNullOrWhiteSpace(request?.CodexPath))
                     {
-                        return workingDirectoryFailure;
+                        workingDirectory = string.Empty;
                     }
+                    else
+                    {
+                        IResult? workingDirectoryFailure = SpellApiResults.MapOptionalWorkspaceFailure<PromptTestResultDto>(
+                            workingDirectoryResult,
+                            traceId,
+                            ArcanumJsonContext.Default.ApiResponsePromptTestResultDto,
+                            out string? resolvedWorkingDirectory);
 
-                    workingDirectory = resolvedWorkingDirectory ?? string.Empty;
+                        if (workingDirectoryFailure is not null)
+                        {
+                            return workingDirectoryFailure;
+                        }
+
+                        workingDirectory = resolvedWorkingDirectory ?? string.Empty;
+                    }
                 }
 
                 string? codexContent = null;
