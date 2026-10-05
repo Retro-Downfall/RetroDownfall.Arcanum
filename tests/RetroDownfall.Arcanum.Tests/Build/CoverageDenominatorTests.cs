@@ -48,13 +48,7 @@ public sealed class CoverageDenominatorTests
 
                 parts.Add(Path.GetRelativePath(directory, file));
 
-                bool excluded = type.AttributeLists
-                    .SelectMany(static list => list.Attributes)
-                    .Any(static attribute => attribute.Name.ToString() is "ExcludeFromCodeCoverage" or "ExcludeFromCodeCoverageAttribute"
-                        or "System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage"
-                        or "System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverageAttribute");
-
-                if (excluded)
+                if (HasTypeLevelExclusion(type))
                 {
                     offenders.Add(Path.GetRelativePath(directory, file));
                 }
@@ -73,4 +67,66 @@ public sealed class CoverageDenominatorTests
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
     }
+
+    /// <summary>
+    /// Two small types near a security boundary still carry a type-level exclusion: the startup check
+    /// that runs and logs the file-permission self-check, and the manager that spawns external MCP
+    /// server subprocesses. The design used to say a type-level exclusion "never covers a security
+    /// boundary", which the tree did not follow. While either attribute remains, the design has to
+    /// name the type instead of claiming a rule the code breaks.
+    /// </summary>
+    [Theory]
+
+    [InlineData("Hosting", "ArcanumSecurityStartupChecks")]
+
+    [InlineData("Mcp", "McpConnectionManager")]
+
+    public void The_design_names_each_security_adjacent_type_that_still_carries_a_type_level_exclusion(
+        string folder,
+        string typeName)
+    {
+        string directory = Path.Combine(
+            TestRepositoryPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Infrastructure",
+            folder);
+
+        List<ClassDeclarationSyntax> declarations = [];
+
+        foreach (string file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
+        {
+            declarations.AddRange(
+                CSharpSyntaxTree.ParseText(File.ReadAllText(file))
+                    .GetRoot()
+                    .DescendantNodes()
+                    .OfType<ClassDeclarationSyntax>()
+                    .Where(type => type.Identifier.Text == typeName));
+        }
+
+        Assert.NotEmpty(declarations);
+
+        if (!declarations.Any(HasTypeLevelExclusion))
+        {
+            return;
+        }
+
+        string design = File
+            .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", "Arcanum.DESIGN.md"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        string paragraph = design
+            .Split('\n')
+            .Single(static line => line.StartsWith("Types excluded through `[ExcludeFromCodeCoverage]`", StringComparison.Ordinal));
+
+        Assert.Contains(typeName, paragraph, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("never covers a security boundary", paragraph, StringComparison.Ordinal);
+    }
+
+    private static bool HasTypeLevelExclusion(ClassDeclarationSyntax type) =>
+        type.AttributeLists
+            .SelectMany(static list => list.Attributes)
+            .Any(static attribute => attribute.Name.ToString() is "ExcludeFromCodeCoverage" or "ExcludeFromCodeCoverageAttribute"
+                or "System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage"
+                or "System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverageAttribute");
 }

@@ -220,6 +220,8 @@ ARCANUM_PUBLISHED_EXECUTABLE="$SMOKE_EXECUTABLE" \
 ARCANUM_PUBLISHED_SMOKE_RECEIPT="$SMOKE_RECEIPT_FOR_TEST" \
 dotnet test "$TEST_PROJECT" \
   -c "$CONFIGURATION" \
+  --blame-hang-timeout 15m \
+  --blame-hang-dump-type none \
   --filter "$TEST_FILTER" \
   --artifacts-path "$WORK/test-artifacts" \
   --disable-build-servers \

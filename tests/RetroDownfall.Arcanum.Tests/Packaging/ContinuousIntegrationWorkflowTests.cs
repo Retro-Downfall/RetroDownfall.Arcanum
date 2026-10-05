@@ -236,11 +236,70 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.True(publish >= 0, $"{jobId} selects the AppContainer broker smoke without publishing the apphost it re-executes.");
 
-        Assert.Contains($"-r {rid}", lane.Body[publish..], StringComparison.Ordinal);
+        Assert.True(
+            PublishCommandNamesRuntimeIdentifier(lane.Body, publish, rid),
+            $"{jobId} publishes the apphost without `-r {rid}` on the publish command itself, so the broker smoke would re-execute the wrong architecture.");
 
         Assert.True(export > publish, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE after publishing the apphost.");
 
         Assert.True(suite > export, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE before the Arcanum suite starts.");
+    }
+
+    /// <summary>
+    /// The runtime identifier has to be an argument of the publish command. Checking the rest of the
+    /// lane body instead would pass a publish that lost or mis-set its <c>-r</c> as long as any later
+    /// step happened to repeat the same text.
+    /// </summary>
+    [Fact]
+    public void The_publish_runtime_identifier_check_reads_only_the_publish_command()
+    {
+        const string publishCommand = "dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c Release";
+
+        string laneWithRid = $"{publishCommand} -r win-x64 --self-contained true -o out\nexport ARCANUM_PUBLISHED_EXECUTABLE=out/a.exe\n";
+
+        Assert.True(PublishCommandNamesRuntimeIdentifier(laneWithRid, laneWithRid.IndexOf("dotnet publish", StringComparison.Ordinal), "win-x64"));
+
+        string laneWithoutRid = $"{publishCommand} --self-contained true -o out\n# built with -r win-x64\n";
+
+        Assert.False(
+            PublishCommandNamesRuntimeIdentifier(laneWithoutRid, laneWithoutRid.IndexOf("dotnet publish", StringComparison.Ordinal), "win-x64"),
+            "A later line that repeats the text must not satisfy the publish command.");
+
+        string laneWithWrongRid = $"{publishCommand} -r win-x64abc --self-contained true\n";
+
+        Assert.False(
+            PublishCommandNamesRuntimeIdentifier(laneWithWrongRid, laneWithWrongRid.IndexOf("dotnet publish", StringComparison.Ordinal), "win-x64"),
+            "A runtime identifier that only starts with the expected one is a different identifier.");
+
+        string laneWithContinuations = "dotnet publish src/App.csproj `\n  -c Release `\n  -r win-arm64 `\n  -o out\n";
+
+        Assert.True(PublishCommandNamesRuntimeIdentifier(laneWithContinuations, 0, "win-arm64"));
+    }
+
+    /// <summary>
+    /// Whether the command that starts at <paramref name="publishIndex"/> carries <c>-r {rid}</c> as
+    /// a whole argument. The command ends at the first line that is not continued with a trailing
+    /// backtick (PowerShell) or backslash (shell).
+    /// </summary>
+    private static bool PublishCommandNamesRuntimeIdentifier(string laneBody, int publishIndex, string rid)
+    {
+        string command = laneBody[publishIndex..]
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("`\n", " ", StringComparison.Ordinal)
+            .Replace("\\\n", " ", StringComparison.Ordinal);
+
+        int end = command.IndexOf('\n', StringComparison.Ordinal);
+
+        if (end >= 0)
+        {
+            command = command[..end];
+        }
+
+        return Regex.IsMatch(
+            command,
+            $@"(?<=\s)-r {Regex.Escape(rid)}(?=\s|$)",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(5));
     }
 
     private const string ArcanumTestNamespacePrefix = "RetroDownfall.Arcanum.Tests.";
@@ -919,46 +978,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     }
 
     /// <summary>
-    /// The reusable Windows workflow is also a release entry point. Its package step performs a
-    /// fresh Native AOT publish, so it must audit the same validated RID first instead of relying on
-    /// a possibly older pull-request run.
-    /// </summary>
-    [Fact]
-    public void Windows_release_audits_the_validated_native_rid_before_packaging()
-    {
-        string repositoryRoot = FindRepositoryRoot();
-
-        WorkflowJob package = Assert.Single(
-            JobsIn(Path.Combine(repositoryRoot, ".github", "workflows", "build-windows.yml")),
-            static job => job.Body.Contains("package-windows.ps1", StringComparison.Ordinal));
-
-        int nativeSdk = package.Body.IndexOf(
-            "Assert the SDK is native to the RID",
-            StringComparison.Ordinal);
-        int audit = package.Body.IndexOf(
-            "./scripts/verify-aot-il-warnings.sh \"$RID\"",
-            StringComparison.Ordinal);
-        int ripgrepInstall = package.Body.IndexOf(
-            "choco install ripgrep --version=15.2.0",
-            StringComparison.Ordinal);
-        int packaging = package.Body.IndexOf("package-windows.ps1", StringComparison.Ordinal);
-
-        Assert.True(nativeSdk >= 0, "The Windows release must validate its SDK architecture.");
-        Assert.True(
-            ripgrepInstall > nativeSdk,
-            "The Windows release must install ripgrep after validating its native SDK and before "
-            + "running the fail-closed AOT diagnostic profile.");
-        Assert.True(
-            audit > ripgrepInstall,
-            "The Windows release must run its AOT diagnostic profile only after installing ripgrep.");
-        Assert.True(
-            audit < packaging,
-            "The Windows release must clear its AOT diagnostic profile before creating archives.");
-        Assert.Contains("RID: ${{ inputs.rid }}", package.Body, StringComparison.Ordinal);
-        Assert.Contains("rg --version", package.Body, StringComparison.Ordinal);
-    }
-
-    /// <summary>
     /// The longest a job may be allowed to run. A hung test, a notarization that never answers, or a
     /// stuck runner otherwise holds the job for the platform default (six hours), which is a long
     /// time to hold a signing keychain or a scarce macOS runner. The ceiling sits above the slowest
@@ -1091,18 +1110,23 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// the exact RID first. The shipping publish deliberately suppresses dependency summary
     /// diagnostics after that audit has classified them, so a release that skipped the audit would
     /// accept a first-party IL warning that CI's host-RID lane never saw for this RID. Windows already
-    /// audited; the macOS release did not.
+    /// audited; the macOS release did not. The reusable Windows workflow is also a release entry
+    /// point whose package step performs a fresh Native AOT publish, so it audits the same validated
+    /// RID first instead of relying on a possibly older pull-request run: its SDK is proven native to
+    /// the RID, then ripgrep (which the fail-closed audit needs) is installed, then the audit runs.
     /// </summary>
     [Theory]
 
-    [InlineData("build-windows.yml", "./scripts/verify-aot-il-warnings.sh \"$RID\"", "package-windows.ps1")]
+    [InlineData("build-windows.yml", "./scripts/verify-aot-il-warnings.sh \"$RID\"", "package-windows.ps1", "Assert the SDK is native to the RID", "choco install ripgrep --version=15.2.0")]
 
-    [InlineData("release-macos-arm64.yml", "./scripts/verify-aot-il-warnings.sh osx-arm64", "build-arcanum.sh")]
+    [InlineData("release-macos-arm64.yml", "./scripts/verify-aot-il-warnings.sh osx-arm64", "build-arcanum.sh", "", "Install ripgrep for the warning-free publish gate")]
 
     public void Every_release_workflow_audits_aot_diagnostics_before_it_packages(
         string workflowFile,
         string auditInvocation,
-        string packagingInvocation)
+        string packagingInvocation,
+        string validatedSdkStep,
+        string ripgrepInstall)
     {
         string path = Path.Combine(FindRepositoryRoot(), ".github", "workflows", workflowFile);
 
@@ -1114,11 +1138,33 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         int packaging = job.Body.IndexOf(packagingInvocation, StringComparison.Ordinal);
 
+        int ripgrep = job.Body.IndexOf(ripgrepInstall, StringComparison.Ordinal);
+
         Assert.True(audit >= 0, $"{workflowFile} never runs `{auditInvocation}`, so a first-party AOT warning unique to the released RID ships unaudited.");
 
         Assert.True(audit < packaging, $"{workflowFile} audits Native AOT diagnostics only after packaging has already published.");
 
-        Assert.Contains("ripgrep", job.Body[..audit], StringComparison.Ordinal);
+        Assert.True(ripgrep >= 0, $"{workflowFile} no longer installs ripgrep (`{ripgrepInstall}`), which the fail-closed audit needs.");
+
+        Assert.True(ripgrep < audit, $"{workflowFile} must install ripgrep before it runs the fail-closed AOT diagnostic profile.");
+
+        if (validatedSdkStep.Length > 0)
+        {
+            Assert.Contains("rg --version", job.Body, StringComparison.Ordinal);
+
+            int nativeSdk = job.Body.IndexOf(validatedSdkStep, StringComparison.Ordinal);
+
+            Assert.True(nativeSdk >= 0, $"{workflowFile} must validate its SDK architecture (`{validatedSdkStep}`).");
+
+            Assert.True(
+                nativeSdk < ripgrep,
+                $"{workflowFile} must validate its native SDK before installing ripgrep and running the audit.");
+        }
+
+        if (auditInvocation.Contains("$RID", StringComparison.Ordinal))
+        {
+            Assert.Contains("RID: ${{ inputs.rid }}", job.Body, StringComparison.Ordinal);
+        }
     }
 
     /// <summary>

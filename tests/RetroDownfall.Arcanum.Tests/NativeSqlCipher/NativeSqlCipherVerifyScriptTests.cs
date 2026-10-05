@@ -116,6 +116,27 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         Assert.DoesNotContain($"{Rid} exports no symbol outside the SQLite C API", result.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The bash a Windows runner ships has no <c>strings</c>, so the Windows job reads the compile
+    /// options through the <c>grep</c> fallback. That is the only path the real job takes, and every
+    /// other case here runs on a host that has <c>strings</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_host_without_strings_still_proves_the_compile_options_through_the_grep_fallback()
+    {
+        RequireScriptHost();
+
+        ScriptResult result = await RunAsync(withDumpbin: true, exports: SqliteExports(), dependents: ManifestDependents(), withStrings: false);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+
+        Assert.Contains($"{Rid} compile options match the manifest", result.Output, StringComparison.Ordinal);
+
+        Assert.False(
+            File.Exists(Path.Combine(_root, "toolbelt", "strings")),
+            "The fixture must hide strings, or the fallback was never taken.");
+    }
+
     [Fact]
     public void The_windows_verification_job_runs_the_script_with_dumpbin_on_the_path()
     {
@@ -145,7 +166,7 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
     {
         Skip.If(OperatingSystem.IsWindows(), "The stubbed-dumpbin fixture is POSIX-only; the real dumpbin runs in the Windows CI job.");
 
-        foreach (string command in new[] { "bash", "jq", "awk", "strings" })
+        foreach (string command in new[] { "bash", "jq", "awk" })
         {
             Skip.IfNot(IsOnPath(command), $"{command} is required to run verify-native-sqlcipher.sh.");
         }
@@ -197,10 +218,15 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         StringBuilder text = new();
 
         text.Append("Microsoft (R) COFF/PE Dumper Version 14.44.35211.0\r\n");
+
         text.Append("Dump of file e_sqlcipher.dll\r\n\r\n");
+
         text.Append("File Type: DLL\r\n\r\n");
+
         text.Append("  Section contains the following exports for e_sqlcipher.dll\r\n\r\n");
+
         text.Append("    00000000 characteristics\r\n");
+
         text.Append("    ordinal hint RVA      name\r\n\r\n");
 
         int ordinal = 1;
@@ -222,8 +248,11 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         StringBuilder text = new();
 
         text.Append("Microsoft (R) COFF/PE Dumper Version 14.44.35211.0\r\n");
+
         text.Append("Dump of file e_sqlcipher.dll\r\n\r\n");
+
         text.Append("File Type: DLL\r\n\r\n");
+
         text.Append("  Image has the following dependencies:\r\n\r\n");
 
         foreach (string dependent in dependents)
@@ -239,7 +268,7 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
     private static string CultureFormat(FormattableString value) =>
         value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    private async Task<ScriptResult> RunAsync(bool withDumpbin, IReadOnlyList<string> exports, IReadOnlyList<string> dependents)
+    private async Task<ScriptResult> RunAsync(bool withDumpbin, IReadOnlyList<string> exports, IReadOnlyList<string> dependents, bool withStrings = true)
     {
         string stubBin = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
 
@@ -280,10 +309,13 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         };
 
         start.ArgumentList.Add(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "scripts", "verify-native-sqlcipher.sh"));
+
         start.ArgumentList.Add("--rid");
+
         start.ArgumentList.Add(Rid);
 
-        start.Environment["PATH"] = stubBin + Path.PathSeparator + global::System.Environment.GetEnvironmentVariable("PATH");
+        start.Environment["PATH"] = stubBin + Path.PathSeparator
+            + (withStrings ? global::System.Environment.GetEnvironmentVariable("PATH") : BuildToolbeltWithoutStrings());
 
         using System.Diagnostics.Process process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("bash did not start.");
 
@@ -296,6 +328,45 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         await process.WaitForExitAsync(timeout.Token);
 
         return new ScriptResult(process.ExitCode, await standardOutput + await standardError);
+    }
+
+    /// <summary>
+    /// A directory of symbolic links to every command on the current <c>PATH</c> except
+    /// <c>strings</c>, so the script sees a host that has everything else but no binutils.
+    /// </summary>
+    private string BuildToolbeltWithoutStrings()
+    {
+        string toolbelt = Directory.CreateDirectory(Path.Combine(_root, "toolbelt")).FullName;
+
+        HashSet<string> seen = new(StringComparer.Ordinal) { "strings" };
+
+        foreach (string directory in (global::System.Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Where(Directory.Exists))
+        {
+            foreach (string file in Directory.EnumerateFiles(directory))
+            {
+                string name = Path.GetFileName(file);
+
+                if (!seen.Add(name))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    File.CreateSymbolicLink(Path.Combine(toolbelt, name), file);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+
+        return toolbelt;
     }
 
     private sealed record ScriptResult(int ExitCode, string Output);

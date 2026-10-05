@@ -1189,6 +1189,11 @@ public sealed class HostProjectFeatureSwitchTests
         Assert.NotEqual(0, exitCode);
 
         Assert.Contains("ARC0001", output, StringComparison.Ordinal);
+
+        // The RID-less message, not the RID-qualified one: both ARC0001 texts mention "RID-qualified".
+        Assert.Contains("pass -r osx-arm64, win-x64 or win-arm64", output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("PublishAot cannot be disabled", output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1216,7 +1221,10 @@ public sealed class HostProjectFeatureSwitchTests
 
         Assert.Contains("ARC0001", output, StringComparison.Ordinal);
 
-        Assert.Contains("RID-qualified", output, StringComparison.Ordinal);
+        // The RID-qualified message, not the RID-less one: both ARC0001 texts mention "RID-qualified".
+        Assert.Contains("PublishAot cannot be disabled for a shipping build", output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("pass -r osx-arm64", output, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1236,7 +1244,10 @@ public sealed class HostProjectFeatureSwitchTests
 
         Assert.Contains("ARC0001", output, StringComparison.Ordinal);
 
-        Assert.Contains("RID-qualified", output, StringComparison.Ordinal);
+        // The RID-qualified message, not the RID-less one: both ARC0001 texts mention "RID-qualified".
+        Assert.Contains("PublishAot cannot be disabled for a shipping build", output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("pass -r osx-arm64", output, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1261,9 +1272,13 @@ public sealed class HostProjectFeatureSwitchTests
         };
 
         startInfo.ArgumentList.Add("msbuild");
+
         startInfo.ArgumentList.Add(project);
+
         startInfo.ArgumentList.Add("-nologo");
+
         startInfo.ArgumentList.Add("-verbosity:minimal");
+
         startInfo.ArgumentList.Add("-t:PrepareForPublish");
 
         foreach (string argument in extraArguments)
@@ -1272,7 +1287,9 @@ public sealed class HostProjectFeatureSwitchTests
         }
 
         startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+
         startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+
         startInfo.Environment["DOTNET_NOLOGO"] = "1";
 
         using System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo)
