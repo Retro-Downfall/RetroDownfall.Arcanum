@@ -201,11 +201,11 @@ internal static class IntelligenceEndpoints
             PingRequest? body;
 
             // ReadFromJsonAsync raises InvalidOperationException — not JsonException — for a missing
-            // or non-JSON Content-Type, so that case is answered by the check below, before the read, with
-            // the 415 every ApiRequestJson-based endpoint gives it. Nothing after the check catches
-            // InvalidOperationException: with the media type proven, one that still escapes is the
-            // server's own fault.
-            if (!httpContext.Request.HasJsonContentType())
+            // or non-JSON Content-Type and for a charset it cannot decode, so both are answered by the check
+            // below, before the read, with the 415 every ApiRequestJson-based endpoint gives them. Nothing
+            // after the check catches InvalidOperationException: with the media type and charset proven,
+            // one that still escapes is the server's own fault.
+            if (!ApiRequestJson.HasReadableJsonContentType(httpContext.Request))
             {
                 await WriteUnsupportedMediaTypeAsync(httpContext, ct).ConfigureAwait(false);
 

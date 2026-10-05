@@ -4,6 +4,8 @@ using System.Text;
 
 using System.Text.Json;
 
+using Microsoft.AspNetCore.Diagnostics;
+
 using Microsoft.AspNetCore.Hosting;
 
 using Microsoft.AspNetCore.Builder;
@@ -13,6 +15,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Api;
+
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
@@ -165,6 +169,124 @@ public sealed class ApiRequestJsonBodyFaultTests
             response,
             ErrorCodes.Validation.RequestHeadersTooLarge,
             ApiRequestJson.RequestHeadersTooLargeMessage);
+    }
+
+    /// <summary>
+    /// A route that binds its body as a handler parameter answers the faults Kestrel raises while the
+    /// framework's generated reader pulls the body with the same envelope as a route that reads it itself.
+    /// </summary>
+    /// <remarks>
+    /// The generated reader catches <see cref="BadHttpRequestException"/> around the read, records the
+    /// status on the response and returns, whatever <c>ThrowOnBadRequest</c> says: the exception never
+    /// reaches <c>ArcanumExceptionHandler</c>, so the response would leave empty with only the status.
+    /// The status-code hook behind the exception handler is what puts the envelope on it. A body that ends
+    /// early (400) is not here on purpose: it is indistinguishable from the bodyless 400 a route returns
+    /// deliberately (<c>GET /api/presence</c>), and the client that dropped the connection is no longer
+    /// there to read it.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, ErrorCodes.Validation.BodyTooLarge, ApiRequestJson.BodyTooLargeMessage)]
+    [InlineData(StatusCodes.Status408RequestTimeout, ErrorCodes.Validation.BodyReadTimeout, ApiRequestJson.BodyReadTimeoutMessage)]
+    [InlineData(StatusCodes.Status431RequestHeaderFieldsTooLarge, ErrorCodes.Validation.RequestHeadersTooLarge, ApiRequestJson.RequestHeadersTooLargeMessage)]
+    public async Task A_bound_body_route_answers_a_body_fault_with_the_envelope(int status, string code, string message)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpResponseMessage response = await SendFaultingBodyAsync(
+            "/api/prompts",
+            new BadHttpRequestException("The framework's own wording", status));
+
+        Assert.Equal((HttpStatusCode)status, response.StatusCode);
+
+        await AssertEnvelopeAsync(response, code, message);
+    }
+
+    /// <summary>
+    /// The form-bound upload route is a generated reader too, and answers in the OpenAI envelope.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, "payload_too_large")]
+    [InlineData(StatusCodes.Status408RequestTimeout, "invalid_request")]
+    public async Task A_form_bound_v1_route_answers_a_body_fault_with_the_openai_envelope(int status, string code)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<IStartupFilter>(
+                new BodyFaultFilter("/v1/files", new BadHttpRequestException("The framework's own wording", status))),
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using MultipartFormDataContent form = new();
+
+        form.Add(new StringContent("assistants"), "purpose");
+
+        form.Add(new ByteArrayContent(Encoding.UTF8.GetBytes("hello")), "file", "hello.txt");
+
+        using HttpResponseMessage response = await client.PostAsync("/v1/files", form);
+
+        Assert.Equal((HttpStatusCode)status, response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body!.Error.Type);
+
+        Assert.Equal(code, body.Error.Code);
+    }
+
+    /// <summary>
+    /// The hook leaves every other empty status exactly as it was: a bodyless 400 a route returns on
+    /// purpose (<c>GET /api/presence</c>) is not a body fault, and a 408, 413 or 431 with no matched
+    /// endpoint did not come from a route's body read.
+    /// </summary>
+    [Theory]
+    [InlineData(StatusCodes.Status400BadRequest, true, false)]
+    [InlineData(StatusCodes.Status401Unauthorized, true, false)]
+    [InlineData(StatusCodes.Status404NotFound, true, false)]
+    [InlineData(StatusCodes.Status500InternalServerError, true, false)]
+    [InlineData(StatusCodes.Status503ServiceUnavailable, true, false)]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, false, false)]
+    [InlineData(StatusCodes.Status408RequestTimeout, false, false)]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, true, true)]
+    [InlineData(StatusCodes.Status408RequestTimeout, true, true)]
+    [InlineData(StatusCodes.Status431RequestHeaderFieldsTooLarge, true, true)]
+    [InlineData(StatusCodes.Status415UnsupportedMediaType, true, true)]
+    [InlineData(StatusCodes.Status415UnsupportedMediaType, false, true)]
+    public async Task The_status_code_hook_writes_the_envelope_for_body_faults_only(
+        int status,
+        bool endpointMatched,
+        bool expectEnvelope)
+    {
+        DefaultHttpContext httpContext = new()
+        {
+            RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
+        };
+
+        httpContext.Request.Path = "/api/prompts";
+
+        httpContext.Response.StatusCode = status;
+
+        MemoryStream body = new();
+
+        httpContext.Response.Body = body;
+
+        if (endpointMatched)
+        {
+            httpContext.SetEndpoint(new Endpoint(static _ => Task.CompletedTask, new EndpointMetadataCollection(), "matched"));
+        }
+
+        await ApiBootstrapper.WriteBodyFaultEnvelopeAsync(
+            new StatusCodeContext(httpContext, new StatusCodePagesOptions(), static _ => Task.CompletedTask));
+
+        Assert.Equal(status, httpContext.Response.StatusCode);
+
+        Assert.Equal(expectEnvelope, body.Length > 0);
     }
 
     /// <summary>

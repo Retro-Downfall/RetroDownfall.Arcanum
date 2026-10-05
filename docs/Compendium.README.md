@@ -83,7 +83,7 @@ Arcanum does not flatten arbitrary environment variables into the configuration 
 | `edition` | enum `"local"` | `local`, `development` | Runtime hardening mode; `ARCANUM_EDITION` overrides it. Development-only surfaces still require their companion startup flags. |
 | `host.port` | `int`, `5001` | 1–65,535 | Loopback HTTP port. |
 | `host.corsAllowedOrigins` | `string[]`, `["http://localhost:5001", "http://127.0.0.1:5001", "http://localhost:3000", "http://127.0.0.1:3000"]` | — | Browser origins allowed to read keyed responses. |
-| `host.listenAny` | `bool`, `false` | — | All-interface binding is HTTPS-only and also forces rate limiting and metrics authentication; `ARCANUM_HOST_ANY` overrides it. |
+| `host.listenAny` | `bool`, `false` | — | All-interface binding is HTTPS-only and also forces rate limiting and metrics authentication; `ARCANUM_HOST_ANY` overrides it. A loopback-only host (this off) answers only `localhost`, `127.0.0.1` and `[::1]` in the `Host` header and refuses any other name with a bare 400; an all-interface host answers any name. |
 | `host.auditLog.enabled` | `bool`, `false` | — | Enables the append-only inference audit trail. |
 | `host.auditLog.redactToolArguments` | `bool`, `true` | — | Records tool names without argument JSON. |
 | `host.https.enabled` | `bool`, `false` | — | Adds TLS on loopback; required for all-interface binding. |

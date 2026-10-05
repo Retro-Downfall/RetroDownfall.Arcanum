@@ -137,12 +137,13 @@ internal static partial class OpenAiV1Endpoints
         OpenAiChatRequest? body;
 
         // ReadFromJsonAsync throws InvalidOperationException — not JsonException — for a missing or
-        // non-JSON Content-Type, which is answered by the check below before the read; nothing after it
-        // catches InvalidOperationException, because with the media type proven one that still escapes is
-        // the server's own fault. Kestrel throws BadHttpRequestException once WithLargeRequestBody's
-        // 16 MiB ceiling is exceeded; uncaught it would turn a routine client mistake into a 500
-        // api_error/inference_failed with an Error-level stack trace.
-        if (!httpContext.Request.HasJsonContentType())
+        // non-JSON Content-Type and for a charset it cannot decode, both of which are answered by the check
+        // below before the read; nothing after it catches InvalidOperationException, because with the media
+        // type and charset proven one that still escapes is the server's own fault. Kestrel throws
+        // BadHttpRequestException once WithLargeRequestBody's 16 MiB ceiling is exceeded; uncaught it would
+        // turn a routine client mistake into a 500 api_error/inference_failed with an Error-level stack
+        // trace.
+        if (!ApiRequestJson.HasReadableJsonContentType(httpContext.Request))
         {
             return CreateUnsupportedMediaTypeErrorResult();
         }

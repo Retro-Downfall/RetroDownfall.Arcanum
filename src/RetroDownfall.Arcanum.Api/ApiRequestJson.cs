@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Primitives;
+using Microsoft.Net.Http.Headers;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -14,7 +17,7 @@ internal static class ApiRequestJson
     public const string MalformedJsonMessage = "Request body could not be parsed as valid JSON.";
 
     public const string UnsupportedMediaTypeMessage =
-        "Request body must be sent with 'Content-Type: application/json'.";
+        "Request body must be sent with 'Content-Type: application/json' and, if it names a charset, one this server can decode (UTF-8 always is).";
 
     public const string IncompleteBodyMessage = "Request body could not be read to completion.";
 
@@ -48,9 +51,74 @@ internal static class ApiRequestJson
     /// Whether a route read a request body that was actually sent.
     /// </summary>
     public static bool RouteReadARequestBody(HttpContext httpContext) =>
-        httpContext.Items.ContainsKey(BodyReadItemKey)
-        && (httpContext.Request.ContentLength is > 0
-            || !string.IsNullOrEmpty(httpContext.Request.Headers.TransferEncoding));
+        httpContext.Items.ContainsKey(BodyReadItemKey) && CarriesABody(httpContext.Request);
+
+    /// <summary>
+    /// Whether the request declares a body: a non-zero <c>Content-Length</c> or a <c>Transfer-Encoding</c>.
+    /// </summary>
+    public static bool CarriesABody(HttpRequest request) =>
+        request.ContentLength is > 0 || !string.IsNullOrEmpty(request.Headers.TransferEncoding);
+
+    /// <summary>
+    /// Whether the request is typed as JSON but names a charset the read cannot decode.
+    /// </summary>
+    /// <remarks>
+    /// The one request shape whose <see cref="InvalidOperationException"/> is the caller's: a route that
+    /// binds its body as a handler parameter reads it in framework-generated code with no hook for this,
+    /// so <c>ArcanumExceptionHandler</c> uses this to tell that exception from a fault of the server's own.
+    /// </remarks>
+    public static bool IsJsonWithAnUnreadableCharset(HttpRequest request) =>
+        request.HasJsonContentType() && !HasReadableJsonContentType(request);
+
+    /// <summary>
+    /// Whether <c>ReadFromJsonAsync</c> can read this request's body: a JSON media type, and a
+    /// <c>charset</c> parameter, if there is one, that names an encoding .NET can decode.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="HttpRequestJsonExtensions.HasJsonContentType(HttpRequest)"/> checks only the media type.
+    /// The read then resolves the charset itself and raises <see cref="InvalidOperationException"/>, not
+    /// <see cref="JsonException"/>, for one it does not know -- <c>windows-1252</c>, <c>shift_jis</c> and
+    /// <c>gbk</c> are unknown unless an encoding provider is registered, and so is any made-up name, a
+    /// quoted value, or an empty one. That is a request the caller got wrong, so every route that reads
+    /// its own body answers it here, before the read, with the same 415 as a non-JSON media type.
+    ///
+    /// <para>Nothing after this check catches <see cref="InvalidOperationException"/>: with the media type
+    /// and charset proven, one that still escapes the read is a fault of the server's own, and mapping it
+    /// to 415 would tell the caller a lie and hide the fault. The charset test below follows the
+    /// framework's own resolution exactly (a charset is looked up verbatim, and only <c>utf-8</c> is
+    /// short-circuited), and <c>ApiRequestJsonCharsetTests</c> pins the two to agree, because a
+    /// disagreement is the 500 this exists to prevent.</para>
+    /// </remarks>
+    public static bool HasReadableJsonContentType(HttpRequest request)
+    {
+        if (!request.HasJsonContentType())
+        {
+            return false;
+        }
+
+        if (!MediaTypeHeaderValue.TryParse(request.ContentType, out MediaTypeHeaderValue? mediaType))
+        {
+            return false;
+        }
+
+        StringSegment charset = mediaType.Charset;
+
+        if (!charset.HasValue || charset.Equals("utf-8", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        try
+        {
+            _ = Encoding.GetEncoding(charset.Value);
+
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+    }
 
     public static async ValueTask<(T? Body, IResult? Error)> ReadAsync<T>(
         HttpContext httpContext,
@@ -59,10 +127,11 @@ internal static class ApiRequestJson
         CancellationToken cancellationToken)
     {
         // ReadFromJsonAsync throws InvalidOperationException — not JsonException — for a missing or
-        // non-JSON Content-Type, so that case is answered here, before the read. Nothing after this check
-        // catches InvalidOperationException: with the media type proven, one that still escapes the read is a
-        // fault of the server's own, and mapping it to 415 told the caller a lie and hid the fault.
-        if (!httpContext.Request.HasJsonContentType())
+        // non-JSON Content-Type and for a charset it cannot decode, so both are answered here, before the
+        // read. Nothing after this check catches InvalidOperationException: with the media type and charset
+        // proven, one that still escapes the read is a fault of the server's own, and mapping it to 415 told
+        // the caller a lie and hid the fault.
+        if (!HasReadableJsonContentType(httpContext.Request))
         {
             return (default, UnsupportedMediaTypeResult(httpContext));
         }
@@ -109,9 +178,24 @@ internal static class ApiRequestJson
     /// </remarks>
     public static IResult UnreadableBodyResult(HttpContext httpContext, BadHttpRequestException failure)
     {
-        (string code, string message) = ResolveBodyFault(failure);
+        (string code, string message) = ResolveBodyFault(failure.StatusCode, failure);
 
         return BodyFaultResult(httpContext, failure.StatusCode, code, message);
+    }
+
+    /// <summary>
+    /// A body fault the framework's generated reader recorded as a status on the response and did not
+    /// throw, answered with that status.
+    /// </summary>
+    /// <remarks>
+    /// There is no exception to read an inner <see cref="JsonException"/> or a binder message from, so
+    /// only the statuses that name their own fault resolve to anything but the generic wording.
+    /// </remarks>
+    public static IResult UnreadableBodyResult(HttpContext httpContext, int statusCode)
+    {
+        (string code, string message) = ResolveBodyFault(statusCode, failure: null);
+
+        return BodyFaultResult(httpContext, statusCode, code, message);
     }
 
     /// <summary>
@@ -159,13 +243,13 @@ internal static class ApiRequestJson
     /// (400) and the status on the response may differ. Naming a new status here rather than widening
     /// the default is what keeps that set empty.
     /// </remarks>
-    private static (string Code, string Message) ResolveBodyFault(BadHttpRequestException failure) =>
-        failure.StatusCode switch
+    private static (string Code, string Message) ResolveBodyFault(int statusCode, BadHttpRequestException? failure) =>
+        statusCode switch
         {
-            StatusCodes.Status400BadRequest when failure.InnerException is JsonException =>
+            StatusCodes.Status400BadRequest when failure?.InnerException is JsonException =>
                 (ErrorCodes.Validation.InvalidBody, MalformedJsonMessage),
 
-            StatusCodes.Status400BadRequest when IsParameterBindingFault(failure) =>
+            StatusCodes.Status400BadRequest when failure is not null && IsParameterBindingFault(failure) =>
                 (ErrorCodes.Validation.InvalidBody, ParameterBindingFailedMessage),
 
             StatusCodes.Status400BadRequest => (ErrorCodes.Validation.InvalidBody, IncompleteBodyMessage),

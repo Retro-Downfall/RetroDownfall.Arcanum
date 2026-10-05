@@ -231,6 +231,20 @@ public static class ApiBootstrapper
         return bool.TryParse(configured.Trim(), out bool parsed) && parsed;
     }
 
+    /// <summary>
+    /// The host names a loopback-only host answers to: the three spellings of the loopback address a local
+    /// client or browser uses to reach it. A port on the request's Host header is ignored.
+    /// </summary>
+    internal static readonly string[] LoopbackHostNames = ["localhost", "127.0.0.1", "[::1]"];
+
+    /// <summary>
+    /// Whether the Host-header allow-list applies: on a loopback-only bind, and not on an all-interfaces
+    /// bind (<c>Arcanum:Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>), which is the topology that
+    /// legitimately answers other names.
+    /// </summary>
+    internal static bool IsHostFilteringEffective(IConfiguration configuration) =>
+        !ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(configuration));
+
     private static bool IsRateLimitEnabled(IConfiguration configuration)
         => ArcanumEnvironment.IsRateLimitEnabled(
             rateLimitConfigEnabled: false,
@@ -293,10 +307,17 @@ public static class ApiBootstrapper
         services.AddExceptionHandler<ArcanumExceptionHandler>();
 
         // The framework's default is to throw a binder failure into the exception handler only in
-        // Development and to write an empty 400/415 everywhere else. Pinned on so a bound-body route
-        // answers a malformed, mistyped or oversized body with the same envelope in every environment,
-        // through ArcanumExceptionHandler's BadHttpRequestException arm.
+        // Development and to write an empty 400 everywhere else. Pinned on so a bound-body route answers a
+        // body that is not valid JSON, and a parameter that cannot be bound, with the same envelope in every
+        // environment, through ArcanumExceptionHandler's BadHttpRequestException arm. It does not reach the
+        // faults Kestrel raises while the generated reader pulls the body (too large, too slow, trailers
+        // too long), nor an unaccepted Content-Type: the generated code records those as a status and
+        // returns, and UseArcanumExceptionHandler's status-code hook answers them.
         services.Configure<RouteHandlerOptions>(static options => options.ThrowOnBadRequest = true);
+
+        // The names a loopback-only host answers to. Registered unconditionally and applied by
+        // UseArcanumHostFiltering only when the bind is loopback-only.
+        services.AddHostFiltering(static options => options.AllowedHosts = [.. LoopbackHostNames]);
 
         services.AddProblemDetails();
 
@@ -502,32 +523,79 @@ public static class ApiBootstrapper
     }
 
     /// <summary>
+    /// Refuses a request whose <c>Host</c> header names anything but a loopback name, on a loopback-only
+    /// bind; a no-op on an all-interfaces bind.
+    /// </summary>
+    /// <remarks>
+    /// Registered first, ahead of the exception handler, so a refused request reaches no other
+    /// middleware and no route. The framework's host-filtering middleware answers it with a bare 400.
+    /// The loopback gates judge the socket peer, which is no defence against a page that has rebound its
+    /// own DNS name to 127.0.0.1: the browser really is on the same machine, and only the name it sends
+    /// gives it away. A name configured by the operator is not yet accepted (there is no setting for it),
+    /// so a loopback-only host reached by any other name is refused.
+    /// </remarks>
+    public static void UseArcanumHostFiltering(this WebApplication app)
+    {
+        if (IsHostFilteringEffective(app.Configuration))
+        {
+            app.UseHostFiltering();
+        }
+    }
+
+    /// <summary>
     /// Activates centralized exception handling for all Arcanum API hosts.
     /// </summary>
     public static void UseArcanumExceptionHandler(this WebApplication app)
     {
         app.UseExceptionHandler();
 
-        // The binder answers a request whose Content-Type it does not accept by setting 415 and
-        // returning, so ThrowOnBadRequest never routes it to the exception handler and the response
-        // would reach the client with no body. Every other empty status is left exactly as it was.
-        app.UseStatusCodePages(WriteUnacceptedMediaTypeAsync);
+        // A route that binds its body as a handler parameter reads it in framework-generated code that
+        // catches the exceptions Kestrel raises for a bad body, writes the status onto the response and
+        // returns -- it does not rethrow, whatever ThrowOnBadRequest says, so ArcanumExceptionHandler never
+        // sees them and the response would reach the client with a status and no body. The same generated
+        // code answers a Content-Type the route does not accept by setting 415 and returning. This hook is
+        // what gives those empty responses the envelope. It acts on exactly the statuses below and leaves
+        // every other empty status as it was, because a route can return a bodyless 400 on purpose
+        // (GET /api/presence).
+        app.UseStatusCodePages(WriteBodyFaultEnvelopeAsync);
     }
 
-    private static async Task WriteUnacceptedMediaTypeAsync(StatusCodeContext context)
+    /// <summary>
+    /// Puts the documented error envelope on an otherwise empty 408, 413, 415 or 431 that a route's own
+    /// body read produced.
+    /// </summary>
+    /// <remarks>
+    /// 408 (a body under the minimum data rate), 413 (a body past the ceiling) and 431 (trailers over the
+    /// header ceiling) only ever come from reading a body, so for a matched endpoint they are answered
+    /// here. 415 needs no endpoint: the binder sets it before any handler runs. A body that ends early
+    /// (400) is deliberately not covered: it is indistinguishable here from a bodyless 400 a route
+    /// returns on purpose, and the client that dropped the connection is no longer there to read it.
+    /// </remarks>
+    internal static async Task WriteBodyFaultEnvelopeAsync(StatusCodeContext context)
     {
         HttpContext httpContext = context.HttpContext;
 
-        if (httpContext.Response.StatusCode != StatusCodes.Status415UnsupportedMediaType)
+        int statusCode = httpContext.Response.StatusCode;
+
+        bool isBodyRead = statusCode is StatusCodes.Status408RequestTimeout
+            or StatusCodes.Status413PayloadTooLarge
+            or StatusCodes.Status431RequestHeaderFieldsTooLarge;
+
+        if (statusCode != StatusCodes.Status415UnsupportedMediaType
+            && !(isBodyRead && httpContext.GetEndpoint() is not null))
         {
             return;
         }
 
-        IResult unaccepted = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase)
-            ? OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(StatusCodes.Status415UnsupportedMediaType)
-            : ApiRequestJson.UnacceptedMediaTypeResult(httpContext);
+        bool isOpenAiRoute = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase);
 
-        await unaccepted.ExecuteAsync(httpContext).ConfigureAwait(false);
+        IResult envelope = isOpenAiRoute
+            ? OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(statusCode)
+            : statusCode == StatusCodes.Status415UnsupportedMediaType
+                ? ApiRequestJson.UnacceptedMediaTypeResult(httpContext)
+                : ApiRequestJson.UnreadableBodyResult(httpContext, statusCode);
+
+        await envelope.ExecuteAsync(httpContext).ConfigureAwait(false);
     }
 
     /// <summary>

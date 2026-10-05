@@ -121,10 +121,10 @@ internal static partial class OpenAiV1Endpoints
         IUploadedFileRepository files,
         CancellationToken cancellationToken)
     {
-        if (!httpContext.Request.HasJsonContentType())
+        if (!ApiRequestJson.HasReadableJsonContentType(httpContext.Request))
         {
             return JsonError(
-                "Request body must be sent with 'Content-Type: application/json'.",
+                ApiRequestJson.UnsupportedMediaTypeMessage,
                 "invalid_request_error",
                 "unsupported_media_type",
                 param: null,

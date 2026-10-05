@@ -455,6 +455,83 @@ public sealed class ArcanumExceptionHandlerTests
     }
 
     /// <summary>
+    /// A bound-body route has no pre-check of its own: the framework's reader raises
+    /// <see cref="InvalidOperationException"/> for a JSON Content-Type whose charset it cannot decode, and
+    /// that is the caller's mistake, answered 415.
+    /// </summary>
+    [Theory]
+    [InlineData("/api/prompts", "windows-1252")]
+    [InlineData("/api/prompts", "bogus")]
+    [InlineData("/v1/files", "bogus")]
+    public async Task TryHandleAsync_InvalidOperationException_for_a_charset_the_request_names_but_cannot_be_decoded_is_a_415(
+        string path,
+        string charset)
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = path;
+
+        httpContext.Request.ContentType = $"application/json; charset={charset}";
+
+        httpContext.Request.ContentLength = 2;
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new InvalidOperationException($"Unable to read the request as JSON because the request content type charset '{charset}' is not a known encoding."),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status415UnsupportedMediaType, httpContext.Response.StatusCode);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.DoesNotContain(ErrorCodes.Hub.Unhandled, ReadBody(httpContext), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The 415 is for that request shape only: an <see cref="InvalidOperationException"/> on a request whose
+    /// charset decodes, or that sent no body, or that is not JSON-typed, is the server's own fault.
+    /// </summary>
+    [Theory]
+    [InlineData("application/json; charset=utf-8", 2L)]
+    [InlineData("application/json", 2L)]
+    [InlineData("application/json; charset=bogus", 0L)]
+    [InlineData("text/plain; charset=bogus", 2L)]
+    public async Task TryHandleAsync_InvalidOperationException_on_any_other_request_is_still_the_logged_500(
+        string contentType,
+        long contentLength)
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/prompts";
+
+        httpContext.Request.ContentType = contentType;
+
+        httpContext.Request.ContentLength = contentLength;
+
+        InvalidOperationException serverFault = new("JsonTypeInfo metadata for type 'X' was not provided.");
+
+        bool handled = await handler.TryHandleAsync(httpContext, serverFault, CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
+
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Error && ReferenceEquals(entry.Exception, serverFault));
+    }
+
+    /// <summary>
     /// A request-level fault the framework detected while binding or reading a body is the client's, and is
     /// answered with the status the framework chose and the documented envelope, never a 500.
     /// </summary>

@@ -178,8 +178,19 @@ public sealed class CodexEndpointTests : IDisposable
         Assert.Equal([codexPath], Directory.GetFileSystemEntries(_root));
     }
 
+    /// <summary>
+    /// A request that was already cancelled when the write began leaves a whole codex and no temporary file.
+    /// </summary>
+    /// <remarks>
+    /// This pins only what its name says: the token is cancelled before the write starts, which was
+    /// harmless before the atomic replace too, so it would pass with the replace reverted. The guarantee
+    /// for a write that stops part-way is carried by
+    /// <see cref="WriteCodexAsync_replaces_the_file_rather_than_rewriting_it_in_place"/>, which fails if
+    /// the codex is rewritten in place, and by the replace running on a non-cancelable token once it has
+    /// begun, which a test cannot time and so is not claimed here.
+    /// </remarks>
     [Fact]
-    public async Task WriteCodexAsync_cancelled_mid_write_leaves_the_previous_file_intact()
+    public async Task WriteCodexAsync_with_an_already_cancelled_request_leaves_a_whole_codex_and_no_temporary_file()
     {
         string codexPath = Path.Combine(_root, "CODEX.md");
 
