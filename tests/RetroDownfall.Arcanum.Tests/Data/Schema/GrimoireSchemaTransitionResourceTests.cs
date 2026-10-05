@@ -278,6 +278,8 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "Batches_OutputFileId_index",
                 "Batches_ErrorFileId_index",
                 "InferenceRuns_SessionId_norm_index",
+                "tapestry_generations_supersede_duplicate_complete",
+                "tapestry_generations_one_complete_per_scope_index",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",

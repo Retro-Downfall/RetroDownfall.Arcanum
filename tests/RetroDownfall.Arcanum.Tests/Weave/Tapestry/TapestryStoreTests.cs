@@ -326,6 +326,61 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal("corpus-2", current.CorpusFingerprint);
     }
 
+    /// <summary>
+    /// The atomic switch is only atomic if it can tell that it did not switch. Publishing a generation
+    /// that is not <c>Building</c> — one already published, or one an abandonment removed — changes no
+    /// row in its own statement, so the supersede that ran first in the same transaction would otherwise
+    /// commit alone and leave the scope with no current generation at all.
+    /// </summary>
+    [SkippableFact]
+    public async Task PublishingANonBuildingGenerationThrowsAndLeavesTheCurrentOneComplete()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string published = await BeginAsync("corpus-1");
+
+        await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
+
+        await _store.PublishGenerationAsync(
+            published,
+            1,
+            1,
+            1,
+            TapestryTerminalReason.LeafOnly,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        // Publishing the same generation a second time: it is Complete, not Building.
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.PublishGenerationAsync(
+                published,
+                1,
+                1,
+                1,
+                TapestryTerminalReason.LeafOnly,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None));
+
+        Assert.Equal(published, (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))?.GenerationId);
+
+        // A generation that was abandoned and no longer exists.
+        string abandoned = await BeginAsync("corpus-2");
+
+        await _store.AbandonGenerationAsync(abandoned, CancellationToken.None);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.PublishGenerationAsync(
+                abandoned,
+                1,
+                1,
+                1,
+                TapestryTerminalReason.LeafOnly,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None));
+
+        Assert.Equal(published, (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))?.GenerationId);
+    }
+
     [SkippableFact]
     public async Task AbandoningAStagingGenerationLeavesTheCompleteOneCurrent()
     {

@@ -112,10 +112,13 @@ internal static class GrimoireSchemaVersionChains
     /// place, in the statement's own transaction, and indexes the three batch columns. It also adds
     /// <c>IX_InferenceRuns_SessionId_Norm</c>, the expression index the retention sweep's
     /// <c>lower(replace(SessionId, '-', ''))</c> comparisons against the run ledger need; that column keeps its
-    /// dash-free spelling, so no value is rewritten. It declares no sweep:
+    /// dash-free spelling, so no value is rewritten. Last, it adds <c>ux_tapestry_generations_complete_scope</c>, the
+    /// partial unique index that makes the Tapestry's one-Complete-generation-per-scope invariant the schema's rather
+    /// than the publishing statement's alone; one statement first supersedes every Complete generation of a scope but
+    /// the newest, so the index can be built over a pair the old switch left behind. It declares no sweep:
     /// the two file tables are small relative to the Entries family, no trigger or foreign key names either file
-    /// column, the rewrite is one statement per column, and an index is built inside the step's own
-    /// transaction.</para>
+    /// column, the rewrite is one statement per column, the Tapestry repair is one statement over a derived table,
+    /// and an index is built inside the step's own transaction.</para>
     /// </remarks>
     internal const int CoreSchemaVersion = 15;
 

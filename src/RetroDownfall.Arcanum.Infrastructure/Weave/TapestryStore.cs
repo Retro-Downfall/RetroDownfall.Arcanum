@@ -628,7 +628,18 @@ internal sealed class TapestryStore(
 
                     AddParameter(publish, "@generationId", generationId);
 
-                    _ = await publish.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    // The switch is only atomic if it can tell that it did not happen. A generation that
+                    // is not Building — already published, abandoned, or never begun — matches no row
+                    // here, and the supersede above has already run in this transaction: committing would
+                    // retire the scope's current generation and promote nothing. Throwing before the commit
+                    // rolls the supersede back with it, so the current generation stays current.
+                    int published = await publish.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (published != 1)
+                    {
+                        throw new InvalidOperationException(
+                            $"Tapestry generation {generationId} could not be published: it is not a Building generation, so nothing was switched.");
+                    }
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
