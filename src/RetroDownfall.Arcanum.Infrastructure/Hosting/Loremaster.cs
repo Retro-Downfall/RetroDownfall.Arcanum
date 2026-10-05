@@ -371,8 +371,11 @@ internal sealed class Loremaster(
 
             string summaryText = result.Value.Text.Trim();
 
+            // The provider call is billed once it returns, so the write that keeps its result runs on a
+            // token the host cannot cancel: a shutdown arriving here would otherwise discard the summary
+            // and leave the watermark behind, and the next sweep would pay for the same batch again.
             await grimoire
-                .UpdateSessionCampaignRollupAsync(sessionId, summaryText, batchEndUtc, stoppingToken)
+                .UpdateSessionCampaignRollupAsync(sessionId, summaryText, batchEndUtc, CancellationToken.None)
                 .ConfigureAwait(false);
 
             hostLogger.LogInformation(

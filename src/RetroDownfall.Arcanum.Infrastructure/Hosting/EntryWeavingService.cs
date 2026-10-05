@@ -39,6 +39,26 @@ internal sealed class EntryWeavingService(
     IGrimoireConnectionAdmissionGate admissionGate,
     ILogger<EntryWeavingService> logger) : BackgroundService
 {
+    /// <summary>
+    /// The most entries whose failed batches are tracked at once. A full table stops tracking new
+    /// failures rather than growing, which only costs the ladder, never correctness.
+    /// </summary>
+    private const int MaxTrackedFailures = 256;
+
+    /// <summary>The longest an entry waits between retries, in ticks (an hour at the default cadence).</summary>
+    private const int MaxBackoffTicks = 360;
+
+    private readonly object _failuresGate = new();
+
+    /// <summary>
+    /// Process-local failure ladder, keyed by entry id. A restart starts every ladder over, which is
+    /// the right trade for a bookkeeping table that exists to stop a failing batch being billed again
+    /// every interval, not to remember failures.
+    /// </summary>
+    private readonly Dictionary<string, EmbeddingFailure> _failures = new(StringComparer.Ordinal);
+
+    private long _tick;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
@@ -148,12 +168,19 @@ internal sealed class EntryWeavingService(
 
         int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(embeddings.ChunkSizeChars);
 
-        List<(string EntryId, string Content)> pending = await FetchUnembeddedEntriesAsync(
+        (long tick, int backingOff) = BeginTick();
+
+        // Entries still waiting out a failure are filtered after the read, so the read is widened by
+        // their number: filtering without widening would let them hold the head of the queue and starve
+        // every entry behind them, which is the reason empty content is filtered in SQL.
+        List<(string EntryId, string Content)> fetched = await FetchUnembeddedEntriesAsync(
                 db,
-                batchSize,
+                batchSize + backingOff,
                 chunkSizeChars,
                 cancellationToken)
             .ConfigureAwait(false);
+
+        List<(string EntryId, string Content)> pending = SelectEligible(fetched, tick, batchSize);
 
         if (pending.Count == 0)
         {
@@ -177,7 +204,22 @@ internal sealed class EntryWeavingService(
 
         // The host token, never the lease's revocation. Once the frontier is won maintenance waits
         // through this group and its durable disposition rather than cancelling into it.
-        Result<Embedding<float>[]> embedResult = await weaveService.EmbedBatchAsync(contents, cancellationToken).ConfigureAwait(false);
+        Result<Embedding<float>[]> embedResult;
+
+        try
+        {
+            embedResult = await weaveService.EmbedBatchAsync(contents, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            RecordFailure(pending, 0, tick);
+
+            throw;
+        }
 
         if (embedResult.IsFailure)
         {
@@ -185,6 +227,8 @@ internal sealed class EntryWeavingService(
                 "Entry Weaving embed batch failed ({Code}): {Message}",
                 embedResult.Error.Code,
                 embedResult.Error.Message);
+
+            RecordFailure(pending, 0, tick);
 
             return EntryWeavingTickOutcome.Woven;
         }
@@ -194,13 +238,137 @@ internal sealed class EntryWeavingService(
         // IWeaveService answers exactly one vector per input or fails (WeaveService enforces it at the
         // provider boundary), so generated[i] always pairs with pending[i] and a short provider reply
         // can no longer reach the upsert loop as an IndexOutOfRangeException retry-and-rebill spin.
+        //
+        // The provider call is billed once it returns, so the writes that keep its answer run on a token
+        // the host cannot cancel. A shutdown arriving here would otherwise drop what was paid for, and
+        // the next tick would select the same entries and pay for them again.
         for (int i = 0; i < pending.Count; i++)
         {
-            await UpsertEmbeddingAsync(db, pending[i].EntryId, generated[i].Vector.ToArray(), cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await UpsertEmbeddingAsync(db, pending[i].EntryId, generated[i].Vector.ToArray(), CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // The failure is in storage, not in the provider, but the rows from here on are
+                // re-selected and re-billed all the same.
+                RecordFailure(pending, i, tick);
+
+                throw;
+            }
+
+            ClearFailure(pending[i].EntryId);
         }
 
         return EntryWeavingTickOutcome.Woven;
     }
+
+    /// <summary>
+    /// Starts a tick that reached the entry queue and reports how many entries are still waiting out a
+    /// failure. A tick refused its work lease never gets here, so a maintenance window does not age
+    /// the ladder.
+    /// </summary>
+    private (long Tick, int BackingOff) BeginTick()
+    {
+        lock (_failuresGate)
+        {
+            long tick = ++_tick;
+
+            int backingOff = 0;
+
+            foreach (EmbeddingFailure failure in _failures.Values)
+            {
+                if (failure.RetryAtTick > tick)
+                {
+                    backingOff++;
+                }
+            }
+
+            return (tick, backingOff);
+        }
+    }
+
+    private List<(string EntryId, string Content)> SelectEligible(
+        List<(string EntryId, string Content)> fetched,
+        long tick,
+        int batchSize)
+    {
+        List<(string EntryId, string Content)> eligible = new(Math.Min(fetched.Count, batchSize));
+
+        lock (_failuresGate)
+        {
+            foreach ((string entryId, string content) in fetched)
+            {
+                if (eligible.Count == batchSize)
+                {
+                    break;
+                }
+
+                if (_failures.TryGetValue(entryId, out EmbeddingFailure failure) && failure.RetryAtTick > tick)
+                {
+                    continue;
+                }
+
+                eligible.Add((entryId, content));
+            }
+        }
+
+        return eligible;
+    }
+
+    /// <summary>
+    /// Charges a failed batch to its entries: each waits one tick, then two, then four and so on, up to
+    /// <see cref="MaxBackoffTicks"/>, before it is selected again, so a batch the provider keeps
+    /// refusing is not billed again every interval and does not hold back the entries behind it.
+    /// </summary>
+    private void RecordFailure(List<(string EntryId, string Content)> batch, int firstFailed, long tick)
+    {
+        lock (_failuresGate)
+        {
+            for (int index = firstFailed; index < batch.Count; index++)
+            {
+                string entryId = batch[index].EntryId;
+
+                int attempts = 1;
+
+                if (_failures.TryGetValue(entryId, out EmbeddingFailure existing))
+                {
+                    attempts = existing.Attempts + 1;
+                }
+                else if (_failures.Count >= MaxTrackedFailures && !TryMakeRoom(tick))
+                {
+                    continue;
+                }
+
+                long wait = Math.Min(1L << Math.Min(attempts - 1, 30), MaxBackoffTicks);
+
+                _failures[entryId] = new EmbeddingFailure(attempts, tick + 1 + wait);
+            }
+        }
+    }
+
+    /// <summary>Drops entries whose wait is over to make room, reporting whether any room was made.</summary>
+    private bool TryMakeRoom(long tick)
+    {
+        string[] settled = [.. _failures.Where(pair => pair.Value.RetryAtTick <= tick).Select(static pair => pair.Key)];
+
+        foreach (string entryId in settled)
+        {
+            _ = _failures.Remove(entryId);
+        }
+
+        return _failures.Count < MaxTrackedFailures;
+    }
+
+    private void ClearFailure(string entryId)
+    {
+        lock (_failuresGate)
+        {
+            _ = _failures.Remove(entryId);
+        }
+    }
+
+    private readonly record struct EmbeddingFailure(int Attempts, long RetryAtTick);
 
     private static Task<List<(string EntryId, string Content)>> FetchUnembeddedEntriesAsync(
         ArcanumDbContext db,
