@@ -205,6 +205,161 @@ public sealed class MacOsDescendantSupervisorTests
     }
 
     /// <summary>
+    /// The fault that stops the loop can be the process-table scan itself. Ending the tree must not depend
+    /// on that same scan: a kill path that rescans first throws again, the descendants already tracked
+    /// survive the root, and nothing is enforcing the ceiling over them any more. Stopping the supervisor
+    /// afterwards must likewise neither throw nor leave them running.
+    /// </summary>
+    [SkippableFact]
+    public async Task Scan_fault_with_a_memory_ceiling_still_kills_the_tracked_descendants()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        using System.Diagnostics.Process child = new();
+
+        child.StartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            ArgumentList = { "-c", "sleep 60 & echo $!; wait" },
+        };
+
+        _ = child.Start();
+
+        int descendantPid = int.Parse(
+            (await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(30)))!.Trim(),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        using ManualResetEventSlim scanFaultArmed = new(false);
+
+        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(
+            child.Id,
+            memoryLimitBytes: 64L * 1024 * 1024 * 1024,
+            processScanHook: () =>
+            {
+                if (scanFaultArmed.IsSet)
+                {
+                    throw new InvalidOperationException("injected scan fault");
+                }
+            });
+
+        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+
+        try
+        {
+            await WaitUntilAsync(
+                () => supervisor!.TrackedCount >= 2,
+                TimeSpan.FromSeconds(30),
+                "The supervisor never tracked the backgrounded descendant.");
+
+            scanFaultArmed.Set();
+
+            await WaitUntilAsync(
+                () => supervisor!.MonitorFaulted,
+                TimeSpan.FromSeconds(30),
+                "The injected scan fault never stopped the monitor loop.");
+
+            Assert.True(
+                child.WaitForExit(TimeSpan.FromSeconds(30)),
+                "The faulted monitor left the root running.");
+
+            Assert.True(
+                await WaitForReapedAsync(descendantPid, TimeSpan.FromSeconds(5)),
+                $"The faulted monitor killed the root but left tracked descendant {descendantPid} running.");
+
+            // Production order: stop, then dispose. The scan still throws; neither may.
+            Assert.True(await supervisor!.StopKillAndVerifyAsync(TimeSpan.FromSeconds(2)));
+        }
+        finally
+        {
+            KillIfStillRunning(descendantPid);
+
+            await supervisor!.DisposeAsync();
+
+            KillIfRunning(child);
+        }
+    }
+
+    /// <summary>
+    /// Only a live process can be a hole in the ceiling. A descendant that exits between the identity read
+    /// and the footprint read is gone, not unmeasured, and counting it turned every short-lived build step
+    /// into a coverage warning.
+    /// </summary>
+    [SkippableFact]
+    public async Task Descendant_that_exits_before_its_footprint_is_read_is_not_counted_as_unreadable()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        using System.Diagnostics.Process child = new();
+
+        child.StartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            ArgumentList = { "-c", "sleep 60 & echo $!; wait; exec sleep 60" },
+        };
+
+        _ = child.Start();
+
+        int rootPid = child.Id;
+
+        int descendantPid = int.Parse(
+            (await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(30)))!.Trim(),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        using ManualResetEventSlim descendantReadFailed = new(false);
+
+        // The reader stands in for the race: by the time the footprint read fails, the descendant has been
+        // killed and reaped by its parent's `wait`, so it no longer exists at all.
+        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(
+            rootPid,
+            memoryLimitBytes: 64L * 1024 * 1024 * 1024,
+            footprintReader: pid =>
+            {
+                if (pid != descendantPid)
+                {
+                    return 1L;
+                }
+
+                KillIfStillRunning(descendantPid);
+
+                _ = WaitForReapedAsync(descendantPid, TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+
+                descendantReadFailed.Set();
+
+                return null;
+            });
+
+        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+
+        try
+        {
+            Assert.True(
+                descendantReadFailed.Wait(TimeSpan.FromSeconds(30)),
+                "The descendant's footprint was never read.");
+
+            long ticksAfterRace = supervisor!.MonitorTickCount;
+
+            await WaitUntilAsync(
+                () => supervisor.MonitorTickCount >= ticksAfterRace + 10,
+                TimeSpan.FromSeconds(30),
+                "The monitor loop stopped ticking.");
+
+            Assert.Equal(0, supervisor.UnreadableFootprintCount);
+        }
+        finally
+        {
+            KillIfStillRunning(descendantPid);
+
+            await supervisor!.DisposeAsync();
+
+            KillIfRunning(child);
+        }
+    }
+
+    /// <summary>
     /// A descendant whose footprint cannot be read is left out of the sum. That has to be visible — a
     /// silent drop is a hole in the ceiling nobody can see.
     /// </summary>
@@ -352,6 +507,47 @@ public sealed class MacOsDescendantSupervisorTests
         if (!child.HasExited)
         {
             child.Kill(entireProcessTree: true);
+        }
+    }
+
+    /// <summary>
+    /// Waits until <paramref name="processId"/> no longer exists at all — exited and reaped, so not even a
+    /// zombie answers for it.
+    /// </summary>
+    private static async Task<bool> WaitForReapedAsync(int processId, TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+
+        do
+        {
+            try
+            {
+                using System.Diagnostics.Process _ = System.Diagnostics.Process.GetProcessById(processId);
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+
+            await Task.Delay(10);
+        }
+
+        while (DateTime.UtcNow < deadline);
+
+        return false;
+    }
+
+    private static void KillIfStillRunning(int processId)
+    {
+        try
+        {
+            using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(processId);
+
+            process.Kill();
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Already gone, which is what every caller wants.
         }
     }
 

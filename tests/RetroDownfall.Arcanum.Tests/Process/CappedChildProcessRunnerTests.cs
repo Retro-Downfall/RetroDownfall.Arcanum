@@ -946,6 +946,82 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Single(MonitorFaultErrors(logger));
     }
 
+    /// <summary>
+    /// A descendant left out of the memory ceiling's sum is a gap in that ceiling whichever way the run
+    /// ends. The warning was written only on the normal-exit path, so a run that timed out — the likeliest
+    /// end for a tree the ceiling was not fully covering — reported nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunAsync_logs_unreadable_descendant_footprints_when_the_run_times_out()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        TestCapturingLogger<CappedChildProcessRunnerTests> logger = new();
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            CreateBackgroundedSleepProcessStartInfo(30),
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(2),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 4096 },
+            resourceLimiter: new MonitoredMemoryLimiter(4096L * 1024 * 1024),
+            CancellationToken.None,
+            logger: logger,
+            descendantSupervisorFactory: RootOnlyFootprintMonitorFactory);
+
+        Assert.Equal(CappedChildProcessOutcome.TimedOut, result.Outcome);
+
+        Assert.Single(UnreadableFootprintWarnings(logger));
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_logs_unreadable_descendant_footprints_once_when_the_run_completes()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        TestCapturingLogger<CappedChildProcessRunnerTests> logger = new();
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            CreateBackgroundedSleepProcessStartInfo(1),
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(60),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 4096 },
+            resourceLimiter: new MonitoredMemoryLimiter(4096L * 1024 * 1024),
+            CancellationToken.None,
+            logger: logger,
+            descendantSupervisorFactory: RootOnlyFootprintMonitorFactory);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+        Assert.Single(UnreadableFootprintWarnings(logger));
+    }
+
+    /// <summary>A monitor that can read only the root's footprint, so every descendant is unreadable.</summary>
+    private static MacOsDescendantSupervisor? RootOnlyFootprintMonitorFactory(int pid, long? memoryLimitBytes) =>
+        MacOsDescendantSupervisor.TryStart(
+            pid,
+            memoryLimitBytes: memoryLimitBytes,
+            footprintReader: readPid => readPid == pid ? 1L : null);
+
+    private static TestLogEntry[] UnreadableFootprintWarnings(TestCapturingLogger<CappedChildProcessRunnerTests> logger) =>
+        [.. logger.Entries.Where(entry =>
+            entry.Level == LogLevel.Warning
+            && entry.Message.Contains("could not read the footprint", StringComparison.Ordinal))];
+
+    private static ProcessStartInfo CreateBackgroundedSleepProcessStartInfo(int seconds) => new()
+    {
+        FileName = "/bin/sh",
+
+        RedirectStandardOutput = true,
+
+        RedirectStandardError = true,
+
+        UseShellExecute = false,
+
+        ArgumentList = { "-c", $"sleep {seconds} </dev/null >/dev/null 2>&1 & wait" },
+    };
+
     private static MacOsDescendantSupervisor? FaultingMonitorFactory(int pid, long? memoryLimitBytes) =>
         MacOsDescendantSupervisor.TryStart(
             pid,
