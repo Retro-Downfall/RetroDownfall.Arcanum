@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class BackupServiceTests : IDisposable
 {
     private readonly string _root = Path.Combine(
