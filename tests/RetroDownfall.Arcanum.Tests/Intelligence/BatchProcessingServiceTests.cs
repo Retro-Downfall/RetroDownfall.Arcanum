@@ -1353,6 +1353,67 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// When the very first read of the input fails there is no record yet, and a batch with no records
+    /// is otherwise concluded as <c>completed</c> with no artifacts. A failed read is not an empty input,
+    /// so the batch must still be published as <c>failed</c> with the note saying where to resume.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProcessBatchAsync_InputReadFailsBeforeTheFirstRecord_IsPublishedAsFailedNotCompleted()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider intelligence = new() { NextText = "ok", NextFinishReason = "stop" };
+
+        FailingInputBlobStore blobStore = new(_blobStore);
+
+        BatchProcessingService service = CreateService(
+            BuildServiceProvider(intelligence, blobStore: blobStore));
+
+        // An empty input, so the first read is the end-of-input read that fails.
+        Guid inputFileId = await SeedInputFileAsync(string.Empty);
+
+        blobStore.FailReadsOf(UploadedFileStorage.ResolvePath(inputFileId));
+
+        BatchRecord batch = new(
+            Guid.NewGuid(),
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Failed, finished.Status);
+
+        Assert.Equal(0, intelligence.ExecutePromptCallCount);
+
+        Assert.NotNull(finished.ErrorFileId);
+
+        string errorPath = UploadedFileStorage.ResolvePath(finished.ErrorFileId.Value);
+
+        _createdFilePaths.Add(errorPath);
+
+        if (finished.OutputFileId is { } outputFileId)
+        {
+            _createdFilePaths.Add(UploadedFileStorage.ResolvePath(outputFileId));
+        }
+
+        string error = await ReadArtifactTextAsync(errorPath);
+
+        Assert.Contains("\"line\":1", error, StringComparison.Ordinal);
+
+        Assert.Contains(nameof(IOException), error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A closed admission gate is a deliberate, temporary refusal, never a processing failure, so an
     /// unexpected-failure stop must not publish the batch as failed for it. The exception propagates
     /// and the batch stays <c>in_progress</c> for the durable recovery that reconciles it.

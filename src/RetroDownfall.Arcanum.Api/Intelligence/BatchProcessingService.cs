@@ -408,13 +408,26 @@ internal sealed class BatchProcessingService(
                 }
                 catch (Exception exception) when (StopsAsUnexpectedFailure(exception, state, stoppingToken))
                 {
-                    state.HasRecords = true;
-
-                    if (!await TryStopAfterUnexpectedFailureAsync(
-                            batch.Id, null, lastFinishedLine, batches, exception).ConfigureAwait(false))
+                    // The stop bookkeeping writes to the Grimoire, so it wins its own effect frontier
+                    // first, exactly as a page does. An admission refusal defers the batch: the
+                    // retry rereads the input and, if it still fails, records the stop then.
+                    if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? stopGroup))
                     {
-                        throw;
+                        return BatchProcessingDisposition.DeferredForMaintenance;
                     }
+
+                    await using (stopGroup!)
+                    {
+                        if (!await TryStopAfterUnexpectedFailureAsync(
+                                batch.Id, null, lastFinishedLine, batches, exception).ConfigureAwait(false))
+                        {
+                            throw;
+                        }
+                    }
+
+                    // A note was recorded, so there is an error file to publish even when the
+                    // failure came before the first record could be read.
+                    state.HasRecords = true;
 
                     state.UnexpectedFailure = true;
 
