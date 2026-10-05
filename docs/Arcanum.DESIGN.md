@@ -3320,7 +3320,7 @@ It then:
 3. Hashes the inbound header through `SHA256.TryHashData` into a stack buffer and compares both 32-byte digests with `CryptographicOperations.FixedTimeEquals` — constant-time **and** length-independent (no early-return on size mismatch).
 4. Uses `stackalloc` for the header UTF-8 buffer when `<= 256` bytes; the 32-byte digest buffer is always on the stack.
 
-Failed authentication returns **`ApiResponse<string>`** at **401** with error code **`Auth.Unauthorized`** (matches the `{Noun}.{Verb}` convention used elsewhere).
+Failed authentication returns **`ApiResponse<string>`** at **401** with error code **`Auth.Unauthorized`** (matches the `{Noun}.{Verb}` convention used elsewhere). Under `/v1` the one `ApiKeyAuthenticator.Unauthorized` helper both gates call writes the OpenAI error shape instead (`invalid_request_error` / `invalid_api_key`), the same path branch the rate limiter and the maintenance refusal take, because an OpenAI client reads `error.code`.
 
 ### 11.4 CORS (serve host)
 

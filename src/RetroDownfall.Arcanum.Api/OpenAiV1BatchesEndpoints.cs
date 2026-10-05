@@ -148,6 +148,13 @@ internal static partial class OpenAiV1Endpoints
                 param: null,
                 StatusCodes.Status400BadRequest);
         }
+        catch (BadHttpRequestException exception)
+        {
+            // A body past the ceiling, one that ended early, or one under the minimum data rate. The other
+            // two /v1 body readers answer these with the status Kestrel chose in the OpenAI envelope; left
+            // uncaught here the answer depended on the exception handler sitting above this route.
+            return OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(exception.StatusCode);
+        }
 
         if (body is null || string.IsNullOrWhiteSpace(body.InputFileId))
         {

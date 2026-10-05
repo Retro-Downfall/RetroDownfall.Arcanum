@@ -46,7 +46,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class ApiRequestJsonBodyFaultTests
 {
-
     [SkippableTheory]
     [InlineData("/api/lore")]
     [InlineData("/api/memory/saga/m-1/retire")]
@@ -60,7 +59,6 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/config/validate")]
     public async Task A_body_that_ends_early_is_answered_with_the_envelope_and_not_a_server_error(string route)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpResponseMessage response = await SendFaultingBodyAsync(
@@ -70,7 +68,6 @@ public sealed class ApiRequestJsonBodyFaultTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         await AssertEnvelopeAsync(response, ErrorCodes.Validation.InvalidBody, ApiRequestJson.IncompleteBodyMessage);
-
     }
 
     [SkippableTheory]
@@ -86,7 +83,6 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/config/validate")]
     public async Task A_body_past_the_size_ceiling_keeps_the_status_kestrel_chose(string route)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpResponseMessage response = await SendFaultingBodyAsync(
@@ -101,7 +97,6 @@ public sealed class ApiRequestJsonBodyFaultTests
         // distinct from its family's invalid-request code, and Validation.InvalidBody is pinned to 400
         // by the mapper and its tests — so reusing it here would have put one code on two statuses.
         await AssertEnvelopeAsync(response, ErrorCodes.Validation.BodyTooLarge, ApiRequestJson.BodyTooLargeMessage);
-
     }
 
     /// <summary>
@@ -125,7 +120,6 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/config/validate")]
     public async Task A_body_arriving_too_slowly_is_a_timeout_rather_than_a_bad_request(string route)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpResponseMessage response = await SendFaultingBodyAsync(
@@ -140,7 +134,6 @@ public sealed class ApiRequestJsonBodyFaultTests
             response,
             ErrorCodes.Validation.BodyReadTimeout,
             ApiRequestJson.BodyReadTimeoutMessage);
-
     }
 
     /// <summary>
@@ -158,7 +151,6 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/config/validate")]
     public async Task Trailers_over_the_header_ceiling_are_named_as_such(string route)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpResponseMessage response = await SendFaultingBodyAsync(
@@ -173,7 +165,6 @@ public sealed class ApiRequestJsonBodyFaultTests
             response,
             ErrorCodes.Validation.RequestHeadersTooLarge,
             ApiRequestJson.RequestHeadersTooLargeMessage);
-
     }
 
     /// <summary>
@@ -197,7 +188,6 @@ public sealed class ApiRequestJsonBodyFaultTests
         string expectedCode,
         string expectedMessage)
     {
-
         ApiResponse<bool>? body = JsonSerializer.Deserialize(
             await response.Content.ReadAsStringAsync(),
             ArcanumJsonContext.Default.ApiResponseBoolean);
@@ -211,12 +201,10 @@ public sealed class ApiRequestJsonBodyFaultTests
         Assert.Equal(expectedMessage, body.Error?.Message);
 
         Assert.False(string.IsNullOrEmpty(body.TraceId));
-
     }
 
     private static async Task<HttpResponseMessage> SendFaultingBodyAsync(string route, Exception failure)
     {
-
         await using ArcanumWebApplicationFactory factory = new()
         {
             ServiceOverrides = services =>
@@ -228,7 +216,6 @@ public sealed class ApiRequestJsonBodyFaultTests
         return await client.PostAsync(
             route,
             new StringContent("{\"key\":\"k\"}", Encoding.UTF8, "application/json"));
-
     }
 
     /// <summary>Replaces the request body with one that fails the way Kestrel's does.</summary>
@@ -236,39 +223,30 @@ public sealed class ApiRequestJsonBodyFaultTests
     /// A startup filter rather than a test-only endpoint, so the fault is injected into the real
     /// pipeline ahead of the real route and every layer between them runs as it does in production.
     /// </remarks>
-    private sealed class BodyFaultFilter(string route, Exception failure) : IStartupFilter
+    internal sealed class BodyFaultFilter(string route, Exception failure) : IStartupFilter
     {
-
         public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
             app =>
             {
-
                 app.Use(async (context, proceed) =>
                 {
-
                     if (context.Request.Path.StartsWithSegments(route, StringComparison.Ordinal))
                     {
-
                         context.Request.Body = new FaultingBody(
                             Encoding.UTF8.GetBytes("{\"key\":\"k"),
                             failure);
-
                     }
 
                     await proceed(context);
-
                 });
 
                 next(app);
-
             };
-
     }
 
     /// <summary>Yields a valid JSON prefix, then fails.</summary>
-    private sealed class FaultingBody(byte[] prefix, Exception failure) : Stream
+    internal sealed class FaultingBody(byte[] prefix, Exception failure) : Stream
     {
-
         private int _offset;
 
         public override bool CanRead => true;
@@ -283,17 +261,13 @@ public sealed class ApiRequestJsonBodyFaultTests
 
         public override void Flush()
         {
-
         }
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-
             if (_offset >= prefix.Length)
             {
-
                 throw failure;
-
             }
 
             int take = Math.Min(count, prefix.Length - _offset);
@@ -303,17 +277,13 @@ public sealed class ApiRequestJsonBodyFaultTests
             _offset += take;
 
             return take;
-
         }
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
         {
-
             if (_offset >= prefix.Length)
             {
-
                 throw failure;
-
             }
 
             int take = Math.Min(buffer.Length, prefix.Length - _offset);
@@ -323,7 +293,6 @@ public sealed class ApiRequestJsonBodyFaultTests
             _offset += take;
 
             return ValueTask.FromResult(take);
-
         }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
@@ -331,7 +300,5 @@ public sealed class ApiRequestJsonBodyFaultTests
         public override void SetLength(long value) => throw new NotSupportedException();
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
     }
-
 }
