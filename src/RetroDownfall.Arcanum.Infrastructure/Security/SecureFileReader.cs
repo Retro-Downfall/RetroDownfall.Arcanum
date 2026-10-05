@@ -484,7 +484,11 @@ internal static partial class SecureFileReader
         SecureFileReadStatus status) =>
         new(status, null, 0, default);
 
-    private static SecureFileReadStatus MapOpenStatus(
+    /// <summary>
+    /// The read status a failed <see cref="TryOpenRegularFile"/> reports, for a caller that opens the handle
+    /// itself and then reads it through <see cref="ReadUtf8TextAsync(FileStream, int, CancellationToken, bool)"/>.
+    /// </summary>
+    internal static SecureFileReadStatus MapOpenStatus(
         SecureFileOpenStatus status) =>
         (SecureFileReadStatus)status;
 
