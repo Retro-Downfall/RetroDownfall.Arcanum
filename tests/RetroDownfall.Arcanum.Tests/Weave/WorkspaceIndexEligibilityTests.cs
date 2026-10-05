@@ -61,6 +61,18 @@ public sealed class WorkspaceIndexEligibilityTests
     }
 
     [Fact]
+    public void The_workspace_root_passes_the_lexical_rule_and_paths_outside_it_do_not()
+    {
+        Assert.True(WorkspaceIndexEligibility.HasEligibleSegments("."));
+
+        Assert.False(WorkspaceIndexEligibility.HasEligibleSegments(".."));
+
+        Assert.False(WorkspaceIndexEligibility.HasEligibleSegments(OsPath("../outside/file.cs")));
+
+        Assert.False(WorkspaceIndexEligibility.HasEligibleSegments(OsPath("./.hidden/file.cs")));
+    }
+
+    [Fact]
     public void The_extension_rule_applies_only_when_extensions_are_supplied()
     {
         string relativePath = OsPath("assets/logo.png");

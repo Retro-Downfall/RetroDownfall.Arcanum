@@ -315,6 +315,37 @@ public sealed partial class WorkspaceIndexingServiceTests
     }
 
     /// <summary>
+    /// A directory event still requests reconciliation, including one for the workspace root, which the
+    /// eligibility rule must not mistake for a hidden path.
+    /// </summary>
+    [SkippableFact]
+    public async Task Watcher_event_for_the_workspace_root_still_requests_a_reconciliation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("one.cs", "class One {}");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers, scopeFactory: scopes);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerChanged(_workspace.Root);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        // The incremental unit that met a directory failed and queued the full reconciliation: two scopes.
+        Assert.Equal(2, scopes.ScopeCount);
+
+        Assert.Equal(["one.cs"], await GetIndexedRelativePathsAsync());
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
     /// A build writing thousands of files under <c>obj/</c> must not fill the 4,096-path coalescer: queued,
     /// those events cost a delete statement apiece and overflow into a forced full re-walk of the whole
     /// workspace.

@@ -97,7 +97,7 @@ internal static class WorkspaceIndexEligibility
     /// <summary>
     /// The lexical part of the rule, free of filesystem access: no segment is dot-prefixed or an
     /// ignored directory name. Used where a path is judged before anything is known about the entry,
-    /// such as when a watcher event arrives.
+    /// such as when a watcher event arrives. The workspace root itself (<c>"."</c>) passes.
     /// </summary>
     internal static bool HasEligibleSegments(string relativePath)
     {
@@ -116,7 +116,12 @@ internal static class WorkspaceIndexEligibility
             {
                 ReadOnlySpan<char> segment = relativePath.AsSpan(start, end - start);
 
-                if (segment[0] == '.' || ignored.Contains(segment))
+                // A lone "." is the workspace root itself (a directory event for it still has to reach
+                // the incremental drain, which answers it with a reconciliation); every other
+                // dot-prefixed segment, ".." included, is hidden or outside the workspace.
+                bool isRoot = segment.Length == 1 && segment[0] == '.';
+
+                if ((segment[0] == '.' && !isRoot) || ignored.Contains(segment))
                 {
                     return false;
                 }

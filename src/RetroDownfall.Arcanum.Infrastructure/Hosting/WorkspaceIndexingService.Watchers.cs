@@ -429,18 +429,15 @@ internal sealed partial class WorkspaceIndexingService
     }
 
     /// <summary>
-    /// Whether a watcher event's path may be queued: the workspace root itself (a directory event that
-    /// still requests reconciliation) or a path whose relative segments pass the lexical half of
-    /// <see cref="WorkspaceIndexEligibility"/>. A path that cannot be made relative is dropped.
+    /// Whether a watcher event's path may be queued: its relative segments pass the lexical half of
+    /// <see cref="WorkspaceIndexEligibility"/> (the workspace root itself does, so a directory event
+    /// for it still requests reconciliation). A path that cannot be made relative is dropped.
     /// </summary>
     private static bool IsIndexablePath(string workspacePath, string fullPath)
     {
         try
         {
-            string relativePath = Path.GetRelativePath(workspacePath, fullPath);
-
-            return string.Equals(relativePath, ".", StringComparison.Ordinal)
-                || WorkspaceIndexEligibility.HasEligibleSegments(relativePath);
+            return WorkspaceIndexEligibility.HasEligibleSegments(Path.GetRelativePath(workspacePath, fullPath));
         }
         catch (ArgumentException)
         {
