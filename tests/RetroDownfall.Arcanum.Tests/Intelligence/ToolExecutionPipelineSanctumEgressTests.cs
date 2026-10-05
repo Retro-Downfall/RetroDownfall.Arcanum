@@ -36,6 +36,7 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
     public async Task ReadUrl_InStrictSanctum_PublishesWardAndOptionsCarryIt()
     {
         SanctumPipelineHarness harness = SanctumPipelineHarness.Create(_root, [AllowedHost]);
+
         RecordingReadProvider provider = new();
 
         ToolExecutionPipeline.ProcessedToolCall processed = await RunReadUrlAsync(
@@ -75,6 +76,7 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
     public async Task ReadUrl_OffAllowlistFirstHop_IsDeniedBeforeToolRuns()
     {
         SanctumPipelineHarness harness = SanctumPipelineHarness.Create(_root, [AllowedHost]);
+
         RecordingReadProvider provider = new();
 
         ToolExecutionPipeline.ProcessedToolCall processed = await RunReadUrlAsync(

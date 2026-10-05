@@ -185,7 +185,9 @@ public sealed class ArcanumBrowseWebToolTests
         BrowseWebResult? dto = Deserialize(rejected);
 
         Assert.NotNull(dto);
+
         Assert.Contains(ErrorCodes.WebBrowsing.InvalidUrl, dto.Content, StringComparison.Ordinal);
+
         Assert.False(handlerCalled);
     }
 
@@ -212,7 +214,9 @@ public sealed class ArcanumBrowseWebToolTests
         BrowseWebResult? dto = Deserialize(result);
 
         Assert.NotNull(dto);
+
         Assert.Contains(ErrorCodes.WebBrowsing.SsrfBlocked, dto.Content, StringComparison.Ordinal);
+
         Assert.False(handlerCalled);
     }
 
@@ -266,8 +270,11 @@ public sealed class ArcanumBrowseWebToolTests
         BrowseWebResult? followed = await InvokeAsync(tool, "https://public.fixture.test/start");
 
         Assert.NotNull(followed);
+
         Assert.Equal("Final", followed.Title);
+
         Assert.Contains("Landed", followed.Content, StringComparison.Ordinal);
+
         Assert.DoesNotContain("HTTP 301", followed.Content, StringComparison.Ordinal);
 
         // Relative links resolve against the page the redirect landed on.
@@ -291,7 +298,9 @@ public sealed class ArcanumBrowseWebToolTests
         BrowseWebResult? blocked = await InvokeAsync(toPrivate, "https://public.fixture.test/start");
 
         Assert.NotNull(blocked);
+
         Assert.Contains(ErrorCodes.WebBrowsing.SsrfBlocked, blocked.Content, StringComparison.Ordinal);
+
         Assert.Single(requested);
     }
 
@@ -321,8 +330,11 @@ public sealed class ArcanumBrowseWebToolTests
         BrowseWebResult? dto = await InvokeAsync(tool, "https://public.fixture.test/start");
 
         Assert.NotNull(dto);
+
         Assert.Contains(ErrorCodes.WebBrowsing.SsrfBlocked, dto.Content, StringComparison.Ordinal);
+
         Assert.Equal(["https://example.com/final"], warded.Select(static uri => uri.AbsoluteUri));
+
         Assert.Single(requested);
     }
 
@@ -345,7 +357,9 @@ public sealed class ArcanumBrowseWebToolTests
         BrowseWebResult? limited = await InvokeAsync(endless, "https://example.com/hop-0");
 
         Assert.NotNull(limited);
+
         Assert.Contains(ErrorCodes.WebBrowsing.RedirectLimitExceeded, limited.Content, StringComparison.Ordinal);
+
         Assert.Equal(maxRedirects + 1, requests);
 
         int cycleRequests = 0;
@@ -362,7 +376,9 @@ public sealed class ArcanumBrowseWebToolTests
         BrowseWebResult? cyclic = await InvokeAsync(cycle, "https://example.com/a");
 
         Assert.NotNull(cyclic);
+
         Assert.Contains(ErrorCodes.WebBrowsing.RedirectLimitExceeded, cyclic.Content, StringComparison.Ordinal);
+
         Assert.Equal(2, cycleRequests);
     }
 
@@ -375,6 +391,7 @@ public sealed class ArcanumBrowseWebToolTests
         BrowseWebResult? dto = await InvokeAsync(tool, "https://example.com/start");
 
         Assert.NotNull(dto);
+
         Assert.Contains(ErrorCodes.WebBrowsing.InvalidUrl, dto.Content, StringComparison.Ordinal);
     }
 
@@ -593,8 +610,11 @@ public sealed class ArcanumBrowseWebToolTests
         FakeDnsResolver resolver = new();
 
         resolver.Add("example.com", IPAddress.Parse("93.184.216.34"));
+
         resolver.Add("example.test", IPAddress.Parse("93.184.216.34"));
+
         resolver.Add("public.fixture.test", IPAddress.Parse("93.184.216.34"));
+
         resolver.Add("internal.fixture.test", IPAddress.Parse("10.0.0.5"));
 
         return resolver;
