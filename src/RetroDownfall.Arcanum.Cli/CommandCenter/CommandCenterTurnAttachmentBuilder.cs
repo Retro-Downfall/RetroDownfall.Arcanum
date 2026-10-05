@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text;
 using System.Text.RegularExpressions;
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Infrastructure.Security;

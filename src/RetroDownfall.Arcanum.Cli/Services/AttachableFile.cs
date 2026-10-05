@@ -1,6 +1,6 @@
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
-namespace RetroDownfall.Arcanum.Cli.Commands;
+namespace RetroDownfall.Arcanum.Cli.Services;
 
 /// <summary>
 /// The one test of whether a path may be read as an attachment, shared by every surface that stages files

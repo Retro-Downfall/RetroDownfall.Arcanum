@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Cli.Services;
 using System.Buffers;
 
 using System.Security.Cryptography;
