@@ -341,6 +341,58 @@ public sealed class ApprenticeCommandTests
         Assert.Equal($"/api/apprentices/{SampleId:D}", Assert.Single(showHandler.Requests).RequestUri!.AbsolutePath);
     }
 
+    /// <summary>
+    /// The harness renders at 80 columns, and a row with a 36-character ID, a 36-character Campaign GUID
+    /// and an <c>Updated</c> instant has no room for the Goal beside them. The ID is the one thing that
+    /// must survive intact (it is what <c>show</c>, <c>cancel</c> and <c>delete</c> are handed), on one
+    /// line and without an ellipsis, and the Goal stays readable beside it; the Campaign and Updated
+    /// columns are left out, and a stderr line says so, rather than every column being squeezed to a few
+    /// characters with truncated headings.
+    /// </summary>
+    [Fact]
+    public void List_keeps_the_whole_identifier_on_one_line_beside_a_campaign_guid_at_80_columns()
+    {
+        Guid campaignId = Guid.Parse("55555555-5555-4555-8555-555555555555");
+
+        ApprenticeSummaryDto summary = new(
+            SampleId,
+            campaignId,
+            "Task",
+            "Refactor the nightly import so that a failed row no longer stops the whole batch",
+            "Running",
+            1,
+            4,
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(new ListPageResult<ApprenticeSummaryDto>([summary], false), true, null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string[] lines = result.Output.ReplaceLineEndings("\n").Split('\n');
+
+        string idLine = Assert.Single(lines, line => line.Contains(SampleId.ToString("D"), StringComparison.Ordinal));
+
+        Assert.DoesNotContain("…", idLine, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("...", idLine, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("…", result.Output, StringComparison.Ordinal);
+
+        Assert.All(lines, line => Assert.True(line.Length <= 80, $"A line of {line.Length} columns overflows the 80-column terminal: {line}"));
+
+        foreach (string word in new[] { "Refactor", "nightly", "import", "failed", "whole", "batch" })
+        {
+            Assert.Contains(word, result.Output, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("Not shown at 80 columns: Campaign, Updated.", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

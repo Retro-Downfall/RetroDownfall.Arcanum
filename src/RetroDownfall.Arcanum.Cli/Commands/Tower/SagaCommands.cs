@@ -78,45 +78,31 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         SagaMemoryDto[] memories = listing.Value.Items;
 
-        Table table = new();
-
         // The whole identifier, never wrapped: the listing is where an operator reads what to hand to
-        // `saga delete`, and a fragment of it is not something any verb accepts.
-        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("Id"))).NoWrap());
+        // `saga delete`, and a fragment of it is not something any verb accepts. The State cell is never
+        // wrapped either: "retired, pinned" split across two lines reads as two rows' states. What gives way
+        // on a narrow terminal is the columns beside them, least useful first, and the operator is told which.
+        IReadOnlyList<ListingColumn<SagaMemoryDto>> columns =
+        [
+            new("Id", static memory => memory.Id, ListingColumnRole.Fixed, Muted: true),
+            new("Content", static memory => ContentPreview(memory), ListingColumnRole.Flexible),
+            new("Session", static memory => memory.SessionId is { } sid ? sid.ToString("D")[..8] : "-", ListingColumnRole.Optional, Muted: true, DropOrder: 3),
+            new("Source", static memory => memory.Source ?? "-", ListingColumnRole.Optional, Muted: true, DropOrder: 4),
+            new("Created", static memory => memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture), ListingColumnRole.Optional, Muted: true, DropOrder: 2),
+            new("Scope", static memory => DescribeScope(memory), ListingColumnRole.Optional, Muted: true, DropOrder: 1),
+            new("State", static memory => DescribeState(memory), ListingColumnRole.Fixed, Muted: true),
+        ];
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Content")));
+        int width = AnsiConsole.Profile.Width;
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Session")));
+        ListingTableResult rendered = ListingTable.Build(themePalette, columns, memories, width);
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Source")));
+        AnsiConsole.Write(rendered.Table);
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Created")));
-
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Scope")));
-
-        // Never wrapped: "retired, pinned" split across two lines reads as two rows' states, and the
-        // content column is the one that can afford to give up width.
-        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("State"))).NoWrap());
-
-        foreach (SagaMemoryDto memory in memories)
+        if (ListingTable.HiddenColumnsNotice(rendered, width) is { } hiddenNotice)
         {
-            string preview = memory.Content.Length > ContentPreviewChars
-                ? string.Concat(memory.Content.AsSpan(0, Utf8Truncation.SafeCharSliceLength(memory.Content, ContentPreviewChars)), "...")
-                : memory.Content;
-
-            string sessionText = memory.SessionId is { } sid ? sid.ToString("D")[..8] : "-";
-
-            table.AddRow(
-                new Markup(themePalette.MutedMarkup(Markup.Escape(memory.Id))),
-                new Markup(themePalette.TextMarkup(Markup.Escape(preview))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(memory.Source ?? "-"))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture)))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeScope(memory)))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeState(memory)))));
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape(hiddenNotice)));
         }
-
-        AnsiConsole.Write(table);
 
         if (memories.Length == 0)
         {
@@ -318,6 +304,11 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// Session binding needs resolving before that memory can be recalled anywhere, and a blank cell
     /// would read as "installation-scoped" - the one thing it is not.
     /// </remarks>
+    private static string ContentPreview(SagaMemoryDto memory) =>
+        memory.Content.Length > ContentPreviewChars
+            ? string.Concat(memory.Content.AsSpan(0, Utf8Truncation.SafeCharSliceLength(memory.Content, ContentPreviewChars)), "...")
+            : memory.Content;
+
     private static string DescribeScope(SagaMemoryDto memory) =>
         memory.ScopeKind switch
         {

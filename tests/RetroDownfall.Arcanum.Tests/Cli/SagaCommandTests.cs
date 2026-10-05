@@ -289,6 +289,56 @@ public sealed class SagaCommandTests
     }
 
     /// <summary>
+    /// A fully populated row has a 32-character identifier, a 15-character state and four more columns, and
+    /// the harness renders at 80 columns. The identifier and the state stay whole and the content stays
+    /// readable beside them; the columns that cannot fit are left out and a stderr line names them, instead
+    /// of every column being squeezed to a few characters under truncated headings.
+    /// </summary>
+    [Fact]
+    public void List_stays_readable_at_80_columns_with_a_fully_populated_row()
+    {
+        const string FullId = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+        SagaMemoryDto memory = new(
+            FullId,
+            "The operator prefers dark mode in every editor and terminal they use daily.",
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero),
+            Guid.Parse("66666666-6666-4666-8666-666666666666"),
+            null,
+            "extraction",
+            null,
+            SagaMemoryScopeKind.Campaign,
+            Guid.Parse("77777777-7777-4777-8777-777777777777"),
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaMemoryDto[]>([memory], true, null),
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string[] lines = result.Output.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.Single(lines, line => line.Contains(FullId, StringComparison.Ordinal));
+
+        Assert.Equal("retired, pinned", StateCell(lines, FullId));
+
+        Assert.DoesNotContain("…", result.Output, StringComparison.Ordinal);
+
+        Assert.All(lines, line => Assert.True(line.Length <= 80, $"A line of {line.Length} columns overflows the 80-column terminal: {line}"));
+
+        foreach (string word in new[] { "operator", "prefers", "editor", "terminal", "daily" })
+        {
+            Assert.Contains(word, result.Output, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("Not shown at 80 columns: Source, Session, Created, Scope.", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The listing is where an operator reads the identifier to hand to <c>saga delete</c>, so it
     /// prints the whole identifier rather than a fragment no verb accepts.
     /// </summary>

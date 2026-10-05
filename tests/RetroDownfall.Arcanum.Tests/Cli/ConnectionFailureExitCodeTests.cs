@@ -183,6 +183,23 @@ public sealed class ConnectionFailureExitCodeTests
         Assert.Contains("unreachable", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The one verb that asks the host and still does not exit 3: <c>context current</c> shows the saved
+    /// context and checks it against the host on a best-effort basis, so a host that cannot be reached leaves
+    /// the saved context unchecked (a stale-context warning is only ever about something the host answered)
+    /// rather than failing a verb whose job, printing what is saved, was done. The Command Reference names
+    /// it as the exception to the exit-3 rule.
+    /// </summary>
+    [Fact]
+    public void Context_current_does_not_fail_on_an_unreachable_host()
+    {
+        CliTestResult result = RunCommand(["context", "current", "--no-context"]);
+
+        Assert.True(
+            result.ExitCode == (int)CliExitCode.Success,
+            $"exit {result.ExitCode}; stdout: {result.Output}; stderr: {result.Error}");
+    }
+
     private static CliTestResult RunCommand(string[] args, Action<IServiceCollection>? configure = null)
     {
         ServiceCollection services = new();

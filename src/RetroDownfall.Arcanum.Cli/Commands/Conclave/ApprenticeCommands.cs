@@ -159,31 +159,28 @@ public sealed class ApprenticeCommands(
 
         ApprenticeSummaryDto[] apprentices = result.Value.Items;
 
-        Table table = new();
-
         // The whole identifier, never wrapped: the listing is where an operator reads what to hand to
-        // show, cancel or delete, and a fragment of it is not an ID, a name or a name prefix.
-        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("ID"))).NoWrap());
+        // show, cancel or delete, and a fragment of it is not an ID, a name or a name prefix. What gives way
+        // on a narrow terminal is the columns beside it, least useful first, and the operator is told which.
+        IReadOnlyList<ListingColumn<ApprenticeSummaryDto>> columns =
+        [
+            new("ID", static apprentice => apprentice.Id.ToString("D"), ListingColumnRole.Fixed),
+            new("Goal", static apprentice => apprentice.Goal, ListingColumnRole.Flexible),
+            new("Status", static apprentice => apprentice.Status, ListingColumnRole.Fixed, Muted: true),
+            new("Campaign", static apprentice => apprentice.CampaignId?.ToString("D") ?? "-", ListingColumnRole.Optional, Muted: true, DropOrder: 2),
+            new("Updated", static apprentice => apprentice.UpdatedAt.ToString("u"), ListingColumnRole.Optional, Muted: true, DropOrder: 1),
+        ];
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Goal")));
+        int width = AnsiConsole.Profile.Width;
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Status")));
+        ListingTableResult rendered = ListingTable.Build(themePalette, columns, apprentices, width);
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Campaign")));
+        AnsiConsole.Write(rendered.Table);
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Updated")));
-
-        foreach (ApprenticeSummaryDto apprentice in apprentices)
+        if (ListingTable.HiddenColumnsNotice(rendered, width) is { } hiddenNotice)
         {
-            table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(apprentice.Id.ToString("D")))),
-                new Markup(themePalette.TextMarkup(Markup.Escape(apprentice.Goal))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(apprentice.Status))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(apprentice.CampaignId?.ToString("D") ?? "-"))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(apprentice.UpdatedAt.ToString("u")))));
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape(hiddenNotice)));
         }
-
-        AnsiConsole.Write(table);
 
         if (apprentices.Length == 0)
         {

@@ -308,16 +308,16 @@ internal sealed class CliContextService(
         CampaignDto selected,
         CancellationToken cancellationToken)
     {
-        (bool loaded, CampaignDto[] campaigns) = await GetCampaignsAsync(
+        Result<CampaignDto[]> listed = await GetAllCampaignsAsync(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (!loaded)
+        if (listed.IsFailure)
         {
-            return RevalidationUnavailable("campaign");
+            return RevalidationUnavailable("campaign", listed.Error);
         }
 
-        CampaignDto? refreshed = campaigns.FirstOrDefault(
+        CampaignDto? refreshed = listed.Value.FirstOrDefault(
             candidate => candidate.Id == selected.Id
                 && candidate.CreatedAt == selected.CreatedAt);
 
@@ -421,12 +421,21 @@ internal sealed class CliContextService(
             current with { SessionId = refreshed.Id });
     }
 
+    /// <summary>
+    /// The refusal when the host cannot revalidate a selection. A <c>Connection.*</c> failure keeps its own
+    /// error, as the workspace, model and session revalidations do, so the command exits 3 like every other
+    /// unreachable-host failure instead of reporting a configuration problem; any other cause is the
+    /// generic "retry the selection".
+    /// </summary>
     private static Result<CliContextDocument> RevalidationUnavailable(
-        string resourceKind) =>
-        Result<CliContextDocument>.Failure(
-            new Error(
-                ErrorCodes.Data.ControlPathUnavailable,
-                $"The selected {resourceKind} could not be revalidated on the current host. Retry the selection."));
+        string resourceKind,
+        Error cause) =>
+        CliFailureExit.Classify(cause.Code, CliExitCode.ConfigurationError) == CliExitCode.NetworkError
+            ? Result<CliContextDocument>.Failure(cause)
+            : Result<CliContextDocument>.Failure(
+                new Error(
+                    ErrorCodes.Data.ControlPathUnavailable,
+                    $"The selected {resourceKind} could not be revalidated on the current host. Retry the selection."));
 
     private static Result<CliContextDocument> RevalidationMissing(
         string resourceKind,
@@ -936,8 +945,21 @@ internal sealed class CliContextService(
         CancellationToken cancellationToken)
     {
         // A host that cannot list its campaigns, or whose cursor does not advance, degrades the caller to
-        // "not loaded" rather than failing it: the walker refuses a non-advancing cursor, so the
-        // accumulator cannot grow without bound.
+        // "not loaded" rather than failing it.
+        Result<CampaignDto[]> campaigns = await GetAllCampaignsAsync(cancellationToken).ConfigureAwait(false);
+
+        return campaigns.IsFailure
+            ? (false, [])
+            : (true, campaigns.Value);
+    }
+
+    /// <summary>
+    /// Every campaign, following the host's continuation. The walker refuses a cursor that does not advance,
+    /// so the accumulator cannot grow without bound.
+    /// </summary>
+    private async Task<Result<CampaignDto[]>> GetAllCampaignsAsync(
+        CancellationToken cancellationToken)
+    {
         Result<HostListing<CampaignDto>> campaigns = await HostPageWalker
             .ReadAsync<CampaignDto, int>(
                 "campaign list",
@@ -950,8 +972,8 @@ internal sealed class CliContextService(
             .ConfigureAwait(false);
 
         return campaigns.IsFailure
-            ? (false, [])
-            : (true, campaigns.Value.Items);
+            ? Result<CampaignDto[]>.Failure(campaigns.Error)
+            : Result<CampaignDto[]>.Success(campaigns.Value.Items);
     }
 
     private void AddRelationshipWarnings(

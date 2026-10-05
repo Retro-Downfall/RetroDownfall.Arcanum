@@ -213,6 +213,33 @@ public sealed class CliContextMutationBoundaryTests
         Assert.Equal(0, store.ExclusiveSaves);
     }
 
+    /// <summary>
+    /// The same for a campaign, whose revalidation builds its own refusal: it used to drop the
+    /// <c>Connection.*</c> code and exit 2, so a wrapper that retries on 3 never saw the retryable case.
+    /// </summary>
+    [Fact]
+    public async Task A_host_that_goes_away_during_campaign_revalidation_exits_3_and_keeps_the_saved_context()
+    {
+        FakeContextStore store = new(
+            CliContextDocument.Empty with { Model = "retained-model" });
+
+        RecordingArcanumClientMutationBoundary boundary = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            Services(store, boundary, new UnreachableHandler()),
+            ["use", "campaign", FakeResourceCatalog.CampaignId.ToString("D")]);
+
+        Assert.True(
+            result.ExitCode == (int)CliExitCode.NetworkError,
+            $"exit {result.ExitCode}; stdout: {result.Output}; stderr: {result.Error}");
+
+        Assert.Equal("retained-model", store.Load().Model);
+
+        Assert.Null(store.Load().CampaignId);
+
+        Assert.Equal(0, store.ExclusiveSaves);
+    }
+
     private static ServiceCollection Services<TStore>(
         TStore store,
         RecordingArcanumClientMutationBoundary boundary,
@@ -393,9 +420,23 @@ public sealed class CliContextMutationBoundaryTests
                         DateTimeOffset.UnixEpoch,
                         DateTimeOffset.UnixEpoch)));
 
+        internal static Guid CampaignId { get; } =
+            Guid.Parse("25252525-2525-2525-2525-252525252525");
+
         public Task<ResourceSelectionResult<CampaignDto>> SelectCampaignAsync(
             string? identifier,
-            CancellationToken cancellationToken) => throw Unused();
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                ResourceSelectionResult<CampaignDto>.Selected(
+                    new CampaignDto(
+                        CampaignId,
+                        "Selected campaign",
+                        "/srv/campaign",
+                        WorkspaceType.Campaign,
+                        null,
+                        CampaignSettings.CreateDefault(),
+                        DateTimeOffset.UnixEpoch,
+                        DateTimeOffset.UnixEpoch)));
 
         public Task<ResourceSelectionResult<EntryDto>> SelectSessionEntryAsync(
             Guid sessionId,
