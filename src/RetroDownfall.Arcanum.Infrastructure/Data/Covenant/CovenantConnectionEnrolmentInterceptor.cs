@@ -32,7 +32,7 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         IGrimoireOrdinaryConnectionLifecycle lifecycle,
         ICovenantConnectionDrain drain,
         ICovenantSqliteConnectionInitializer initializer,
-        ISqliteNativeRuntime? nativeRuntime = null)
+        ISqliteNativeRuntime nativeRuntime)
     {
         ArgumentNullException.ThrowIfNull(lifecycle);
 
@@ -40,13 +40,15 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
         ArgumentNullException.ThrowIfNull(initializer);
 
+        ArgumentNullException.ThrowIfNull(nativeRuntime);
+
         _lifecycle = lifecycle;
 
         _drain = drain;
 
         _initializer = initializer;
 
-        _nativeRuntime = nativeRuntime ?? SqliteNativeRuntime.Instance;
+        _nativeRuntime = nativeRuntime;
     }
 
     public override InterceptionResult ConnectionOpening(

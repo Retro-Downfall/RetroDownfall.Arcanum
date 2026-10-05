@@ -277,6 +277,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "Batches_InputFileId_index",
                 "Batches_OutputFileId_index",
                 "Batches_ErrorFileId_index",
+                "InferenceRuns_SessionId_norm_index",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",

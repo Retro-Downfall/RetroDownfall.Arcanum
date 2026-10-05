@@ -4,9 +4,10 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 /// <summary>The exact normalized Core version-14 tree before the file-identity indexes were added.</summary>
 /// <remarks>
-/// Version 15 appends three indexes to <c>Batches</c> and changes nothing else in the tree. That file is frozen
-/// here byte for byte, because the version-13 reconstruction, and through it the version-12 one and the raw
-/// version-1 to version-5 fixtures, inherit every object they do not freeze through this one.
+/// Version 15 appends three indexes to <c>Batches</c> and one to <c>InferenceRuns</c>, and changes nothing else in
+/// the tree. Those two files are frozen here byte for byte, because the version-13 reconstruction, and through it the
+/// version-12 one and the raw version-1 to version-5 fixtures, inherit every object they do not freeze through this
+/// one.
 /// </remarks>
 internal static class CoreSchemaVersionFourteenFixture
 {
@@ -44,12 +45,34 @@ internal static class CoreSchemaVersionFourteenFixture
 
         """;
 
+    // Version 15 appends IX_InferenceRuns_SessionId_Norm.
+    private const string InferenceRunsSql =
+        """
+        CREATE TABLE IF NOT EXISTS "InferenceRuns" (
+            "Id" TEXT NOT NULL CONSTRAINT "PK_InferenceRuns" PRIMARY KEY,
+            "RequestId" TEXT NOT NULL,
+            "SessionId" TEXT NULL,
+            "Surface" TEXT NOT NULL,
+            "Purpose" TEXT NOT NULL,
+            "StartedAt" TEXT NOT NULL,
+            "CompletedAt" TEXT NULL,
+            "Status" INTEGER NOT NULL,
+            "IdempotencyClaimId" TEXT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS "IX_InferenceRuns_StartedAt" ON "InferenceRuns" ("StartedAt");
+        CREATE INDEX IF NOT EXISTS "IX_InferenceRuns_IdempotencyClaimId" ON "InferenceRuns" ("IdempotencyClaimId");
+
+        """;
+
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
         .. GrimoireSchemaCatalog.CoreObjects
             .Select(static definition => definition.Name switch
             {
                 "Batches" => definition with { Sql = BatchesSql.ReplaceLineEndings("\n") },
+
+                "InferenceRuns" => definition with { Sql = InferenceRunsSql.ReplaceLineEndings("\n") },
 
                 _ => definition,
             }),

@@ -9,8 +9,8 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
 /// <summary>
 /// Core version 15: the file identities (<c>UploadedFiles.Id</c> and the three file roles a batch names) settle on
-/// the canonical uppercase dashed spelling, and the batch roles are indexed, reached the same way from a fresh install
-/// and from a version-14 installation.
+/// the canonical uppercase dashed spelling, the batch roles are indexed, and the run ledger's Session column gets its
+/// expression index, reached the same way from a fresh install and from a version-14 installation.
 /// </summary>
 public sealed class FileIdentitySchemaEvolutionTests
 {
@@ -31,7 +31,13 @@ public sealed class FileIdentitySchemaEvolutionTests
 
         IReadOnlyDictionary<string, string> evolved = await DefinitionsAsync(evolve: true);
 
-        foreach (string name in (string[])["IX_Batches_InputFileId", "IX_Batches_OutputFileId", "IX_Batches_ErrorFileId"])
+        foreach (string name in (string[])
+            [
+                "IX_Batches_InputFileId",
+                "IX_Batches_OutputFileId",
+                "IX_Batches_ErrorFileId",
+                "IX_InferenceRuns_SessionId_Norm",
+            ])
         {
             Assert.Contains(name, fresh.Keys);
         }

@@ -481,9 +481,31 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
         string directory = Path.Combine(_testHome, "reopen-special-characters");
 
-        Directory.CreateDirectory(directory);
+        await AssertReopenReadsSeededRowAsync(Path.Combine(directory, "a?b%c#d.db"));
+    }
 
-        string databasePath = Path.Combine(directory, "a?b%c#d.db");
+    /// <summary>
+    /// The Windows spelling of the immutable URI is <c>file:///C%3A/...</c>, which the separator seam pins on every
+    /// platform; this is the one test that hands that spelling to the real SQLite on a Windows path, with the drive
+    /// colon, a space, a percent sign and a hash sign (a question mark is not a legal Windows file name character).
+    /// </summary>
+    [SkippableFact]
+    public async Task OpenJournalCandidateReopenAsync_OpensAWindowsPathContainingSpacePercentHashAndDriveColon()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The drive-letter URI spelling only exists on a Windows path.");
+
+        string directory = Path.Combine(_testHome, "reopen windows 50% #special");
+
+        string databasePath = Path.Combine(directory, "a b%c#d.db");
+
+        Assert.Contains(':', databasePath);
+
+        await AssertReopenReadsSeededRowAsync(databasePath);
+    }
+
+    private static async Task AssertReopenReadsSeededRowAsync(string databasePath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
 
         SqliteNativeRuntime.Instance.Initialize();
 

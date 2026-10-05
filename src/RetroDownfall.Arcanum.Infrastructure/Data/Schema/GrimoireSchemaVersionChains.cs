@@ -109,9 +109,13 @@ internal static class GrimoireSchemaVersionChains
     /// <c>OutputFileId</c> and <c>ErrorFileId</c>, were written in lowercase dashed form while every lookup
     /// wrapped the column in <c>lower(replace(col, '-', ''))</c>, so deleting an uploaded file and checking
     /// whether a batch still named it scanned both tables. The step rewrites any non-canonical value in
-    /// place, in the statement's own transaction, and indexes the three batch columns. It declares no sweep:
-    /// both tables are small relative to the Entries family, no trigger or foreign key names either column,
-    /// and the rewrite is one statement per column.</para>
+    /// place, in the statement's own transaction, and indexes the three batch columns. It also adds
+    /// <c>IX_InferenceRuns_SessionId_Norm</c>, the expression index the retention sweep's
+    /// <c>lower(replace(SessionId, '-', ''))</c> comparisons against the run ledger need; that column keeps its
+    /// dash-free spelling, so no value is rewritten. It declares no sweep:
+    /// the two file tables are small relative to the Entries family, no trigger or foreign key names either file
+    /// column, the rewrite is one statement per column, and an index is built inside the step's own
+    /// transaction.</para>
     /// </remarks>
     internal const int CoreSchemaVersion = 15;
 
