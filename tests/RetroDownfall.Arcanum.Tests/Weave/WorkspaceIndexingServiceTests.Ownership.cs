@@ -182,6 +182,254 @@ public sealed partial class WorkspaceIndexingServiceTests
         }
     }
 
+    /// <summary>
+    /// One vanished workspace must not make the scheduler re-walk every healthy workspace each second: the
+    /// retry belongs to the entry that failed, with its own backoff, and the healthy entries wait for the
+    /// next scheduled reconciliation.
+    /// </summary>
+    [SkippableFact]
+    public async Task Failed_sweep_does_not_repeat_full_walk_of_healthy_workspaces_each_second()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string healthy = Path.Combine(_workspace.Root, "healthy");
+
+        string vanished = _workspace.CreateSubdir("vanished");
+
+        _workspace.WriteFile("healthy/one.cs", "class One {}");
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, scopeFactory: scopes);
+
+        service.RegisterWorkspace(healthy);
+
+        service.RegisterWorkspace(vanished);
+
+        Directory.Delete(vanished);
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            // The first sweep walks the healthy workspace once and fails the vanished one.
+            await WaitForWorkspaceConditionAsync(() => scopes.ScopeCount == 1 && service.GetScheduledSweepSnapshot().Outstanding == 0);
+
+            // Long enough for at least two one-second retries of the failed entry.
+            await Task.Delay(TimeSpan.FromSeconds(3.5));
+
+            Assert.Equal(1, scopes.ScopeCount);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(2, 2)]
+    [InlineData(3, 4)]
+    [InlineData(4, 8)]
+    [InlineData(9, 256)]
+    [InlineData(10, 300)]
+    [InlineData(31, 300)]
+    [InlineData(500, 300)]
+    public void Retry_delay_doubles_per_consecutive_failure_and_is_capped_at_the_ceiling(int failures, int expectedSeconds)
+    {
+        TimeSpan delay = WorkspaceIndexingService.NextRetryDelay(failures, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(5));
+
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), delay);
+    }
+
+    [Fact]
+    public void Retry_delay_requires_at_least_one_failure()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => WorkspaceIndexingService.NextRetryDelay(0, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(5)));
+    }
+
+    /// <summary>
+    /// Registration happens on every inference turn and nothing else removes an entry, so a deleted working
+    /// directory is retried until the process exits unless its repeated failures evict it. Eviction keeps
+    /// every healthy entry and lets a later registration of the same path start from the new root.
+    /// </summary>
+    [SkippableFact]
+    public async Task Workspace_with_a_persistently_unavailable_root_is_evicted_and_registers_afresh()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string healthy = Path.Combine(_workspace.Root, "healthy");
+
+        string vanished = _workspace.CreateSubdir("vanished");
+
+        _workspace.WriteFile("healthy/one.cs", "class One {}");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers);
+
+        service.RetryBackoffBaseDelay = TimeSpan.FromMilliseconds(1);
+
+        service.RegisterWorkspace(healthy);
+
+        service.RegisterWorkspace(vanished);
+
+        FakeWorkspaceFileWatcher vanishedWatcher = Assert.Single(watchers.Created, watcher => watcher.WorkspacePath == vanished);
+
+        Directory.Delete(vanished);
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitForWorkspaceConditionAsync(() => vanishedWatcher.IsDisposed);
+
+            Assert.Equal(1, service.ActiveWatcherCount);
+
+            Assert.True(service.GetRuntimeStatus(healthy).Watching);
+
+            Assert.False(service.GetRuntimeStatus(vanished).Watching);
+
+            Directory.CreateDirectory(vanished);
+
+            service.RegisterWorkspace(vanished);
+
+            Assert.Equal(2, service.ActiveWatcherCount);
+
+            Assert.True(service.GetRuntimeStatus(vanished).Watching);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// A watcher factory that keeps failing (an exhausted inotify budget, say) delivered no events, so it
+    /// must neither be retried on every scheduler cycle nor force a full re-read of the workspace each
+    /// time: the periodic reconciliation already covers a workspace nothing watches.
+    /// </summary>
+    [SkippableFact]
+    public async Task Persistent_watcher_creation_failure_backs_off_and_does_not_force_full_reindex()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("one.cs", "class One {}");
+
+        FakeWorkspaceFileWatcherFactory watchers = new()
+        {
+            BeforeReturn = static () => throw new InvalidOperationException("The inotify watch budget is exhausted."),
+        };
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers, scopeFactory: scopes);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            // The one scheduled reconciliation walks the workspace once and settles.
+            await WaitForWorkspaceConditionAsync(() => scopes.ScopeCount == 1 && service.GetScheduledSweepSnapshot().Outstanding == 0);
+
+            await Task.Delay(TimeSpan.FromSeconds(2.5));
+
+            // A retry at once, then one second, then two: never one attempt per debounce cycle.
+            Assert.InRange(watchers.Created.Count, 1, 4);
+
+            // No creation failure forced another reconciliation.
+            Assert.Equal(1, scopes.ScopeCount);
+
+            Assert.Equal(0, service.ActiveWatcherCount);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// A backed-off watcher is re-created when its deadline arrives even though nothing else wakes the
+    /// scheduler: the loop otherwise sleeps until the next reconciliation, an hour away.
+    /// </summary>
+    [SkippableFact]
+    public async Task Watcher_creation_is_retried_when_its_backoff_elapses_without_another_signal()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        int attempts = 0;
+
+        FakeWorkspaceFileWatcherFactory watchers = new()
+        {
+            BeforeReturn = () =>
+            {
+                if (Interlocked.Increment(ref attempts) <= 2)
+                {
+                    throw new InvalidOperationException("The inotify watch budget is exhausted.");
+                }
+            },
+        };
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers);
+
+        service.RetryBackoffBaseDelay = TimeSpan.FromMilliseconds(700);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitForWorkspaceConditionAsync(() => service.ActiveWatcherCount == 1);
+
+            Assert.Equal(3, watchers.Created.Count);
+
+            Assert.True(service.GetRuntimeStatus(_workspace.Root).Watching);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// The watcher that ran and then failed may have lost events, so unlike a creation failure it still
+    /// forces the reconciliation of what it covered.
+    /// </summary>
+    [SkippableFact]
+    public async Task Runtime_watcher_error_still_forces_a_full_reconciliation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("one.cs", "class One {}");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        RecordingGrimoireWorkAdmissionGate gate = new(new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers, workAdmission: gate);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
+
+        await DrainWorkspaceSchedulerAsync(service);
+
+        Assert.Equal(1, gate.EffectGroupAttempts);
+
+        watchers.Single.TriggerError(new IOException("Watcher lost events."));
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        // The forced reconciliation re-reads the unchanged file, one effect group per visit.
+        Assert.Equal(2, gate.EffectGroupAttempts);
+
+        await service.DisposeAsync();
+    }
+
     [SkippableFact]
     public async Task Dispatch_failure_returns_unavailable_and_settles_the_published_handle_without_admission()
     {

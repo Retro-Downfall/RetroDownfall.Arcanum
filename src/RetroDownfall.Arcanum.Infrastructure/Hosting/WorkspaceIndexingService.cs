@@ -51,19 +51,6 @@ internal sealed partial class WorkspaceIndexingService(
     IWorkspaceIndexRuntimeStatusProvider,
     IAsyncDisposable
 {
-    private static readonly HashSet<string> IgnoredDirectorySegments = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "bin",
-        "obj",
-        ".git",
-        "node_modules",
-        ".vs",
-        ".nuget",
-        "packages",
-        "dist",
-        "build",
-    };
-
     /// <summary>
     /// Path comparison for the visited canonical-directory set that terminates symlink cycles, matching
     /// <c>EyeOfTheWorldService.ScanWorkspace</c> and <c>SpellScanner</c>.
@@ -138,7 +125,9 @@ internal sealed partial class WorkspaceIndexingService(
 
                 string relativePath = Path.GetRelativePath(workspacePath, normalizedPath);
 
-                if (ContainsIgnoredDirectorySegment(relativePath))
+                // The shared rule, lexical half: a dot-prefixed or ignored segment is never indexed and
+                // anything already stored for it is removed.
+                if (!WorkspaceIndexEligibility.HasEligibleSegments(relativePath))
                 {
                     await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
@@ -165,9 +154,7 @@ internal sealed partial class WorkspaceIndexingService(
                     return WorkspaceUnitOutcome.Failed;
                 }
 
-                bool ignored = !extensions.Contains(Path.GetExtension(normalizedPath));
-
-                if (ignored || !File.Exists(normalizedPath))
+                if (!File.Exists(normalizedPath) || !IsEligibleOnDisk(workspacePath, relativePath, extensions))
                 {
                     await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
@@ -293,9 +280,14 @@ internal sealed partial class WorkspaceIndexingService(
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
-        int filesIndexed = demand.FilesIndexed;
+        int startingFilesIndexed = demand.FilesIndexed;
+
+        int filesIndexed = startingFilesIndexed;
 
         bool failed = false;
+
+        // Set when a changed file is left for later because the per-checkpoint budget ran out.
+        bool budgetStopped = false;
 
         IEnumerable<string> candidates =
             EnumerateCandidateFiles(workspacePath, extensions);
@@ -326,11 +318,10 @@ internal sealed partial class WorkspaceIndexingService(
 
                 seenRelativePaths.Add(relativePath);
 
-                if (filesIndexed >= maxFilesToIndex)
+                if (budgetStopped)
                 {
-                    // Per-tick re-embed budget exhausted — the file is still "seen" (above) so a
-                    // later orphan-cleanup pass never mistakes it for deleted, but re-indexing it is
-                    // deferred to a future tick.
+                    // Deferred work is already known; what remains is only inventory, so the file is
+                    // "seen" (above) and a later orphan-cleanup pass never mistakes it for deleted.
                     continue;
                 }
 
@@ -365,6 +356,15 @@ internal sealed partial class WorkspaceIndexingService(
                     && existing.FileLength == fileLength)
                 {
                     // Unchanged since last index — skip without consuming the per-tick file budget.
+                    continue;
+                }
+
+                if (filesIndexed >= maxFilesToIndex)
+                {
+                    // Per-checkpoint re-embed budget exhausted with changed work still waiting: stop
+                    // indexing here and let the scheduler continue with a follow-up unit.
+                    budgetStopped = true;
+
                     continue;
                 }
 
@@ -412,13 +412,18 @@ internal sealed partial class WorkspaceIndexingService(
 
         await DeleteOrphanedChunksAsync(db, workspacePath, seenRelativePaths, cancellationToken).ConfigureAwait(false);
 
+        // A unit that made no progress never asks for a continuation, so a budget that cannot be
+        // spent cannot become a hot loop; every continuation indexes at least one more file.
+        demand.ContinuationRequired = budgetStopped && filesIndexed > startingFilesIndexed;
+
         return failed ? WorkspaceUnitOutcome.Failed : WorkspaceUnitOutcome.Completed;
     }
 
     /// <summary>
     /// Manually walks <paramref name="workspacePath"/> breadth-first (mirroring
     /// <c>PhysicalFileSystemBrowser.ListAsync</c>'s recursive-listing walk), pruning
-    /// <see cref="IgnoredDirectorySegments"/> and symlink-escaping subdirectories <b>before</b>
+    /// every directory <see cref="WorkspaceIndexEligibility"/> rejects (ignored, dot-prefixed, hidden or
+    /// system) and symlink-escaping subdirectories <b>before</b>
     /// descending into them — unlike <see cref="Directory.EnumerateFiles(string, string, EnumerationOptions)"/>
     /// with <c>RecurseSubdirectories = true</c>, which would still visit every entry under a huge
     /// ignored directory (for example <c>node_modules</c>) only to discard them one by one. The walk
@@ -458,22 +463,22 @@ internal sealed partial class WorkspaceIndexingService(
                     continue;
                 }
 
-                if ((attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0)
+                bool isDirectory = (attributes & FileAttributes.Directory) != 0;
+
+                // The shared rule, judged on the entry's own name because every ancestor was vetted
+                // before the walk descended into it. A hidden, system, dot-prefixed or ignored
+                // directory is pruned before recursion, so its contents are never visited at all
+                // rather than being walked and discarded one entry at a time.
+                if (!WorkspaceIndexEligibility.IsEligible(
+                        Path.GetFileName(fullPath),
+                        attributes,
+                        isDirectory ? null : extensions))
                 {
                     continue;
                 }
 
-                if ((attributes & FileAttributes.Directory) != 0)
+                if (isDirectory)
                 {
-                    string name = Path.GetFileName(fullPath);
-
-                    if (IgnoredDirectorySegments.Contains(name))
-                    {
-                        // Pruned before recursion — its contents are never visited at all, rather
-                        // than being walked and discarded one entry at a time.
-                        continue;
-                    }
-
                     if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspacePath, fullPath, out _))
                     {
                         // Escaping symlinked directory — never descended into.
@@ -488,7 +493,7 @@ internal sealed partial class WorkspaceIndexingService(
 
                     pendingDirectories.Enqueue(fullPath);
                 }
-                else if (extensions.Contains(Path.GetExtension(fullPath)))
+                else
                 {
                     yield return fullPath;
                 }
@@ -1361,19 +1366,24 @@ internal sealed partial class WorkspaceIndexingService(
         cmd.Parameters.Add(parameter);
     }
 
-    private static bool ContainsIgnoredDirectorySegment(string relativePath)
+    /// <summary>
+    /// The shared eligibility rule applied to a file a watcher event named: dot-prefixed and ignored
+    /// segments, the Hidden/System attribute of the leaf and of every ancestor directory, and the
+    /// configured extensions. An entry whose attributes cannot be read is not eligible.
+    /// </summary>
+    private static bool IsEligibleOnDisk(string workspacePath, string relativePath, IReadOnlySet<string> extensions)
     {
-        foreach (string segment in relativePath.Split(
-                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                     StringSplitOptions.RemoveEmptyEntries))
+        try
         {
-            if (IgnoredDirectorySegments.Contains(segment))
-            {
-                return true;
-            }
+            return WorkspaceIndexEligibility.IsEligible(
+                relativePath,
+                prefix => File.GetAttributes(Path.Combine(workspacePath, prefix)),
+                extensions);
         }
-
-        return false;
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private enum PendingPathAction

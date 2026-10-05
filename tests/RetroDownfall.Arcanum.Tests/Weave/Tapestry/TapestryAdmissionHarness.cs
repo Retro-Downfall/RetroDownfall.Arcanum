@@ -88,6 +88,17 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
     internal async Task<IReadOnlyList<TapestryWeaveOutcome>> SweepAsync(CancellationToken token = default) =>
         (await Service.RunSweepAsync(Settings(), token)).Outcomes;
 
+    /// <summary>Polls until <paramref name="condition"/> holds, failing the test after ten seconds.</summary>
+    internal static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+
+        while (!condition())
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(10), deadline.Token);
+        }
+    }
+
     internal async Task StepAsync(string step, CancellationToken token)
     {
         Events.Enqueue(step);

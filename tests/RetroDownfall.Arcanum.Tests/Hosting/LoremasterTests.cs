@@ -204,6 +204,45 @@ public sealed class LoremasterTests
                 && message.Exception is IOException);
     }
 
+    /// <summary>
+    /// The summary is billed the moment the provider returns it, so a shutdown that arrives before the
+    /// rollup write must not discard it: the write runs on a token the host cannot cancel, and the
+    /// watermark moves with the summary instead of the next sweep paying for the same batch again.
+    /// </summary>
+    [Fact]
+    public async Task Rollup_is_persisted_when_shutdown_is_requested_after_the_provider_returns()
+    {
+        LoremasterHarness harness = new();
+
+        await harness.Service.StartAsync(CancellationToken.None);
+
+        await harness.NextStepAsync("sweep");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        Checkpoint rollup = new();
+
+        harness.OnStepAsync = (step, token) => step == "rollup"
+            ? rollup.PauseAsync(token)
+            : Task.CompletedTask;
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await rollup.Reached.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task stopping = harness.Service.StopAsync(CancellationToken.None);
+
+        rollup.Release();
+
+        await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, harness.Intelligence.Calls);
+
+        Assert.Equal(1, harness.Repository.Rollups);
+
+        Assert.Equal(harness.Repository.Session.Id, harness.Repository.LastRollupSessionId);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

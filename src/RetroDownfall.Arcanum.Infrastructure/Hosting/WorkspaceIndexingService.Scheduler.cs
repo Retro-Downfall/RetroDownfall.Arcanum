@@ -12,6 +12,15 @@ internal sealed partial class WorkspaceIndexingService
 {
     private const int WorkspaceCapacity = 2;
 
+    /// <summary>
+    /// Consecutive sweep failures with an unavailable root (gone, moved outside the allowlist, or
+    /// replaced by another directory) after which an entry is evicted. Registration happens on every
+    /// inference turn and nothing else ever removes an entry, so without this a deleted working
+    /// directory is retried for the life of the process. The next registration of the same path
+    /// creates a fresh entry with the new root identity.
+    /// </summary>
+    private const int MaxConsecutiveRootFailures = 8;
+
     private readonly object _schedulerGate = new();
 
     private readonly Dictionary<string, WorkspaceEntry> _entries = new(CanonicalDirectoryComparer);
@@ -30,6 +39,18 @@ internal sealed partial class WorkspaceIndexingService
 
     internal Action? BeforeHandleDispatchForTests { get; set; }
 
+    /// <summary>
+    /// Replaces the code-owned per-checkpoint file budget for the units the scheduler runs, so a test
+    /// can exhaust it with a handful of files.
+    /// </summary>
+    internal int? MaxFilesToIndexOverride { get; set; }
+
+    /// <summary>
+    /// The first retry delay of a failed entry; it doubles per consecutive failure up to the
+    /// reconciliation interval. A property so a test can shorten the ladder.
+    /// </summary>
+    internal TimeSpan RetryBackoffBaseDelay { get; set; } = TimeSpan.FromSeconds(1);
+
     internal WorkspaceSchedulerSnapshot GetSchedulerSnapshot()
     {
         lock (_schedulerGate)
@@ -38,12 +59,66 @@ internal sealed partial class WorkspaceIndexingService
         }
     }
 
+    /// <summary>
+    /// The sweep still outstanding and the instant the scheduler next has sweep work: the next full
+    /// reconciliation, or an earlier retry of a failed entry.
+    /// </summary>
     internal (int Outstanding, DateTimeOffset NextReconciliation) GetScheduledSweepSnapshot()
     {
         lock (_schedulerGate)
         {
-            return (_sweep?.Outstanding ?? 0, _nextReconciliation);
+            return (_sweep?.Outstanding ?? 0, NextSweepDueLocked());
         }
+    }
+
+    /// <summary>
+    /// The delay before a failed entry is retried: <paramref name="baseDelay"/> doubled once per
+    /// failure after the first, never above <paramref name="ceiling"/>.
+    /// </summary>
+    internal static TimeSpan NextRetryDelay(int consecutiveFailures, TimeSpan baseDelay, TimeSpan ceiling)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(consecutiveFailures, 1);
+
+        double scaled = baseDelay.Ticks * Math.Pow(2, Math.Min(consecutiveFailures - 1, 30));
+
+        return scaled >= ceiling.Ticks ? ceiling : TimeSpan.FromTicks((long)scaled);
+    }
+
+    /// <summary>
+    /// When the scheduler loop next has work of its own: the next sweep, or the next future retry of
+    /// an entry whose watcher is not running. A retry already past is not a deadline: the loop has
+    /// just attempted it, or capacity or admission refused it, and waking at once would only spin.
+    /// </summary>
+    private DateTimeOffset NextWakeLocked()
+    {
+        DateTimeOffset due = NextSweepDueLocked();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        foreach (WorkspaceEntry entry in _entries.Values)
+        {
+            if (entry.Watcher is null && entry.WatcherRetryAt is { } retryAt && retryAt > now && retryAt < due)
+            {
+                due = retryAt;
+            }
+        }
+
+        return due;
+    }
+
+    private DateTimeOffset NextSweepDueLocked()
+    {
+        DateTimeOffset due = _nextReconciliation;
+
+        foreach (WorkspaceEntry entry in _entries.Values)
+        {
+            if (entry.RetryAt is { } retryAt && retryAt < due)
+            {
+                due = retryAt;
+            }
+        }
+
+        return due;
     }
 
     public WorkspaceIndexRuntimeStatus GetRuntimeStatus(string workspacePath)
@@ -355,10 +430,17 @@ internal sealed partial class WorkspaceIndexingService
                         || !FileHandleIdentity.IdentitiesMatch(entry.RootIdentity, currentIdentity))
                     {
                         outcome = WorkspaceUnitOutcome.Failed;
+
+                        handle.RootUnavailable = true;
                     }
                     else
                     {
                         EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+
+                        if (MaxFilesToIndexOverride is { } fileBudget)
+                        {
+                            embeddings.Codebase.MaxFilesToIndex = fileBudget;
+                        }
 
                         outcome = !embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled
                             ? WorkspaceUnitOutcome.Failed
@@ -377,9 +459,20 @@ internal sealed partial class WorkspaceIndexingService
                             }
                             else if (outcome == WorkspaceUnitOutcome.Completed)
                             {
-                                if (demand.Full)
+                                if (demand.Full && demand.ContinuationRequired)
+                                {
+                                    // The budget stopped this unit with changed files left: progress, not
+                                    // a finished reconciliation.
+                                    entry.Status.MarkSuccessfulIndex();
+
+                                    entry.Pending.ContinueFullReconciliation(demand);
+                                }
+                                else if (demand.Full)
                                 {
                                     entry.Status.MarkReconciled();
+
+                                    // A complete reconciliation proves the root and the work are healthy again.
+                                    entry.ClearFailureState();
                                 }
                                 else
                                 {
@@ -393,6 +486,11 @@ internal sealed partial class WorkspaceIndexingService
                                 if (!demand.Full)
                                 {
                                     entry.Pending.RequestForcedReconciliation();
+                                }
+                                else if (demand.ContinuationRequired)
+                                {
+                                    // One file failing must not strand the changed files the budget deferred.
+                                    entry.Pending.ContinueFullReconciliation(demand);
                                 }
                             }
                         }
@@ -441,6 +539,10 @@ internal sealed partial class WorkspaceIndexingService
 
         WorkspaceHandle? second = null;
 
+        IWorkspaceFileWatcher? evictedWatcher = null;
+
+        string? evictedPath = null;
+
         handle.DisposeCancellation();
 
         lock (_schedulerGate)
@@ -460,7 +562,14 @@ internal sealed partial class WorkspaceIndexingService
 
             if (handle.Sweep is not null || entry.Retired)
             {
-                SettleSweepLocked(entry, handle.Failed);
+                SettleSweepLocked(entry, handle.Failed, handle.RootUnavailable);
+            }
+
+            if (IsCurrentLocked(entry) && entry.ConsecutiveRootFailures >= MaxConsecutiveRootFailures)
+            {
+                evictedPath = entry.Path;
+
+                evictedWatcher = EvictLocked(entry);
             }
 
             handle.Terminal.TrySetResult();
@@ -483,11 +592,51 @@ internal sealed partial class WorkspaceIndexingService
             }
         }
 
+        if (evictedPath is not null)
+        {
+            DisposeEvictedWatcher(evictedWatcher, evictedPath);
+        }
+
         StartHandle(first);
 
         StartHandle(second);
 
         SignalWatcherWork();
+    }
+
+    /// <summary>
+    /// Removes an entry whose root has stayed unavailable. Its stored chunks are untouched; the next
+    /// registration of the path starts a new entry against whatever the path is by then.
+    /// </summary>
+    private IWorkspaceFileWatcher? EvictLocked(WorkspaceEntry entry)
+    {
+        _ = _entries.Remove(entry.Key);
+
+        entry.Retired = true;
+
+        entry.Pending = new WorkspaceDemand();
+
+        UnlinkLocked(entry);
+
+        return RetireWatcherLocked(entry);
+    }
+
+    private void DisposeEvictedWatcher(IWorkspaceFileWatcher? watcher, string workspacePath)
+    {
+        logger.LogWarning(
+            "Workspace {WorkspacePath} was evicted from indexing after {Failures} consecutive failures with an unavailable root; it is indexed again when it is next registered.",
+            workspacePath,
+            MaxConsecutiveRootFailures);
+
+        try
+        {
+            watcher?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            // Runs from the owned execution's cleanup, which must still settle the handle.
+            logger.LogWarning(ex, "Disposing the watcher of evicted workspace {WorkspacePath} failed.", workspacePath);
+        }
     }
 
     private void EnqueueLocked(WorkspaceEntry entry)
@@ -626,6 +775,37 @@ internal sealed partial class WorkspaceIndexingService
         internal WatcherRegistration? Watcher { get; set; }
 
         internal ScheduledSweep? Sweep { get; set; }
+
+        /// <summary>Sweep failures of this entry since its last success; drives the retry backoff.</summary>
+        internal int ConsecutiveFailures { get; set; }
+
+        /// <summary>The subset of <see cref="ConsecutiveFailures"/> caused by an unavailable root; drives eviction.</summary>
+        internal int ConsecutiveRootFailures { get; set; }
+
+        /// <summary>When a failed entry is next retried, or <see langword="null"/> when it is not waiting on a retry.</summary>
+        internal DateTimeOffset? RetryAt { get; set; }
+
+        internal void ClearFailureState()
+        {
+            ConsecutiveFailures = 0;
+
+            ConsecutiveRootFailures = 0;
+
+            RetryAt = null;
+        }
+
+        /// <summary>Watcher failures since the watcher last delivered an event; drives the re-creation backoff.</summary>
+        internal int WatcherFailures { get; set; }
+
+        /// <summary>When the watcher may next be created, or <see langword="null"/> when no backoff is running.</summary>
+        internal DateTimeOffset? WatcherRetryAt { get; set; }
+
+        internal void ClearWatcherFailureState()
+        {
+            WatcherFailures = 0;
+
+            WatcherRetryAt = null;
+        }
     }
 
     private sealed class WorkspaceDemand
@@ -640,6 +820,12 @@ internal sealed partial class WorkspaceIndexingService
 
         internal int FilesIndexed { get; set; }
 
+        /// <summary>
+        /// Set by a full unit that stopped on the per-checkpoint file budget with changed files left and
+        /// had indexed at least one file itself; the scheduler answers with a follow-up full unit.
+        /// </summary>
+        internal bool ContinuationRequired { get; set; }
+
         internal bool HasDemand => Full || Actions.Count != 0;
 
         internal bool ShouldForceFile(string path) =>
@@ -652,6 +838,26 @@ internal sealed partial class WorkspaceIndexingService
             if (ForceAll)
             {
                 (_completedForcedPaths ??= new HashSet<string>(CanonicalDirectoryComparer)).Add(path);
+            }
+        }
+
+        /// <summary>
+        /// Queues the next full unit of a reconciliation that stopped on its file budget. Unlike
+        /// <see cref="RestoreOlder"/> it starts a fresh budget, and it keeps a forced reconciliation
+        /// forced, with the files it already re-embedded recorded as done.
+        /// </summary>
+        internal void ContinueFullReconciliation(WorkspaceDemand finished)
+        {
+            Full = true;
+
+            if (finished.ForceAll)
+            {
+                if (!ForceAll)
+                {
+                    _completedForcedPaths = finished._completedForcedPaths;
+                }
+
+                ForceAll = true;
             }
         }
 
@@ -715,6 +921,9 @@ internal sealed partial class WorkspaceIndexingService
 
         internal bool Failed { get; set; }
 
+        /// <summary>The unit stopped because the workspace root was gone, outside the allowlist, or replaced.</summary>
+        internal bool RootUnavailable { get; set; }
+
         internal CancellationTokenSource Cancellation { get; } = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
         internal TaskCompletionSource Terminal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -750,12 +959,17 @@ internal sealed partial class WorkspaceIndexingService
         internal int Count { get; set; }
     }
 
-    private sealed class ScheduledSweep(int count, int intervalMinutes)
+    /// <summary>
+    /// One scheduled pass over a set of entries. A full sweep covers every entry and advances the
+    /// reconciliation cadence when it settles; a retry-only sweep covers just the failed entries whose
+    /// backoff elapsed and leaves that cadence alone.
+    /// </summary>
+    private sealed class ScheduledSweep(int count, int intervalMinutes, bool retryOnly)
     {
-        internal bool Failed { get; set; }
-
         internal int Outstanding { get; set; } = count;
 
         internal int IntervalMinutes { get; } = intervalMinutes;
+
+        internal bool RetryOnly { get; } = retryOnly;
     }
 }

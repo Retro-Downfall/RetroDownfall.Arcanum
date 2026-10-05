@@ -90,6 +90,43 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         _ = entryTwoId;
     }
 
+    /// <summary>
+    /// The provider call is billed the moment it returns, so a shutdown that arrives with the answer must
+    /// not discard what was paid for: the rows are written on a token the host cannot cancel, and the
+    /// next tick would otherwise select and bill the same entries again.
+    /// </summary>
+    [SkippableFact]
+    public async Task Embeddings_are_persisted_when_shutdown_is_requested_after_the_provider_returns()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "first entry content");
+
+        await CreateEntryAsync(sessionId, "second entry content");
+
+        using CancellationTokenSource shutdown = new();
+
+        FakeWeaveService weave = new()
+        {
+            OnEmbed = () =>
+            {
+                shutdown.Cancel();
+
+                return Task.CompletedTask;
+            },
+        };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        Assert.Equal(EntryWeavingTickOutcome.Woven, await service.RunTickAsync(embeddings, shutdown.Token));
+
+        Assert.Equal(2, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+    }
+
     [SkippableFact]
     public async Task RunTickAsync_SkipsEmptyContentEntries()
     {
@@ -158,6 +195,124 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         await service.RunTickAsync(embeddings, CancellationToken.None);
 
         Assert.Equal(0, await CountEntryEmbeddingsAsync());
+    }
+
+    /// <summary>
+    /// A batch the provider refuses is not billed again every interval: each entry in it waits one tick,
+    /// then two, then four, and is retried when its wait is over.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTickAsync_FailedBatch_IsNotBilledAgainImmediatelyAndRetriesOnTheLadder()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content the provider refuses");
+
+        FakeWeaveService weave = new() { FailNextBatch = true };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        // Tick 1 bills and fails; the entry waits out tick 2.
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        // Tick 3 retries and fails again; the second failure waits two ticks.
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+
+        weave.FailNextBatch = false;
+
+        // Tick 6 retries once the provider recovers, and the entry is embedded and leaves the ladder.
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(3, weave.EmbedBatchCallCount);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(3, weave.EmbedBatchCallCount);
+    }
+
+    /// <summary>
+    /// A batch that keeps failing must not hold the head of the queue: the entries behind it are read
+    /// past it and embedded while it waits.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTickAsync_EntriesBehindAFailingBatchAreNotStarved()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(
+            ArcanumRuntimeDefaults.Embeddings.BatchSize);
+
+        await CreateEntryAsync(sessionId, "older entry the provider accepts");
+
+        // Newer entries are read first (CreatedAt DESC), so a full batch of refused ones heads the queue.
+        await Task.Delay(TimeSpan.FromMilliseconds(25));
+
+        for (int index = 0; index < batchSize; index++)
+        {
+            await CreateEntryAsync(sessionId, $"poison entry {index}");
+        }
+
+        FakeWeaveService weave = new() { FailForContentContaining = "poison" };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(0, await CountEntryEmbeddingsAsync());
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+
+        Assert.Equal(["older entry the provider accepts"], weave.LastBatch);
+    }
+
+    /// <summary>
+    /// A provider that throws is charged to the ladder too, so the loop's one-second fault backoff does
+    /// not re-bill the same batch on every retry.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTickAsync_ThrowingProvider_IsNotBilledAgainOnTheNextTick()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content that makes the provider throw");
+
+        FakeWeaveService weave = new() { ThrowOnEmbed = true };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        Assert.Equal(EntryWeavingTickOutcome.Woven, await service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
     }
 
     [SkippableFact]
@@ -915,6 +1070,8 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         public bool ThrowOnEmbed { get; set; }
 
+        public string? FailForContentContaining { get; set; }
+
         public int EmbedBatchCallCount { get; private set; }
 
         public List<string>? LastBatch { get; private set; }
@@ -943,7 +1100,8 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
                 throw new InvalidOperationException("Simulated unexpected tick failure.");
             }
 
-            if (FailNextBatch)
+            if (FailNextBatch
+                || (FailForContentContaining is { } needle && texts.Any(text => text.Contains(needle, StringComparison.Ordinal))))
             {
                 return Result<Embedding<float>[]>.Failure(
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure."));
