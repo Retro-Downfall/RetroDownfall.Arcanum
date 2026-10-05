@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace RetroDownfall.Arcanum.Tests.Support;
 
@@ -22,6 +24,15 @@ internal static class AdHocJson
     {
         TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
     };
+
+    /// <summary>
+    /// Lets a test-only host serialize a type no source-generated context knows (a third-party SDK's own
+    /// model, say) through <c>Results.Json</c> and <c>WriteAsJsonAsync</c>, by adding reflection after
+    /// whatever resolvers the host already has.
+    /// </summary>
+    public static IServiceCollection AddAdHocHttpJson(this IServiceCollection services) =>
+        services.ConfigureHttpJsonOptions(static options =>
+            options.SerializerOptions.TypeInfoResolverChain.Add(new DefaultJsonTypeInfoResolver()));
 
     /// <summary>
     /// <see cref="AIFunctionFactory"/> options for a test tool whose parameters are not among the shapes the
