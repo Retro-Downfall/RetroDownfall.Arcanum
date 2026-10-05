@@ -205,6 +205,71 @@ public sealed class ProviderHealthProbeServiceTests
     }
 
     [Fact]
+    public async Task Removed_unhealthy_provider_does_not_keep_the_recovery_interval()
+    {
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate admission = new(inner);
+
+        ProbeDouble probe = new(static _ => Task.FromResult(true));
+
+        ProviderHealthTracker tracker = new(NullLogger<ProviderHealthTracker>.Instance);
+
+        int threshold = ArcanumSettingClamps.HealthFailureThreshold(
+            ArcanumRuntimeDefaults.Resilience.HealthFailureThreshold);
+
+        for (int failure = 0; failure < threshold; failure++)
+        {
+            tracker.MarkFailed("removed-provider");
+        }
+
+        Assert.False(tracker.IsHealthy("removed-provider"));
+
+        ProviderHealthProbeService service = CreateService(admission, probe, tracker, "kept-provider");
+
+        await service.ProbeAllProvidersAsync(CancellationToken.None);
+
+        // The operator removed the provider from configuration, so nothing will ever probe it healthy again.
+        Assert.False(service.ReconcileTrackedProviders());
+
+        Assert.DoesNotContain(
+            tracker.GetAllStatuses(),
+            static status => status.ProviderName == "removed-provider");
+
+        Assert.Contains(
+            tracker.GetAllStatuses(),
+            static status => status.ProviderName == "kept-provider");
+    }
+
+    [Fact]
+    public async Task Unhealthy_configured_provider_keeps_the_recovery_interval()
+    {
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate admission = new(inner);
+
+        ProbeDouble probe = new(static _ => Task.FromResult(false));
+
+        ProviderHealthTracker tracker = new(NullLogger<ProviderHealthTracker>.Instance);
+
+        int threshold = ArcanumSettingClamps.HealthFailureThreshold(
+            ArcanumRuntimeDefaults.Resilience.HealthFailureThreshold);
+
+        for (int failure = 0; failure < threshold; failure++)
+        {
+            tracker.MarkFailed("down-provider");
+        }
+
+        ProviderHealthProbeService service = CreateService(admission, probe, tracker, "down-provider");
+
+        Assert.True(service.ReconcileTrackedProviders());
+
+        Assert.Contains(
+            tracker.GetAllStatuses(),
+            static status => status.ProviderName == "down-provider");
+    }
+
+    [Fact]
     public async Task RealProbeFailureStillMarksUnhealthy()
     {
         GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
@@ -750,6 +815,11 @@ public sealed class ProviderHealthProbeServiceTests
             Volatile.Write(ref _healthy, 1);
 
             RecordPublishedProvider(providerName);
+        }
+
+        public void Remove(string providerName)
+
+        {
         }
 
         public IReadOnlyList<ProviderHealthStatus> GetAllStatuses() =>

@@ -11,7 +11,6 @@ public sealed class DaemonRunner(
     IEventBus eventBus,
     IDaemonLogAttacher logAttacher) : IDaemonRunner
 {
-
     public Task<Result<DaemonExecutionSummary>> RunAsync(string daemonId, bool force, CancellationToken ct) =>
         RunCoreAsync(daemonId, force, skipOnDemandGate: false, ct);
 
@@ -51,10 +50,8 @@ public sealed class DaemonRunner(
 
         if (!started)
         {
-
             return Result<DaemonExecutionSummary>.Failure(
                 new Error("Daemon.AlreadyRunning", $"Daemon job '{daemonId}' already has a running execution."));
-
         }
 
         Guid runId = Guid.Parse(executionId);
@@ -67,6 +64,27 @@ public sealed class DaemonRunner(
 
         if (executionCts is null)
         {
+            // The in-flight slot was reserved above and nothing will ever run or drain this execution, so
+            // it has to be released here: a failed terminal transition does both, and no later caller can.
+            try
+            {
+                _ = await repository
+                    .FailAsync(executionId, "Execution token source was missing after start.", CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                // The record itself is gone (history trimming), so there is no reservation left to release.
+            }
+
+            PublishEvent(
+                job,
+                runId,
+                DaemonEventType.Failed,
+                DateTimeOffset.UtcNow,
+                "Execution token source was missing after start.",
+                durationMilliseconds: ElapsedMilliseconds(startedAt));
+
             return Result<DaemonExecutionSummary>.Failure(
                 new Error(ErrorCodes.Daemon.NotFound, $"Execution '{executionId}' was not found after start."));
         }
@@ -170,5 +188,4 @@ public sealed class DaemonRunner(
 
     private static long ElapsedMilliseconds(DateTimeOffset startedAt) =>
         (long)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
-
 }

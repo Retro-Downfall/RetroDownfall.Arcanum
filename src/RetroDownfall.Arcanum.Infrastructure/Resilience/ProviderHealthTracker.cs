@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 internal sealed class ProviderHealthTracker(
     ILogger<ProviderHealthTracker> logger) : IProviderHealthTracker
 {
-
     private readonly ConcurrentDictionary<string, ProviderHealthStatus> _statuses = new(StringComparer.Ordinal);
 
     public event Action<ProviderHealthStatus>? HealthChanged;
@@ -23,7 +22,6 @@ internal sealed class ProviderHealthTracker(
 
     public void MarkFailed(string providerName)
     {
-
         int threshold = ArcanumSettingClamps.HealthFailureThreshold(
             ArcanumRuntimeDefaults.Resilience.HealthFailureThreshold);
 
@@ -52,7 +50,6 @@ internal sealed class ProviderHealthTracker(
 
         if (transitioned)
         {
-
             logger.LogInformation(
                 "Provider {ProviderName} health changed to {Status} after {ConsecutiveFailures} consecutive failure(s).",
                 providerName,
@@ -60,14 +57,11 @@ internal sealed class ProviderHealthTracker(
                 updated.ConsecutiveFailures);
 
             HealthChanged?.Invoke(updated);
-
         }
-
     }
 
     public void MarkHealthy(string providerName)
     {
-
         bool transitioned = false;
 
         ProviderHealthStatus updated = _statuses.AddOrUpdate(
@@ -82,15 +76,13 @@ internal sealed class ProviderHealthTracker(
 
         if (transitioned)
         {
-
             logger.LogInformation("Provider {ProviderName} health changed to Healthy.", providerName);
 
             HealthChanged?.Invoke(updated);
-
         }
-
     }
 
     public IReadOnlyList<ProviderHealthStatus> GetAllStatuses() => _statuses.Values.ToArray();
 
+    public void Remove(string providerName) => _ = _statuses.TryRemove(providerName, out _);
 }

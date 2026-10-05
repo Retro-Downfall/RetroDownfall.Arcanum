@@ -24,6 +24,7 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
             System.Environment.GetEnvironmentVariable(CredentialVariable);
         System.Environment.SetEnvironmentVariable(CredentialVariable, null);
     }
+
     [Fact]
     public async Task BuildReportAsync_AllKnownProvidersUnhealthy_ProvidersUnhealthy_OverallDegraded()
     {
@@ -184,6 +185,11 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
         {
             _ = _unhealthy.Remove(providerName);
             HealthChanged?.Invoke(new ProviderHealthStatus(providerName, true, DateTimeOffset.UtcNow, 0));
+        }
+
+        public void Remove(string providerName)
+
+        {
         }
 
         public IReadOnlyList<ProviderHealthStatus> GetAllStatuses() =>
