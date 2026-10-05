@@ -1846,7 +1846,7 @@ public sealed class ToolExecutionPipeline(
                     {
                         return await sanctumGuard.ValidatePathAsync(
                             campaignId,
-                            relativeCwd,
+                            AnchorToWorkspaceRoot(workspaceRoot, relativeCwd),
                             "working directory",
                             toolName,
                             cancellationToken).ConfigureAwait(false);
@@ -1882,7 +1882,7 @@ public sealed class ToolExecutionPipeline(
                 {
                     return await sanctumGuard.ValidatePathAsync(
                         campaignId,
-                        relativeRoot,
+                        AnchorToWorkspaceRoot(workspaceRoot, relativeRoot),
                         "search root",
                         toolName,
                         cancellationToken).ConfigureAwait(false);
@@ -1944,7 +1944,7 @@ public sealed class ToolExecutionPipeline(
                     {
                         return await sanctumGuard.ValidatePathAsync(
                             campaignId,
-                            relativePath,
+                            AnchorToWorkspaceRoot(workspaceRoot, relativePath),
                             "patch path",
                             toolName,
                             cancellationToken).ConfigureAwait(false);
@@ -1987,7 +1987,7 @@ public sealed class ToolExecutionPipeline(
                 {
                     return await sanctumGuard.ValidatePathAsync(
                         campaignId,
-                        relativePath,
+                        AnchorToWorkspaceRoot(workspaceRoot, relativePath),
                         pathOperation,
                         toolName,
                         cancellationToken).ConfigureAwait(false);
@@ -2162,6 +2162,28 @@ public sealed class ToolExecutionPipeline(
             absolutePath = string.Empty;
 
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Spells a path whose workspace resolution failed so the Sanctum guard judges it where the tool would
+    /// act on it. The guard turns what it receives into a full path against the host process's current
+    /// directory, so a workspace-relative spelling handed over as written would be judged against wherever
+    /// the host happens to run: from a directory inside the campaign a lexical escape such as
+    /// <c>../x</c> could read as inside it and record no <c>PathEscape</c> breach. Anchoring it to the
+    /// workspace root first keeps an escape an escape whatever that directory is. An absolute path is
+    /// returned normalized and otherwise unchanged.
+    /// </summary>
+    internal static string AnchorToWorkspaceRoot(string workspaceRoot, string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path.Trim(), Path.GetFullPath(workspaceRoot.Trim()));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+        {
+            // Handed over as written, the guard rejects it as an invalid path and records that breach.
+            return path;
         }
     }
 

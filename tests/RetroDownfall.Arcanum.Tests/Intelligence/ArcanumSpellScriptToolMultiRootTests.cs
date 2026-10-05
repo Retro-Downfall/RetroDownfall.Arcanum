@@ -194,6 +194,21 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 
         Assert.Contains("[one]\n[two words]\n[threefour]\n", result, StringComparison.Ordinal);
 
+        // A backslash is an ordinary character, so \" is a backslash followed by a grouping quote and not
+        // an escaped quote: the quotes still group (and still vanish) and the backslashes reach the script.
+        string? backslashed = await tool.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["script_name"] = "args.sh",
+                    ["arguments"] = "one \\\"two three\\\" four",
+                }))
+            as string;
+
+        Assert.NotNull(backslashed);
+
+        Assert.Contains("[one]\n[\\two three\\]\n[four]\n", backslashed, StringComparison.Ordinal);
+
         string description = tool.JsonSchema
             .GetProperty("properties")
             .GetProperty("arguments")

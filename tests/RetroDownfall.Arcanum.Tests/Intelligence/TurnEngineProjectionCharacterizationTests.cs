@@ -121,6 +121,7 @@ public sealed class TurnEngineProjectionCharacterizationTests
             new Error(internalCode, "candidate detail"));
 
         Assert.Equal("invalid_request_error", error.Type);
+
         Assert.Equal(expectedOpenAiCode, error.Code);
     }
 

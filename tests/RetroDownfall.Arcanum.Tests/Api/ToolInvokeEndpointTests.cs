@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -20,10 +21,15 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class ToolInvokeEndpointTests : IAsyncLifetime
 {
-
     private ArcanumWebApplicationFactory _factory = null!;
 
     private readonly HttpMessageHandlerStub _handler;
+
+    /// <summary>
+    /// Fixed answers for every host these tests name, so none of them depends on live DNS. The page host
+    /// exists only here: a lookup that bypassed the registered resolver could not find it.
+    /// </summary>
+    private readonly FakeDnsResolver _dns = CreateDns();
 
     public ToolInvokeEndpointTests()
     {
@@ -60,6 +66,10 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
                 services.RemoveAll<IHttpClientFactory>();
 
                 services.AddSingleton<IHttpClientFactory>(new FakeHttpClientFactory(_handler));
+
+                services.RemoveAll<IDnsResolver>();
+
+                services.AddSingleton<IDnsResolver>(_dns);
             },
             SettingsOverride = settings => settings with
             {
@@ -82,7 +92,7 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
         string payload = """
             {
               "toolName": "browse_web",
-              "arguments": { "url": "https://example.com/page", "maxLinks": 10 }
+              "arguments": { "url": "https://fixture-page.test/page", "maxLinks": 10 }
             }
             """;
 
@@ -108,7 +118,7 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
         Assert.Equal("Invoked Page", result.Title);
         Assert.Contains("Hello from invoke", result.Content);
         Assert.Contains("https://example.com/absolute", result.Links);
-        Assert.Contains("https://example.com/relative", result.Links);
+        Assert.Contains("https://fixture-page.test/relative", result.Links);
     }
 
     [SkippableFact]
@@ -159,6 +169,10 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
                 services.RemoveAll<IHttpClientFactory>();
 
                 services.AddSingleton<IHttpClientFactory>(new FakeHttpClientFactory(_handler));
+
+                services.RemoveAll<IDnsResolver>();
+
+                services.AddSingleton<IDnsResolver>(_dns);
             },
             SettingsOverride = settings => settings with
             {
@@ -171,7 +185,7 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
         string payload = """
             {
               "toolName": "browse_web",
-              "arguments": { "url": "https://example.com/page" }
+              "arguments": { "url": "https://fixture-page.test/page" }
             }
             """;
 
@@ -182,9 +196,17 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
+    private static FakeDnsResolver CreateDns()
+    {
+        FakeDnsResolver dns = new();
+
+        dns.Add("fixture-page.test", IPAddress.Parse("93.184.216.34"));
+
+        return dns;
+    }
+
     private sealed class HttpMessageHandlerStub : HttpMessageHandler
     {
-
         private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
 
         public HttpMessageHandlerStub(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
@@ -196,7 +218,5 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
         {
             return _handler(request, cancellationToken);
         }
-
     }
-
 }

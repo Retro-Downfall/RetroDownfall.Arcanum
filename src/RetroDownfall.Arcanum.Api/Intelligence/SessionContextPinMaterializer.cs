@@ -36,8 +36,11 @@ public sealed class SessionContextPinMaterializer(
 
     private const string PerTurnTruncationNotice = "[TRUNCATED BY PER-TURN CONTEXT BUDGET]";
 
-    /// <summary>Longest source label, id or diagnostic echoed into a block header.</summary>
-    private const int MaxHeaderValueChars = 256;
+    /// <summary>
+    /// Longest source label, id or diagnostic echoed into a block header, counted in rendered characters
+    /// after escaping (an ellipsis marking a cut follows it).
+    /// </summary>
+    internal const int MaxHeaderValueChars = 256;
 
     /// <summary>
     /// Largest file whose whole content is hashed to decide freshness. A larger file is previewed without
@@ -52,6 +55,9 @@ public sealed class SessionContextPinMaterializer(
     /// </summary>
     internal const int MaxDirectoriesPerSnapshot = 2_048;
 
+    /// <summary>Most bytes of one <c>.gitignore</c> a snapshot reads.</summary>
+    internal const int MaxGitIgnoreBytes = 64 * 1024;
+
     /// <summary>
     /// Directory names a snapshot does not descend into: version-control metadata, installed
     /// dependencies and build output. They are matched by name at any depth below the pinned directory.
@@ -65,6 +71,9 @@ public sealed class SessionContextPinMaterializer(
     };
 
     private const string FreshnessTokenPrefix = "size=";
+
+    private const string OpenedFileNotProvenInsideWorkspace =
+        "The opened file could not be proven to be inside the workspace.";
 
     private const string DirectoryTruncationSuffix =
         "[TRUNCATED BY CONTEXT MATERIALIZATION BUDGET]";
@@ -91,6 +100,15 @@ public sealed class SessionContextPinMaterializer(
             if (remaining <= 0)
             {
                 omitted++;
+                continue;
+            }
+
+            // A pin that cannot fit even an empty frame in what is left is deferred before its source is
+            // opened, hashed or walked: the block would be thrown away after all of that work.
+            if (remaining < MinimumFrameBytes(pin))
+            {
+                omitted++;
+
                 continue;
             }
 
@@ -137,10 +155,12 @@ public sealed class SessionContextPinMaterializer(
                     pin.Kind,
                     sourceId,
                     pin.DisplayLabel,
+                    // The identity of what was injected: the source's own hash when the store supplies one,
+                    // otherwise the framed block after any budget truncation, never the untruncated source.
                     materialized.SourceHash
                         ?? Convert.ToHexString(
                             SHA256.HashData(
-                                Encoding.UTF8.GetBytes(materialized.Content ?? block)))
+                                Encoding.UTF8.GetBytes(block)))
                             .ToLowerInvariant(),
                     materialized.SourceVersion,
                     blockBytes,
@@ -199,7 +219,12 @@ public sealed class SessionContextPinMaterializer(
         int byteLimit,
         CancellationToken cancellationToken)
     {
-        if (!TryResolveWorkspacePath(workingDirectory, pin.TargetIdentifier, out string path, out string error))
+        if (!TryResolveWorkspacePath(
+                workingDirectory,
+                pin.TargetIdentifier,
+                out string workspaceRoot,
+                out string path,
+                out string error))
         {
             return new(SessionContextPinStatus.Unsafe, null, error);
         }
@@ -225,6 +250,11 @@ public sealed class SessionContextPinMaterializer(
 
         await using (stream)
         {
+            if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle))
+            {
+                return new(SessionContextPinStatus.Unsafe, null, OpenedFileNotProvenInsideWorkspace);
+            }
+
             long length = stream.Length;
 
             BoundedFileRead source = await ReadBoundedFileAsync(
@@ -237,8 +267,9 @@ public sealed class SessionContextPinMaterializer(
             // token is its size and last-write time rather than a content hash.
             string? hash = source.Sha256;
 
+            // The opened handle names the file whose preview was read; the path could by now name another.
             string freshnessToken = hash
-                ?? $"{FreshnessTokenPrefix}{length};mtime={File.GetLastWriteTimeUtc(path).Ticks}";
+                ?? $"{FreshnessTokenPrefix}{length};mtime={File.GetLastWriteTimeUtc(stream.SafeFileHandle).Ticks}";
 
             // A pinned content hash cannot be checked against a size/mtime token, so it is not
             // reported as a change.
@@ -264,6 +295,13 @@ public sealed class SessionContextPinMaterializer(
                     ? $"Content changed; current freshness token {freshnessToken}."
                     : $"Content hash skipped above the {FileHashCapBytes}-byte cap; freshness token {freshnessToken}.";
 
+            // A directory moved out of the workspace while the file was being read leaves the read bytes
+            // from a place the pin was never allowed to see.
+            if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle))
+            {
+                return new(SessionContextPinStatus.Unsafe, null, OpenedFileNotProvenInsideWorkspace);
+            }
+
             return new(status, source.Content, diagnostic);
         }
     }
@@ -274,7 +312,12 @@ public sealed class SessionContextPinMaterializer(
         int byteLimit,
         CancellationToken cancellationToken)
     {
-        if (!TryResolveWorkspacePath(workingDirectory, pin.TargetIdentifier, out string path, out string error))
+        if (!TryResolveWorkspacePath(
+                workingDirectory,
+                pin.TargetIdentifier,
+                out string workspaceRoot,
+                out string path,
+                out string error))
         {
             return new(SessionContextPinStatus.Unsafe, null, error);
         }
@@ -283,9 +326,6 @@ public sealed class SessionContextPinMaterializer(
         {
             return new(SessionContextPinStatus.Missing, null, "Directory no longer exists.");
         }
-
-        string workspaceRoot = Path.TrimEndingDirectorySeparator(
-            Path.GetFullPath(workingDirectory!));
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
                 workspaceRoot,
@@ -310,9 +350,11 @@ public sealed class SessionContextPinMaterializer(
 
         _ = visitedCanonicalDirectories.Add(snapshotRoot);
 
-        Queue<(string TraversalPath, string CanonicalIdentity)> directories = new();
+        // The rules of the directories above the pinned one apply to what is listed below it, as they do
+        // in git; each directory's own file joins the chain when the walk reaches it.
+        Queue<(string TraversalPath, string CanonicalIdentity, IgnoreScope? ParentScope)> directories = new();
 
-        directories.Enqueue((snapshotRoot, snapshotRoot));
+        directories.Enqueue((snapshotRoot, snapshotRoot, AncestorIgnoreScope(workspaceRoot, snapshotRoot)));
 
         StringBuilder snapshot = new();
 
@@ -329,7 +371,7 @@ public sealed class SessionContextPinMaterializer(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            (string directory, string queuedIdentity) =
+            (string directory, string queuedIdentity, IgnoreScope? parentScope) =
                 directories.Dequeue();
 
             if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
@@ -363,6 +405,8 @@ public sealed class SessionContextPinMaterializer(
 
             directoriesVisited++;
 
+            IgnoreScope? scope = WithIgnoreRulesOf(directory, parentScope);
+
             string[] entries = Directory
                 .EnumerateFileSystemEntries(
                     directory,
@@ -387,7 +431,8 @@ public sealed class SessionContextPinMaterializer(
                 {
                     // Version-control and dependency trees would otherwise spend the byte budget before
                     // the source does. Only descendants are skipped; a pin rooted at one still lists it.
-                    if (IgnoredDirectoryNames.Contains(Path.GetFileName(entry)))
+                    if (IgnoredDirectoryNames.Contains(Path.GetFileName(entry))
+                        || IsIgnoredByGitIgnore(scope, entry, isDirectory: true))
                     {
                         continue;
                     }
@@ -399,13 +444,14 @@ public sealed class SessionContextPinMaterializer(
                             canonicalDirectory))
                     {
                         directories.Enqueue(
-                            (entry, canonicalDirectory));
+                            (entry, canonicalDirectory, scope));
                     }
 
                     continue;
                 }
 
-                if (!File.Exists(entry))
+                if (!File.Exists(entry)
+                    || IsIgnoredByGitIgnore(scope, entry, isDirectory: false))
                 {
                     continue;
                 }
@@ -450,6 +496,121 @@ public sealed class SessionContextPinMaterializer(
         return FromText(snapshot.ToString(), byteLimit);
     }
 
+    /// <summary>The <c>.gitignore</c> rules of one directory, chained to those of the directories above it.</summary>
+    private sealed record IgnoreScope(string Directory, GitIgnoreRules Rules, IgnoreScope? Parent);
+
+    /// <summary>
+    /// Whether a rule in the chain excludes <paramref name="entry"/>. The nearest file with a rule for it
+    /// decides, so a file below overrides one above, as in git. <c>.git/info/exclude</c> and the user's
+    /// global ignore file are not consulted.
+    /// </summary>
+    private static bool IsIgnoredByGitIgnore(IgnoreScope? scope, string entry, bool isDirectory)
+    {
+        for (IgnoreScope? current = scope; current is not null; current = current.Parent)
+        {
+            string relative = Path.GetRelativePath(current.Directory, entry)
+                .Replace(Path.DirectorySeparatorChar, '/');
+
+            if (current.Rules.Evaluate(relative, isDirectory) is { } ignored)
+            {
+                return ignored;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The rules of every directory from the workspace root down to, not including, the snapshot root.</summary>
+    private static IgnoreScope? AncestorIgnoreScope(string workspaceRoot, string snapshotRoot)
+    {
+        string relative = Path.GetRelativePath(workspaceRoot, snapshotRoot);
+
+        if (relative == "."
+            || relative == ".."
+            || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            || Path.IsPathRooted(relative))
+        {
+            return null;
+        }
+
+        string current = workspaceRoot;
+
+        IgnoreScope? scope = WithIgnoreRulesOf(current, parent: null);
+
+        string[] parts = relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+
+        for (int index = 0; index < parts.Length - 1; index++)
+        {
+            current = Path.Combine(current, parts[index]);
+
+            scope = WithIgnoreRulesOf(current, scope);
+        }
+
+        return scope;
+    }
+
+    private static IgnoreScope? WithIgnoreRulesOf(string directory, IgnoreScope? parent)
+    {
+        GitIgnoreRules rules = ReadGitIgnore(directory);
+
+        return rules.IsEmpty
+            ? parent
+            : new IgnoreScope(directory, rules, parent);
+    }
+
+    /// <summary>
+    /// Reads the <c>.gitignore</c> in <paramref name="directory"/> through the no-follow regular-file open,
+    /// so a link, a pipe or a device of that name contributes nothing. Only the first
+    /// <see cref="MaxGitIgnoreBytes"/> bytes are read, ending at a whole line. A file that cannot be read
+    /// yields no rules, which lists more files rather than fewer.
+    /// </summary>
+    private static GitIgnoreRules ReadGitIgnore(string directory)
+    {
+        SecureFileOpenStatus status = SecureFileReader.TryOpenRegularFile(
+            Path.Combine(directory, ".gitignore"),
+            expectedIdentity: null,
+            out FileStream? stream,
+            out _);
+
+        if (status != SecureFileOpenStatus.Success || stream is null)
+        {
+            return GitIgnoreRules.Empty;
+        }
+
+        using (stream)
+        {
+            try
+            {
+                byte[] buffer = new byte[MaxGitIgnoreBytes + 1];
+
+                int total = 0;
+
+                int read;
+
+                while (total < buffer.Length
+                    && (read = stream.Read(buffer, total, buffer.Length - total)) > 0)
+                {
+                    total += read;
+                }
+
+                string text = Encoding.UTF8.GetString(buffer, 0, Math.Min(total, MaxGitIgnoreBytes));
+
+                if (total > MaxGitIgnoreBytes)
+                {
+                    int lastLineEnd = text.LastIndexOf('\n');
+
+                    text = lastLineEnd < 0 ? string.Empty : text[..lastLineEnd];
+                }
+
+                return GitIgnoreRules.Parse(text);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return GitIgnoreRules.Empty;
+            }
+        }
+    }
+
     private static async Task<MaterializedPin> MaterializeSymbolRangeAsync(
         SessionContextPinRecord pin,
         string? workingDirectory,
@@ -471,7 +632,12 @@ public sealed class SessionContextPinMaterializer(
             return new(SessionContextPinStatus.Error, null, "Invalid line range.");
         }
 
-        if (!TryResolveWorkspacePath(workingDirectory, pathPart, out string path, out string error))
+        if (!TryResolveWorkspacePath(
+                workingDirectory,
+                pathPart,
+                out string workspaceRoot,
+                out string path,
+                out string error))
         {
             return new(SessionContextPinStatus.Unsafe, null, error);
         }
@@ -497,12 +663,21 @@ public sealed class SessionContextPinMaterializer(
 
         await using (stream)
         {
-            return await ReadBoundedLineRangeAsync(
+            if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle))
+            {
+                return new(SessionContextPinStatus.Unsafe, null, OpenedFileNotProvenInsideWorkspace);
+            }
+
+            MaterializedPin lines = await ReadBoundedLineRangeAsync(
                 stream,
                 start,
                 end,
                 byteLimit,
                 cancellationToken).ConfigureAwait(false);
+
+            return WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle)
+                ? lines
+                : new(SessionContextPinStatus.Unsafe, null, OpenedFileNotProvenInsideWorkspace);
         }
     }
 
@@ -578,16 +753,6 @@ public sealed class SessionContextPinMaterializer(
             text,
             truncated ? $"Limited to {byteLimit} bytes." : null);
     }
-
-    internal static Task<BoundedFileRead> ReadBoundedFileAsync(
-        Stream stream,
-        int byteLimit,
-        CancellationToken cancellationToken) =>
-        ReadBoundedFileAsync(
-            stream,
-            byteLimit,
-            hashCapBytes: long.MaxValue,
-            cancellationToken);
 
     /// <summary>
     /// Reads at most <paramref name="byteLimit"/> bytes of preview and hashes the whole stream only while
@@ -763,8 +928,9 @@ public sealed class SessionContextPinMaterializer(
     }
 
     private static bool TryResolveWorkspacePath(
-        string? workingDirectory, string target, out string path, out string error)
+        string? workingDirectory, string target, out string root, out string path, out string error)
     {
+        root = string.Empty;
         path = string.Empty;
         error = string.Empty;
         if (string.IsNullOrWhiteSpace(workingDirectory))
@@ -775,7 +941,7 @@ public sealed class SessionContextPinMaterializer(
 
         try
         {
-            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workingDirectory));
+            root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workingDirectory));
             string candidate = Path.GetFullPath(target, root);
 
             if (!WorkspacePathPolicy.IsPathUnderWorkspace(root, candidate))
@@ -864,7 +1030,9 @@ public sealed class SessionContextPinMaterializer(
     /// <summary>
     /// Renders a header value on one bounded line. Line breaks, other control characters, backslashes and
     /// backticks are escaped, so a label, id or diagnostic can neither open a line that looks like the end
-    /// marker or a fence nor repeat an arbitrarily large body outside the fenced data.
+    /// marker or a fence nor repeat an arbitrarily large body outside the fenced data. The bound is on the
+    /// rendered text: output stops before the escape that would pass <see cref="MaxHeaderValueChars"/>
+    /// characters, so an escape is never cut and an ellipsis marks what was left out.
     /// </summary>
     private static string SingleLine(string? value)
     {
@@ -875,39 +1043,62 @@ public sealed class SessionContextPinMaterializer(
 
         StringBuilder line = new(Math.Min(value.Length, MaxHeaderValueChars) + 3);
 
-        int taken = 0;
-
-        foreach (char c in value)
+        for (int index = 0; index < value.Length; index++)
         {
-            if (taken >= MaxHeaderValueChars)
-            {
-                if (line.Length > 0 && char.IsHighSurrogate(line[^1]))
-                {
-                    line.Length--;
-                }
+            char c = value[index];
 
+            string rendered = c switch
+            {
+                '\\' => "\\\\",
+                '\r' => "\\r",
+                '\n' => "\\n",
+                '\t' => "\\t",
+                '`' => "\\u0060",
+                _ when char.IsControl(c) || c is '\u2028' or '\u2029' =>
+                    "\\u" + ((int)c).ToString("x4", System.Globalization.CultureInfo.InvariantCulture),
+                _ => c.ToString(),
+            };
+
+            // A surrogate pair is kept whole, so a cut never leaves half of a character behind.
+            if (char.IsHighSurrogate(c) && index + 1 < value.Length && char.IsLowSurrogate(value[index + 1]))
+            {
+                rendered = value.Substring(index, 2);
+            }
+
+            if (line.Length + rendered.Length > MaxHeaderValueChars)
+            {
                 _ = line.Append("...");
 
                 break;
             }
 
-            taken++;
+            _ = line.Append(rendered);
 
-            _ = c switch
+            if (rendered.Length == 2 && char.IsHighSurrogate(c))
             {
-                '\\' => line.Append("\\\\"),
-                '\r' => line.Append("\\r"),
-                '\n' => line.Append("\\n"),
-                '\t' => line.Append("\\t"),
-                '`' => line.Append("\\u0060"),
-                _ when char.IsControl(c) || c is '\u2028' or '\u2029' =>
-                    line.Append("\\u").Append(((int)c).ToString("x4", System.Globalization.CultureInfo.InvariantCulture)),
-                _ => line.Append(c),
-            };
+                index++;
+            }
         }
 
         return line.ToString();
     }
+
+    /// <summary>
+    /// The fewest bytes any frame for <paramref name="pin"/> can occupy: its fixed lines, kind and label
+    /// around empty content, with every value not known before the source is read taken as empty. A budget
+    /// below this cannot hold the frame whatever the source turns out to be.
+    /// </summary>
+    private static int MinimumFrameBytes(SessionContextPinRecord pin) =>
+        Encoding.UTF8.GetByteCount(
+            StartMarker + "\n"
+            + "source-kind: " + pin.Kind + "\n"
+            + "source-label: " + SingleLine(pin.DisplayLabel) + "\n"
+            + "source-id: \n"
+            + "status: \n"
+            + "diagnostic: \n"
+            + "```data\n"
+            + "\n```\n"
+            + EndMarker);
 
     private static string DescribeFailure(Exception failure) =>
         failure switch

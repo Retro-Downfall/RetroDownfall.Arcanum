@@ -29,22 +29,14 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
 
     public ToolExecutionPipelineSanctumEgressTests() => Directory.CreateDirectory(_root);
 
-    public void Dispose()
-    {
-        try
-        {
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (IOException)
-        {
-            // Best-effort fixture cleanup.
-        }
-    }
+    public void Dispose() =>
+        _ = TestDirectoryCleanup.TryDelete(_root, nameof(ToolExecutionPipelineSanctumEgressTests));
 
     [Fact]
     public async Task ReadUrl_InStrictSanctum_PublishesWardAndOptionsCarryIt()
     {
         SanctumPipelineHarness harness = SanctumPipelineHarness.Create(_root, [AllowedHost]);
+
         RecordingReadProvider provider = new();
 
         ToolExecutionPipeline.ProcessedToolCall processed = await RunReadUrlAsync(
@@ -84,6 +76,7 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
     public async Task ReadUrl_OffAllowlistFirstHop_IsDeniedBeforeToolRuns()
     {
         SanctumPipelineHarness harness = SanctumPipelineHarness.Create(_root, [AllowedHost]);
+
         RecordingReadProvider provider = new();
 
         ToolExecutionPipeline.ProcessedToolCall processed = await RunReadUrlAsync(

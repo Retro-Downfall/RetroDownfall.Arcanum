@@ -77,6 +77,34 @@ public sealed class ApiErrorCatalogDocumentationTests
             $"{offenders.Count} code(s) the mapper arms are missing or misfiled in section 8.23:\n{string.Join('\n', offenders)}");
     }
 
+    /// <summary>
+    /// <c>browse_web</c> reports its failures inside the tool result, so the status mapper never arms
+    /// them and the contract above cannot see them. They still reach the <c>/api/tools/invoke</c> wire,
+    /// and a client that switches on one has to find it in the catalog.
+    /// </summary>
+    [Fact]
+    public void Every_code_the_browse_web_tool_can_report_has_a_row_in_section_8_23()
+    {
+        Dictionary<string, HashSet<int>> documented = DocumentedStatuses();
+
+        string[] declared =
+        [
+            .. typeof(ErrorCodes.WebBrowsing)
+                .GetFields(BindingFlags.Public | BindingFlags.Static)
+                .Where(static field => field is { IsLiteral: true } && field.FieldType == typeof(string))
+                .Select(static field => (string)field.GetRawConstantValue()!)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.NotEmpty(declared);
+
+        string[] missing = [.. declared.Where(code => !documented.ContainsKey(code))];
+
+        Assert.True(
+            missing.Length == 0,
+            $"WebBrowsing codes with no row in section 8.23: {string.Join(", ", missing)}");
+    }
+
     [Fact]
     public void The_catalog_reading_finds_the_codes_the_mapper_arms()
     {

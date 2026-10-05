@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -46,7 +47,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         if (Directory.Exists(_workspace))
         {
-            Directory.Delete(_workspace, recursive: true);
+            _ = TestDirectoryCleanup.TryDelete(_workspace, nameof(SessionContextPinMaterializerTests));
         }
     }
 
@@ -98,6 +99,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             await SessionContextPinMaterializer.ReadBoundedFileAsync(
                 stream,
                 4096,
+                hashCapBytes: long.MaxValue,
                 CancellationToken.None);
 
         Assert.True(read.Truncated);
@@ -378,7 +380,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         {
             Directory.Delete(link);
 
-            Directory.Delete(outside, recursive: true);
+            _ = TestDirectoryCleanup.TryDelete(outside, nameof(SessionContextPinMaterializerTests));
         }
     }
 
@@ -415,13 +417,19 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             Path.Combine(_workspace, "src", "nested", "node_modules", "dep", "index.js"),
             "x");
 
-        await File.WriteAllTextAsync(Path.Combine(_workspace, "src", "Program.cs"), "class P {}");
+        // The source sits one level deeper than the ignored object stores. Breadth-first order would list
+        // them before it and spend the byte budget on them, so only skipping them lets the walk reach it.
+        string sourceDirectory = Path.Combine(_workspace, "src", "a", "b");
+
+        Directory.CreateDirectory(sourceDirectory);
+
+        await File.WriteAllTextAsync(Path.Combine(sourceDirectory, "Program.cs"), "class P {}");
 
         SessionContextPinRecord pin = Pin(SessionContextPinKind.DirectorySnapshot, ".", "workspace", null);
 
         string text = await MaterializeSingleAsync(pin);
 
-        Assert.Contains(Path.Combine("src", "Program.cs"), text, StringComparison.Ordinal);
+        Assert.Contains(Path.Combine("src", "a", "b", "Program.cs"), text, StringComparison.Ordinal);
 
         Assert.Contains("status: Current", text, StringComparison.Ordinal);
 
@@ -447,6 +455,118 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             Pin(SessionContextPinKind.DirectorySnapshot, "node_modules", "deps", null));
 
         Assert.Contains("index.js", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Directory_snapshot_honours_gitignore_files_at_and_above_the_pinned_directory()
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(_workspace, ".gitignore"),
+            "dist/\n*.log\n!keep.log\n# comment\n");
+
+        Directory.CreateDirectory(Path.Combine(_workspace, "dist"));
+
+        Directory.CreateDirectory(Path.Combine(_workspace, "src"));
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "dist", "bundle.js"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "build.log"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "keep.log"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "src", "debug.log"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "src", "generated.cs"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "src", "real.cs"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "src", ".gitignore"), "generated.cs\n");
+
+        string workspaceText = await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.DirectorySnapshot, ".", "workspace", null));
+
+        Assert.Contains("keep.log", workspaceText, StringComparison.Ordinal);
+
+        Assert.Contains(Path.Combine("src", "real.cs"), workspaceText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("bundle.js", workspaceText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("build.log", workspaceText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("debug.log", workspaceText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("generated.cs", workspaceText, StringComparison.Ordinal);
+
+        // A pin below the workspace root still honours the rules of the directories above it.
+        string sourceText = await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.DirectorySnapshot, "src", "source", null));
+
+        Assert.Contains("real.cs", sourceText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("debug.log", sourceText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("generated.cs", sourceText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Directory_snapshot_reads_only_the_first_part_of_an_oversized_gitignore_and_ends_at_a_whole_line()
+    {
+        string comment = "# " + new string('x', 1_000) + "\n";
+
+        // Enough comment lines to push the last rule past the read limit, which cuts mid-line.
+        string padding = string.Concat(
+            Enumerable.Repeat(comment, (SessionContextPinMaterializer.MaxGitIgnoreBytes / comment.Length) + 2));
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_workspace, ".gitignore"),
+            "early.tmp\n" + padding + "late.tmp\n");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "early.tmp"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "late.tmp"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "plain.txt"), "x");
+
+        string text = await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.DirectorySnapshot, ".", "workspace", null));
+
+        Assert.DoesNotContain("early.tmp", text, StringComparison.Ordinal);
+
+        Assert.Contains("late.tmp", text, StringComparison.Ordinal);
+
+        Assert.Contains("plain.txt", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Directory_snapshot_does_not_follow_a_gitignore_that_is_a_symlink()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink handling is exercised on Unix hosts.");
+
+        string outside = Path.Combine(Path.GetTempPath(), "arcanum-pin-ignore-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(outside);
+
+        try
+        {
+            string rules = Path.Combine(outside, "rules");
+
+            await File.WriteAllTextAsync(rules, "*\n");
+
+            File.CreateSymbolicLink(Path.Combine(_workspace, ".gitignore"), rules);
+
+            await File.WriteAllTextAsync(Path.Combine(_workspace, "visible.txt"), "x");
+
+            string text = await MaterializeSingleAsync(
+                Pin(SessionContextPinKind.DirectorySnapshot, ".", "workspace", null));
+
+            Assert.Contains("visible.txt", text, StringComparison.Ordinal);
+        }
+        finally
+        {
+            _ = TestDirectoryCleanup.TryDelete(outside, nameof(SessionContextPinMaterializerTests));
+        }
     }
 
     [Fact]
@@ -811,14 +931,24 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         int readCount = 0;
 
-        NoOpSessionAttachmentStore store = new(
-            ownerAttachment,
-            readBytes: (_, _) =>
-            {
-                readCount++;
+        Task<ReadOnlyMemory<byte>> ReadOwnerBytes(SessionAttachmentRecord record, CancellationToken cancellationToken)
+        {
+            readCount++;
 
-                return Task.FromResult<ReadOnlyMemory<byte>>(Encoding.UTF8.GetBytes(ownerSecret));
-            });
+            return Task.FromResult<ReadOnlyMemory<byte>>(Encoding.UTF8.GetBytes(ownerSecret));
+        }
+
+        NoOpSessionAttachmentStore store = new(ownerAttachment, readBytes: ReadOwnerBytes);
+
+        // A store whose logical-key lookup does not scope to the pinning session, so the logical-key
+        // variant below reaches the materializer's own session guard instead of leaning on the store's.
+        NoOpSessionAttachmentStore sessionBlindStore = new(
+            ownerAttachment,
+            readBytes: ReadOwnerBytes,
+            logicalLookup: (_, logicalKey, _) =>
+                string.Equals(logicalKey, ownerAttachment.LogicalKey, StringComparison.Ordinal)
+                    ? ownerAttachment
+                    : null);
 
         // A pin created in session B that carries session A's attachment GUID.
         SessionContextPinRecord byIdPin = new(
@@ -831,18 +961,21 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow);
 
-        // The logical-key lookup is scoped to the pinning session by the store itself.
         SessionContextPinRecord byLogicalKeyPin = byIdPin with
         {
             Id = Guid.NewGuid(),
             TargetIdentifier = "notes",
         };
 
-        foreach (SessionContextPinRecord pin in new[] { byIdPin, byLogicalKeyPin })
+        foreach ((SessionContextPinRecord pin, NoOpSessionAttachmentStore lookupStore) in new[]
+        {
+            (byIdPin, store),
+            (byLogicalKeyPin, sessionBlindStore),
+        })
         {
             SessionContextPinMaterializer materializer = new(
                 new StaticPinStore(pin),
-                store,
+                lookupStore,
                 CreateSessions());
 
             SessionContextPinMaterialization result = await materializer.MaterializeAsync(
@@ -924,7 +1057,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         {
             Directory.Delete(link);
 
-            Directory.Delete(outside, recursive: true);
+            _ = TestDirectoryCleanup.TryDelete(outside, nameof(SessionContextPinMaterializerTests));
         }
     }
 
@@ -1064,6 +1197,37 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
     }
 
     [Fact]
+    public async Task Header_values_are_capped_after_escaping_not_before()
+    {
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "notes.txt"), "plain body");
+
+        // Every backtick escapes to six characters, so a cap on the input alone would let this reach ~1.5 KB.
+        string[] lines = (await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.File, "notes.txt", new string('`', 5_000), null))).Split('\n');
+
+        string labelLine = Assert.Single(lines, static line => line.StartsWith("source-label:", StringComparison.Ordinal));
+
+        string value = labelLine["source-label: ".Length..];
+
+        Assert.True(
+            value.Length <= SessionContextPinMaterializer.MaxHeaderValueChars + "...".Length,
+            $"The escaped label is {value.Length} characters long.");
+
+        Assert.EndsWith("...", value, StringComparison.Ordinal);
+
+        // An escape is kept whole or left out; it is never cut in the middle.
+        Assert.Equal(0, (value.Length - "...".Length) % "\\u0060".Length);
+
+        // The cap lands inside an escape sequence: the 255 plain characters stay, the escape does not.
+        string[] boundary = (await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.File, "notes.txt", new string('a', 255) + "`tail", null))).Split('\n');
+
+        Assert.Contains(
+            "source-label: " + new string('a', 255) + "...",
+            boundary);
+    }
+
+    [Fact]
     public async Task Diagnostic_pin_header_uses_the_pin_id_and_does_not_repeat_the_body()
     {
         string body = "diagnostic-body-" + Guid.NewGuid().ToString("N");
@@ -1143,41 +1307,10 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
     {
         Guid sessionId = Guid.NewGuid();
 
-        SessionContextPinRecord Diagnostic(string text) =>
-            new(
-                Guid.NewGuid(),
-                sessionId,
-                SessionContextPinKind.Diagnostic,
-                text,
-                "diag",
-                ContentVersion: null,
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow);
-
-        // Measure the fixed framing cost of one block, then size the pins so that exactly ten bytes
-        // of the per-turn budget remain for the last one: too few to open a frame and close it.
-        SessionContextPinMaterialization probe = await Create(Diagnostic("x")).MaterializeAsync(
-            sessionId,
-            _workspace,
-            CancellationToken.None);
-
-        int frameBytes = probe.IncludedBytes - 1;
-
-        int fourthContentBytes =
-            SessionContextPinMaterializer.MaxBytesPerTurn
-            - (3 * (SessionContextPinMaterializer.MaxBytesPerPin + frameBytes))
-            - frameBytes
-            - 10;
-
-        Assert.InRange(fourthContentBytes, 1, SessionContextPinMaterializer.MaxBytesPerPin);
-
         SessionContextPinRecord[] pins =
         [
-            Diagnostic(new string('a', SessionContextPinMaterializer.MaxBytesPerPin - 1) + "1"),
-            Diagnostic(new string('a', SessionContextPinMaterializer.MaxBytesPerPin - 1) + "2"),
-            Diagnostic(new string('a', SessionContextPinMaterializer.MaxBytesPerPin - 1) + "3"),
-            Diagnostic(new string('a', fourthContentBytes)),
-            Diagnostic("fifth pin does not fit"),
+            .. await FillTurnBudgetLeavingTenBytesAsync(sessionId),
+            DiagnosticPin(sessionId, "fifth pin does not fit"),
         ];
 
         SessionContextPinMaterialization result = await Create(pins).MaterializeAsync(
@@ -1202,6 +1335,257 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         Assert.DoesNotContain("fifth pin", string.Concat(result.Contents.OfType<TextContent>().Select(static c => c.Text)), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task Pin_that_cannot_fit_even_an_empty_frame_is_deferred_without_touching_its_source()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = new(
+            attachmentId,
+            sessionId,
+            EntryId: null,
+            PendingTurnId: null,
+            SessionAttachmentState.Bound,
+            LogicalKey: "notes",
+            OriginalFileName: "notes.txt",
+            Version: 1,
+            RelativePath: "session/notes/v1/notes.txt",
+            ContentSha256: new string('d', 64),
+            MimeType: "text/plain",
+            ByteLength: 16,
+            SessionAttachmentKind.Text,
+            DateTimeOffset.UtcNow);
+
+        int readCount = 0;
+
+        NoOpSessionAttachmentStore store = new(
+            attachment,
+            readBytes: (_, _) =>
+            {
+                readCount++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(Encoding.UTF8.GetBytes("attachment bytes"));
+            });
+
+        SessionContextPinRecord[] pins =
+        [
+            .. await FillTurnBudgetLeavingTenBytesAsync(sessionId),
+            new SessionContextPinRecord(
+                Guid.NewGuid(),
+                sessionId,
+                SessionContextPinKind.Attachment,
+                attachmentId.ToString("D"),
+                "notes",
+                ContentVersion: null,
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow),
+        ];
+
+        SessionContextPinMaterialization result = await new SessionContextPinMaterializer(
+                new StaticPinStore(pins),
+                store,
+                CreateSessions())
+            .MaterializeAsync(sessionId, _workspace, CancellationToken.None);
+
+        Assert.Equal(1, result.OmittedCount);
+
+        // Reading the bytes only to throw the block away spends I/O the turn has no budget to use.
+        Assert.Equal(0, readCount);
+    }
+
+    [Fact]
+    public async Task Item_hash_identifies_the_block_that_was_injected_not_the_untruncated_source()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        int ceiling = SessionContextPinMaterializer.MaxBytesPerPin;
+
+        int smaller = 62 * 1024;
+
+        // The fifth pin gets only the few KiB the four before it leave, so its block is cut by the turn
+        // budget while the earlier ones are whole.
+        SessionContextPinRecord[] pins =
+        [
+            DiagnosticPin(sessionId, new string('a', smaller - 1) + "1"),
+            DiagnosticPin(sessionId, new string('a', smaller - 1) + "2"),
+            DiagnosticPin(sessionId, new string('a', smaller - 1) + "3"),
+            DiagnosticPin(sessionId, new string('a', ceiling - 1) + "4"),
+            DiagnosticPin(sessionId, new string('b', ceiling)),
+        ];
+
+        SessionContextPinMaterialization result = await Create(pins).MaterializeAsync(
+            sessionId,
+            _workspace,
+            CancellationToken.None);
+
+        IReadOnlyList<ContextPinMaterializedItem> items = result.Items!;
+
+        Assert.Equal(5, items.Count);
+
+        foreach (ContextPinMaterializedItem item in items)
+        {
+            string block = Assert.IsType<TextContent>(item.Content).Text;
+
+            Assert.Equal(
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(block))).ToLowerInvariant(),
+                item.ContentHash);
+        }
+
+        string truncated = Assert.IsType<TextContent>(items[^1].Content).Text;
+
+        Assert.Contains("[TRUNCATED BY PER-TURN CONTEXT BUDGET]", truncated, StringComparison.Ordinal);
+
+        // The hash of the whole source would claim bytes the model never saw.
+        Assert.NotEqual(
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(new string('b', ceiling)))).ToLowerInvariant(),
+            items[^1].ContentHash);
+    }
+
+    [SkippableFact]
+    public async Task File_pin_whose_directory_leaves_the_workspace_while_it_is_open_is_Unsafe()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "A directory holding an open file cannot be renamed on Windows.");
+
+        string inside = Path.Combine(_workspace, "inside");
+
+        Directory.CreateDirectory(inside);
+
+        string file = Path.Combine(inside, "notes.txt");
+
+        await File.WriteAllTextAsync(file, "moved-out-canary-4e7a");
+
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "arcanum-pin-moved-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(outsideRoot);
+
+        bool moved = false;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = openedPath =>
+        {
+            // Only the pin's own open: other tests in this process open files through the same seam.
+            if (moved || !string.Equals(openedPath, file, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            moved = true;
+
+            Directory.Move(inside, Path.Combine(outsideRoot, "inside"));
+        };
+
+        try
+        {
+            string text = await MaterializeSingleAsync(
+                Pin(SessionContextPinKind.File, Path.Combine("inside", "notes.txt"), "moved", null));
+
+            Assert.True(moved, "The directory was never moved, so the post-open check was not exercised.");
+
+            Assert.Contains("status: Unsafe", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("moved-out-canary-4e7a", text, StringComparison.Ordinal);
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+
+            _ = TestDirectoryCleanup.TryDelete(outsideRoot, nameof(SessionContextPinMaterializerTests));
+        }
+    }
+
+    [Fact]
+    public async Task Freshness_token_for_a_file_over_the_hash_cap_describes_the_opened_file()
+    {
+        string file = Path.Combine(_workspace, "oversized.bin");
+
+        await using (FileStream stream = new(file, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            stream.SetLength(SessionContextPinMaterializer.FileHashCapBytes + 1L);
+        }
+
+        DateTime openedWriteTime = new(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+
+        File.SetLastWriteTimeUtc(file, openedWriteTime);
+
+        long openedTicks = File.GetLastWriteTimeUtc(file).Ticks;
+
+        bool replaced = false;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = openedPath =>
+        {
+            if (replaced || !string.Equals(openedPath, file, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            replaced = true;
+
+            // A different file takes the path after the pinned one was opened.
+            File.Move(file, file + ".opened");
+
+            File.WriteAllText(file, "replacement");
+        };
+
+        try
+        {
+            string text = await MaterializeSingleAsync(
+                Pin(SessionContextPinKind.File, "oversized.bin", "oversized", null));
+
+            Assert.True(replaced, "The path was never replaced, so the handle read was not exercised.");
+
+            Assert.Contains(
+                $"size={SessionContextPinMaterializer.FileHashCapBytes + 1L};mtime={openedTicks}",
+                text,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+        }
+    }
+
+    private async Task<SessionContextPinRecord[]> FillTurnBudgetLeavingTenBytesAsync(Guid sessionId)
+    {
+        // Measure the fixed framing cost of one block, then size four pins so that exactly ten bytes
+        // of the per-turn budget remain after them: too few to open a frame and close it.
+        SessionContextPinMaterialization probe = await Create(DiagnosticPin(sessionId, "x")).MaterializeAsync(
+            sessionId,
+            _workspace,
+            CancellationToken.None);
+
+        int frameBytes = probe.IncludedBytes - 1;
+
+        int fourthContentBytes =
+            SessionContextPinMaterializer.MaxBytesPerTurn
+            - (3 * (SessionContextPinMaterializer.MaxBytesPerPin + frameBytes))
+            - frameBytes
+            - 10;
+
+        Assert.InRange(fourthContentBytes, 1, SessionContextPinMaterializer.MaxBytesPerPin);
+
+        return
+        [
+            DiagnosticPin(sessionId, new string('a', SessionContextPinMaterializer.MaxBytesPerPin - 1) + "1"),
+            DiagnosticPin(sessionId, new string('a', SessionContextPinMaterializer.MaxBytesPerPin - 1) + "2"),
+            DiagnosticPin(sessionId, new string('a', SessionContextPinMaterializer.MaxBytesPerPin - 1) + "3"),
+            DiagnosticPin(sessionId, new string('a', fourthContentBytes)),
+        ];
+    }
+
+    private static SessionContextPinRecord DiagnosticPin(Guid sessionId, string text) =>
+        new(
+            Guid.NewGuid(),
+            sessionId,
+            SessionContextPinKind.Diagnostic,
+            text,
+            "diag",
+            ContentVersion: null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
 
     private async Task<string> MaterializeSingleAsync(SessionContextPinRecord pin)
     {
