@@ -103,8 +103,7 @@ public sealed class RecentResourceStore : IRecentResourceStore
 
             try
             {
-                // Owner-only before the first byte is written, not narrowed after the stream opened.
-                using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(temp))
+                using (FileStream stream = CreateStagingFile(temp))
                 using (StreamWriter writer = new(stream, Encoding.UTF8))
                 {
                     foreach (RecentEntry entry in entries)
@@ -137,6 +136,33 @@ public sealed class RecentResourceStore : IRecentResourceStore
         {
             // Recency is an optional UX hint. Selection must continue when it cannot persist.
         }
+    }
+
+    internal static FileStream CreateStagingFile(string path) =>
+        CreateStagingFile(path, SecureFilePermissions.ApplyOwnerOnlyFile);
+
+    /// <summary>
+    /// Creates the staging file owner-only before any byte is written, on every platform.
+    /// <see cref="SecureFilePermissions.CreateOwnerOnlyTempFile"/> narrows the file at creation on Unix
+    /// but leaves the ACL to a later <c>ApplyOwnerOnlyFile</c> on Windows, so the narrowing is applied
+    /// here too: it is a repeat of the creation mode on Unix and the first hardening on Windows.
+    /// </summary>
+    internal static FileStream CreateStagingFile(string path, Action<string> applyOwnerOnly)
+    {
+        FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(path);
+
+        try
+        {
+            applyOwnerOnly(path);
+        }
+        catch
+        {
+            stream.Dispose();
+
+            throw;
+        }
+
+        return stream;
     }
 
     private List<RecentEntry> ReadEntries()

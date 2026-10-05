@@ -26,6 +26,14 @@ public sealed class FileBatchApiClient(
 {
     private const long MaxJsonResponseBytes = 64 * 1024 * 1024;
 
+    /// <summary>
+    /// How long a short call may wait for the host to start answering; the same deadline the
+    /// short-call client carries everywhere else (DESIGN 2.1). An upload and a download are not short
+    /// calls and are never subject to it.
+    /// </summary>
+    internal TimeSpan RequestResponseHeadersTimeout { get; init; } =
+        ArcanumApiClient.DefaultRequestResponseHeadersTimeout;
+
     public Task<Result<OpenAiFileListResponse>> ListFilesAsync(
         string? purpose,
         CancellationToken cancellationToken) =>
@@ -67,7 +75,10 @@ public sealed class FileBatchApiClient(
                 cancellationToken,
                 new Error(
                     "Files.ReadFailed",
-                    "The local upload file could not be read."))
+                    "The local upload file could not be read."),
+                // The answer arrives only after the whole file has been sent and stored, which takes
+                // as long as the file is large: not a short call, so no headers deadline.
+                ArcanumApiClient.StreamingHttpClientName)
             .ConfigureAwait(false);
     }
 
@@ -279,17 +290,24 @@ public sealed class FileBatchApiClient(
             ArcanumJsonContext.Default.OpenAiBatchObject,
             cancellationToken);
 
+    /// <summary>
+    /// Sends one request and reads its bounded JSON answer. The short-call client (the default) carries
+    /// the response-headers deadline, so a hung host fails the call as <c>Connection.Timeout</c>; a
+    /// caller whose answer takes as long as its work, such as an upload, passes the unbounded
+    /// streaming client instead.
+    /// </summary>
     private async Task<Result<T>> SendJsonAsync<T>(
         HttpMethod method,
         string path,
         Func<HttpContent?>? content,
         JsonTypeInfo<T> responseType,
         CancellationToken cancellationToken,
-        Error? requestContentError = null)
+        Error? requestContentError = null,
+        string httpClientName = ArcanumApiClient.RequestHttpClientName)
     {
         try
         {
-            HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
+            HttpClient client = httpClientFactory.CreateClient(httpClientName);
 
             using ArcanumAuthenticatedHttpResponse sent =
                 await ArcanumAuthenticatedHttpSender.SendAsync(
@@ -301,7 +319,9 @@ public sealed class FileBatchApiClient(
                     },
                     HttpCompletionOption.ResponseHeadersRead,
                     canReplayAfterUnauthorized: true,
-                    cancellationToken)
+                    ArcanumAuthenticatedHttpSender.PresenceProbeTimeout,
+                    cancellationToken,
+                    ArcanumApiClient.ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout))
                 .ConfigureAwait(false);
 
             if (!sent.IsAuthenticated)

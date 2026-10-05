@@ -46,6 +46,20 @@ public sealed partial class ArcanumApiClient(
 
     internal TimeSpan RequestResponseHeadersTimeout { get; init; } = DefaultRequestResponseHeadersTimeout;
 
+    /// <summary>
+    /// The one rule for who carries the headers deadline: a call on the short-call client does, a
+    /// call on any other client (the unbounded streaming client) never does. Every call that has no
+    /// Arcanum-owned expected duration is therefore exempt by being issued on the streaming client,
+    /// and the choice of client at each call site is the whole policy. The CLI's two API clients
+    /// both read it from here so they cannot drift.
+    /// </summary>
+    internal static TimeSpan? ResponseHeadersDeadlineFor(
+        string httpClientName,
+        TimeSpan requestResponseHeadersTimeout) =>
+        string.Equals(httpClientName, RequestHttpClientName, StringComparison.Ordinal)
+            ? requestResponseHeadersTimeout
+            : null;
+
     /// <summary>Operator-facing copy when an SSE/NDJSON stream disconnects mid-flight.</summary>
     public const string StreamDisconnectMessage =
         "The connection to the Arcanum API was lost before the stream completed.";
@@ -270,9 +284,7 @@ public sealed partial class ArcanumApiClient(
                         canReplayAfterUnauthorized: true,
                         ArcanumAuthenticatedHttpSender.PresenceProbeTimeout,
                         cancellationToken,
-                        string.Equals(httpClientName, RequestHttpClientName, StringComparison.Ordinal)
-                            ? RequestResponseHeadersTimeout
-                            : null)
+                        ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout))
                     .ConfigureAwait(false);
 
                 if (!sent.IsAuthenticated)
@@ -487,6 +499,11 @@ public sealed partial class ArcanumApiClient(
             ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto,
             cancellationToken);
 
+    /// <summary>
+    /// Runs the reconciliation sweep inline on the host, over up to 500 durable operations, and answers
+    /// when it has finished. Durable operations have no Arcanum-owned expected duration, so the call
+    /// uses the unbounded streaming client rather than the headers deadline.
+    /// </summary>
     public Task<Result<LongRunningOperationReconciliationSummary>> ReconcileOperationsAsync(
         CancellationToken cancellationToken = default) =>
         SendRequestAsync(
@@ -495,7 +512,8 @@ public sealed partial class ArcanumApiClient(
             null,
             null,
             ArcanumJsonContext.Default.ApiResponseLongRunningOperationReconciliationSummary,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
 
     #endregion
 
@@ -581,6 +599,11 @@ public sealed partial class ArcanumApiClient(
 
     #endregion
 
+    /// <summary>
+    /// One non-streaming model turn. It answers only when the turn, tool rounds included, is done,
+    /// and a turn has no Arcanum-owned duration, so the call uses the unbounded streaming client
+    /// rather than the headers deadline.
+    /// </summary>
     public async Task<Result<string>> AskAsync(PingRequest body, CancellationToken cancellationToken)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.PingRequest);
@@ -591,7 +614,8 @@ public sealed partial class ArcanumApiClient(
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
 
         return result.IsSuccess
             ? Result<string>.Success(result.Value?.Text ?? string.Empty)
@@ -1007,6 +1031,11 @@ public sealed partial class ArcanumApiClient(
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Invokes one tool on an external MCP server and answers when the tool returns. A tool has no
+    /// Arcanum-owned duration, so the call uses the unbounded streaming client rather than the
+    /// headers deadline.
+    /// </summary>
     public async Task<Result<McpToolInvokeResponse>> InvokeDiagnosticMcpToolAsync(
         McpToolInvokeRequest request,
         CancellationToken cancellationToken = default)
@@ -1021,7 +1050,8 @@ public sealed partial class ArcanumApiClient(
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
     }
 
     public async Task<Result<WorkspaceArsenalDto>> GetWorkspaceArsenalAsync(OptionalWorkspaceRequest request, CancellationToken cancellationToken)
@@ -1419,6 +1449,11 @@ public sealed partial class ArcanumApiClient(
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Uploads one attachment. The response headers arrive only after the whole body has been sent and
+    /// stored, which takes as long as the file is large, so the upload uses the unbounded streaming
+    /// client rather than the headers deadline.
+    /// </summary>
     public async Task<Result<SessionAttachmentDto>> UploadSessionAttachmentAsync(
         Guid sessionId,
 
@@ -1434,7 +1469,7 @@ public sealed partial class ArcanumApiClient(
         try
 
         {
-            HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
+            HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
 
             long? initialPosition = contentStream.CanSeek
                 ? contentStream.Position
@@ -4187,6 +4222,10 @@ public sealed partial class ArcanumApiClient(
             Message = error.Message,
         };
 
+    /// <summary>
+    /// Executes one built-in tool and answers when it finishes. A tool has no Arcanum-owned
+    /// duration, so the call uses the unbounded streaming client rather than the headers deadline.
+    /// </summary>
     public async Task<Result<ToolInvokeResponse>> InvokeToolAsync(
         string toolName,
         JsonElement arguments,
@@ -4213,7 +4252,8 @@ public sealed partial class ArcanumApiClient(
                 { Data: null } => Result<ToolInvokeResponse>.Failure(InvalidResponseError),
                 _ => Result<ToolInvokeResponse>.Success(envelope.Data)
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
     }
 
     #endregion

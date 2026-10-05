@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -778,7 +779,7 @@ public sealed class ArcanumApiClientTests
     }
 
     [Fact]
-    public async Task AskAsync_returns_timeout_when_bounded_client_exceeds_deadline()
+    public async Task A_short_call_returns_timeout_when_the_bounded_client_exceeds_its_deadline()
     {
         // Only the client's deadline can finish this request. A second success timer can win
         // when a suspended thread pool resumes with both timers already overdue.
@@ -793,10 +794,10 @@ public sealed class ArcanumApiClientTests
             apiKey: "test-key",
             requestTimeout: TimeSpan.FromMilliseconds(100));
 
-        PingRequest body = new("hello");
-
         // Preserve the fixture's original five-second bound as a hang guard, not a success path.
-        Result<string> result = await client.AskAsync(body, CancellationToken.None)
+        // A model turn is no longer the probe: it runs on the unbounded client, which the short-call
+        // client's own timeout never reaches.
+        Result<BudgetSummaryDto> result = await client.GetBudgetAsync(CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(result.IsFailure);
@@ -941,6 +942,110 @@ public sealed class ArcanumApiClientTests
         Assert.NotEqual(ErrorCodes.Connection.Timeout, sending.Error.Code);
 
         Assert.Equal(2, handler.Requests.Count);
+    }
+
+    /// <summary>
+    /// A model turn, a tool execution, a diagnostic MCP tool call and an operations sweep all answer
+    /// only when their work is done, and none of that work has an Arcanum-owned duration. A call that
+    /// took longer than the short-call deadline used to fail as <c>Connection.Timeout</c> (exit 3)
+    /// while the host kept working on it. A session attachment upload is held back the same way: its
+    /// headers arrive only after the whole body has been sent and stored.
+    /// </summary>
+    [Fact]
+    public async Task Calls_whose_work_has_no_expected_duration_are_not_bounded_by_the_headers_deadline()
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<CompactResult>(null, false, new Error("Test.Marker", "reached the host")),
+            ArcanumJsonContext.Default.ApiResponseCompactResult);
+
+        RecordingHandler handler = new(async (_, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(json),
+            };
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        using JsonDocument noArguments = JsonDocument.Parse("{}");
+
+        (string Name, Func<Task<Error>> Call)[] calls =
+        [
+            (
+                nameof(ArcanumApiClient.AskAsync),
+                async () => (await client.AskAsync(new PingRequest("hello"), CancellationToken.None)).Error),
+            (
+                nameof(ArcanumApiClient.InvokeToolAsync),
+                async () => (await client.InvokeToolAsync(
+                    "workspace_check",
+                    noArguments.RootElement,
+                    CancellationToken.None)).Error),
+            (
+                nameof(ArcanumApiClient.InvokeDiagnosticMcpToolAsync),
+                async () => (await client.InvokeDiagnosticMcpToolAsync(
+                    new McpToolInvokeRequest
+                    {
+                        ToolName = "remote_tool",
+                        Arguments = noArguments.RootElement,
+                    },
+                    CancellationToken.None)).Error),
+            (
+                nameof(ArcanumApiClient.ReconcileOperationsAsync),
+                async () => (await client.ReconcileOperationsAsync(CancellationToken.None)).Error),
+            (
+                nameof(ArcanumApiClient.UploadSessionAttachmentAsync),
+                async () => (await client.UploadSessionAttachmentAsync(
+                    Guid.NewGuid(),
+                    new MemoryStream([1, 2, 3]),
+                    "notes.txt",
+                    "text/plain",
+                    CancellationToken.None)).Error),
+        ];
+
+        List<string> timedOut = [];
+
+        foreach ((string name, Func<Task<Error>> call) in calls)
+        {
+            Error error = await call().WaitAsync(TimeSpan.FromSeconds(10));
+
+            if (string.Equals(error.Code, ErrorCodes.Connection.Timeout, StringComparison.Ordinal))
+            {
+                timedOut.Add(name);
+            }
+        }
+
+        Assert.Empty(timedOut);
+
+        Assert.Equal(calls.Length, handler.Requests.Count);
+    }
+
+    /// <summary>
+    /// The state flip behind <c>operations retry</c> only resets one row; it is a short call and
+    /// stays behind the deadline, so a hung host still fails it instead of wedging the command.
+    /// </summary>
+    [Fact]
+    public async Task Resetting_one_operation_for_retry_stays_bounded_by_the_headers_deadline()
+    {
+        TaskCompletionSource<HttpResponseMessage> never = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        RecordingHandler handler = new((_, cancellationToken) =>
+            never.Task.WaitAsync(cancellationToken));
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        Result<LongRunningOperationDto> result = await client
+            .RetryOperationAsync(Guid.NewGuid(), CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(ErrorCodes.Connection.Timeout, result.Error.Code);
     }
 
     [Fact]

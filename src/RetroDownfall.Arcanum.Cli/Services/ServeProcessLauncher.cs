@@ -4,8 +4,10 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 
 /// <summary>
 /// Direct <see cref="ProcessStartInfo"/> spawn — no shell, no reflection, no P/Invoke.
-/// The child is deliberately not detached: it shares the launching terminal's session and process
-/// group, so Ctrl+C or closing that terminal ends the host (DESIGN 4.4.1, host lifetime).
+/// The child is deliberately not detached: it shares the launching command's session and process
+/// group, so a terminal Ctrl+C or hangup reaches it only while that command is still the terminal's
+/// foreground job. Once the launcher has exited, as <c>run</c> and <c>ask</c> do, the host keeps
+/// running until <c>arcanum serve quit</c> (DESIGN 4.4.1, host lifetime).
 /// </summary>
 internal sealed class ServeProcessLauncher : IServeProcessLauncher
 {

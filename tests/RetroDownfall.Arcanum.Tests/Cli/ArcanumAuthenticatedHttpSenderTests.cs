@@ -589,10 +589,10 @@ public sealed class ArcanumAuthenticatedHttpSenderTests
             "src/RetroDownfall.Arcanum.Cli/Services/ArcanumApiClient.cs|ArcanumApiClient|ResearchWebAsync|CreateClient|name=ArcanumApi",
             "src/RetroDownfall.Arcanum.Cli/Services/ArcanumApiClient.cs|ArcanumApiClient|SendRequestAsync|CreateClient|name=parameter:httpClientName",
             "src/RetroDownfall.Arcanum.Cli/Services/ArcanumApiClient.cs|ArcanumApiClient|StreamApprenticeChronicleAsync|CreateClient|name=ArcanumApi",
-            "src/RetroDownfall.Arcanum.Cli/Services/ArcanumApiClient.cs|ArcanumApiClient|UploadSessionAttachmentAsync|CreateClient|name=ArcanumApiRequest",
+            "src/RetroDownfall.Arcanum.Cli/Services/ArcanumApiClient.cs|ArcanumApiClient|UploadSessionAttachmentAsync|CreateClient|name=ArcanumApi",
             "src/RetroDownfall.Arcanum.Cli/Services/ArcanumApiCredentialLease.cs|ArcanumApiCredentialLease|CreateHttpClient|CreateClient|name=ArcanumApiRequest",
             "src/RetroDownfall.Arcanum.Cli/Services/FileBatchApiClient.cs|FileBatchApiClient|DownloadFileAsync|CreateClient|name=ArcanumApi",
-            "src/RetroDownfall.Arcanum.Cli/Services/FileBatchApiClient.cs|FileBatchApiClient|SendJsonAsync|CreateClient|name=ArcanumApiRequest",
+            "src/RetroDownfall.Arcanum.Cli/Services/FileBatchApiClient.cs|FileBatchApiClient|SendJsonAsync|CreateClient|name=parameter:httpClientName",
             "src/RetroDownfall.Arcanum.Cli/Services/Setup/SetupProviderProbe.cs|SetupProviderProbe|ProbeAsync|new HttpClient|handler=handlerFactory.Create(),disposeHandler=true",
         ];
 

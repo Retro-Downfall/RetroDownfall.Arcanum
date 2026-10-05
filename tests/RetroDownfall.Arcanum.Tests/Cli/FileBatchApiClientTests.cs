@@ -1,5 +1,6 @@
 using System.Net;
 using System.Runtime.Versioning;
+using System.Text;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -267,6 +268,141 @@ public sealed class FileBatchApiClientTests
         }
     }
 
+    /// <summary>
+    /// The file and batch verbs go through their own client, which used to send without any deadline,
+    /// so a hung host wedged <c>file list</c>, <c>batch status</c> and the rest while the "timed out"
+    /// branch below the sender stayed unreachable. Every short call now carries the same
+    /// response-headers deadline as the rest of the CLI and reports the same typed timeout.
+    /// </summary>
+    [Fact]
+    public async Task Short_file_and_batch_calls_fail_as_timeouts_when_the_host_never_answers_headers()
+    {
+        HangingHandler handler = new();
+
+        using ArcanumApiCredentialLease credentials =
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key");
+
+        FileBatchApiClient client = new(
+            new FakeHttpClientFactory(handler),
+            credentials)
+        {
+            RequestResponseHeadersTimeout = TimeSpan.FromMilliseconds(100),
+        };
+
+        (string Name, Func<Task<string>> Call)[] calls =
+        [
+            (nameof(FileBatchApiClient.ListFilesAsync), async () =>
+                (await client.ListFilesAsync(purpose: null, CancellationToken.None)).Error.Code),
+            (nameof(FileBatchApiClient.GetFileAsync), async () =>
+                (await client.GetFileAsync("file-1", CancellationToken.None)).Error.Code),
+            (nameof(FileBatchApiClient.DeleteFileAsync), async () =>
+                (await client.DeleteFileAsync("file-1", CancellationToken.None)).Error.Code),
+            (nameof(FileBatchApiClient.ListBatchesAsync), async () =>
+                (await client.ListBatchesAsync(status: null, cursor: null, CancellationToken.None)).Error.Code),
+            (nameof(FileBatchApiClient.GetBatchAsync), async () =>
+                (await client.GetBatchAsync("batch-1", CancellationToken.None)).Error.Code),
+            (nameof(FileBatchApiClient.CreateBatchAsync), async () =>
+                (await client.CreateBatchAsync("file-1", CancellationToken.None)).Error.Code),
+            (nameof(FileBatchApiClient.CancelBatchAsync), async () =>
+                (await client.CancelBatchAsync("batch-1", CancellationToken.None)).Error.Code),
+            (nameof(FileBatchApiClient.ResetBatchAsync), async () =>
+                (await client.ResetBatchAsync("batch-1", CancellationToken.None)).Error.Code),
+        ];
+
+        List<string> notTimedOut = [];
+
+        foreach ((string name, Func<Task<string>> call) in calls)
+        {
+            // Only the client's own deadline can finish these requests; the outer bound is a hang guard.
+            string code = await call().WaitAsync(TimeSpan.FromSeconds(10));
+
+            if (!string.Equals(code, ErrorCodes.Connection.Timeout, StringComparison.Ordinal))
+            {
+                notTimedOut.Add($"{name}: {code}");
+            }
+        }
+
+        Assert.Empty(notTimedOut);
+
+        Assert.Equal(calls.Length, handler.RequestCount);
+    }
+
+    /// <summary>
+    /// The deadline is for the response headers. A body that takes longer than the deadline to
+    /// arrive is a slow answer, not a hung host, and must not be cut off.
+    /// </summary>
+    [Fact]
+    public async Task Short_file_call_headers_deadline_does_not_bound_the_response_body()
+    {
+        DelayedStartHandler handler = new(
+            TimeSpan.Zero,
+            TimeSpan.FromMilliseconds(400),
+            """{"object":"list","data":[],"has_more":false}""");
+
+        using ArcanumApiCredentialLease credentials =
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key");
+
+        FileBatchApiClient client = new(
+            new FakeHttpClientFactory(handler),
+            credentials)
+        {
+            RequestResponseHeadersTimeout = TimeSpan.FromMilliseconds(100),
+        };
+
+        var result = await client
+            .ListFilesAsync(purpose: null, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : string.Empty);
+    }
+
+    /// <summary>
+    /// An upload answers only after the whole file has been sent and stored, which can take as long
+    /// as the file is large, so it is not a short call: it goes out on the unbounded client and the
+    /// headers deadline never applies to it.
+    /// </summary>
+    [Fact]
+    public async Task Upload_is_not_bounded_by_the_headers_deadline()
+    {
+        string filePath = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-file-batch-{Guid.NewGuid():N}.txt");
+
+        await File.WriteAllTextAsync(filePath, "a file that takes a while to store");
+
+        try
+        {
+            DelayedStartHandler handler = new(
+                TimeSpan.FromMilliseconds(400),
+                TimeSpan.Zero,
+                """{"id":"file-1","bytes":34,"created_at":1,"filename":"a.txt","purpose":"assistants","object":"file"}""");
+
+            using ArcanumApiCredentialLease credentials =
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key");
+
+            FakeHttpClientFactory factory = new(handler);
+
+            FileBatchApiClient client = new(factory, credentials)
+            {
+                RequestResponseHeadersTimeout = TimeSpan.FromMilliseconds(100),
+            };
+
+            var result = await client
+                .UploadFileAsync(filePath, "assistants", "text/plain", CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : string.Empty);
+
+            Assert.Equal(
+                [ArcanumApiClient.StreamingHttpClientName],
+                factory.RequestedNames);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
     [UnsupportedOSPlatform("windows")]
     private sealed class ModePeekingStream(string directory, byte[] payload) : Stream
     {
@@ -340,15 +476,110 @@ public sealed class FileBatchApiClientTests
     private sealed class FakeHttpClientFactory(
         HttpMessageHandler handler) : IHttpClientFactory
     {
+        internal List<string> RequestedNames { get; } = [];
+
         public HttpClient CreateClient(string name)
         {
-            _ = name;
+            RequestedNames.Add(name);
 
             return new HttpClient(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
         }
+    }
+
+    private sealed class HangingHandler : HttpMessageHandler
+    {
+        private int _requestCount;
+
+        internal int RequestCount => Volatile.Read(ref _requestCount);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            _ = Interlocked.Increment(ref _requestCount);
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+
+            throw new InvalidOperationException("The hanging handler never answers.");
+        }
+    }
+
+    private sealed class DelayedStartHandler(
+        TimeSpan headersDelay,
+        TimeSpan bodyDelay,
+        string json) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            // The request body is consumed first, as a real transport would, so a content factory
+            // that fails is observed here rather than skipped.
+            if (request.Content is not null)
+            {
+                _ = await request.Content
+                    .ReadAsByteArrayAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            await Task.Delay(headersDelay, cancellationToken).ConfigureAwait(false);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new DelayedStartStream(Encoding.UTF8.GetBytes(json), bodyDelay)),
+            };
+        }
+    }
+
+    private sealed class DelayedStartStream(byte[] payload, TimeSpan delay) : Stream
+    {
+        private readonly MemoryStream _inner = new(payload);
+
+        private bool _delayed;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_delayed)
+            {
+                _delayed = true;
+
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+
+            return await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class RecordingHandler(
