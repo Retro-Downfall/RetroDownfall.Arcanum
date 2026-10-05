@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
@@ -37,6 +38,11 @@ internal sealed class ArcanumServeLauncher(
     /// </summary>
     internal static TimeSpan? TestPollDeadline { get; set; }
 
+    internal static string LaunchLockPath =>
+        Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.serve.lock");
+
     internal static string BootstrapLogPath =>
         Path.Combine(
             ArcanumPaths.GrimoireDirectory,
@@ -62,39 +68,15 @@ internal sealed class ArcanumServeLauncher(
             .ResolveAsync(ProbeTimeout, cancellationToken)
             .ConfigureAwait(false);
 
-        if (presence.IsVerified)
-        {
-            return Success(
-                ServeLaunchStatus.AlreadyRunning,
-                stopwatch,
-                logPath: null);
-        }
-
-        if (presence.ProbeState == HealthProbeState.UnhealthyStatus)
-        {
-            presence = await RetryExistingHostAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            if (presence.IsVerified)
-            {
-                return Success(
-                    ServeLaunchStatus.AlreadyRunning,
-                    stopwatch,
-                    logPath: null);
-            }
-
-            return FailureFromPresence(
+        ServeLaunchResult? existingHost = await ResolveExistingHostAsync(
                 presence,
                 stopwatch,
-                logPath: null);
-        }
+                cancellationToken)
+            .ConfigureAwait(false);
 
-        if (!IsNoListener(presence.ProbeState))
+        if (existingHost is not null)
         {
-            return FailureFromPresence(
-                presence,
-                stopwatch,
-                logPath: null);
+            return existingHost;
         }
 
         ArcanumSettings settings = settingsMonitor.CurrentValue;
@@ -108,6 +90,41 @@ internal sealed class ArcanumServeLauncher(
                 stopwatch.Elapsed,
                 null,
                 "ListenAny requires acknowledgement — run `arcanum serve` manually once to acknowledge, or set ARCANUM_LISTEN_ANY_ACK=1 if intentional.");
+        }
+
+        // Two clients started together would both see no listener and both spawn a host. The lock makes
+        // probe-and-spawn one step across processes, and it is held until this launch has finished, so a
+        // second client waits for the host the first one started instead of racing it for the PID file.
+        using LaunchLockHold launchLock = await AcquireLaunchLockAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (launchLock.TimedOut)
+        {
+            return new ServeLaunchResult(
+                ServeLaunchStatus.Failed,
+                HealthProbeState.Timeout,
+                stopwatch.Elapsed,
+                BootstrapLogPath,
+                $"Timed out waiting for another arcanum process that is starting the host. Check {BootstrapLogPath} and run `arcanum doctor`.");
+        }
+
+        if (launchLock.Waited)
+        {
+            // Whoever held the lock may have started the host in the meantime.
+            presence = await credentialLease
+                .ResolveAsync(ProbeTimeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            existingHost = await ResolveExistingHostAsync(
+                    presence,
+                    stopwatch,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (existingHost is not null)
+            {
+                return existingHost;
+            }
         }
 
         (string executable, IReadOnlyList<string> arguments) =
@@ -148,6 +165,120 @@ internal sealed class ArcanumServeLauncher(
                 stopwatch,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A result when something is already answering on the endpoint (running, still bootstrapping, or a
+    /// failure that must not be spawned over); null when nothing listens and a host may be started.
+    /// </summary>
+    private async Task<ServeLaunchResult?> ResolveExistingHostAsync(
+        ApiCredentialLeaseResult presence,
+        Stopwatch stopwatch,
+        CancellationToken cancellationToken)
+    {
+        if (presence.IsVerified)
+        {
+            return Success(
+                ServeLaunchStatus.AlreadyRunning,
+                stopwatch,
+                logPath: null);
+        }
+
+        if (presence.ProbeState == HealthProbeState.UnhealthyStatus)
+        {
+            presence = await RetryExistingHostAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (presence.IsVerified)
+            {
+                return Success(
+                    ServeLaunchStatus.AlreadyRunning,
+                    stopwatch,
+                    logPath: null);
+            }
+
+            return FailureFromPresence(
+                presence,
+                stopwatch,
+                logPath: null);
+        }
+
+        return IsNoListener(presence.ProbeState)
+            ? null
+            : FailureFromPresence(
+                presence,
+                stopwatch,
+                logPath: null);
+    }
+
+    /// <summary>
+    /// Takes the owner-only cross-process launch lock, waiting while another client holds it. A lock that
+    /// cannot be created safely does not stop the launch: the host's own PID-file claim is still the
+    /// authority that admits exactly one host, so the launcher proceeds unserialised and says so.
+    /// </summary>
+    private async Task<LaunchLockHold> AcquireLaunchLockAsync(
+        CancellationToken cancellationToken)
+    {
+        Stopwatch wait = Stopwatch.StartNew();
+
+        TimeSpan deadline = TestPollDeadline ?? PollDeadline;
+
+        bool waited = false;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            RetainedExclusiveFileLockAcquisitionResult attempt;
+
+            try
+            {
+                attempt = RetainedExclusiveFileLock.Acquire(LaunchLockPath);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Could not take the serve launch lock; starting without cross-process serialisation.");
+
+                return new LaunchLockHold(null, waited, TimedOut: false);
+            }
+
+            switch (attempt.Disposition)
+            {
+                case RetainedExclusiveFileLockAcquisitionDisposition.Acquired:
+                    return new LaunchLockHold(attempt.Lock, waited, TimedOut: false);
+
+                case RetainedExclusiveFileLockAcquisitionDisposition.Unsafe:
+                    logger.LogWarning(
+                        "The serve launch lock at {Path} could not be used safely; starting without cross-process serialisation.",
+                        LaunchLockPath);
+
+                    return new LaunchLockHold(null, waited, TimedOut: false);
+
+                default:
+                    waited = true;
+
+                    if (wait.Elapsed >= deadline)
+                    {
+                        return new LaunchLockHold(null, waited, TimedOut: true);
+                    }
+
+                    await Task.Delay(PollInterval, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    break;
+            }
+        }
+    }
+
+    private readonly record struct LaunchLockHold(
+        RetainedExclusiveFileLock? Lock,
+        bool Waited,
+        bool TimedOut) : IDisposable
+    {
+        public void Dispose() => Lock?.Dispose();
     }
 
     private async Task<ApiCredentialLeaseResult> RetryExistingHostAsync(

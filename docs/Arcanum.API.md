@@ -543,7 +543,7 @@ All routes are API-key protected and operate only on a bound attachment belongin
 
 ### 8.19 Server lifecycle (PID file)
 
-The code-owned path is `~/.config/arcanum/arcanum.pid`. Startup fails if a live PID is present; a stale file is overwritten. Shutdown deletes the file only if it still names this process. DevHost and `serve` share the same path and therefore cannot run concurrently.
+The code-owned path is `~/.config/arcanum/arcanum.pid`. Startup claims the file with an atomic exclusive create and fails if it names a live Arcanum owner, with a message that names the file and says to remove it when no Arcanum process owns that PID; a stale file (malformed, a dead process, or a recycled id held by a process that started after the file was last written) is replaced, and two starters can never both claim it. Shutdown deletes the file only if it still names this process. DevHost and `serve` share the same path and therefore cannot run concurrently.
 
 ### 8.20 Unified data lifecycle API (`/api/data`)
 

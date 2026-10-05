@@ -1,9 +1,9 @@
-using System.Diagnostics;
 using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
@@ -108,26 +108,27 @@ internal readonly record struct PidFilePosture(PidFileKind Kind, int Pid, string
             return new PidFilePosture(PidFileKind.Malformed, 0, path);
         }
 
-        return new PidFilePosture(IsRunning(pid) ? PidFileKind.Live : PidFileKind.Stale, pid, path);
+        return new PidFilePosture(IsRunning(pid, path) ? PidFileKind.Live : PidFileKind.Stale, pid, path);
     }
 
     /// <summary>
-    /// Liveness only, mirroring <c>PidFileService</c>. It cannot prove the process is Arcanum's — a
-    /// recycled id looks identical — which is precisely why the repair refuses to act while any
-    /// process holds that id, rather than trying to identify it.
+    /// The same ownership rule <c>PidFileService</c> applies at start-up, so <c>doctor</c> and a starting
+    /// host never disagree about one file: a process that began after the file was last written cannot be
+    /// the host that wrote it, so a recycled id reads as stale. A start time the OS will not give counts as
+    /// live, and the repair still refuses to act on anything it cannot prove gone.
     /// </summary>
-    private static bool IsRunning(int pid)
+    private static bool IsRunning(int pid, string path)
     {
         try
         {
-            using Process process = Process.GetProcessById(pid);
-
-            return !process.HasExited;
+            return PidFileOwnership.IsLiveOwner(
+                pid,
+                File.GetLastWriteTimeUtc(path),
+                PidFileOwnership.LookUp);
         }
-        catch (Exception exception) when (
-            exception is ArgumentException or InvalidOperationException or NotSupportedException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return false;
+            return true;
         }
     }
 }
