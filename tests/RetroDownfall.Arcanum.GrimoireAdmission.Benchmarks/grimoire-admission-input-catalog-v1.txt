@@ -1705,6 +1705,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Security/ApiKeyDigestCache.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ArcanumMasterKeyBootstrapper.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/AttachmentSourceResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CampaignRootIdentityKeyProvider.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/CampaignRootIdentityKeyRegistration.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantAuthorityBootstrapper.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantAuthoritySnapshotProvider.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantAuthorityStartupReconciler.cs
