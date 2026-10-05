@@ -890,6 +890,65 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.NotEmpty(await _store.GetLayerNodesAsync(current.GenerationId, 1, CancellationToken.None));
     }
 
+    /// <summary>
+    /// A summary of one child says nothing the child did not, so a singleton cluster is carried to the
+    /// next layer unchanged — as a node too large to summarize already is — instead of costing a model
+    /// call to restate itself.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_DoesNotSummarizeASingleChildCluster()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // Three leaves pointing almost the same way fill one cluster to the child-count bound of three,
+        // so the orthogonal fourth has no sibling with room to be merged into and stays a singleton.
+        _weave!.VectorsByText["alpha body"] = Direction(0, (2, 0.01f));
+
+        _weave.VectorsByText["bravo body"] = Direction(0, (3, 0.01f));
+
+        _weave.VectorsByText["charlie body"] = Direction(0, (4, 0.01f));
+
+        _weave.VectorsByText["outlier body"] = Direction(1);
+
+        await SeedChunksAsync(
+            ("c00", "a.cs", "alpha body"),
+            ("c01", "b.cs", "bravo body"),
+            ("c02", "c.cs", "charlie body"),
+            ("c03", "d.cs", "outlier body"));
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
+            Scope,
+            Settings(target: 2, maxChildren: 3),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        Assert.DoesNotContain(1, _summarizer!.SummarizedChildCounts);
+
+        // The outlier is still part of the tree: the root claims it beside the cluster's summary.
+        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None);
+
+        Assert.Equal(4, leaves.Count);
+
+        Assert.All(leaves, leaf => Assert.NotNull(leaf.ParentNodeId));
+    }
+
+    private static float[] Direction(int axis, params (int Axis, float Weight)[] others)
+    {
+        float[] vector = new float[TestDimensions];
+
+        vector[axis] = 1f;
+
+        foreach ((int otherAxis, float weight) in others)
+        {
+            vector[otherAxis] = weight;
+        }
+
+        return vector;
+    }
+
     [SkippableFact]
     public async Task WeaveAsync_MergingAnUndersizedClusterNeverCrossesTheTokenBound()
     {
@@ -927,6 +986,9 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         public bool Available { get; set; } = true;
 
         public float[]? ConstantVector { get; set; }
+
+        /// <summary>Exact text to the direction it embeds to, for cases that need a chosen geometry.</summary>
+        public Dictionary<string, float[]> VectorsByText { get; } = new(StringComparer.Ordinal);
 
         public string? PoisonContentSubstring { get; set; }
 
@@ -970,6 +1032,11 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
                 poisoned[0] = float.NaN;
 
                 return poisoned;
+            }
+
+            if (VectorsByText.TryGetValue(text, out float[]? chosen))
+            {
+                return [.. chosen];
             }
 
             if (ConstantVector is { } constant)
@@ -1024,6 +1091,9 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public int CallCount { get; private set; }
 
+        /// <summary>The number of children each summary call was asked to summarize, in call order.</summary>
+        public List<int> SummarizedChildCounts { get; } = [];
+
         /// <summary>The largest child count any fit estimate was asked about.</summary>
         public int LargestFitEstimate { get; private set; }
 
@@ -1066,6 +1136,8 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             cancellationToken.ThrowIfCancellationRequested();
 
             CallCount++;
+
+            SummarizedChildCounts.Add(request.ChildTexts.Count);
 
             // The real summarizer does not re-check the fit here: an over-budget request goes to the
             // provider, fails there, and fails the whole generation. Recording it is how a cluster

@@ -13,13 +13,11 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 /// </summary>
 public sealed class SphericalKMeansTests
 {
-
     private static SphericalKMeansPoint Point(string id, params float[] vector) => new(id, vector);
 
     [Fact]
     public void Cluster_SeparatesTwoObviousGroups()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("a1", 1f, 0f),
@@ -41,13 +39,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(["a1", "a2"], first);
 
         Assert.Equal(["b1", "b2"], second);
-
     }
 
     [Fact]
     public void Cluster_NormalizesVectors_SoMagnitudeDoesNotChangeMembership()
     {
-
         SphericalKMeansPoint[] unit =
         [
             Point("a1", 1f, 0f),
@@ -71,13 +67,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(
             unitResult.Clusters.Select(static cluster => cluster.MemberIds),
             scaledResult.Clusters.Select(static cluster => cluster.MemberIds));
-
     }
 
     [Fact]
     public void Cluster_IsDeterministicForTheSameSeedAndInput()
     {
-
         SphericalKMeansPoint[] points =
         [
             .. Enumerable.Range(0, 40).Select(index =>
@@ -99,13 +93,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(first.Termination, second.Termination);
 
         Assert.Equal(first.Iterations, second.Iterations);
-
     }
 
     [Fact]
     public void Cluster_InputOrderDoesNotChangeMemberships()
     {
-
         SphericalKMeansPoint[] points =
         [
             .. Enumerable.Range(0, 24).Select(index =>
@@ -124,13 +116,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(
             ordered.Clusters.Select(static cluster => cluster.MemberIds),
             reversed.Clusters.Select(static cluster => cluster.MemberIds));
-
     }
 
     [Fact]
     public void Cluster_OrdersClustersByLowestStableMemberId()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("zeta", 0f, 1f),
@@ -148,13 +138,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(0, result.Clusters[0].Ordinal);
 
         Assert.Equal(1, result.Clusters[1].Ordinal);
-
     }
 
     [Fact]
     public void Cluster_ClampsKToUsablePointCount()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("a", 1f, 0f),
@@ -164,13 +152,11 @@ public sealed class SphericalKMeansTests
         SphericalKMeansResult result = SphericalKMeans.Cluster(points, k: 9, seed: 1UL);
 
         Assert.Equal(2, result.Clusters.Count);
-
     }
 
     [Fact]
     public void Cluster_ClampsKToDistinctVectorCount_AndTerminates()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("a", 1f, 0f),
@@ -186,13 +172,11 @@ public sealed class SphericalKMeansTests
         Assert.All(result.Clusters, static cluster => Assert.NotEmpty(cluster.MemberIds));
 
         Assert.Equal(4, result.Clusters.Sum(static cluster => cluster.MemberIds.Count));
-
     }
 
     [Fact]
     public void Cluster_IdenticalVectorCorpusProducesOneCluster()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("a", 0.5f, 0.5f),
@@ -205,13 +189,11 @@ public sealed class SphericalKMeansTests
         Assert.Single(result.Clusters);
 
         Assert.Equal(["a", "b", "c"], result.Clusters[0].MemberIds);
-
     }
 
     [Fact]
     public void Cluster_NeverReturnsAnEmptyCluster()
     {
-
         SphericalKMeansPoint[] points =
         [
             .. Enumerable.Range(0, 30).Select(index =>
@@ -223,7 +205,6 @@ public sealed class SphericalKMeansTests
         Assert.Equal(6, result.Clusters.Count);
 
         Assert.All(result.Clusters, static cluster => Assert.NotEmpty(cluster.MemberIds));
-
     }
 
     /// <summary>
@@ -236,7 +217,6 @@ public sealed class SphericalKMeansTests
     [Fact]
     public void Cluster_RepairingManyEmptyClustersMatchesRecomputedSimilarities()
     {
-
         SphericalKMeansPoint[] points =
         [
             .. Enumerable.Range(0, 400).Select(index =>
@@ -256,13 +236,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(
             "8db504b833897d307de7c09bac6f907c54585aeac763687b6173370c077da7b4",
             Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(memberships))));
-
     }
 
     [Fact]
     public void Cluster_QuarantinesUnusableVectorsWithoutPoisoningTheLayer()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("good1", 1f, 0f),
@@ -294,13 +272,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(
             SphericalKMeansRejection.DimensionMismatch,
             result.Rejected.Single(static rejected => rejected.StableId == "short").Reason);
-
     }
 
     [Fact]
     public void Cluster_UsesTheExplicitExpectedDimensionWhenSupplied()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("wide1", 1f, 0f, 0f),
@@ -319,13 +295,11 @@ public sealed class SphericalKMeansTests
             Assert.Single(result.Rejected).Reason);
 
         Assert.Equal("narrow", result.Rejected[0].StableId);
-
     }
 
     [Fact]
     public void Cluster_EmptyInputProducesNoClusters()
     {
-
         SphericalKMeansResult result = SphericalKMeans.Cluster([], k: 4, seed: 1UL);
 
         Assert.Empty(result.Clusters);
@@ -335,13 +309,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(0, result.Iterations);
 
         Assert.Equal(SphericalKMeansTermination.AssignmentsStable, result.Termination);
-
     }
 
     [Fact]
     public void Cluster_AllUnusableInputProducesNoClusters()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("zero1", 0f, 0f),
@@ -353,13 +325,11 @@ public sealed class SphericalKMeansTests
         Assert.Empty(result.Clusters);
 
         Assert.Equal(2, result.Rejected.Count);
-
     }
 
     [Fact]
     public void Cluster_StopsOnStableAssignments()
     {
-
         // Members are deliberately spread within each cluster so the first centroid update moves
         // further than the convergence tolerance — otherwise the run would legitimately terminate on
         // tolerance before a second assignment pass ever happens.
@@ -376,13 +346,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(SphericalKMeansTermination.AssignmentsStable, result.Termination);
 
         Assert.InRange(result.Iterations, 2, SphericalKMeans.MaxIterations);
-
     }
 
     [Fact]
     public void Cluster_ConvergesWithoutReachingTheIterationCap()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("a1", 1f, 0f),
@@ -400,13 +368,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(["a1", "a2"], result.Clusters[0].MemberIds);
 
         Assert.Equal(["b1", "b2"], result.Clusters[1].MemberIds);
-
     }
 
     [Fact]
     public void Cluster_DoesNotCollapseNearIdenticalVectorsIntoFewerClusters()
     {
-
         // A codebase full of near-identical boilerplate must still be partitioned into the requested
         // number of clusters: only *exactly* duplicate directions cap k.
         SphericalKMeansPoint[] points =
@@ -418,13 +384,11 @@ public sealed class SphericalKMeansTests
         SphericalKMeansResult result = SphericalKMeans.Cluster(points, k: 6, seed: 2UL);
 
         Assert.Equal(6, result.Clusters.Count);
-
     }
 
     [Fact]
     public void Cluster_RespectsTheIterationCap()
     {
-
         SphericalKMeansPoint[] points =
         [
             .. Enumerable.Range(0, 12).Select(index =>
@@ -442,26 +406,22 @@ public sealed class SphericalKMeansTests
         Assert.Equal(1, result.Iterations);
 
         Assert.Equal(12, result.Clusters.Sum(static cluster => cluster.MemberIds.Count));
-
     }
 
     [Fact]
     public void Cluster_SingleUsablePointProducesOneCluster()
     {
-
         SphericalKMeansResult result = SphericalKMeans.Cluster(
             [Point("only", 0.3f, 0.4f)],
             k: 3,
             seed: 1UL);
 
         Assert.Equal(["only"], Assert.Single(result.Clusters).MemberIds);
-
     }
 
     [Fact]
     public void Cluster_EveryUsablePointIsAssignedExactlyOnce()
     {
-
         SphericalKMeansPoint[] points =
         [
             .. Enumerable.Range(0, 57).Select(index =>
@@ -480,13 +440,11 @@ public sealed class SphericalKMeansTests
         Assert.Equal(57, assigned.Length);
 
         Assert.Equal(57, assigned.Distinct(StringComparer.Ordinal).Count());
-
     }
 
     [Fact]
     public void Cluster_CentroidsAreUnitLength()
     {
-
         SphericalKMeansPoint[] points =
         [
             Point("a", 3f, 4f),
@@ -498,19 +456,15 @@ public sealed class SphericalKMeansTests
 
         foreach (SphericalKMeansCluster cluster in result.Clusters)
         {
-
             double norm = Math.Sqrt(cluster.Centroid.Sum(component => (double)component * component));
 
             Assert.InRange(norm, 0.999, 1.001);
-
         }
-
     }
 
     [Fact]
     public void DeriveClusterCount_UsesCeilingOfTargetChildrenPerSummary()
     {
-
         Assert.Equal(
             4,
             SphericalKMeans.DeriveClusterCount(
@@ -526,13 +480,11 @@ public sealed class SphericalKMeansTests
                 targetChildrenPerSummary: 5,
                 maxClustersPerLayer: 64,
                 distinctVectorCount: 21));
-
     }
 
     [Fact]
     public void DeriveClusterCount_ClampsToBoundsAndDistinctVectors()
     {
-
         Assert.Equal(
             2,
             SphericalKMeans.DeriveClusterCount(
@@ -572,13 +524,11 @@ public sealed class SphericalKMeansTests
                 targetChildrenPerSummary: 5,
                 maxClustersPerLayer: 64,
                 distinctVectorCount: 0));
-
     }
 
     [Fact]
     public void Cluster_ObservesCancellationDuringSeeding()
     {
-
         // Enough clusters that seeding runs several rounds: without a token reaching the algorithm,
         // clustering a real layer is minutes of uninterruptible CPU inside one synchronous call.
         SphericalKMeansPoint[] points =
@@ -595,13 +545,11 @@ public sealed class SphericalKMeansTests
 
         _ = Assert.Throws<OperationCanceledException>(() =>
             SphericalKMeans.Cluster(points, k: 16, seed: 99UL, cancellationToken: cts.Token));
-
     }
 
     [Fact]
     public void ClusterLayer_ObservesCancellation()
     {
-
         SphericalKMeansPoint[] points =
         [
             .. Enumerable.Range(0, 64).Select(index => Point(
@@ -621,13 +569,11 @@ public sealed class SphericalKMeansTests
                 maxClustersPerLayer: 16,
                 seed: 99UL,
                 cancellationToken: cts.Token));
-
     }
 
     [Fact]
     public void Cluster_SeedingIsIncrementalYetProducesTheDocumentedMemberships()
     {
-
         // Pins the K-Means++ selection weights that the incremental nearest-distance array must
         // reproduce exactly. A running minimum is exact in floating point, so collapsing the per-round
         // rescan of every chosen centroid into one fold of the newest centroid cannot move a boundary.
@@ -654,7 +600,72 @@ public sealed class SphericalKMeansTests
         Assert.Contains(memberships, static members => members.SequenceEqual(new[] { "b1", "b2" }));
 
         Assert.Contains(memberships, static members => members.SequenceEqual(new[] { "c1", "c2" }));
-
     }
 
+    /// <summary>
+    /// The weaver's merge similarity is the scalar, double-accumulated dot product of unit vectors, bit
+    /// for bit, and not the lane-width cosine Divination ranks with.
+    /// </summary>
+    /// <remarks>
+    /// Seventy-one components is not a multiple of any vector width, so the lane routine also takes its
+    /// scalar remainder path, and the sample is large enough that its float lane sums differ from the
+    /// double accumulation in at least one pair. If none did, this case would say nothing, so it
+    /// requires one.
+    /// </remarks>
+    [Fact]
+    public void DirectionCosine_is_the_scalar_double_accumulated_dot_of_the_unit_vectors()
+    {
+        Random random = new(20261005);
+
+        int laneRoutineDisagreed = 0;
+
+        for (int pair = 0; pair < 200; pair++)
+        {
+            float[] left = RandomVector(random, 71);
+
+            float[] right = RandomVector(random, 71);
+
+            float[] leftUnit = SphericalKMeans.NormalizedDirection(left);
+
+            float[] rightUnit = SphericalKMeans.NormalizedDirection(right);
+
+            double expected = 0;
+
+            for (int index = 0; index < 71; index++)
+            {
+                expected += (double)leftUnit[index] * rightUnit[index];
+            }
+
+            Assert.Equal(expected, SphericalKMeans.DirectionCosine(leftUnit, rightUnit));
+
+            if ((double)RetroDownfall.Arcanum.Core.Primitives.EmbeddingBlobCodec.CosineSimilarity(left, right) != expected)
+            {
+                laneRoutineDisagreed++;
+            }
+        }
+
+        Assert.True(laneRoutineDisagreed > 0, "the sample never separated the lane routine from the scalar one");
+    }
+
+    [Fact]
+    public void NormalizedDirection_is_empty_for_a_vector_with_no_direction()
+    {
+        Assert.Empty(SphericalKMeans.NormalizedDirection([0f, 0f, 0f]));
+
+        Assert.Empty(SphericalKMeans.NormalizedDirection([1f, float.NaN]));
+
+        Assert.Equal(1d, SphericalKMeans.DirectionCosine(SphericalKMeans.NormalizedDirection([2f, 0f]), [1f, 0f]));
+    }
+
+    private static float[] RandomVector(Random random, int length)
+    {
+        float[] vector = new float[length];
+
+        for (int index = 0; index < length; index++)
+        {
+            vector[index] = (float)((random.NextDouble() * 2d) - 1d);
+        }
+
+        return vector;
+    }
 }

@@ -578,9 +578,9 @@ internal sealed class TapestryWeaver(
 
     /// <summary>
     /// Derives one layer's clusters, then repairs them deterministically: oversized or token-heavy
-    /// clusters are split again, and an undersized cluster is merged into its most similar sibling
-    /// that still has room. Every tie breaks on stable id, so the plan is a pure function of the
-    /// layer.
+    /// clusters are split again, an undersized cluster is merged into its most similar sibling that
+    /// still has room, and a singleton that finds none is carried up unsummarized. Every tie breaks on
+    /// stable id, so the plan is a pure function of the layer.
     /// </summary>
     private LayerPlan PlanLayer(
         TapestryScope scope,
@@ -631,20 +631,22 @@ internal sealed class TapestryWeaver(
 
         foreach (PlanCandidate candidate in candidates)
         {
-            // Every singleton below costs a whole-cluster concatenation and tokenization, so this loop is
-            // part of the same uninterrupted stretch the token was threaded into clustering for.
+            // This loop is the tail of the same uninterrupted synchronous stretch the token was threaded
+            // into clustering for, so it keeps observing a stop request between candidates.
             cancellationToken.ThrowIfCancellationRequested();
 
-            // A lone node whose own text exceeds one summary request cannot be partitioned further —
-            // Arcanum does not re-chunk source material to make a model call fit. Carrying it to the
-            // next layer keeps the whole scope's tree buildable instead of letting one oversized
-            // excerpt block every generation forever.
-            if (candidate.Members.Count == 1
-                && !summarizer.FitsOneRequest(
-                    new TapestrySummaryRequest(scope.Kind, scope.Id, layer, [candidate.Members[0].Content])))
+            // A lone node is carried up unchanged, never summarized. Two things lead here. One is a node
+            // whose own text exceeds one summary request, which cannot be partitioned further — Arcanum
+            // does not re-chunk source material to make a model call fit — so carrying it keeps the
+            // whole scope's tree buildable instead of letting one oversized excerpt block every
+            // generation forever. The other is a singleton with no sibling that has room: a summary of
+            // one child restates that child for the price of a model call and an embedding, and adds
+            // nothing it did not already say. A carried node keeps its own layer and re-enters the next
+            // round, where a later layer may claim it or it stays a root.
+            if (candidate.Members.Count == 1)
             {
                 logger.LogDebug(
-                    "Tapestry carried an unsummarizable node up from layer {Layer} for {ScopeKind} {ScopeId}: its own text exceeds one summary request.",
+                    "Tapestry carried a single-child cluster up from layer {Layer} for {ScopeKind} {ScopeId} without summarizing it.",
                     layer,
                     scope.Kind,
                     scope.Id);
@@ -767,8 +769,8 @@ internal sealed class TapestryWeaver(
     /// One deterministic rule for undersized clusters: merge a singleton into the sibling whose
     /// members it is most similar to, provided that sibling still has room — room being both the
     /// child-count bound and the selected model's real context estimate. A singleton with nowhere to
-    /// go stays as its own one-child summary and is recorded as a carry — it is never dropped and
-    /// never skips a layer.
+    /// go is recorded as a carry and the plan carries it to the next layer unsummarized — it is never
+    /// dropped, and a later layer may still claim it.
     /// </summary>
     /// <remarks>
     /// Takes the sweep's token for the same reason clustering does: this is O(singletons × candidates ×
@@ -814,8 +816,12 @@ internal sealed class TapestryWeaver(
                     continue;
                 }
 
+                // Scalar cosine over unit vectors, the arithmetic the clustering contract is stated in.
+                // The lane-width cosine Divination ranks with sums in a hardware-dependent order, so a
+                // near-tie between siblings could resolve differently on another machine and the same
+                // persisted vectors would stop producing the same memberships.
                 double similarity = candidates[other].Members.Max(
-                    member => (double)EmbeddingBlobCodec.CosineSimilarity(orphan.Embedding, member.Embedding));
+                    member => SphericalKMeans.DirectionCosine(orphan.Direction, member.Direction));
 
                 // Stable-id tie-break keeps the merge target reproducible when two siblings are
                 // equally close.
@@ -1054,7 +1060,11 @@ internal sealed class TapestryWeaver(
         float[] Embedding,
         string Content,
         string ContentHash,
-        int DescendantLeafCount);
+        int DescendantLeafCount)
+    {
+        /// <summary>The unit vector of <see cref="Embedding"/>, computed once for the merge's comparisons.</summary>
+        public float[] Direction { get; } = SphericalKMeans.NormalizedDirection(Embedding);
+    }
 
     private sealed record PlanCandidate(List<WorkingNode> Members, TapestryPartitionReason Reason);
 
