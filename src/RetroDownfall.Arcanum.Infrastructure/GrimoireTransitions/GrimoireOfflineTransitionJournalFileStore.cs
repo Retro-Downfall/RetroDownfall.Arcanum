@@ -531,15 +531,17 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
                 if (exchanged.IsFailure)
                 {
-                    // A failed exchange whose canonical file is back in place is still pre-publication.
-                    // One that could not restore it leaves the working file for recovery to adopt.
+                    // A failed exchange that left nothing published is still pre-publication, and keeps
+                    // its own retryable error so the caller can tell a clean rollback from recovery
+                    // evidence. One that could not restore the canonical file leaves the working file
+                    // for recovery to adopt.
                     return exchanged.Error.Code == ErrorCodes.Data.RecoveryRequired
                         ? RecoveryRequired()
                         : CleanupBeforePublication(
                             primitives,
                             location,
                             created,
-                            RecoveryRequired().Error);
+                            exchanged.Error);
                 }
 
                 published = true;

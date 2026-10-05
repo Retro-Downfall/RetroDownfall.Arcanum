@@ -1547,6 +1547,77 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
         Assert.Null(evidence.Retiring);
     }
 
+    /// <summary>
+    /// Restoring the predecessor opens the parent again. An outage there happens before any rename, so
+    /// nothing has changed: recovery keeps <c>Covenant.Unavailable</c> and a later start converges the
+    /// same shape, instead of reporting the slot as needing manual recovery.
+    /// </summary>
+    [Fact]
+    public async Task Recover_keeps_an_outage_opening_the_predecessor_restore_retryable()
+    {
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(ReadyStore());
+
+        GrimoireOfflineTransitionJournalLocation location = current.Location;
+
+        File.Move(location.JournalPath, location.PreviousPath);
+
+        int opens = 0;
+
+        GrimoireOfflineTransitionJournalFileStore files = new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: opening =>
+            {
+                if (++opens > 1)
+                {
+                    return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(new Error(
+                        ErrorCodes.Covenant.Unavailable,
+                        "Injected parent-open outage."));
+                }
+
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(opening.JournalPath)!,
+                        opening.GuardedParentPhysicalIdentityDigest);
+
+                return opened.IsFailure
+                    ? Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(opened.Error)
+                    : Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(opened.Value);
+            });
+
+        GrimoireOfflineTransitionJournalStore outage = new(
+            _credentials,
+            files,
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await outage.RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+        Assert.Equal(2, opens);
+
+        Assert.True(File.Exists(location.PreviousPath));
+
+        Assert.False(File.Exists(location.JournalPath));
+
+        GrimoireOfflineTransitionJournalRecoveryState retried = Value(await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None));
+
+        Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated, retried.Outcome);
+
+        Assert.True(File.Exists(location.JournalPath));
+
+        Assert.False(File.Exists(location.PreviousPath));
+    }
+
     [Fact]
     public async Task Recover_refuses_an_unauthenticated_previous_when_canonical_absent()
     {
