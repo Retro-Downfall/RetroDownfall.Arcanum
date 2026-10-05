@@ -582,8 +582,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 ErrorCodes.Workspace.SymbolicLinkEscape,
                 LinkedDestinationMessage),
             AtomicReplaceStatus.Aborted when expectedExistingContent is not null => new Error(
-                ErrorCodes.Workspace.WriteFailed,
-                FileChangedDuringEditMessage),
+                ErrorCodes.Workspace.FileChanged,
+                FileContentBaseline.ChangedAfterReadMessage),
             _ => new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage),
         };
     }
@@ -936,8 +936,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     private const string SymlinkEscapeMessage = "The path resolves outside the workspace via a symbolic link.";
 
     private const string LinkedDestinationMessage = "The destination is a symbolic link or has more than one hard link, so it cannot be written through this endpoint. Write to the real file instead.";
-
-    private const string FileChangedDuringEditMessage = "The file changed after it was read, or its state could not be verified, so nothing was written. Re-read the file and retry.";
 
     private const string IoWriteErrorMessage = "An I/O error occurred while writing the file. See server logs.";
 

@@ -1764,6 +1764,63 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The tool carries the bytes it read into the atomic replace (R-143). An in-place edit by someone else
+    /// (same inode, same length) that lands between the tool's read and its write is invisible to identity
+    /// and length checks, so only the carried baseline stops the tool from overwriting it with a stale edit.
+    /// Dropping the baseline argument at the call site leaves every other test green; this one goes red.
+    /// </summary>
+    [Fact]
+    public async Task ToolsCall_replace_text_block_refuses_when_the_file_changes_after_the_read()
+    {
+        const string relativePath = "notes/concurrent.txt";
+
+        string path = _workspace.WriteFile(relativePath, "alpha beta gamma");
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        SandboxedFileIo.AfterCreateParentDirectoryForTests = _ =>
+        {
+            SandboxedFileIo.AfterCreateParentDirectoryForTests = null;
+
+            using FileStream stream = new(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+
+            stream.Write("alpha OMGA gamma"u8);
+        };
+
+        try
+        {
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ReplaceTextBlockParams
+                {
+                    RelativePath = relativePath,
+                    ExactSearchText = "beta",
+                    ReplacementText = "BETA!",
+                },
+                McpJsonSerializerContext.Default.ReplaceTextBlockParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "replace_text_block",
+                arguments);
+
+            Assert.True(result.IsError);
+
+            string message = Assert.Single(result.Content!).Text!;
+
+            Assert.Contains("changed after it was read", message, StringComparison.Ordinal);
+
+            Assert.Equal("alpha OMGA gamma", await File.ReadAllTextAsync(path));
+
+            Assert.Empty(Directory.GetFiles(_workspace.Root, ".arcanum-*", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            SandboxedFileIo.AfterCreateParentDirectoryForTests = null;
+        }
+    }
+
     [Fact]
     public async Task ToolsCall_replace_text_block_rejects_malformed_utf8()
     {

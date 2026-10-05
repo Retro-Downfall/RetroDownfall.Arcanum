@@ -717,9 +717,13 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
             Assert.True(result.IsFailure);
 
-            Assert.Equal("Workspace.WriteFailed", result.Error.Code);
+            // The edit is the caller's to re-read and retry, so it is a conflict (409), not a server
+            // fault (Workspace.WriteFailed, 500), and the message tells the caller what to do.
+            Assert.Equal("Workspace.FileChanged", result.Error.Code);
 
-            Assert.Contains("changed", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("changed after it was read", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.Contains("Re-read the file and retry", result.Error.Message, StringComparison.Ordinal);
 
             Assert.Equal("alpha OMGA gamma", await File.ReadAllTextAsync(target));
 
@@ -749,7 +753,14 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
             Assert.True(result.IsFailure);
 
+            Assert.Equal("Workspace.FileChanged", result.Error.Code);
+
+            Assert.Contains("changed after it was read", result.Error.Message, StringComparison.Ordinal);
+
+            // The destination stays deleted: the replace must not resurrect it from the stale read.
             Assert.False(File.Exists(target));
+
+            Assert.Empty(Directory.GetFiles(_workspace.Root, ".arcanum-*"));
         }
         finally
         {

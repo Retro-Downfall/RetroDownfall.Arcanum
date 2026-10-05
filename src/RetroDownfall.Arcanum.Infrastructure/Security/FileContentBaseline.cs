@@ -11,6 +11,13 @@ internal readonly record struct FileContentBaseline(
     long Length,
     string Sha256Hex)
 {
+    /// <summary>
+    /// What both read-modify-write writers (the PATCH route and the in-process <c>replace_text_block</c>
+    /// tool) tell the caller when the replace aborted against a baseline, so the two cannot drift.
+    /// </summary>
+    internal const string ChangedAfterReadMessage =
+        "The file changed after it was read, or its state could not be verified, so nothing was written. Re-read the file and retry.";
+
     internal static FileContentBaseline Of(ReadOnlySpan<byte> bytes) =>
         new(
             bytes.Length,
