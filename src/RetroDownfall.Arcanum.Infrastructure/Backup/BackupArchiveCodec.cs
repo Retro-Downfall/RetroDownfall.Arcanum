@@ -855,7 +855,7 @@ public sealed class BackupArchiveCodec
 
         SecureFileOpenStatus openStatus = SecureFileReader.TryOpenRegularFile(
             fullSourcePath,
-            expectedIdentity: null,
+            source.ExpectedIdentity,
             out FileStream? opened,
             out FileHandleMetadata openedMetadata);
 

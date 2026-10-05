@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 
 public sealed class BackupServiceTests : IDisposable
 {
-
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "arcanum-backup-service-" + Guid.NewGuid().ToString("N"));
@@ -29,20 +28,15 @@ public sealed class BackupServiceTests : IDisposable
 
     public void Dispose()
     {
-
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Metadata_only_create_inspect_verify_and_list_are_secret_free_and_do_not_need_installation_state()
     {
-
         BackupStatePaths paths = Paths();
 
         CountingSecretReader secrets = new();
@@ -120,13 +114,11 @@ public sealed class BackupServiceTests : IDisposable
         Assert.DoesNotContain(
             listed,
             item => item.ArchivePath == maliciousArchive);
-
     }
 
     [Fact]
     public async Task Metadata_configuration_create_uses_service_owned_stage_for_self_verification_scratch()
     {
-
         BackupStatePaths paths = Paths();
 
         string configurationPath = Path.Combine(
@@ -157,7 +149,6 @@ public sealed class BackupServiceTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
 
             ChunkSize = 64 * 1024,
@@ -167,7 +158,6 @@ public sealed class BackupServiceTests : IDisposable
 
             BeforeTemporaryExtractionCleanupForTests = path =>
                 extractionPaths.Add(path),
-
         });
 
         BackupService service = new(
@@ -237,13 +227,11 @@ public sealed class BackupServiceTests : IDisposable
         Assert.True(File.Exists(presetStatePath));
 
         Assert.True(File.Exists(presetRollbackPath));
-
     }
 
     [Fact]
     public async Task CreateAsync_CanonicalizesRequestedOverridesInTheManifest()
     {
-
         BackupService service = CreateService(
             Paths(),
             new CountingSecretReader());
@@ -291,22 +279,18 @@ public sealed class BackupServiceTests : IDisposable
                 BackupComponent.MasterApiKey,
             ],
             inspected.Manifest?.RequestedExcludes);
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_PreservesPermissionsOfAnExistingOutputParentOnUnix()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string outputParent = Path.Combine(_root, "shared-output");
@@ -345,13 +329,11 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Equal(
             UnixFileMode.UserRead | UnixFileMode.UserWrite,
             File.GetUnixFileMode(result.ArchivePath!));
-
     }
 
     [Fact]
     public async Task CreateAsync_CreatesAMissingOutputParent()
     {
-
         string outputParent = Path.Combine(_root, "new-output", "nested");
 
         string archive = Path.Combine(outputParent, "portable.arcbackup");
@@ -377,13 +359,11 @@ public sealed class BackupServiceTests : IDisposable
         Assert.True(Directory.Exists(outputParent));
 
         Assert.True(File.Exists(archive));
-
     }
 
     [Fact]
     public async Task Failed_inventory_never_publishes_an_archive()
     {
-
         BackupStatePaths paths = Paths();
 
         Directory.CreateDirectory(paths.AttachmentsDirectory);
@@ -417,13 +397,11 @@ public sealed class BackupServiceTests : IDisposable
             result.Plan.Components,
             component => component.Component == BackupComponent.SessionAttachments
                 && component.Status == BackupComponentStatus.Failed);
-
     }
 
     [Fact]
     public async Task Database_backup_reports_durable_progress_and_completes_the_same_operation()
     {
-
         BackupStatePaths paths = Paths();
 
         const string grimoireSecret = "grimoire-secret";
@@ -433,16 +411,13 @@ public sealed class BackupServiceTests : IDisposable
         await using (Microsoft.Data.Sqlite.SqliteConnection connection = new(
                          new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
                          {
-
                              DataSource = paths.DatabasePath,
 
                              Password = DeriveDatabasePassphrase(paths.DatabasePath, grimoireSecret),
 
                              Pooling = false,
-
                          }.ToString()))
         {
-
             await connection.OpenAsync();
 
             await using Microsoft.Data.Sqlite.SqliteCommand remove = connection.CreateCommand();
@@ -450,7 +425,6 @@ public sealed class BackupServiceTests : IDisposable
             remove.CommandText = "DELETE FROM SessionAttachments;";
 
             _ = await remove.ExecuteNonQueryAsync();
-
         }
 
         RecordingOperationJournal operations = new();
@@ -461,11 +435,9 @@ public sealed class BackupServiceTests : IDisposable
             new BackupDatabaseSnapshotter(),
             new BackupArchiveCodec(new BackupArchiveCodecOptions
             {
-
                 KdfIterations = 10_000,
 
                 ChunkSize = 64 * 1024,
-
             }),
             new CountingSecretReader(SecretStoreReadResult.Ok(grimoireSecret)),
             TimeProvider.System,
@@ -520,13 +492,11 @@ public sealed class BackupServiceTests : IDisposable
         Assert.True(operations.Completed);
 
         Assert.False(operations.Failed);
-
     }
 
     [Fact]
     public async Task Source_replaced_after_inventory_is_rejected_without_publishing_an_archive()
     {
-
         BackupStatePaths paths = Paths();
 
         string configurationPath = Path.Combine(paths.GrimoireDirectory, "arcanum.json");
@@ -542,12 +512,9 @@ public sealed class BackupServiceTests : IDisposable
             new CountingSecretReader(),
             _ =>
             {
-
                 if (replaced)
                 {
-
                     return;
-
                 }
 
                 replaced = true;
@@ -555,7 +522,6 @@ public sealed class BackupServiceTests : IDisposable
                 File.Move(configurationPath, originalPath);
 
                 File.WriteAllText(configurationPath, "{\"b\":2}");
-
             });
 
         string archive = Path.Combine(_root, "replaced.arcbackup");
@@ -577,13 +543,11 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Equal("{\"b\":2}", await File.ReadAllTextAsync(configurationPath));
 
         Assert.Equal("{\"a\":1}", await File.ReadAllTextAsync(originalPath));
-
     }
 
     [Fact]
     public async Task Full_backup_requires_the_active_file_encryption_key_without_blob_references()
     {
-
         BackupStatePaths paths = Paths();
 
         const string grimoireSecret = "grimoire-secret";
@@ -593,16 +557,13 @@ public sealed class BackupServiceTests : IDisposable
         await using (Microsoft.Data.Sqlite.SqliteConnection connection = new(
                          new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
                          {
-
                              DataSource = paths.DatabasePath,
 
                              Password = DeriveDatabasePassphrase(paths.DatabasePath, grimoireSecret),
 
                              Pooling = false,
-
                          }.ToString()))
         {
-
             await connection.OpenAsync();
 
             await using Microsoft.Data.Sqlite.SqliteCommand remove = connection.CreateCommand();
@@ -610,7 +571,6 @@ public sealed class BackupServiceTests : IDisposable
             remove.CommandText = "DELETE FROM SessionAttachments;";
 
             _ = await remove.ExecuteNonQueryAsync();
-
         }
 
         BackupService service = CreateService(
@@ -635,7 +595,6 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Contains(
             result.Issues,
             issue => issue.Code == "backup.recovery_keys_missing");
-
     }
 
     /// <summary>
@@ -648,7 +607,6 @@ public sealed class BackupServiceTests : IDisposable
     [Fact]
     public async Task An_included_master_api_key_is_carried_by_the_portable_recovery_material()
     {
-
         BackupStatePaths paths = Paths();
 
         const string grimoireSecret = "grimoire-secret";
@@ -660,16 +618,13 @@ public sealed class BackupServiceTests : IDisposable
         await using (Microsoft.Data.Sqlite.SqliteConnection connection = new(
                          new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
                          {
-
                              DataSource = paths.DatabasePath,
 
                              Password = DeriveDatabasePassphrase(paths.DatabasePath, grimoireSecret),
 
                              Pooling = false,
-
                          }.ToString()))
         {
-
             await connection.OpenAsync();
 
             await using Microsoft.Data.Sqlite.SqliteCommand remove = connection.CreateCommand();
@@ -677,7 +632,6 @@ public sealed class BackupServiceTests : IDisposable
             remove.CommandText = "DELETE FROM SessionAttachments;";
 
             _ = await remove.ExecuteNonQueryAsync();
-
         }
 
         string fileEncryptionSecret = Convert.ToBase64String(
@@ -717,11 +671,9 @@ public sealed class BackupServiceTests : IDisposable
         BackupArchiveExtraction extraction = await new BackupArchiveCodec(
             new BackupArchiveCodecOptions
             {
-
                 KdfIterations = 10_000,
 
                 ChunkSize = 64 * 1024,
-
             }).ExtractAsync(
                 archive,
                 "master key passphrase".AsMemory(),
@@ -744,7 +696,6 @@ public sealed class BackupServiceTests : IDisposable
         Assert.True(rewrap.MasterApiKeyWritten);
 
         Assert.Equal("the archived master key", adopted.ApiKey);
-
     }
 
     /// <summary>
@@ -757,7 +708,6 @@ public sealed class BackupServiceTests : IDisposable
     [Fact]
     public async Task Verification_scratch_uses_an_owner_only_per_run_os_temp_outside_the_installation()
     {
-
         string installationRoot = Path.Combine(_root, "installation");
 
         BackupStatePaths paths = new(
@@ -791,9 +741,7 @@ public sealed class BackupServiceTests : IDisposable
 
         if (Directory.Exists(paths.GrimoireDirectory))
         {
-
             Directory.Delete(paths.GrimoireDirectory, recursive: true);
-
         }
 
         List<string> temporaries = [];
@@ -804,7 +752,6 @@ public sealed class BackupServiceTests : IDisposable
             new BackupDatabaseSnapshotter(),
             new BackupArchiveCodec(new BackupArchiveCodecOptions
             {
-
                 KdfIterations = 10_000,
 
                 ChunkSize = 64 * 1024,
@@ -812,7 +759,6 @@ public sealed class BackupServiceTests : IDisposable
                 BeforeTemporaryPayloadCleanupForTests = temporaries.Add,
 
                 BeforeTemporaryExtractionCleanupForTests = temporaries.Add,
-
             }),
             new CountingSecretReader(),
             TimeProvider.System);
@@ -856,13 +802,11 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Equal(
             [archive],
             Directory.EnumerateFileSystemEntries(removable).Order(StringComparer.Ordinal));
-
     }
 
     [Fact]
     public async Task Same_size_source_mutation_after_inventory_is_rejected()
     {
-
         BackupStatePaths paths = Paths();
 
         string configurationPath = Path.Combine(paths.GrimoireDirectory, "arcanum.json");
@@ -876,18 +820,14 @@ public sealed class BackupServiceTests : IDisposable
             new CountingSecretReader(),
             _ =>
             {
-
                 if (mutated)
                 {
-
                     return;
-
                 }
 
                 mutated = true;
 
                 File.WriteAllText(configurationPath, "{\"b\":2}");
-
             });
 
         string archive = Path.Combine(_root, "mutated.arcbackup");
@@ -907,7 +847,109 @@ public sealed class BackupServiceTests : IDisposable
         Assert.False(File.Exists(archive));
 
         Assert.Equal("{\"b\":2}", await File.ReadAllTextAsync(configurationPath));
+    }
 
+    /// <summary>
+    /// A selected file is read once for the inventory fingerprint and once for the archive pass, which
+    /// is the single re-verification; the manifest takes its checksum from the inventory rather than
+    /// from a third read.
+    /// </summary>
+    [Fact]
+    public async Task Create_reads_each_selected_file_once_for_inventory_and_once_for_the_archive()
+    {
+        BackupStatePaths paths = Paths();
+
+        string configurationPath = Path.GetFullPath(
+            Path.Combine(paths.GrimoireDirectory, "arcanum.json"));
+
+        await File.WriteAllTextAsync(configurationPath, "{\"a\":1}");
+
+        int opens = 0;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = openedPath =>
+        {
+            if (string.Equals(openedPath, configurationPath, StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref opens);
+            }
+        };
+
+        try
+        {
+            BackupCreateResult created = await CreateService(paths, new CountingSecretReader())
+                .CreateAsync(
+                    new BackupCreateRequest(
+                        new BackupPlanRequest(
+                            BackupScope.ConfigurationAndAuthoredAssets,
+                            SessionId: null,
+                            Include: [],
+                            Exclude: []),
+                        Path.Combine(_root, "single-pass.arcbackup"),
+                        Overwrite: false),
+                    "recovery passphrase".AsMemory(),
+                    CancellationToken.None);
+
+            Assert.Equal(BackupCreateStatus.Complete, created.Status);
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+        }
+
+        Assert.Equal(2, opens);
+    }
+
+    [SkippableFact]
+    public async Task A_source_replaced_by_an_identical_copy_after_inventory_is_rejected()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows denies replacing a file another handle reads without delete sharing.");
+
+        BackupStatePaths paths = Paths();
+
+        string configurationPath = Path.Combine(paths.GrimoireDirectory, "arcanum.json");
+
+        await File.WriteAllTextAsync(configurationPath, "{\"a\":1}");
+
+        string copyPath = Path.Combine(_root, "identical-copy.json");
+
+        await File.WriteAllTextAsync(copyPath, "{\"a\":1}");
+
+        bool replaced = false;
+
+        BackupService service = CreateService(
+            paths,
+            new CountingSecretReader(),
+            _ =>
+            {
+                if (replaced)
+                {
+                    return;
+                }
+
+                replaced = true;
+
+                File.Move(copyPath, configurationPath, overwrite: true);
+            });
+
+        string archive = Path.Combine(_root, "replaced.arcbackup");
+
+        await Assert.ThrowsAsync<IOException>(() => service.CreateAsync(
+            new BackupCreateRequest(
+                new BackupPlanRequest(
+                    BackupScope.ConfigurationAndAuthoredAssets,
+                    SessionId: null,
+                    Include: [],
+                    Exclude: []),
+                archive,
+                Overwrite: false),
+            "recovery passphrase".AsMemory(),
+            CancellationToken.None));
+
+        Assert.True(replaced);
+
+        Assert.False(File.Exists(archive));
     }
 
     private BackupStatePaths Paths() => new(
@@ -926,25 +968,20 @@ public sealed class BackupServiceTests : IDisposable
             new BackupDatabaseSnapshotter(),
             new BackupArchiveCodec(new BackupArchiveCodecOptions
             {
-
                 KdfIterations = 10_000,
 
                 ChunkSize = 64 * 1024,
-
             }),
             secrets,
             TimeProvider.System)
         {
-
             AfterInventoryBuiltForTests = afterInventoryBuilt,
-
         };
 
     private static async Task CreateMissingAttachmentDatabaseAsync(
         string path,
         string grimoireSecret)
     {
-
         RetroDownfall.Arcanum.Infrastructure.Data.SqliteNativeRuntime.Instance.Initialize();
 
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(
@@ -963,13 +1000,11 @@ public sealed class BackupServiceTests : IDisposable
         await using Microsoft.Data.Sqlite.SqliteConnection connection = new(
             new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
             {
-
                 DataSource = path,
 
                 Password = passphrase,
 
                 Pooling = false,
-
             }.ToString());
 
         await connection.OpenAsync();
@@ -1004,68 +1039,53 @@ public sealed class BackupServiceTests : IDisposable
             """;
 
         _ = await command.ExecuteNonQueryAsync();
-
     }
 
     private static string DeriveDatabasePassphrase(
         string databasePath,
         string grimoireSecret)
     {
-
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(databasePath);
 
         byte[] salt = sidecar.GetSaltBytes();
 
         try
         {
-
             return GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
                 grimoireSecret,
                 salt);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(salt);
-
         }
-
     }
 
     private sealed class CountingSecretReader(
         SecretStoreReadResult? grimoire = null) : IBackupSecretSnapshotReader
     {
-
         public int ReadCount { get; private set; }
 
         public Task<SecretStoreReadResult> ReadGrimoireSecretAsync()
         {
-
             ReadCount++;
 
             return Task.FromResult(grimoire ?? SecretStoreReadResult.Missing());
-
         }
 
         public Task<SecretStoreReadResult> ReadFileEncryptionKeysAsync()
         {
-
             ReadCount++;
 
             return Task.FromResult(SecretStoreReadResult.Missing());
-
         }
 
         public Task<SecretStoreReadResult> ReadMasterApiKeyAsync()
         {
-
             ReadCount++;
 
             return Task.FromResult(SecretStoreReadResult.Missing());
-
         }
-
     }
 
     private sealed class StubSecretReader(
@@ -1073,7 +1093,6 @@ public sealed class BackupServiceTests : IDisposable
         SecretStoreReadResult fileEncryptionKeys,
         SecretStoreReadResult masterApiKey) : IBackupSecretSnapshotReader
     {
-
         public Task<SecretStoreReadResult> ReadGrimoireSecretAsync() =>
             Task.FromResult(grimoire);
 
@@ -1082,13 +1101,11 @@ public sealed class BackupServiceTests : IDisposable
 
         public Task<SecretStoreReadResult> ReadMasterApiKeyAsync() =>
             Task.FromResult(masterApiKey);
-
     }
 
     /// <summary>The clean machine a portable archive is restored onto: it holds nothing until the re-wrap writes it.</summary>
     private sealed class AdoptingSecretStore : ISecretStore
     {
-
         public string? ApiKey { get; private set; }
 
         public string? GrimoireSecret { get; private set; }
@@ -1105,11 +1122,9 @@ public sealed class BackupServiceTests : IDisposable
 
         public Task SaveApiKeyAsync(string apiKey)
         {
-
             ApiKey = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() =>
@@ -1117,11 +1132,9 @@ public sealed class BackupServiceTests : IDisposable
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
-
             GrimoireSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
 
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
@@ -1132,20 +1145,16 @@ public sealed class BackupServiceTests : IDisposable
 
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
         {
-
             FileEncryptionSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
-
     }
 
     private sealed class RecordingOperationJournal :
         ILongRunningOperationCoordinator,
         ILongRunningOperationStore
     {
-
         public Guid OperationId { get; } = Guid.NewGuid();
 
         public string? CreatedKind { get; private set; }
@@ -1197,11 +1206,9 @@ public sealed class BackupServiceTests : IDisposable
             TimeSpan leaseDuration,
             CancellationToken cancellationToken = default)
         {
-
             CreatedKind = request.Kind;
 
             return Task.FromResult(new LongRunningOperationLeaseResult(true, Operation()));
-
         }
 
         public Task<bool> HeartbeatAsync(
@@ -1221,12 +1228,9 @@ public sealed class BackupServiceTests : IDisposable
             string publicSummary,
             CancellationToken cancellationToken = default)
         {
-
             if (expectedCheckpointVersion != CurrentCheckpointVersion)
             {
-
                 return Task.FromResult(false);
-
             }
 
             CheckpointCount++;
@@ -1237,13 +1241,10 @@ public sealed class BackupServiceTests : IDisposable
 
             if (checkpointPayload is not null)
             {
-
                 CheckpointPayloads.Add([.. checkpointPayload]);
-
             }
 
             return Task.FromResult(true);
-
         }
 
         public Task<bool> CompleteAsync(
@@ -1252,11 +1253,9 @@ public sealed class BackupServiceTests : IDisposable
             long expectedRevision,
             CancellationToken cancellationToken = default)
         {
-
             Completed = true;
 
             return Task.FromResult(true);
-
         }
 
         public Task<bool> FailAsync(
@@ -1266,11 +1265,9 @@ public sealed class BackupServiceTests : IDisposable
             string errorCode,
             CancellationToken cancellationToken = default)
         {
-
             Failed = true;
 
             return Task.FromResult(true);
-
         }
 
         public Task<LongRunningOperation?> GetAsync(
@@ -1381,7 +1378,5 @@ public sealed class BackupServiceTests : IDisposable
         public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
-
 }
