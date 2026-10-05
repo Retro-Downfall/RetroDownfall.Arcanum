@@ -30,6 +30,10 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// per file, against an inventory that names the routes behind each count and the status or shape their
 /// documentation has to state. A new bodyless or raw answer changes a count, and the failure asks for the
 /// route to be documented and the inventory updated.</para>
+/// <para>The table-derived reading cannot notice a deleted row, because it reads the rows it checks, and
+/// no discovery sees a route that is outside <c>/api</c>, writes its answer from a handler rather than a
+/// result factory, and carries no stream metadata (the Prometheus exposition is the plain case). Those
+/// routes are a short fixed list, and each one is asserted to be both mapped and named in the table.</para>
 /// <para>The host is built with the A2A server enabled because that surface is off by default and its
 /// routes are exactly the ones a default host cannot show. <c>/v1</c> is out of
 /// scope on purpose: it is an OpenAI-shaped surface documented as a whole, and the table names only the
@@ -96,6 +100,22 @@ public sealed class ApiWireShapeInventoryTests
     {
         "GET /api/scalar",
     };
+
+    /// <summary>
+    /// The non-envelope routes that no discovery in this class can see: none carries stream metadata, none
+    /// answers through a result factory the source count reads, and the table-derived reading would pass
+    /// with the row deleted. <c>GET /metrics</c> writes the Prometheus text from a handler and lives
+    /// outside <c>/api</c>; the OpenAPI document and the Scalar UI are mapped by library calls; the Agent
+    /// Card is the SDK's own JSON. Each is asserted mapped (the Scalar UI excepted, see
+    /// <see cref="RoutesMappedOnlyFromRawConfiguration"/>) and named in the table.
+    /// </summary>
+    private static readonly string[] NonEnvelopeRoutesNoDiscoveryCanSee =
+    [
+        "GET /metrics",
+        "GET /api/openapi/v1.json",
+        "GET /api/scalar",
+        "GET /api/conclave/a2a/agent-card",
+    ];
 
     /// <summary>
     /// A result factory that answers without an <c>ApiResponse</c> body: a bodyless 204, 200 or 202, a bare
@@ -167,32 +187,13 @@ public sealed class ApiWireShapeInventoryTests
 
         await using ArcanumWebApplicationFactory factory = CreateHostWithA2AServer();
 
-        // The reference names a concrete route (the OpenAPI document is /api/openapi/v1.json) where the
-        // host maps a template (/api/openapi/{documentName}.json), so a documented route is mapped when a
-        // mapped route of its method matches it with each parameter standing for one segment's text.
-        List<(string Method, Regex Template)> templates =
-        [
-            .. MappedRouteNames(factory).Select(static route =>
-            {
-                string[] parts = route.Split(' ', 2);
-
-                return (parts[0], new Regex(
-                    "^" + Regex.Replace(Regex.Escape(parts[1]), @"\\\{[^/]*?\}", "[^/]+", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)) + "$",
-                    RegexOptions.CultureInvariant,
-                    TimeSpan.FromSeconds(5)));
-            }),
-        ];
+        List<(string Method, Regex Template)> templates = MappedRouteTemplates(factory);
 
         string[] missing =
         [
             .. NonEnvelopeTableRoutes()
                 .Where(route => !RoutesMappedOnlyFromRawConfiguration.Contains(route))
-                .Where(route =>
-                {
-                    string[] parts = route.Split(' ', 2);
-
-                    return !templates.Any(template => template.Method == parts[0] && template.Template.IsMatch(parts[1]));
-                })
+                .Where(route => !IsMapped(templates, route))
                 .Order(StringComparer.Ordinal),
         ];
 
@@ -200,6 +201,42 @@ public sealed class ApiWireShapeInventoryTests
             missing.Length == 0,
             "A row of the non-envelope table in docs/Arcanum.API.md names a route the host does not map:\n"
                 + string.Join('\n', missing));
+    }
+
+    /// <summary>
+    /// A route no discovery can see is pinned by name: the host maps it, and the table names it. The
+    /// table-derived reading above would pass if its row were deleted, so this is the reading that fails.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_non_envelope_routes_no_discovery_can_see_are_mapped_and_named_in_the_table()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateHostWithA2AServer();
+
+        List<(string Method, Regex Template)> templates = MappedRouteTemplates(factory);
+
+        HashSet<string> named = NonEnvelopeTableRoutes();
+
+        List<string> offenders = [];
+
+        foreach (string route in NonEnvelopeRoutesNoDiscoveryCanSee)
+        {
+            if (!RoutesMappedOnlyFromRawConfiguration.Contains(route) && !IsMapped(templates, route))
+            {
+                offenders.Add($"{route} is listed here but the host does not map it");
+            }
+
+            if (!named.Contains(route))
+            {
+                offenders.Add($"{route} has no row in the non-envelope table of docs/Arcanum.API.md");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A non-envelope route that no discovery can see is not both mapped and named in the table:\n"
+                + string.Join('\n', offenders));
     }
 
     /// <summary>
@@ -323,6 +360,34 @@ public sealed class ApiWireShapeInventoryTests
                 },
             },
         };
+
+    /// <summary>
+    /// The mapped routes as templates. The reference names a concrete route (the OpenAPI document is
+    /// <c>/api/openapi/v1.json</c>) where the host maps a template (<c>/api/openapi/{documentName}.json</c>),
+    /// so a documented route is mapped when a mapped route of its method matches it with each parameter
+    /// standing for one segment's text.
+    /// </summary>
+    private static List<(string Method, Regex Template)> MappedRouteTemplates(ArcanumWebApplicationFactory factory) =>
+    [
+        .. MappedRouteNames(factory).Select(static route =>
+        {
+            string[] parts = route.Split(' ', 2);
+
+            return (parts[0], new Regex(
+                "^" + Regex.Replace(Regex.Escape(parts[1]), @"\\\{[^/]*?\}", "[^/]+", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)) + "$",
+                RegexOptions.CultureInvariant,
+                TimeSpan.FromSeconds(5)));
+        }),
+    ];
+
+    private static bool IsMapped(
+        List<(string Method, Regex Template)> templates,
+        string route)
+    {
+        string[] parts = route.Split(' ', 2);
+
+        return templates.Any(template => template.Method == parts[0] && template.Template.IsMatch(parts[1]));
+    }
 
     private static HashSet<string> MappedRouteNames(ArcanumWebApplicationFactory factory) =>
         new(

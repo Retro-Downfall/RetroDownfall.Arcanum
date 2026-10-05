@@ -301,6 +301,56 @@ public sealed class ApiErrorCatalogDocumentationTests
         Assert.Equal(isDisclaimer, ResolverDisclaimer.IsMatch(meaning));
     }
 
+    /// <summary>
+    /// The paragraph that opens section 8.23 lists the explicit <b>500</b> codes the default-400 resolver
+    /// honours, and the sentence after the table refers back to "the explicit 500 set above", so the
+    /// list is the one place a reader learns which codes are not rewritten. It is read against the
+    /// resolver's own answers, over every code <c>ErrorCodes</c> declares, so a code added to the protected
+    /// set (or dropped from it) fails here until the paragraph says so.
+    /// </summary>
+    [Fact]
+    public void The_paragraph_that_lists_the_explicit_500_set_lists_exactly_the_codes_the_resolver_keeps_at_500()
+    {
+        string[] kept =
+        [
+            .. DeclaredErrorCodes()
+                .Where(static code => ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(code) == 500)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        // A reading that found nothing would let the comparison below pass vacuously.
+        Assert.Contains(ErrorCodes.Hub.Error, kept);
+
+        Assert.Contains(ErrorCodes.Saga.WriteFailed, kept);
+
+        string paragraph = Assert.Single(
+            CatalogSection(ReadApi()).Split('\n'),
+            static line => line.Contains("`ResolveStatusCodeDefaultBadRequest` treats unmapped codes as", StringComparison.Ordinal));
+
+        Match list = Regex.Match(
+            paragraph,
+            @"explicit \*\*500\*\* mappings \((?<codes>[^)]*)\)",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(5));
+
+        Assert.True(list.Success, "The paragraph no longer lists the explicit 500 mappings in a parenthesis after 'explicit **500** mappings'.");
+
+        string[] documented =
+        [
+            .. BacktickedToken
+                .Matches(list.Groups["codes"].Value)
+                .Select(static match => match.Groups["token"].Value)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.True(
+            kept.SequenceEqual(documented, StringComparer.Ordinal),
+            "The explicit 500 set in the paragraph that opens section 8.23 is not the set ResolveStatusCodeDefaultBadRequest keeps at 500.\n"
+                + $"Resolver keeps: {string.Join(", ", kept)}\nParagraph lists: {string.Join(", ", documented)}");
+    }
+
     [Fact]
     public void A_section_cited_by_a_catalog_row_exists_and_documents_the_route_the_row_names()
     {
@@ -320,6 +370,14 @@ public sealed class ApiErrorCatalogDocumentationTests
 
         Assert.Contains("/api/mcp/tools/invoke", cited, StringComparison.Ordinal);
     }
+
+    /// <summary>Every code <c>ErrorCodes</c> declares, in any of its nested groups.</summary>
+    private static IEnumerable<string> DeclaredErrorCodes() =>
+        typeof(ErrorCodes)
+            .GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
+            .SelectMany(static group => group.GetFields(BindingFlags.Public | BindingFlags.Static))
+            .Where(static field => field is { IsLiteral: true } && field.FieldType == typeof(string))
+            .Select(static field => (string)field.GetRawConstantValue()!);
 
     private static IEnumerable<(string Code, int Status)> MapperArmedCodes()
     {
