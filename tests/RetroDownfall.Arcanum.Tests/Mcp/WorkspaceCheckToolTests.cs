@@ -2157,6 +2157,64 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         Assert.Null(result.ExitCode);
     }
 
+    /// <summary>
+    /// WorkspaceCheckRuntimeTests pin ApplyMemoryCeiling itself; this pins that RunAsync hands its result,
+    /// not the campaign limits, to the limiter the runner applies. Under the default Sanctum limits the
+    /// campaign ceiling is 512 MB, which would kill ordinary builds; workspace_check must run under 4096 MB.
+    /// The capturing limiter then refuses, so nothing is built.
+    /// </summary>
+    [SkippableFact]
+    public async Task Runtime_applies_the_workspace_check_memory_ceiling_to_the_run()
+    {
+        Skip.IfNot(
+            CanRunMacOsWorkspaceCheck(),
+            "Requires a runnable macOS sandbox-exec filesystem jail.");
+        string dotnet = ResolveInstalledDotNet();
+        using TestTree tree = new();
+        string workspace = tree.CreateDirectory("workspace");
+        string project = Path.Combine(workspace, "App.csproj");
+        File.WriteAllText(
+            project,
+            """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """);
+        File.WriteAllText(
+            Path.Combine(workspace, "Program.cs"),
+            "public sealed class AppMarker { }");
+        await RestoreAsync(dotnet, project);
+        LimitCapturingProcessResourceLimiter limiter = new();
+        ServiceCollection services = new();
+        services.AddSingleton<ISanctumGuard>(
+            new PermissiveSanctumGuard());
+        services.AddSingleton<IProcessResourceLimiter>(limiter);
+        await using ServiceProvider provider = services.BuildServiceProvider();
+        WorkspaceCheckRuntime runtime = new(
+            EnabledRuntimeSettings(dotnet),
+            provider.GetRequiredService<IServiceScopeFactory>());
+
+        WorkspaceCheckToolResultEnvelope result =
+            await runtime.RunAsync(
+                RuntimeRequest(workspace),
+                CancellationToken.None);
+
+        Assert.Equal("resource_limit_unavailable", result.Code);
+        ResourceLimits applied = Assert.Single(limiter.Applied);
+        Assert.Equal(
+            WorkspaceCheckRuntime.MemoryCeilingFloorMb,
+            ProcessResourceLimiter.EffectiveMemoryLimitMb(applied));
+        Assert.Equal(
+            new ResourceLimits() with
+            {
+                MaxMemoryMb = WorkspaceCheckRuntime.MemoryCeilingFloorMb,
+                MaxProcessMemoryMb = WorkspaceCheckRuntime.MemoryCeilingFloorMb,
+            },
+            applied);
+    }
+
     [SkippableFact]
     public async Task Real_dotnet_build_uses_seeded_assets_read_only_source_and_split_writable_caches()
     {
@@ -2838,6 +2896,24 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
+    }
+
+    /// <summary>Records the limits it is asked to apply and refuses, so the target never starts.</summary>
+    private sealed class LimitCapturingProcessResourceLimiter : IProcessResourceLimiter
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<ResourceLimits> _applied = new();
+
+        public IReadOnlyCollection<ResourceLimits> Applied => _applied;
+
+        public ProcessResourceLimiterResult Apply(
+            System.Diagnostics.ProcessStartInfo startInfo,
+            ResourceLimits limits)
+        {
+            _applied.Enqueue(limits);
+            return new ProcessResourceLimiterResult(
+                new ResourceLimitError("captured; not started"),
+                null);
+        }
     }
 
     private sealed class CallbackProcessResourceLimiter(

@@ -844,13 +844,6 @@ internal static class CappedChildProcessRunner
                     return monitorFault;
                 }
 
-                if (descendantSupervisor?.UnreadableFootprintCount is > 0 and long unreadable)
-                {
-                    logger?.LogWarning(
-                        "The child-process memory monitor could not read the footprint of {Count} descendant process(es); they were left out of the memory ceiling's sum.",
-                        unreadable);
-                }
-
                 // The fail-closed prelude exits 126 before exec when a limit could not be applied and
                 // only then writes its per-run marker, so the target never ran: report the refusal,
                 // never the prelude's exit as the target's result.
@@ -949,6 +942,10 @@ internal static class CappedChildProcessRunner
             LogMonitorFault(
                 descendantSupervisor,
                 limiterResult.MonitoredMemoryLimitBytes,
+                logger);
+
+            LogUnreadableFootprints(
+                descendantSupervisor,
                 logger);
         }
 
@@ -1059,6 +1056,24 @@ internal static class CappedChildProcessRunner
         logger?.LogError(
             supervisor.MonitorFault,
             "The child-process memory monitor stopped on a fault; the process tree was killed.");
+    }
+
+    /// <summary>
+    /// Records the descendants the memory ceiling's sum had to leave out. That gap in the ceiling's
+    /// coverage exists however the run ended — the likeliest end for a tree the ceiling was not fully
+    /// covering is a timeout or a cancel, not a normal exit — so it is reported from the teardown, once,
+    /// after disposal, when the count is final.
+    /// </summary>
+    private static void LogUnreadableFootprints(
+        MacOsDescendantSupervisor supervisor,
+        ILogger? logger)
+    {
+        if (supervisor.UnreadableFootprintCount is > 0 and long unreadable)
+        {
+            logger?.LogWarning(
+                "The child-process memory monitor could not read the footprint of {Count} descendant process(es); they were left out of the memory ceiling's sum.",
+                unreadable);
+        }
     }
 
     /// <summary>
@@ -1292,7 +1307,11 @@ internal static class CappedChildProcessRunner
         return null;
     }
 
-    private static ResourceLimitKind? ClassifyWindowsJobExit(int exitCode, ResourceLimits resourceLimits)
+    /// <summary>
+    /// Attributes a Windows Job Object exit to the memory limit. Internal so the classification can be
+    /// pinned on every host: the only caller runs behind <see cref="OperatingSystem.IsWindows"/>.
+    /// </summary>
+    internal static ResourceLimitKind? ClassifyWindowsJobExit(int exitCode, ResourceLimits resourceLimits)
     {
         // Job Object process/job memory violations commonly surface as STATUS_QUOTA_EXCEEDED.
         // CPU-time kills do not have a stable, documented exit code we can trust across Windows

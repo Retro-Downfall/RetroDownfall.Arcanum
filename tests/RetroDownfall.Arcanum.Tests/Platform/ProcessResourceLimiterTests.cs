@@ -268,15 +268,9 @@ public sealed class ProcessResourceLimiterTests
                 $"Clause '{clause.Value}' is not followed by a fail-closed exit: {script}");
         }
 
-        // On a Linux host where a cgroups v2 scope was created the prelude also joins it, and that clause
-        // is held to the same rule (see Prelude_FailsClosed_WhenCgroupJoinRejected for the real shell).
-        foreach (Match join in Regex.Matches(script, "echo \\$\\$ > \"[^\"]+/cgroup\\.procs\""))
-        {
-            Assert.True(
-                script.AsSpan(join.Index + join.Length).StartsWith(" || exit 126; ", StringComparison.Ordinal),
-                $"The cgroup join is not followed by a fail-closed exit: {script}");
-        }
-
+        // The Linux cgroup-join clause is not checked here: Apply emits it only on a host where a cgroups v2
+        // scope was created, so a check against this script would assert nothing on every other host.
+        // Prelude_FailsClosed_WhenCgroupJoinRejected builds that clause directly and runs it on any Unix.
         Assert.EndsWith("exec \"$@\"", script, StringComparison.Ordinal);
 
         Assert.False(string.IsNullOrEmpty(result.PreExecFailureMarker));

@@ -23,6 +23,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
 
     private readonly Func<int, long?> _footprintReader;
 
+    private readonly Action? _processScanHook;
+
     private readonly DescendantScanSchedule _scanSchedule;
 
     private readonly HashSet<ProcessIdentity> _unreadableFootprints = [];
@@ -51,7 +53,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         Func<Task>? monitorTickHold,
         long? memoryLimitBytes,
         Func<int, long?>? footprintReader,
-        int idleScanEveryTicks)
+        int idleScanEveryTicks,
+        Action? processScanHook)
     {
         _rootPid = rootPid;
         _rootIdentity = rootIdentity;
@@ -60,6 +63,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         _monitorTickHold = monitorTickHold;
         _memoryLimitBytes = memoryLimitBytes;
         _footprintReader = footprintReader ?? ReadPhysicalFootprintOrNull;
+        _processScanHook = processScanHook;
 
         // Without a working kqueue nothing announces a fork, so the scan is the only detector and the
         // schedule must never back off.
@@ -92,12 +96,17 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     /// that a kqueue fork or exit event is the only thing that can resume scanning; at the default cadence
     /// the safety scan, and the window a newly found process reopens, would resume it without any event.
     /// </param>
+    /// <param name="processScanHook">
+    /// Always <c>null</c> in production. A test supplies it to make the full process-table scan itself
+    /// throw, which no real process table does on demand; it runs at the start of every scan.
+    /// </param>
     internal static MacOsDescendantSupervisor? TryStart(
         int rootPid,
         Func<Task>? monitorTickHold = null,
         long? memoryLimitBytes = null,
         Func<int, long?>? footprintReader = null,
-        int idleScanEveryTicks = DescendantScanSchedule.IdleScanEveryTicks)
+        int idleScanEveryTicks = DescendantScanSchedule.IdleScanEveryTicks,
+        Action? processScanHook = null)
     {
         Func<int, long?> readFootprint = footprintReader ?? ReadPhysicalFootprintOrNull;
 
@@ -160,7 +169,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 monitorTickHold,
                 memoryLimitBytes,
                 footprintReader,
-                idleScanEveryTicks);
+                idleScanEveryTicks,
+                processScanHook);
         }
         catch
         {
@@ -185,9 +195,15 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Kills every tracked descendant whose identity still matches, after one last scan for descendants
+    /// forked since the previous one. The scan is best effort and the kill does not depend on it: when the
+    /// scan itself is what failed (a faulted monitor loop), rescanning first threw again and the
+    /// descendants already tracked outlived the root with nothing enforcing the ceiling over them.
+    /// </summary>
     internal void KillTracked()
     {
-        DiscoverDescendants();
+        _ = TryDiscoverDescendants();
 
         ProcessIdentity[] tracked;
 
@@ -238,7 +254,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         while (Environment.TickCount64 < deadline)
         {
             int before = TrackedCount;
-            DiscoverDescendants();
+            _ = TryDiscoverDescendants();
             KillTracked();
             bool anyAlive = !VerifyTrackedExited();
             int after = TrackedCount;
@@ -297,7 +313,10 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         }
     }
 
-    private int TrackedCount
+    /// <summary>
+    /// How many processes (the root included) the supervisor is tracking, live or already exited.
+    /// </summary>
+    internal int TrackedCount
     {
         get
         {
@@ -481,7 +500,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
 
     /// <summary>
     /// How many distinct tracked processes could not have their physical footprint read while a memory
-    /// ceiling was being enforced. Each is left out of the summed footprint, so a non-zero count means the
+    /// ceiling was being enforced and were still the same live process afterwards (one that exited between
+    /// the two reads is not a gap). Each is left out of the summed footprint, so a non-zero count means the
     /// ceiling was enforced over less than the whole tree.
     /// </summary>
     internal long UnreadableFootprintCount
@@ -535,6 +555,16 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 continue;
             }
 
+            // A process that exited after the identity read is gone, not unmeasured: only one that is still
+            // the same live process is a hole in the ceiling.
+            if (!TryReadProcess(
+                    identity.Pid,
+                    out ProcessSnapshot afterFailedRead)
+                || afterFailedRead.Identity != identity)
+            {
+                continue;
+            }
+
             // Still the same live process, but its footprint is unreadable: it is excluded from the sum.
             // Counted so the gap is visible instead of silently shrinking the ceiling's coverage.
             lock (_gate)
@@ -581,10 +611,29 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         return true;
     }
 
+    /// <summary>
+    /// The scan on the kill and verify paths: a failure there must cost only the newest descendants, never
+    /// the kill of the ones already tracked or the caller's teardown.
+    /// </summary>
+    /// <returns>Whether the scan ran and added a process to the tracked set.</returns>
+    private bool TryDiscoverDescendants()
+    {
+        try
+        {
+            return DiscoverDescendants();
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     /// <returns>Whether the scan added a process to the tracked set.</returns>
     private bool DiscoverDescendants()
     {
         _ = Interlocked.Increment(ref _fullScanCount);
+
+        _processScanHook?.Invoke();
 
         IReadOnlyList<ProcessSnapshot> processes =
             ReadAllProcesses();

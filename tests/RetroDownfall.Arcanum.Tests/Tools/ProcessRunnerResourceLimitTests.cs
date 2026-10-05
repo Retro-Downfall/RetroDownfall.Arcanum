@@ -126,18 +126,26 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
         Assert.Contains(guard.RecordedBreaches, b => b.Resource == ResourceLimitKind.Cpu);
     }
 
+    /// <summary>
+    /// The hog is a shell script that execs the system perl by absolute path. A <c>.py</c> hog ran
+    /// through <c>/usr/bin/env python3</c>, so it measured whichever interpreter the scrubbed PATH found
+    /// first — on a host whose first <c>python3</c> is a virtual environment that interpreter died during
+    /// startup (it cannot find its prefix under the scrubbed environment) and the test failed without ever
+    /// allocating anything, which says nothing about the memory ceiling.
+    /// </summary>
     [SkippableFact]
     public async Task Process_exceeding_memory_limit_is_terminated_and_breached()
     {
         SkipUnlessEnforcementOptIn();
 
+        Assert.True(File.Exists("/usr/bin/perl"), "The allocation probe needs the system perl at /usr/bin/perl.");
+
         using HostProcessToolsEscapeHatchScope _ = new();
 
         string script = await WriteScriptAsync(
-            "hog.py",
-            "data = []\n"
-            + "while True:\n"
-            + "    data.append(bytearray(1024 * 1024))\n");
+            "hog.sh",
+            "#!/bin/sh\n"
+            + "exec /usr/bin/perl -e 'my @data; while (1) { push @data, \"a\" x (1024 * 1024); }'\n");
 
         FakeSanctumGuard guard = new(new ResourceLimits { MaxCpuSeconds = 0, MaxMemoryMb = 32, MaxFileDescriptors = 0 });
 
