@@ -290,6 +290,12 @@ internal sealed class CliContextService(
                         result.Value.Error.Code,
                         CliExitCode.ConfigurationError));
         }
+        catch (CliContextFileUnusableException exception)
+        {
+            // The saved file is one this build must not replace (a newer format version, or damaged).
+            // The message names the file and the remedy and carries no content from it.
+            return CliContextMutationResult.Failure(exception.Message);
+        }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {

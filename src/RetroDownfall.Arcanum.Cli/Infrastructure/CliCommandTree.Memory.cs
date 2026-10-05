@@ -10,8 +10,7 @@ internal static partial class CliCommandTree
 {
     private static Command BuildMemory(IServiceProvider sp)
     {
-
-        MemoryCommands handler = sp.GetRequiredService<MemoryCommands>();
+        DeferredHandler<MemoryCommands> handler = new(sp);
 
         Command memory = new(
             "memory",
@@ -25,7 +24,7 @@ internal static partial class CliCommandTree
 
         status.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Status(
+                await handler.Value.Status(
                     ActiveSession(sp, pr.GetValue(statusSession)),
                     ct).ConfigureAwait(false));
 
@@ -37,7 +36,7 @@ internal static partial class CliCommandTree
 
         sources.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Sources(
+                await handler.Value.Sources(
                     ActiveSession(sp, pr.GetValue(sourcesSession)),
                     ct).ConfigureAwait(false));
 
@@ -70,7 +69,7 @@ internal static partial class CliCommandTree
 
         search.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Search(
+                await handler.Value.Search(
                     pr.GetValue(query)!,
                     pr.GetValue(scope),
                     ActiveSession(sp, pr.GetValue(searchSession)),
@@ -85,7 +84,7 @@ internal static partial class CliCommandTree
 
         explain.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Explain(
+                await handler.Value.Explain(
                     ActiveSession(sp, pr.GetValue(explainSession)),
                     ct).ConfigureAwait(false));
 
@@ -95,7 +94,7 @@ internal static partial class CliCommandTree
 
         lexiconList.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.LexiconList(ct).ConfigureAwait(false));
+                await handler.Value.LexiconList(ct).ConfigureAwait(false));
 
         Command lexiconShow = new("show", "Show one exact Global or Campaign Lexicon entity and its curation target.");
 
@@ -109,7 +108,7 @@ internal static partial class CliCommandTree
 
         lexiconShow.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.LexiconShow(
+                await handler.Value.LexiconShow(
                     pr.GetValue(showName)!,
                     pr.GetValue(showCampaign),
                     ct).ConfigureAwait(false));
@@ -122,7 +121,7 @@ internal static partial class CliCommandTree
 
         lexiconSearch.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.LexiconSearch(
+                await handler.Value.LexiconSearch(
                     pr.GetValue(lexiconQuery)!,
                     ct).ConfigureAwait(false));
 
@@ -134,7 +133,7 @@ internal static partial class CliCommandTree
 
         lexiconDelete.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.LexiconDelete(
+                await handler.Value.LexiconDelete(
                     pr.GetValue(deleteName)!,
                     ct).ConfigureAwait(false));
 
@@ -167,18 +166,18 @@ internal static partial class CliCommandTree
         lexiconCorrect.Add(correctFile);
 
         lexiconCorrect.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.LexiconCorrect(pr.GetValue(correctName)!, pr.GetValue(correctCampaign),
+            await handler.Value.LexiconCorrect(pr.GetValue(correctName)!, pr.GetValue(correctCampaign),
                 pr.GetValue(correctFile)!, ct).ConfigureAwait(false));
 
         lexicon.Add(lexiconCorrect);
 
-        AddLexiconMutation(lexicon, "retire", "Remove an exact Lexicon entry from retrieval while retaining it for inspection.", handler.LexiconRetire);
+        AddLexiconMutation(lexicon, "retire", "Remove an exact Lexicon entry from retrieval while retaining it for inspection.", (first, second, cancellationToken) => handler.Value.LexiconRetire(first, second, cancellationToken));
 
-        AddLexiconMutation(lexicon, "reinstate", "Make a retired exact Lexicon entry eligible for retrieval again.", handler.LexiconReinstate);
+        AddLexiconMutation(lexicon, "reinstate", "Make a retired exact Lexicon entry eligible for retrieval again.", (first, second, cancellationToken) => handler.Value.LexiconReinstate(first, second, cancellationToken));
 
-        AddLexiconMutation(lexicon, "pin", "Protect an exact Lexicon entry from automatic retention pruning.", handler.LexiconPin);
+        AddLexiconMutation(lexicon, "pin", "Protect an exact Lexicon entry from automatic retention pruning.", (first, second, cancellationToken) => handler.Value.LexiconPin(first, second, cancellationToken));
 
-        AddLexiconMutation(lexicon, "unpin", "Release an exact Lexicon entry's protection from automatic retention pruning.", handler.LexiconUnpin);
+        AddLexiconMutation(lexicon, "unpin", "Release an exact Lexicon entry's protection from automatic retention pruning.", (first, second, cancellationToken) => handler.Value.LexiconUnpin(first, second, cancellationToken));
 
         Command lexiconErase = new(
             "erase",
@@ -194,7 +193,7 @@ internal static partial class CliCommandTree
 
         lexiconErase.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.LexiconErase(
+                await handler.Value.LexiconErase(
                     pr.GetValue(eraseName)!,
                     pr.GetValue(eraseCampaign),
                     ct).ConfigureAwait(false));
@@ -215,7 +214,7 @@ internal static partial class CliCommandTree
 
         lexiconRelease.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.LexiconRelease(
+                await handler.Value.LexiconRelease(
                     pr.GetValue(releaseName)!,
                     pr.GetValue(releaseCampaign),
                     ct).ConfigureAwait(false));
@@ -239,7 +238,6 @@ internal static partial class CliCommandTree
         memory.Add(BuildMemoryErasure(handler));
 
         return memory;
-
     }
 
     /// <summary>
@@ -250,9 +248,8 @@ internal static partial class CliCommandTree
     /// <c>reset-key</c> discards the evidence the current key cannot verify. Only the last asks first:
     /// it is the one that cannot be undone.
     /// </remarks>
-    private static Command BuildMemoryErasure(MemoryCommands handler)
+    private static Command BuildMemoryErasure(DeferredHandler<MemoryCommands> handler)
     {
-
         Command erasure = new(
             "erasure",
             "Inspect and administer erasure fingerprints and receipts across the memory stores.");
@@ -263,7 +260,7 @@ internal static partial class CliCommandTree
 
         status.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.ErasureStatus(ct).ConfigureAwait(false));
+                await handler.Value.ErasureStatus(ct).ConfigureAwait(false));
 
         Command scrub = new(
             "scrub",
@@ -271,7 +268,7 @@ internal static partial class CliCommandTree
 
         scrub.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.ErasureScrub(ct).ConfigureAwait(false));
+                await handler.Value.ErasureScrub(ct).ConfigureAwait(false));
 
         Command resetKey = new(
             "reset-key",
@@ -279,7 +276,7 @@ internal static partial class CliCommandTree
 
         resetKey.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.ErasureResetKey(ct).ConfigureAwait(false));
+                await handler.Value.ErasureResetKey(ct).ConfigureAwait(false));
 
         erasure.Add(status);
 
@@ -288,7 +285,6 @@ internal static partial class CliCommandTree
         erasure.Add(resetKey);
 
         return erasure;
-
     }
 
     private static Argument<string?> OptionalMemorySessionArgument() => new("session")
@@ -337,8 +333,7 @@ internal static partial class CliCommandTree
     /// </remarks>
     private static Command BuildMemorySagaCuration(IServiceProvider sp)
     {
-
-        MemoryCommands handler = sp.GetRequiredService<MemoryCommands>();
+        DeferredHandler<MemoryCommands> handler = new(sp);
 
         Command saga = new(
             "saga",
@@ -352,7 +347,7 @@ internal static partial class CliCommandTree
 
         show.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.SagaShow(
+                await handler.Value.SagaShow(
                     pr.GetValue(showId)!,
                     ct).ConfigureAwait(false));
 
@@ -377,7 +372,7 @@ internal static partial class CliCommandTree
 
         correct.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.SagaCorrect(
+                await handler.Value.SagaCorrect(
                     pr.GetValue(correctId)!,
                     pr.GetValue(correctHash)!,
                     pr.GetValue(correctFile),
@@ -395,7 +390,7 @@ internal static partial class CliCommandTree
 
         retire.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.SagaRetire(
+                await handler.Value.SagaRetire(
                     pr.GetValue(retireId)!,
                     pr.GetValue(retireHash)!,
                     ct).ConfigureAwait(false));
@@ -412,7 +407,7 @@ internal static partial class CliCommandTree
 
         reinstate.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.SagaReinstate(
+                await handler.Value.SagaReinstate(
                     pr.GetValue(reinstateId)!,
                     pr.GetValue(reinstateHash)!,
                     ct).ConfigureAwait(false));
@@ -425,7 +420,7 @@ internal static partial class CliCommandTree
 
         pin.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.SagaPin(
+                await handler.Value.SagaPin(
                     pr.GetValue(pinId)!,
                     ct).ConfigureAwait(false));
 
@@ -437,7 +432,7 @@ internal static partial class CliCommandTree
 
         unpin.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.SagaUnpin(
+                await handler.Value.SagaUnpin(
                     pr.GetValue(unpinId)!,
                     ct).ConfigureAwait(false));
 
@@ -468,7 +463,7 @@ internal static partial class CliCommandTree
 
         erase.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.SagaErase(
+                await handler.Value.SagaErase(
                     pr.GetValue(eraseId)!,
                     pr.GetValue(eraseHash),
                     ct).ConfigureAwait(false));
@@ -501,7 +496,7 @@ internal static partial class CliCommandTree
 
         release.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.SagaRelease(
+                await handler.Value.SagaRelease(
                     pr.GetValue(releaseFile)!,
                     pr.GetValue(releaseCampaign),
                     pr.GetValue(releaseScope),
@@ -518,7 +513,6 @@ internal static partial class CliCommandTree
         saga.Add(BuildSagaReview(handler));
 
         return saga;
-
     }
 
     private static Argument<string> SagaMemoryIdArgument() => new("id")
@@ -543,7 +537,7 @@ internal static partial class CliCommandTree
 
     private static Command BuildSaga(IServiceProvider sp)
     {
-        SagaCommands handler = sp.GetRequiredService<SagaCommands>();
+        DeferredHandler<SagaCommands> handler = new(sp);
         Command saga = new("saga", "Saga long-term associative memory (requires arcanum serve).");
 
         Command list = new("list", "Paginated listing of Saga memories.");
@@ -552,7 +546,7 @@ internal static partial class CliCommandTree
         Option<int?> listLimit = new("--limit") { Description = "Maximum number of memories to return." };
         Option<int?> offset = new("--offset") { Description = "Pagination offset." };
         list.Add(listQuery); list.Add(session); list.Add(listLimit); list.Add(offset);
-        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(
+        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.List(
             pr.GetValue(listQuery),
             ActiveSession(sp, pr.GetValue(session)),
             pr.GetValue(listLimit),
@@ -564,7 +558,7 @@ internal static partial class CliCommandTree
         Option<int?> divineLimit = new("--limit") { Description = "Maximum number of results to return." };
         Option<string?> divineSession = new("--session") { Description = "Search as this session, honoring the Campaign scope its turns draw from." };
         divine.Add(query); divine.Add(divineLimit); divine.Add(divineSession);
-        divine.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Divine(
+        divine.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Divine(
             pr.GetValue(query)!,
             pr.GetValue(divineLimit),
             ActiveSession(sp, pr.GetValue(divineSession)),
@@ -573,12 +567,12 @@ internal static partial class CliCommandTree
         Command delete = new("delete", "Delete a single Saga memory without erasing it.");
         Argument<string> id = new("id") { Description = "Saga memory ID." };
         delete.Add(id);
-        delete.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Delete(
+        delete.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Delete(
             pr.GetValue(id)!,
             ct).ConfigureAwait(false));
 
         Command stats = new("stats", "Aggregate summary of Saga memory storage.");
-        stats.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Stats(ct).ConfigureAwait(false));
+        stats.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Stats(ct).ConfigureAwait(false));
 
         saga.Add(list); saga.Add(divine); saga.Add(delete); saga.Add(stats);
         return saga;
@@ -586,16 +580,16 @@ internal static partial class CliCommandTree
 
     private static Command BuildLore(IServiceProvider sp)
     {
-        LoreCommands handler = sp.GetRequiredService<LoreCommands>();
+        DeferredHandler<LoreCommands> handler = new(sp);
         Command lore = new("lore", "Manage Grimoire explicit memory (lore) directly.");
 
         Command list = new("list", "List all scribed lore keys.");
-        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
+        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.List(ct).ConfigureAwait(false));
 
         Command get = new("get", "Read a specific lore entry by key.");
         Argument<string> getKey = new("key") { Description = "The lore key." };
         get.Add(getKey);
-        get.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Get(
+        get.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Get(
             pr.GetValue(getKey)!,
             ct).ConfigureAwait(false));
 
@@ -603,7 +597,7 @@ internal static partial class CliCommandTree
         Argument<string> setKey = new("key") { Description = "The lore key." };
         Argument<string> value = new("value") { Description = "The lore value." };
         set.Add(setKey); set.Add(value);
-        set.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Set(
+        set.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Set(
             pr.GetValue(setKey)!,
             pr.GetValue(value)!,
             ct).ConfigureAwait(false));
@@ -611,7 +605,7 @@ internal static partial class CliCommandTree
         Command delete = new("delete", "Delete a lore entry.");
         Argument<string> deleteKey = new("key") { Description = "The lore key." };
         delete.Add(deleteKey);
-        delete.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Delete(
+        delete.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Delete(
             pr.GetValue(deleteKey)!,
             ct).ConfigureAwait(false));
 
@@ -621,26 +615,26 @@ internal static partial class CliCommandTree
 
     private static Command BuildDaemon(IServiceProvider sp)
     {
-        DaemonCommands handler = sp.GetRequiredService<DaemonCommands>();
+        DeferredHandler<DaemonCommands> handler = new(sp);
         Command daemon = new("daemon", "Manage the Arcanum background daemon.");
 
         Command install = new("install", "Install and start the Arcanum background daemon.");
-        install.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Install(ct).ConfigureAwait(false));
+        install.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Install(ct).ConfigureAwait(false));
 
         Command uninstall = new("uninstall", "Stop and uninstall the Arcanum background daemon.");
-        uninstall.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Uninstall(ct).ConfigureAwait(false));
+        uninstall.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Uninstall(ct).ConfigureAwait(false));
 
         Command status = new("status", "Show whether the Arcanum daemon is running.");
-        status.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Status(ct).ConfigureAwait(false));
+        status.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Status(ct).ConfigureAwait(false));
 
         Command jobs = new("jobs", "List Unseen Servant jobs (requires API: arcanum serve).");
-        jobs.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Jobs(ct).ConfigureAwait(false));
+        jobs.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Jobs(ct).ConfigureAwait(false));
 
         Command initiative = new("initiative", "Set adaptive polling interval for a job (requires API: arcanum serve).");
         Argument<string> jobName = new("job-name") { Description = "The Unseen Servant job name." };
         Argument<int> minutes = new("minutes") { Description = "The new polling interval in minutes (>= 1)." };
         initiative.Add(jobName); initiative.Add(minutes);
-        initiative.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Initiative(
+        initiative.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Initiative(
             pr.GetValue(jobName)!,
             pr.GetValue(minutes),
             ct).ConfigureAwait(false));
@@ -651,7 +645,7 @@ internal static partial class CliCommandTree
         Option<string?> severity = new("--severity") { Description = "Severity: Info, Warning, or Critical." };
         Option<string?> source = new("--source") { Description = "The alert source label." };
         alert.Add(message); alert.Add(title); alert.Add(severity); alert.Add(source);
-        alert.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Alert(
+        alert.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Alert(
             pr.GetValue(message)!,
             pr.GetValue(title) ?? "Arcanum alert",
             pr.GetValue(severity) ?? "Warning",

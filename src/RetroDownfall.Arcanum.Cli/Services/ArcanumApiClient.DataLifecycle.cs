@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 
 public sealed partial class ArcanumApiClient
 {
-
     public Task<Result<DataRetentionStatus>> GetDataRetentionStatusAsync(
         CancellationToken cancellationToken = default) =>
         SendRequestAsync(
@@ -37,7 +36,6 @@ public sealed partial class ArcanumApiClient
         RetentionRuleUpdateRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.RetentionRuleUpdateRequest);
@@ -49,14 +47,12 @@ public sealed partial class ArcanumApiClient
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseRetentionSettings,
             cancellationToken);
-
     }
 
     public Task<Result<DataRetentionPlan>> PlanDataPruneAsync(
         DataRetentionRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.DataRetentionRequest);
@@ -68,14 +64,12 @@ public sealed partial class ArcanumApiClient
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseDataRetentionPlan,
             cancellationToken);
-
     }
 
     public Task<Result<DataRetentionApplyResult>> ApplyDataPruneAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.DataRetentionApplyRequest);
@@ -86,8 +80,8 @@ public sealed partial class ArcanumApiClient
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult,
-            cancellationToken);
-
+            cancellationToken,
+            StreamingHttpClientName);
     }
 
     public Task<Result<DataRetentionApplyResult>> DeleteDataSessionAsync(
@@ -116,7 +110,6 @@ public sealed partial class ArcanumApiClient
         MemoryResetRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.MemoryResetRequest);
@@ -127,15 +120,14 @@ public sealed partial class ArcanumApiClient
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult,
-            cancellationToken);
-
+            cancellationToken,
+            StreamingHttpClientName);
     }
 
     public Task<Result<DataRetentionPlan>> PlanDataMemoryResetAsync(
         MemoryResetRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.MemoryResetRequest);
@@ -147,14 +139,12 @@ public sealed partial class ArcanumApiClient
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseDataRetentionPlan,
             cancellationToken);
-
     }
 
     public Task<Result<DataRetentionApplyResult>> FactoryResetDataAsync(
         FactoryResetRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.FactoryResetRequest);
@@ -165,15 +155,14 @@ public sealed partial class ArcanumApiClient
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult,
-            cancellationToken);
-
+            cancellationToken,
+            StreamingHttpClientName);
     }
 
     public Task<Result<DataRetentionPlan>> PlanFactoryResetDataAsync(
         InstallationResetDataPlanRequest request,
         CancellationToken cancellationToken = default)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.InstallationResetDataPlanRequest);
@@ -185,7 +174,5 @@ public sealed partial class ArcanumApiClient
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseDataRetentionPlan,
             cancellationToken);
-
     }
-
 }

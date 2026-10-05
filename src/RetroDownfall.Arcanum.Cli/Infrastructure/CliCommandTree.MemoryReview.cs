@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-    private static Command BuildSagaReview(MemoryCommands handler)
+    private static Command BuildSagaReview(DeferredHandler<MemoryCommands> handler)
     {
         Command review = ReviewRoot("Saga");
 
@@ -28,7 +28,7 @@ internal static partial class CliCommandTree
         list.Add(cursor);
 
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.SagaReviewList(
+            await handler.Value.SagaReviewList(
                 pr.GetValue(campaign),
                 pr.GetValue(unresolved),
                 pr.GetValue(limit) ?? MemoryReviewLimits.MaxPageSize,
@@ -36,12 +36,12 @@ internal static partial class CliCommandTree
                 ct).ConfigureAwait(false));
 
         review.Add(list);
-        review.Add(ReviewApply("Saga", handler.SagaReviewApply));
+        review.Add(ReviewApply("Saga", (first, cancellationToken) => handler.Value.SagaReviewApply(first, cancellationToken)));
 
         return review;
     }
 
-    private static Command BuildLexiconReview(MemoryCommands handler)
+    private static Command BuildLexiconReview(DeferredHandler<MemoryCommands> handler)
     {
         Command review = ReviewRoot("Lexicon");
 
@@ -56,19 +56,19 @@ internal static partial class CliCommandTree
         list.Add(cursor);
 
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.LexiconReviewList(
+            await handler.Value.LexiconReviewList(
                 pr.GetValue(campaign),
                 pr.GetValue(limit) ?? MemoryReviewLimits.MaxPageSize,
                 pr.GetValue(cursor),
                 ct).ConfigureAwait(false));
 
         review.Add(list);
-        review.Add(ReviewApply("Lexicon", handler.LexiconReviewApply));
+        review.Add(ReviewApply("Lexicon", (first, cancellationToken) => handler.Value.LexiconReviewApply(first, cancellationToken)));
 
         return review;
     }
 
-    private static Command BuildCovenantReview(MemoryCommands handler)
+    private static Command BuildCovenantReview(DeferredHandler<MemoryCommands> handler)
     {
         Command review = ReviewRoot("Covenant");
 
@@ -90,7 +90,7 @@ internal static partial class CliCommandTree
         list.Add(cursor);
 
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.CovenantReviewList(
+            await handler.Value.CovenantReviewList(
                 pr.GetValue(campaign),
                 pr.GetValue(lane)!,
                 pr.GetValue(limit) ?? MemoryReviewLimits.MaxPageSize,
@@ -98,7 +98,7 @@ internal static partial class CliCommandTree
                 ct).ConfigureAwait(false));
 
         review.Add(list);
-        review.Add(ReviewApply("Covenant", handler.CovenantReviewApply));
+        review.Add(ReviewApply("Covenant", (first, cancellationToken) => handler.Value.CovenantReviewApply(first, cancellationToken)));
 
         return review;
     }

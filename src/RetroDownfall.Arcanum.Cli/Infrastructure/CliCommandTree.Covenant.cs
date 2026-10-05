@@ -28,9 +28,9 @@ internal static partial class CliCommandTree
     /// </remarks>
     private static Command BuildCovenant(IServiceProvider sp)
     {
-        CovenantCommands handler = sp.GetRequiredService<CovenantCommands>();
+        DeferredHandler<CovenantCommands> handler = new(sp);
 
-        MemoryCommands memoryHandler = sp.GetRequiredService<MemoryCommands>();
+        DeferredHandler<MemoryCommands> memoryHandler = new(sp);
 
         Command covenant = new(
             "covenant",
@@ -72,7 +72,7 @@ internal static partial class CliCommandTree
 
         set.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Set(
+                await handler.Value.Set(
                     pr.GetValue(setKey)!,
                     pr.GetValue(campaign),
                     pr.GetValue(file),
@@ -106,7 +106,7 @@ internal static partial class CliCommandTree
 
         list.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.List(
+                await handler.Value.List(
                     pr.GetValue(campaign),
                     pr.GetValue(allScopes),
                     pr.GetValue(listLane),
@@ -143,7 +143,7 @@ internal static partial class CliCommandTree
 
         search.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Search(
+                await handler.Value.Search(
                     pr.GetValue(searchQuery)!,
                     pr.GetValue(campaign),
                     pr.GetValue(searchAllScopes),
@@ -168,7 +168,7 @@ internal static partial class CliCommandTree
 
         show.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Show(
+                await handler.Value.Show(
                     pr.GetValue(showKey)!,
                     pr.GetValue(campaign),
                     pr.GetValue(history),
@@ -200,7 +200,7 @@ internal static partial class CliCommandTree
 
         retire.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Retire(
+                await handler.Value.Retire(
                     pr.GetValue(retireKey)!,
                     pr.GetValue(campaign),
                     pr.GetValue(retireLane) ?? CovenantLane.Confirmed,
@@ -253,7 +253,7 @@ internal static partial class CliCommandTree
 
         correct.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Correct(
+                await handler.Value.Correct(
                     pr.GetValue(correctKey)!,
                     pr.GetValue(campaign),
                     pr.GetValue(correctFile),
@@ -286,7 +286,7 @@ internal static partial class CliCommandTree
 
         erase.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Erase(
+                await handler.Value.Erase(
                     pr.GetValue(eraseKey)!,
                     pr.GetValue(campaign),
                     ct).ConfigureAwait(false));
@@ -305,7 +305,7 @@ internal static partial class CliCommandTree
 
         release.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Release(
+                await handler.Value.Release(
                     pr.GetValue(releaseKey)!,
                     pr.GetValue(campaign),
                     ct).ConfigureAwait(false));
@@ -359,7 +359,7 @@ internal static partial class CliCommandTree
     /// is the right instruction rather than a guaranteed refusal.</para>
     /// </remarks>
     private static Command CurationCommand(
-        CovenantCommands handler,
+        DeferredHandler<CovenantCommands> handler,
         CovenantCurationKind kind,
         string name,
         string description,
@@ -394,7 +394,7 @@ internal static partial class CliCommandTree
 
         command.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Curate(
+                await handler.Value.Curate(
                     kind,
                     pr.GetValue(key)!,
                     pr.GetValue(campaign),

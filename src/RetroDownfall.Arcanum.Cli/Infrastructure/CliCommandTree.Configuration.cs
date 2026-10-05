@@ -10,11 +10,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildConfig(IServiceProvider services)
     {
-
-        ConfigCommands handler = services.GetRequiredService<ConfigCommands>();
+        DeferredHandler<ConfigCommands> handler = new(services);
 
         Command config = new(
             "config",
@@ -22,28 +20,26 @@ internal static partial class CliCommandTree
 
         Command path = new("path", "Print the exact arcanum.json path.");
 
-        path.SetAction((ParseResult _) => handler.Path());
+        path.SetAction((ParseResult _) => handler.Value.Path());
 
         Command show = new("show", "Show the effective configuration with secrets redacted.");
 
         show.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.Show(cancellationToken).ConfigureAwait(false));
+                await handler.Value.Show(cancellationToken).ConfigureAwait(false));
 
         Command get = new("get", "Show one descriptor-backed configuration value.");
 
         Argument<string> getKey = new("key")
         {
-
             Description = "Dot path such as host.port or providers.0.endpoint.",
-
         };
 
         get.Add(getKey);
 
         get.SetAction(
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
-                await handler.Get(
+                await handler.Value.Get(
                         parseResult.GetValue(getKey)!,
                         cancellationToken)
                     .ConfigureAwait(false));
@@ -54,18 +50,14 @@ internal static partial class CliCommandTree
 
         Argument<string> setKey = new("key")
         {
-
             Description = "Dot path such as host.port or providers.0.endpoint.",
-
         };
 
         Argument<string?> setValue = new("value")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Typed value; omit for sensitive fields and use secure input.",
-
         };
 
         set.Add(setKey);
@@ -74,7 +66,7 @@ internal static partial class CliCommandTree
 
         set.SetAction(
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
-                await handler.Set(
+                await handler.Value.Set(
                         parseResult.GetValue(setKey)!,
                         parseResult.GetValue(setValue),
                         cancellationToken)
@@ -86,7 +78,7 @@ internal static partial class CliCommandTree
 
         validate.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.Validate(cancellationToken).ConfigureAwait(false));
+                await handler.Value.Validate(cancellationToken).ConfigureAwait(false));
 
         Command edit = new(
             "edit",
@@ -94,11 +86,11 @@ internal static partial class CliCommandTree
 
         edit.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.Edit(cancellationToken).ConfigureAwait(false));
+                await handler.Value.Edit(cancellationToken).ConfigureAwait(false));
 
         Command open = new("open", "Launch Compendium for visual configuration editing.");
 
-        open.SetAction((ParseResult _) => handler.Open());
+        open.SetAction((ParseResult _) => handler.Value.Open());
 
         config.Add(path);
 
@@ -115,7 +107,5 @@ internal static partial class CliCommandTree
         config.Add(open);
 
         return config;
-
     }
-
 }

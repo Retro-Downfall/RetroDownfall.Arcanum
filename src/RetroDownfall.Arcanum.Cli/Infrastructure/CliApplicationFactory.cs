@@ -161,6 +161,8 @@ internal static class CliApplicationFactory
 
                 client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(settings.Host));
 
+                // No HttpClient-wide timeout: the short-call deadline is per request and bounds only
+                // the wait for response headers (ArcanumApiClient.RequestResponseHeadersTimeout).
                 client.Timeout = Timeout.InfiniteTimeSpan;
             })
             .ConfigurePrimaryHttpMessageHandler(CreateLocalApiHttpMessageHandler);
@@ -350,6 +352,25 @@ internal static class CliApplicationFactory
             AllowAutoRedirect = false,
             UseProxy = false,
         };
+
+    /// <summary>
+    /// Runs one invocation on a provider the caller built for it and disposes that provider when the
+    /// invocation ends, so the singletons it created (pooled HTTP handlers, monitors) are released by
+    /// the code that owns them rather than by process exit.
+    /// </summary>
+    internal static async Task<int> RunAndDisposeProviderAsync(
+        string[] args,
+        ServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        ArgumentNullException.ThrowIfNull(provider);
+
+        await using (provider.ConfigureAwait(false))
+        {
+            return await RunAsync(args, provider).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>
     /// Runs the CLI end-to-end with System.CommandLine 2.0.
@@ -589,6 +610,16 @@ internal static class CliApplicationFactory
             }
 
             dispatcher.WriteDiagnostic(failure.SafeMessage);
+
+            // The invocation scope that carried the parsed options was disposed while the exception
+            // unwound, so the dispatcher cannot see `-v` here; the options captured above can. Only
+            // the type is named: an upstream message can carry a secret or a path.
+            if (activeOptions.Verbose
+                && exception is not OperationCanceledException)
+            {
+                dispatcher.WriteDiagnostic(
+                    $"Exception type: {exception.GetType().FullName}");
+            }
 
             return (int)failure.ExitCode;
         }

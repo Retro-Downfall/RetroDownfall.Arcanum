@@ -662,6 +662,88 @@ public sealed class DocumentationCodeContradictionTests
     private static string Compact(string source) =>
         string.Concat(source.Where(static character => !char.IsWhiteSpace(character)));
 
+    /// <summary>
+    /// <c>ServeProcessLauncher</c> spawns the host in the launching command's own process group, so the
+    /// terminal signals it only while that command is the terminal's foreground job. After
+    /// <c>run</c> or <c>ask</c> has returned the host is still up (a pseudo-terminal probe on macOS saw
+    /// it survive both Ctrl+C at the shell and closing the terminal), so a sentence that says Ctrl+C or
+    /// closing the terminal ends an auto-launched host, or that an implicit invocation never leaves a
+    /// listener behind, is false for the common case and security-relevant. The sentences are true
+    /// only while the launcher adds no detach step, which is the source half of the pairing.
+    /// </summary>
+    [Fact]
+    public void An_auto_launched_host_is_not_documented_as_ending_with_its_terminal()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string commands = ReadDocument("Arcanum.Command.Reference.md");
+
+        string launcher = ReadSource("Cli", "Services", "ServeProcessLauncher.cs");
+
+        Assert.DoesNotContain("setsid(", launcher, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("DETACHED_PROCESS", launcher, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("CREATE_NEW_PROCESS_GROUP", launcher, StringComparison.Ordinal);
+
+        string[] staleSentences =
+        [
+            "until its terminal goes away",
+            "never leaves a long-lived loopback listener",
+            "so Ctrl+C or closing the terminal ends it",
+            "Ctrl+C or closing that terminal therefore ends the host",
+        ];
+
+        foreach (string stale in staleSentences)
+        {
+            Assert.DoesNotContain(stale, design, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, commands, StringComparison.Ordinal);
+        }
+
+        // The true statement carries the condition that makes it true.
+        Assert.Contains("only while that process group is the terminal's foreground job", design, StringComparison.Ordinal);
+
+        Assert.Contains("keeps listening until it is stopped with `arcanum serve quit`", design, StringComparison.Ordinal);
+
+        Assert.Contains("only while that command is still the terminal's foreground job", commands, StringComparison.Ordinal);
+
+        Assert.Contains("keeps running until `arcanum serve quit`", commands, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>CreateOwnerOnlyTempFile</c> narrows the file at creation on Unix only; on Windows its own
+    /// comment leaves the ACL to a later <c>ApplyOwnerOnlyFile</c>. A sentence that says the CLI's temp
+    /// files are owner-only before the first byte, with no platform, is therefore false on Windows
+    /// until each site narrows for itself, which the design now says site by site.
+    /// </summary>
+    [Fact]
+    public void The_cli_temp_file_posture_is_documented_per_platform()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string helper = File
+            .ReadAllText(Path.Combine(
+                TestRepositoryPaths.RepositoryRoot(),
+                "src",
+                "RetroDownfall.Arcanum.Infrastructure",
+                "Security",
+                "SecureFilePermissions.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        // The claim is true only while the helper leaves Windows hardening to its caller.
+        Assert.Contains("ACL hardening is applied", helper, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "so they are owner-only before the first byte is written rather than narrowed after the write.",
+            design,
+            StringComparison.Ordinal);
+
+        Assert.Contains("On Windows that helper hardens nothing at creation", design, StringComparison.Ordinal);
+
+        Assert.Contains("RecentResourceStore.CreateStagingFile", design, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
