@@ -272,14 +272,32 @@ public sealed class BackupArchiveCodec
                     "The staged backup archive path changed before publication.");
             }
 
+            // The one owner-only check that may refuse the archive, and it runs here, on the staged
+            // temp, while the destination is still whatever it was. After the move the previous
+            // archive is gone when overwrite replaced one, so nothing that fails afterwards may delete
+            // the destination: that would destroy the new archive and the one it replaced together.
+            if (!SecureFilePermissions.TryApplyOwnerOnlyFileStrict(tempPath))
+            {
+                throw new IOException(
+                    "The staged backup archive could not be verified with owner-only permissions before publication.");
+            }
+
             File.Move(tempPath, fullDestinationPath, overwrite);
 
-            if (!temporaryArchive.MatchesPathIdentity(fullDestinationPath)
-                || !SecureFilePermissions.TryApplyOwnerOnlyFileStrict(fullDestinationPath)
-                || !temporaryArchive.MatchesPathIdentity(fullDestinationPath))
+            // A move keeps the file's mode and ACL, so re-applying them is belt and braces and a
+            // failure to do so is a warning (logged by the permission helper), not grounds to remove
+            // what has been published. What does still refuse is a destination that is no longer the
+            // staged file, which is reported without deleting anything.
+            if (!temporaryArchive.MatchesPathIdentity(fullDestinationPath))
             {
-                _ = temporaryArchive.TryDeleteAtPath(fullDestinationPath);
+                throw new IOException(
+                    "The published backup archive could not be verified with owner-only permissions.");
+            }
 
+            _ = SecureFilePermissions.TryApplyOwnerOnlyFileStrict(fullDestinationPath);
+
+            if (!temporaryArchive.MatchesPathIdentity(fullDestinationPath))
+            {
                 throw new IOException(
                     "The published backup archive could not be verified with owner-only permissions.");
             }
