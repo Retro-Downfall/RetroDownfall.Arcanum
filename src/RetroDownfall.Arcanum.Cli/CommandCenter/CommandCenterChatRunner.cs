@@ -351,11 +351,25 @@ internal sealed class CommandCenterChatRunner(
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             cancelled = true;
             _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
             await coalescer.FlushCancelledAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex)
+        {
+            // Not the operator: some component gave up on its own (a transport timeout surfaces as a
+            // cancellation). That is a failure to report, not a Ctrl+C to acknowledge.
+            logger.LogError(ex, "Command Center chat turn timed out.");
+            sawError = true;
+            _ = humanPromptCoordinator.TryCloseActive(
+                HumanPromptCloseReason.Expired,
+                "Turn timed out — human prompt closed.");
+            await coalescer.FlushBeforeBlockAsync(CancellationToken.None).ConfigureAwait(false);
+            state.Log.Append(
+                SessionLogEntryKind.Error,
+                $"{ArcanumApiClient.StreamTimeoutMessage} {ArcanumApiClient.StreamDoctorHint}");
         }
         catch (Exception ex)
         {
