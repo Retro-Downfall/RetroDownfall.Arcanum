@@ -1,8 +1,10 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -11,13 +13,11 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantIndexRebuildTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public void The_rebuilder_exposes_one_batch_method_and_no_whole_operation_shortcut()
     {
-
         System.Reflection.MethodInfo[] declared = [.. typeof(CovenantIndexRebuilder)
             .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
                 | System.Reflection.BindingFlags.DeclaredOnly)];
@@ -33,13 +33,11 @@ public sealed class CovenantIndexRebuildTests
                 typeof(CancellationToken),
             ],
             only.GetParameters().Select(static parameter => parameter.ParameterType));
-
     }
 
     [Fact]
     public void Rebuild_phase_codes_are_immutable()
     {
-
         Assert.Equal((byte)1, (byte)CovenantIndexRebuildPhase.BaseScan);
 
         Assert.Equal((byte)2, (byte)CovenantIndexRebuildPhase.DeltaCatchUp);
@@ -51,13 +49,11 @@ public sealed class CovenantIndexRebuildTests
         Assert.Equal((byte)5, (byte)CovenantIndexRebuildPhase.RestartRequired);
 
         Assert.Equal(5, Enum.GetValues<CovenantIndexRebuildPhase>().Length);
-
     }
 
     [Fact]
     public void Progress_invariants_reject_impossible_checkpoints()
     {
-
         _ = Assert.Throws<ArgumentException>(
             () => Progress(Guid.Empty, 1, 0, CovenantIndexRebuildPhase.BaseScan));
 
@@ -69,17 +65,13 @@ public sealed class CovenantIndexRebuildTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => Progress(Guid.NewGuid(), 1, 0, CovenantIndexRebuildPhase.BaseScan) with
             {
-
                 BaseScanAfterSearchRowId = 0,
-
             });
-
     }
 
     [Fact]
     public async Task A_start_captures_its_identity_and_clears_the_old_projection()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -113,18 +105,15 @@ public sealed class CovenantIndexRebuildTests
         Assert.Equal(0, await Count(fixture, "covenant_search_documents"));
 
         Assert.Equal(0, await Scalar(fixture, "SELECT COUNT(AppliedSearchSequence) FROM covenant_state;"));
-
     }
 
     [Fact]
     public async Task A_rebuild_runs_to_completion_and_publishes_eligibility_once()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         for (int index = 0; index < 3; index++)
         {
-
             _ = await fixture.SeedHeadAsync(
                 CovenantScope.Global,
                 null,
@@ -133,7 +122,6 @@ public sealed class CovenantIndexRebuildTests
                 CovenantOperation.Set,
                 $"Body {index}.",
                 Token);
-
         }
 
         CovenantIndexRebuildProgress progress = await AdvanceAsync(fixture, null);
@@ -142,13 +130,11 @@ public sealed class CovenantIndexRebuildTests
 
         while (!progress.IsTerminal && guard++ < 32)
         {
-
             Assert.Equal(
                 0,
                 await Scalar(fixture, "SELECT COUNT(AppliedSearchSequence) FROM covenant_state;"));
 
             progress = await AdvanceAsync(fixture, progress);
-
         }
 
         Assert.Equal(CovenantIndexRebuildPhase.Completed, progress.Phase);
@@ -165,13 +151,11 @@ public sealed class CovenantIndexRebuildTests
 
         // Completion is idempotent.
         Assert.Equal(progress, await AdvanceAsync(fixture, progress));
-
     }
 
     [Fact]
     public async Task A_mutation_during_the_base_scan_is_recovered_from_the_post_target_outbox()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         SeededHead head = await fixture.SeedHeadAsync(
@@ -206,9 +190,7 @@ public sealed class CovenantIndexRebuildTests
 
         while (!progress.IsTerminal && guard++ < 32)
         {
-
             progress = await AdvanceAsync(fixture, progress);
-
         }
 
         Assert.Equal(CovenantIndexRebuildPhase.Completed, progress.Phase);
@@ -218,13 +200,175 @@ public sealed class CovenantIndexRebuildTests
         Assert.Equal(
             "Replacement marker.",
             await StringAsync(fixture, "SELECT AuthoredContent FROM covenant_search_documents;"));
+    }
 
+    [Fact]
+    public async Task A_resume_from_a_stale_cursor_does_not_end_the_base_scan()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        int heads = CovenantIndexRebuildProgress.BaseBatchHeads + 44;
+
+        for (int index = 0; index < heads; index++)
+        {
+            _ = await fixture.SeedHeadAsync(
+                CovenantScope.Global,
+                null,
+                $"global.key{index}",
+                CovenantLane.Confirmed,
+                CovenantOperation.Set,
+                $"Body {index}.",
+                Token);
+        }
+
+        CovenantIndexRebuildProgress staleStart = await AdvanceAsync(fixture, null);
+
+        // The first batch commits, but the process stops before its checkpoint is saved, so the
+        // resume starts from the cursor the start returned.
+        CovenantIndexRebuildProgress firstBatch = await AdvanceAsync(fixture, staleStart);
+
+        Assert.Equal(CovenantIndexRebuildPhase.BaseScan, firstBatch.Phase);
+
+        Assert.Equal(CovenantIndexRebuildProgress.BaseBatchHeads, await Count(fixture, "covenant_search_documents"));
+
+        CovenantIndexRebuildProgress resumed = await AdvanceAsync(fixture, staleStart);
+
+        // The re-selected batch inserts nothing new, which is not the end of the scan.
+        Assert.Equal(CovenantIndexRebuildPhase.BaseScan, resumed.Phase);
+
+        Assert.Equal(firstBatch.BaseScanAfterSearchRowId, resumed.BaseScanAfterSearchRowId);
+
+        CovenantIndexRebuildProgress progress = resumed;
+
+        int guard = 0;
+
+        while (!progress.IsTerminal && guard++ < 32)
+        {
+            progress = await AdvanceAsync(fixture, progress);
+        }
+
+        Assert.Equal(CovenantIndexRebuildPhase.Completed, progress.Phase);
+
+        Assert.Equal(heads, await Count(fixture, "covenant_search_documents"));
+
+        Assert.Equal(heads, await Count(fixture, "covenant_heads"));
+    }
+
+    [Fact]
+    public async Task The_coordinator_saves_the_checkpoint_after_a_committed_batch_without_the_callers_token()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "global.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Body.",
+            Token);
+
+        CheckpointRecordingCoordinator operations = new();
+
+        CovenantIndexRebuildCoordinator coordinator = new(
+            operations,
+            new FakeLongRunningOperationStore(TimeProvider.System),
+            CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token)),
+            new CovenantIndexRebuilder(new FixedCovenantConnectionSource(fixture.Connection)),
+            TimeProvider.System);
+
+        using CancellationTokenSource caller = new();
+
+        LongRunningOperation operation = new(
+            Guid.Parse("55555555-5555-4555-8555-555555555555"),
+            LongRunningOperationKinds.CovenantIndexRebuild,
+            LongRunningOperationState.Running,
+            LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
+            RootOperationId: null,
+            ParentOperationId: null,
+            SessionId: null,
+            RunId: null,
+            InferenceRunId: null,
+            BudgetReservationId: null,
+            IdempotencyClaimId: null,
+            DateTimeOffset.UnixEpoch,
+            StartedAt: null,
+            HeartbeatAt: null,
+            CompletedAt: null,
+            LeaseOwner: null,
+            LeaseExpiresAt: null,
+            AttemptCount: 1,
+            CheckpointVersion: 0,
+            CheckpointPayload: null,
+            CheckpointReference: null,
+            "rebuild",
+            TerminalErrorCode: null,
+            Revision: 1);
+
+        Result<CovenantIndexRebuildProgress> advanced = await coordinator.AdvanceAsync(
+            operation,
+            "owner",
+            caller.Token);
+
+        Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
+
+        // The batch has committed by the time the cursor is saved, so the save is bookkeeping for
+        // work that already happened and a cancellation of the caller must not be able to skip it.
+        Assert.Equal(1, operations.Checkpoints);
+
+        Assert.False(operations.LastToken.CanBeCanceled);
+    }
+
+    [Fact]
+    public async Task Verification_refuses_to_publish_a_projection_that_does_not_cover_every_head()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        for (int index = 0; index < 3; index++)
+        {
+            _ = await fixture.SeedHeadAsync(
+                CovenantScope.Global,
+                null,
+                $"global.key{index}",
+                CovenantLane.Confirmed,
+                CovenantOperation.Set,
+                $"Body {index}.",
+                Token);
+        }
+
+        CovenantIndexRebuildProgress progress = await AdvanceAsync(fixture, null);
+
+        int guard = 0;
+
+        while (progress.Phase != CovenantIndexRebuildPhase.Verifying && guard++ < 32)
+        {
+            progress = await AdvanceAsync(fixture, progress);
+        }
+
+        Assert.Equal(CovenantIndexRebuildPhase.Verifying, progress.Phase);
+
+        // A document that went missing after the scan passed it and that no delta names.
+        await ExecuteAsync(
+            fixture,
+            "DELETE FROM covenant_search_documents WHERE SearchRowId = (SELECT MIN(SearchRowId) FROM covenant_search_documents);");
+
+        FakeCovenantAvailability availability = await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token);
+
+        await using CovenantAcceleratorLease lease =
+            (await CovenantOperationGateFixture.CreateGate(availability).AcquireAcceleratorAsync(Token)).Value;
+
+        Result<CovenantIndexRebuildProgress> refused = await new CovenantIndexRebuilder(
+                new FixedCovenantConnectionSource(fixture.Connection))
+            .AdvanceBatchAsync(progress, lease, Token);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, refused.Error.Code);
+
+        Assert.Equal(0, await Scalar(fixture, "SELECT COUNT(AppliedSearchSequence) FROM covenant_state;"));
     }
 
     [Fact]
     public async Task A_changed_dataset_generation_restarts_rather_than_publishing()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -250,13 +394,11 @@ public sealed class CovenantIndexRebuildTests
         Assert.True(restarted.IsTerminal);
 
         Assert.Equal(restarted, await AdvanceAsync(fixture, restarted, useStaleLease: true));
-
     }
 
     [Fact]
     public async Task A_gap_in_the_post_target_outbox_restarts()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -279,21 +421,17 @@ public sealed class CovenantIndexRebuildTests
 
         while (!progress.IsTerminal && guard++ < 32)
         {
-
             progress = await AdvanceAsync(fixture, progress);
-
         }
 
         Assert.Equal(CovenantIndexRebuildPhase.RestartRequired, progress.Phase);
 
         Assert.Equal(0, await Scalar(fixture, "SELECT COUNT(AppliedSearchSequence) FROM covenant_state;"));
-
     }
 
     [Fact]
     public async Task A_revoked_accelerator_lease_advances_nothing()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
@@ -308,7 +446,6 @@ public sealed class CovenantIndexRebuildTests
             .AdvanceBatchAsync(null, lease, Token);
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
-
     }
 
     private static CovenantIndexRebuildProgress Progress(
@@ -323,7 +460,6 @@ public sealed class CovenantIndexRebuildTests
         CovenantIndexRebuildProgress? progress,
         bool useStaleLease = false)
     {
-
         FakeCovenantAvailability availability = await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
@@ -339,7 +475,6 @@ public sealed class CovenantIndexRebuildTests
         _ = useStaleLease;
 
         return advanced.Value;
-
     }
 
     private static Task<long> Count(CovenantCanonicalFixture fixture, string table) =>
@@ -350,7 +485,6 @@ public sealed class CovenantIndexRebuildTests
 
     private static async Task<string?> StringAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
@@ -358,18 +492,74 @@ public sealed class CovenantIndexRebuildTests
         object? value = await command.ExecuteScalarAsync(Token);
 
         return value is null or DBNull ? null : Convert.ToString(value);
-
     }
 
     private static async Task ExecuteAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(Token);
-
     }
 
+    private sealed class CheckpointRecordingCoordinator : ILongRunningOperationCoordinator
+    {
+        internal int Checkpoints { get; private set; }
+
+        internal CancellationToken LastToken { get; private set; }
+
+        public Task<LongRunningOperationLeaseResult> StartAsync(
+            LongRunningOperationCreateRequest request,
+            string ownerId,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("A mid-scan batch starts nothing.");
+
+        public Task<Result<LongRunningOperationRequestIdentityResult>> StartWithRequestIdentityAsync(
+            LongRunningOperationCreateRequest request,
+            LongRunningOperationRequestIdentity identity,
+            string ownerId,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("A rebuild is never named by a caller.");
+
+        public Task<bool> HeartbeatAsync(
+            Guid operationId,
+            string ownerId,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken) => Task.FromResult(true);
+
+        public Task<bool> CheckpointAsync(
+            Guid operationId,
+            string ownerId,
+            int expectedCheckpointVersion,
+            int checkpointVersion,
+            byte[]? checkpointPayload,
+            string? checkpointReference,
+            string publicSummary,
+            CancellationToken cancellationToken)
+        {
+            Checkpoints++;
+
+            LastToken = cancellationToken;
+
+            return Task.FromResult(true);
+        }
+
+        public Task<bool> CompleteAsync(
+            Guid operationId,
+            string ownerId,
+            long expectedRevision,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("A mid-scan batch completes nothing.");
+
+        public Task<bool> FailAsync(
+            Guid operationId,
+            string ownerId,
+            long expectedRevision,
+            string errorCode,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("A mid-scan batch fails nothing.");
+    }
 }
