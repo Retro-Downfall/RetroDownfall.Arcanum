@@ -1,3 +1,5 @@
+using System.Text;
+
 using RetroDownfall.Arcanum.Core.Annals;
 
 namespace RetroDownfall.Arcanum.Tests.Annals;
@@ -86,5 +88,31 @@ public sealed class AnnalContentDigestTests
     public void A_lexicon_digest_is_thirty_two_bytes()
     {
         Assert.Equal(32, AnnalContentDigest.ForLexiconEntry("Person", "alpha").Length);
+    }
+
+    /// <summary>
+    /// The default UTF-8 encoding would substitute U+FFFD, so two different invalid strings would
+    /// share one binding. The digest refuses instead of binding a claim to bytes the text never had.
+    /// Built in the body: xunit's theory serialization replaces a lone surrogate with U+FFFD.
+    /// </summary>
+    [Fact]
+    public void A_saga_digest_refuses_an_unpaired_surrogate_instead_of_hashing_a_substitute()
+    {
+        foreach (string content in new[] { "a\uD800", "\uDC00b" })
+        {
+            Assert.Throws<EncoderFallbackException>(() => AnnalContentDigest.ForSagaMemory(content));
+        }
+
+        Assert.Equal(32, AnnalContentDigest.ForSagaMemory("a\U0001F600b").Length);
+    }
+
+    [Fact]
+    public void A_lexicon_digest_refuses_an_unpaired_surrogate_in_either_field()
+    {
+        Assert.Throws<EncoderFallbackException>(() => AnnalContentDigest.ForLexiconEntry("Per\uD800son", "alpha"));
+
+        Assert.Throws<EncoderFallbackException>(() => AnnalContentDigest.ForLexiconEntry("Person", "alp\uDC00ha"));
+
+        Assert.Equal(32, AnnalContentDigest.ForLexiconEntry("Person", "alpha\U0001F600").Length);
     }
 }

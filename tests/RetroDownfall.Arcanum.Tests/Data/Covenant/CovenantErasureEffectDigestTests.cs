@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantErasureEffectDigestTests
 {
-
     private static readonly Guid Dataset = Guid.Parse("66666666-6666-6666-6666-666666666666");
 
     private static readonly ICovenantErasureEffectDigestCalculator Calculator =
@@ -38,7 +37,6 @@ public sealed class CovenantErasureEffectDigestTests
     [Fact]
     public void The_two_domains_are_pinned_ascii_constants()
     {
-
         Assert.Equal(
             "Arcanum.Covenant.Reset.Effect.v1",
             CovenantErasureEffectDigestCalculator.ResetDomain);
@@ -46,13 +44,11 @@ public sealed class CovenantErasureEffectDigestTests
         Assert.Equal(
             "Arcanum.Covenant.HealthyCatalogFactoryErasure.Effect.v1",
             CovenantErasureEffectDigestCalculator.HealthyCatalogFactoryErasureDomain);
-
     }
 
     [Fact]
     public void The_same_plan_always_produces_the_same_thirty_two_byte_digest()
     {
-
         Result<CovenantDigest> first = Calculator.Compute(Input());
 
         Result<CovenantDigest> second = Calculator.Compute(Input());
@@ -64,7 +60,6 @@ public sealed class CovenantErasureEffectDigestTests
         Assert.Equal(32, first.Value.Bytes.Length);
 
         Assert.Equal(first.Value, second.Value);
-
     }
 
     /// <summary>
@@ -75,11 +70,9 @@ public sealed class CovenantErasureEffectDigestTests
     [Fact]
     public void The_two_operations_are_domain_separated()
     {
-
         Assert.NotEqual(
             Calculator.Compute(Input()).Value,
             Calculator.Compute(Input(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)).Value);
-
     }
 
     [Theory]
@@ -92,19 +85,16 @@ public sealed class CovenantErasureEffectDigestTests
     public void No_other_exclusive_operation_has_an_erasure_effect_digest(
         CovenantExclusiveOperation operation)
     {
-
         Result<CovenantDigest> computed = Calculator.Compute(Input(operation));
 
         Assert.True(computed.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.InvalidScope, computed.Error.Code);
-
     }
 
     [Fact]
     public void Every_field_of_the_authenticated_plan_changes_the_digest()
     {
-
         CovenantDigest baseline = Calculator.Compute(Input()).Value;
 
         CovenantErasureEffectDigestInput[] variants =
@@ -121,21 +111,33 @@ public sealed class CovenantErasureEffectDigestTests
 
         foreach (CovenantErasureEffectDigestInput variant in variants)
         {
-
             Assert.NotEqual(baseline, Calculator.Compute(variant).Value);
-
         }
-
     }
 
     [Fact]
     public void A_plan_with_no_identity_is_refused_rather_than_hashed()
     {
-
         Assert.True(Calculator.Compute(Input() with { PlanId = "   " }).IsFailure);
 
         Assert.True(Calculator.Compute(Input() with { DatasetGeneration = Guid.Empty }).IsFailure);
+    }
 
+    /// <summary>
+    /// A plan identity that is not valid Unicode has no stable bytes. The default encoding would hash
+    /// U+FFFD in its place, so two different malformed identities would mint the same owner.
+    /// </summary>
+    [Fact]
+    public void A_plan_identity_with_an_unpaired_surrogate_is_an_integrity_failure()
+    {
+        foreach (string planId in new[] { "plan-\uD800", "\uDC00-plan" })
+        {
+            Result<CovenantDigest> computed = Calculator.Compute(Input() with { PlanId = planId });
+
+            Assert.True(computed.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, computed.Error.Code);
+        }
     }
 
     /// <summary>
@@ -145,11 +147,8 @@ public sealed class CovenantErasureEffectDigestTests
     [Fact]
     public void A_negative_count_is_refused()
     {
-
         Assert.True(Calculator.Compute(Input() with { Rows = -1 }).IsFailure);
 
         Assert.True(Calculator.Compute(Input() with { PossibleDisclosures = -1 }).IsFailure);
-
     }
-
 }
