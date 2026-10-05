@@ -534,6 +534,55 @@ public sealed class FileHandleIdentityTests : IDisposable
     }
 
     [Fact]
+    public void Macos_arm64_access_metadata_layout_reads_mode_and_owner()
+    {
+        byte[] buffer = new byte[144];
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), 0x81A4);
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(16), 501U);
+
+        Assert.True(
+            FileHandleIdentityInterop.TryParseUnixAccessMetadataForTests(
+                buffer,
+                isMacOS: true,
+                Architecture.Arm64,
+                out UnixFileMode mode,
+                out uint ownerUserId));
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead, mode);
+
+        Assert.Equal(501U, ownerUserId);
+    }
+
+    /// <summary>
+    /// The owner and permission readers share the stat layout the identity reader refuses on macOS x64:
+    /// the legacy 32-bit-inode struct puts the owner at offset 12, not 16, so the arm64 offsets would read
+    /// another field as the owner. It fails closed the same way.
+    /// </summary>
+    [Fact]
+    public void Macos_x64_access_metadata_layout_is_rejected()
+    {
+        byte[] buffer = new byte[144];
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), 0x81A4);
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(16), 501U);
+
+        Assert.False(
+            FileHandleIdentityInterop.TryParseUnixAccessMetadataForTests(
+                buffer,
+                isMacOS: true,
+                Architecture.X64,
+                out UnixFileMode mode,
+                out uint ownerUserId));
+
+        Assert.Equal(default, mode);
+
+        Assert.Equal(0U, ownerUserId);
+    }
+
+    [Fact]
     public void Macos_x64_layout_is_rejected()
     {
         // The plain `stat` symbol on macOS x64 is the legacy struct with a 32-bit inode, so reading it

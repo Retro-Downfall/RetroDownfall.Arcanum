@@ -225,24 +225,22 @@ internal static partial class FileHandleIdentityInterop
                 }
             }
 
-            int offset = OperatingSystem.IsMacOS()
-                ? 16
-                : RuntimeInformation.ProcessArchitecture == Architecture.X64
-                    ? 28
-                    : RuntimeInformation.ProcessArchitecture == Architecture.Arm64
-                        ? 24
-                        : -1;
-
-            if (offset < 0 || buffer.Length < offset + sizeof(uint))
-            {
-                return false;
-            }
-
-            ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(
-                buffer.AsSpan(offset));
-            return true;
+            return TryReadUnixAccessMetadata(
+                buffer,
+                OperatingSystem.IsMacOS(),
+                RuntimeInformation.ProcessArchitecture,
+                out _,
+                out ownerUserId);
         }
     }
+
+    internal static bool TryParseUnixAccessMetadataForTests(
+        ReadOnlySpan<byte> buffer,
+        bool isMacOS,
+        Architecture architecture,
+        out UnixFileMode mode,
+        out uint ownerUserId) =>
+        TryReadUnixAccessMetadata(buffer, isMacOS, architecture, out mode, out ownerUserId);
 
     internal static bool TryGetPathIdentity(string path, out FileHandleIdentity identity)
     {
@@ -484,52 +482,77 @@ internal static partial class FileHandleIdentityInterop
                     return false;
                 }
 
-                uint rawMode;
-
-                if (OperatingSystem.IsMacOS())
-                {
-                    if (buffer.Length < MacOsAccessMetadataMinimumSize)
-                    {
-                        return false;
-                    }
-
-                    rawMode = BinaryPrimitives.ReadUInt16LittleEndian(buffer[4..]);
-
-                    ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[16..]);
-                }
-                else
-                {
-                    switch (RuntimeInformation.ProcessArchitecture)
-                    {
-                        case Architecture.X64
-                            when buffer.Length >= LinuxX64AccessMetadataMinimumSize:
-
-                            rawMode = BinaryPrimitives.ReadUInt32LittleEndian(buffer[24..]);
-
-                            ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[28..]);
-
-                            break;
-
-                        case Architecture.Arm64
-                            when buffer.Length >= LinuxArm64AccessMetadataMinimumSize:
-
-                            rawMode = BinaryPrimitives.ReadUInt32LittleEndian(buffer[16..]);
-
-                            ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[24..]);
-
-                            break;
-
-                        default:
-
-                            return false;
-                    }
-                }
-
-                mode = (UnixFileMode)(rawMode & UnixPermissionBits);
-
-                return true;
+                return TryReadUnixAccessMetadata(
+                    buffer,
+                    OperatingSystem.IsMacOS(),
+                    RuntimeInformation.ProcessArchitecture,
+                    out mode,
+                    out ownerUserId);
             }
         }
+    }
+
+    /// <summary>
+    /// Reads the permission bits and owner from one <c>stat</c> buffer laid out for the given platform.
+    /// </summary>
+    private static bool TryReadUnixAccessMetadata(
+        ReadOnlySpan<byte> buffer,
+        bool isMacOS,
+        Architecture architecture,
+        out UnixFileMode mode,
+        out uint ownerUserId)
+    {
+        mode = default;
+
+        ownerUserId = default;
+
+        uint rawMode;
+
+        if (isMacOS)
+        {
+            // The arm64 (64-bit-inode) layout only, for the reason TryReadUnixFileMetadata gives: the legacy
+            // x64 struct keeps the owner at offset 12, so these offsets would read another field as the owner.
+            if (architecture is not Architecture.Arm64
+                || buffer.Length < MacOsAccessMetadataMinimumSize)
+            {
+                return false;
+            }
+
+            rawMode = BinaryPrimitives.ReadUInt16LittleEndian(buffer[4..]);
+
+            ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[16..]);
+        }
+        else
+        {
+            switch (architecture)
+            {
+                case Architecture.X64
+                    when buffer.Length >= LinuxX64AccessMetadataMinimumSize:
+
+                    rawMode = BinaryPrimitives.ReadUInt32LittleEndian(buffer[24..]);
+
+                    ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[28..]);
+
+                    break;
+
+                case Architecture.Arm64
+                    when buffer.Length >= LinuxArm64AccessMetadataMinimumSize:
+
+                    rawMode = BinaryPrimitives.ReadUInt32LittleEndian(buffer[16..]);
+
+                    ownerUserId = BinaryPrimitives.ReadUInt32LittleEndian(buffer[24..]);
+
+                    break;
+
+                default:
+
+                    return false;
+            }
+        }
+
+        mode = (UnixFileMode)(rawMode & UnixPermissionBits);
+
+        return true;
     }
 
     internal static bool TryOpenDirectoryMetadata(
