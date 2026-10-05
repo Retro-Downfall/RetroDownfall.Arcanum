@@ -51,6 +51,27 @@ public sealed class ArcanumServeLauncherTests : IDisposable
                 TestProcessPaths.OriginalApplicationData));
     }
 
+    /// <summary>
+    /// The launch lock is held for the whole of a launch, up to the 20-second poll. Inside the Grimoire directory it
+    /// would be an open handle in the directory a backup restore or an installation reset replaces wholesale, which
+    /// Windows refuses to rename; so, like the maintenance and client-mutation locks, it sits beside that directory.
+    /// </summary>
+    [Fact]
+    public void Launch_lock_sits_beside_the_Grimoire_directory_not_inside_it()
+    {
+        string guarded = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ArcanumPaths.GrimoireDirectory));
+
+        string lockPath = Path.GetFullPath(ArcanumServeLauncher.LaunchLockPath);
+
+        Assert.Equal(Path.GetDirectoryName(guarded), Path.GetDirectoryName(lockPath));
+
+        Assert.False(
+            lockPath.StartsWith(guarded + Path.DirectorySeparatorChar, StringComparison.Ordinal),
+            "The launch lock must not be a handle inside the directory a restore or reset replaces.");
+
+        Assert.Equal($".arcanum-serve-{Path.GetFileName(guarded)}.lock", Path.GetFileName(lockPath));
+    }
+
     [Fact]
     public async Task Verified_running_host_uses_the_mirror_once_and_does_not_spawn()
     {

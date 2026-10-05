@@ -473,7 +473,7 @@ Every repair has a read-only detector, a no-change dry-run plan, and converges: 
 |---|---|---|---|
 | `permissions.apply_owner_only` | `permissions.posture` | Sets owner-only mode on every inventoried sensitive path whose posture differs. | Only ever narrows access; sets an absolute mode rather than a delta; never creates a path. |
 | `paths.create_managed_directories` | `paths.managed_directories` | Creates the missing managed directories with owner-only permissions. | Creation only — never deletes, moves, or touches an existing directory. |
-| `runtime.remove_stale_pid` | `runtime.pid_file` | Deletes a PID file whose process is gone or which holds no process id. | Re-reads the posture at apply time and refuses while any process holds that id, so a host that started between plan and apply keeps its claim. |
+| `runtime.remove_stale_pid` | `runtime.pid_file` | Deletes a PID file whose process is gone or which holds no process id. | Re-reads the posture at apply time and refuses while a process that could have written the file holds that id (a process that started after the file's last write is a recycled id and does not count), so a host that started between plan and apply keeps its claim. |
 
 The legacy `API Health` check answers the same question `host.health_components` does, and it agrees with it about what a port already held by something else means: an address that accepts a connection and then answers as no Arcanum host would is a `fail` naming the foreign responder, not the `warn` that reads "not reachable" and points at starting a host which could not bind the port anyway.
 

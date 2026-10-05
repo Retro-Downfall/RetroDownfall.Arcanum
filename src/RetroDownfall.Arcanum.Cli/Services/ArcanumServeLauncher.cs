@@ -38,10 +38,22 @@ internal sealed class ArcanumServeLauncher(
     /// </summary>
     internal static TimeSpan? TestPollDeadline { get; set; }
 
-    internal static string LaunchLockPath =>
-        Path.Combine(
-            ArcanumPaths.GrimoireDirectory,
-            "arcanum.serve.lock");
+    /// <summary>
+    /// The launch lock is held for a whole launch, so it sits beside the Grimoire directory rather than in it, the
+    /// way the maintenance and client-mutation locks do: a restore or an installation reset replaces that directory
+    /// wholesale, and Windows refuses to rename a directory that still contains an open handle.
+    /// </summary>
+    internal static string LaunchLockPath
+    {
+        get
+        {
+            string guarded = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ArcanumPaths.GrimoireDirectory));
+
+            return Path.Combine(
+                Path.GetDirectoryName(guarded)!,
+                $".arcanum-serve-{Path.GetFileName(guarded)}.lock");
+        }
+    }
 
     internal static string BootstrapLogPath =>
         Path.Combine(
