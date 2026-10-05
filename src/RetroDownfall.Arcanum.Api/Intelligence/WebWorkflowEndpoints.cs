@@ -28,7 +28,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 internal static class WebWorkflowEndpoints
 {
-
     /// <summary>
     /// What the operator sees when the research orchestration faults. Sanitized per DESIGN §11.9 —
     /// the exception's own text never reaches the wire.
@@ -39,7 +38,6 @@ internal static class WebWorkflowEndpoints
     internal static void MapWebWorkflowEndpoints(
         this RouteGroupBuilder group)
     {
-
         _ = group.MapPost(
                 "/web/search",
                 HandleSearchAsync)
@@ -55,7 +53,6 @@ internal static class WebWorkflowEndpoints
                 HandleResearchAsync)
             .WithName("PostWebResearch")
             .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain);
-
     }
 
     private static async Task<IResult> HandleSearchAsync(
@@ -64,12 +61,9 @@ internal static class WebWorkflowEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         if (request is null)
         {
-
             return InvalidBody<WebSearchWorkflowResult>(httpContext);
-
         }
 
         Result<WebSearchWorkflowResult> result = await service
@@ -91,7 +85,6 @@ internal static class WebWorkflowEndpoints
                 ArcanumJsonContext.Default.ApiResponseWebSearchWorkflowResult,
                 statusCode: ArcanumErrorMapper.ResolveStatusCode(
                     result.Error.Code));
-
     }
 
     private static async Task<IResult> HandleBrowseAsync(
@@ -100,12 +93,9 @@ internal static class WebWorkflowEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         if (request is null)
         {
-
             return InvalidBody<WebBrowseWorkflowResult>(httpContext);
-
         }
 
         Result<WebBrowseWorkflowResult> result = await service
@@ -127,7 +117,6 @@ internal static class WebWorkflowEndpoints
                 ArcanumJsonContext.Default.ApiResponseWebBrowseWorkflowResult,
                 statusCode: ArcanumErrorMapper.ResolveStatusCode(
                     result.Error.Code));
-
     }
 
     private static async Task HandleResearchAsync(
@@ -136,7 +125,6 @@ internal static class WebWorkflowEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         httpContext.Response.ContentType = "application/x-ndjson";
 
         httpContext.Response.Headers.CacheControl = "no-cache";
@@ -151,32 +139,23 @@ internal static class WebWorkflowEndpoints
         // already paid for. Every exit therefore lands on a frame.
         try
         {
-
             await foreach (WebResearchStreamFrame frame in service
                 .ResearchAsync(effective, cancellationToken)
                 .ConfigureAwait(false))
             {
-
                 await WriteFrameAsync(httpContext, frame, cancellationToken).ConfigureAwait(false);
-
             }
-
         }
         catch (Exception exception) when (ClientDisconnect.IsClientDisconnect(exception, httpContext))
         {
-
             // The socket is gone; there is nowhere left to write a terminal frame.
-
         }
         catch (OperationCanceledException)
         {
-
             // Cooperative cancellation that did not abort the request. Nothing to report.
-
         }
         catch (Exception exception)
         {
-
             ResolveLogger(httpContext).LogError(
                 exception,
                 "Web research stream failed after {TraceId} started; emitting a terminal error frame.",
@@ -184,31 +163,24 @@ internal static class WebWorkflowEndpoints
 
             try
             {
-
                 await WriteFrameAsync(
                         httpContext,
                         new WebResearchStreamFrame
                         {
-
                             Type = WebResearchStreamFrameType.Error,
 
                             Code = ErrorCodes.Hub.Error,
 
                             Message = PublicResearchFailureMessage,
-
                         },
                         CancellationToken.None)
                     .ConfigureAwait(false);
-
             }
             catch (Exception writeException)
                 when (ClientDisconnect.IsClientDisconnect(writeException, httpContext))
             {
-
             }
-
         }
-
     }
 
     private static async Task WriteFrameAsync(
@@ -216,43 +188,6 @@ internal static class WebWorkflowEndpoints
         WebResearchStreamFrame frame,
         CancellationToken cancellationToken)
     {
-
-        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-            frame,
-            ArcanumJsonContext.Default.WebResearchStreamFrame);
-
-        await httpContext.Response.Body
-            .WriteAsync(json, cancellationToken)
-            .ConfigureAwait(false);
-
-        await httpContext.Response.Body
-            .WriteAsync("\n"u8.ToArray(), cancellationToken)
-            .ConfigureAwait(false);
-
-        await httpContext.Response.Body
-            .FlushAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-    }
-
-    private static ILogger ResolveLogger(HttpContext httpContext)
-    {
-
-        string category = typeof(WebWorkflowEndpoints).FullName ?? nameof(WebWorkflowEndpoints);
-
-        return httpContext.RequestServices
-                ?.GetService<ILoggerFactory>()
-                ?.CreateLogger(category)
-            ?? NullLoggerFactory.Instance.CreateLogger(category);
-
-    }
-
-    private static async Task WriteResearchFrameAsync(
-        HttpContext httpContext,
-        WebResearchStreamFrame frame,
-        CancellationToken cancellationToken)
-    {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             frame,
             ArcanumJsonContext.Default.WebResearchStreamFrame);
@@ -268,14 +203,22 @@ internal static class WebWorkflowEndpoints
         await httpContext.Response.Body
             .FlushAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
 
+    private static ILogger ResolveLogger(HttpContext httpContext)
+    {
+        string category = typeof(WebWorkflowEndpoints).FullName ?? nameof(WebWorkflowEndpoints);
+
+        return httpContext.RequestServices
+                ?.GetService<ILoggerFactory>()
+                ?.CreateLogger(category)
+            ?? NullLoggerFactory.Instance.CreateLogger(category);
     }
 
     private static readonly byte[] NewLine = "\n"u8.ToArray();
 
     private static IResult InvalidBody<T>(HttpContext httpContext)
     {
-
         string traceId = Activity.Current?.Id
             ?? httpContext.TraceIdentifier;
 
@@ -286,7 +229,5 @@ internal static class WebWorkflowEndpoints
 
         return Results.BadRequest(
             ApiResponse<T>.FromResult(result, traceId));
-
     }
-
 }
