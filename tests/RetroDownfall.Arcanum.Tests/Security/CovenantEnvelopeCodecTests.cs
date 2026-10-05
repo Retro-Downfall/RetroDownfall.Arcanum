@@ -677,7 +677,9 @@ public sealed class CovenantEnvelopeCodecTests
         using BlockingCodecCheckpoint checkpoint = new(
             CovenantEnvelopeCodecStep.CurrentGenerationProven);
 
-        using CodecHarness harness = CodecHarness.Create(checkpoint);
+        HolderEntryRecorder holder = new(CovenantRuntimePublicationStep.CommittedBeforeSwap);
+
+        using CodecHarness harness = CodecHarness.Create(checkpoint, holder);
 
         CovenantCommittedAuthorityTransition transition = Transition(
             NextDataset,
@@ -711,9 +713,9 @@ public sealed class CovenantEnvelopeCodecTests
 
         try
         {
-            // The publisher is parked on the holder lock the encoder still holds, which is the state this
-            // test claims, not a wall-clock guess that it has not finished yet.
-            AssertBlockedOnALock(publication, () => publisher);
+            // The publisher is parked in front of the holder lock the encoder still holds, which is the
+            // state this test claims, not a wall-clock guess that it has not finished yet.
+            AssertParkedBeforeTheHolderLock(publication, () => publisher, holder);
 
             Assert.Same(predecessor, harness.Keys.Current);
         }
@@ -725,6 +727,8 @@ public sealed class CovenantEnvelopeCodecTests
         Result<string> encoded = await encoding;
 
         await publication;
+
+        Assert.True(holder.Entered, "The publication never entered the holder lock after the encoder released it.");
 
         Assert.True(encoded.IsSuccess);
         Assert.NotEmpty(encoded.Value);
@@ -741,7 +745,9 @@ public sealed class CovenantEnvelopeCodecTests
     [Fact]
     public async Task Decoding_holds_retirement_between_current_proof_and_payload_materialization()
     {
-        using CodecHarness harness = CodecHarness.Create();
+        HolderEntryRecorder holder = new(CovenantRuntimePublicationStep.RetiredBeforeSwap);
+
+        using CodecHarness harness = CodecHarness.Create(holder);
 
         byte[] payload = [16, 17, 18];
 
@@ -772,7 +778,7 @@ public sealed class CovenantEnvelopeCodecTests
 
         try
         {
-            AssertBlockedOnALock(retirement, () => retiree);
+            AssertParkedBeforeTheHolderLock(retirement, () => retiree, holder);
 
             // Retirement has not taken effect: the keys the decoder is mid-way through using are intact.
             Assert.NotNull(harness.Keys.Current);
@@ -785,6 +791,8 @@ public sealed class CovenantEnvelopeCodecTests
         Result<CovenantEnvelopeBody> decoded = await decoding;
 
         await retirement;
+
+        Assert.True(holder.Entered, "The retirement never entered the holder lock after the decoder released it.");
 
         Assert.True(decoded.IsSuccess);
         Assert.Equal(payload, decoded.Value.Payload);
@@ -1004,25 +1012,30 @@ public sealed class CovenantEnvelopeCodecTests
             TaskScheduler.Default);
 
     /// <summary>
-    /// Proves <paramref name="task"/> is parked waiting on a lock rather than merely not finished yet:
-    /// waits until its dedicated thread reports a wait state, failing if the task completes first.
+    /// Proves <paramref name="task"/> is parked in front of the runtime holder lock rather than merely not
+    /// finished yet: its dedicated thread reports a wait state while the holder's own post-acquire
+    /// checkpoint, observed from inside the critical section, has not been reached.
     /// </summary>
     /// <remarks>
     /// A negative proof built on <c>Task.Delay</c> can only ever be false-green: on a slow machine the
     /// operation under test has not started when the delay ends, so "it has not completed" is true for
-    /// the wrong reason. The wait state is the positive evidence that the operation reached the lock and
-    /// is held there. A thread reports it only while blocked, so a pass cannot be an accident of timing.
+    /// the wrong reason. The wait state alone would accept any managed wait; the unreached post-acquire
+    /// checkpoint is what places that wait in front of the holder lock, and the caller's assertion that
+    /// the checkpoint is reached once the codec releases the lock closes the proof.
     /// </remarks>
-    private static void AssertBlockedOnALock(Task task, Func<Thread?> thread)
+    private static void AssertParkedBeforeTheHolderLock(Task task, Func<Thread?> thread, HolderEntryRecorder holder)
     {
-        bool blocked = SpinWait.SpinUntil(
+        bool settled = SpinWait.SpinUntil(
             () => task.IsCompleted
+                || holder.Entered
                 || (thread() is { } candidate && (candidate.ThreadState & ThreadState.WaitSleepJoin) != 0),
             TimeSpan.FromSeconds(30));
 
-        Assert.True(blocked, "The operation neither blocked on the lock nor completed.");
+        Assert.True(settled, "The operation neither blocked nor entered the holder lock.");
 
-        Assert.False(task.IsCompleted, "The operation completed while the lock was still held.");
+        Assert.False(holder.Entered, "The operation entered the holder lock while the codec still held it.");
+
+        Assert.False(task.IsCompleted, "The operation completed while the holder lock was still held.");
     }
 
     /// <summary>
@@ -1162,13 +1175,26 @@ public sealed class CovenantEnvelopeCodecTests
         public static CodecHarness Create(ICovenantEnvelopeCodecCheckpoint checkpoint) =>
             Build(Dataset, checkpoint);
 
+        public static CodecHarness Create(ICovenantRuntimePublicationCheckpoint publication) =>
+            Build(Dataset, publication: publication);
+
+        public static CodecHarness Create(
+            ICovenantEnvelopeCodecCheckpoint checkpoint,
+            ICovenantRuntimePublicationCheckpoint publication) =>
+            Build(Dataset, checkpoint, publication);
+
         public static CodecHarness CreateWithoutDataset() => Build(dataset: null);
 
         private static CodecHarness Build(
             Guid? dataset,
-            ICovenantEnvelopeCodecCheckpoint? checkpoint = null)
+            ICovenantEnvelopeCodecCheckpoint? checkpoint = null,
+            ICovenantRuntimePublicationCheckpoint? publication = null)
         {
-            CovenantEnvelopeMasterKeyProvider keys = new();
+            CovenantEnvelopeMasterKeyProvider keys = new(
+                new CovenantRuntimeGenerationProvider(publication ?? CovenantRuntimePublicationCheckpoint.None),
+                CovenantEnvelopeDerivationCheckpoint.None,
+                CovenantEnvelopeKeyAccessCheckpoint.None,
+                ownsRuntime: true);
 
             Result initialized = dataset is { } committedDataset
                 ? CovenantEnvelopeRuntimeTestHarness.Initialize(
@@ -1266,6 +1292,25 @@ public sealed class CovenantEnvelopeCodecTests
                 CleanupFullSweepRequired: false,
                 CanonicalDiagnosticCode: null,
                 AcceleratorDiagnosticCode: null));
+
+    /// <summary>
+    /// Records, from inside the runtime holder lock, that one publication step's critical section ran.
+    /// </summary>
+    private sealed class HolderEntryRecorder(CovenantRuntimePublicationStep enteredStep)
+        : ICovenantRuntimePublicationCheckpoint
+    {
+        private int _entered;
+
+        internal bool Entered => Volatile.Read(ref _entered) != 0;
+
+        public void Reached(CovenantRuntimePublicationStep step)
+        {
+            if (step == enteredStep)
+            {
+                Volatile.Write(ref _entered, 1);
+            }
+        }
+    }
 
     private sealed class BlockingCodecCheckpoint(
         CovenantEnvelopeCodecStep blockedStep) : ICovenantEnvelopeCodecCheckpoint, IDisposable

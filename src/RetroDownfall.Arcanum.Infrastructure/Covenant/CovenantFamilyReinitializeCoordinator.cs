@@ -329,7 +329,10 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 .ConfigureAwait(false);
         }
 
-        Result writer = await _transition.ReopenDisclosureWriterAsync(cancellationToken).ConfigureAwait(false);
+        // The new generation is published and durable from here, so reopening the writer and completing the
+        // lease are the tail of a committed transition, not work the caller may abandon: a cancellation now
+        // would leave admission closed behind a generation that is already live.
+        Result writer = await _transition.ReopenDisclosureWriterAsync(CancellationToken.None).ConfigureAwait(false);
 
         if (writer.IsFailure)
         {

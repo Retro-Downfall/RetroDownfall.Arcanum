@@ -431,6 +431,45 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Same(expected, runtime.Current);
     }
 
+    /// <summary>
+    /// Retirement observes its critical section through the same quarantined seam as publication, so an
+    /// observer that throws there cannot keep the live generation from being retired.
+    /// </summary>
+    [Fact]
+    public void Retirement_observer_failure_is_non_authoritative()
+    {
+        ThrowingPublicationCheckpoint checkpoint = new(CovenantRuntimePublicationStep.RetiredBeforeSwap);
+
+        using CovenantRuntimeGenerationProvider runtime = new(checkpoint);
+
+        using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
+
+        CovenantAvailability availability = new(runtime);
+
+        Initialize(runtime, keys, availability.Current);
+
+        long observed = runtime.Current.RuntimeAuthorityGeneration;
+
+        checkpoint.Arm();
+
+        Result retired = runtime.RetireAuthorityGeneration(
+            observed,
+            new CovenantExclusiveRecoveryOwner(
+                Guid.Parse("EEEEEEEE-1111-4222-8333-444444444444"),
+                CovenantExclusiveOperation.SchemaRepair,
+                new CovenantDigest([.. Enumerable.Repeat((byte)0x5A, CovenantLimits.DigestBytes)])));
+
+        Assert.True(retired.IsSuccess);
+
+        Assert.Equal(1, checkpoint.FaultCount);
+
+        Assert.True(runtime.Current.AuthorityRetired);
+
+        Assert.Null(runtime.Current.Keys);
+
+        Assert.Equal(observed + 1, runtime.Current.RuntimeAuthorityGeneration);
+    }
+
     [Theory]
     [InlineData((byte)CovenantRuntimePublicationStep.CommittedBeforeSwap)]
     [InlineData((byte)CovenantRuntimePublicationStep.CommittedAfterSwap)]

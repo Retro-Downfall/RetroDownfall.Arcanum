@@ -261,6 +261,8 @@ internal sealed class CovenantRuntimeGenerationProvider
                 ? authority with { RuntimeAuthorityGeneration = retiredGeneration }
                 : null;
 
+            ObservePublication(CovenantRuntimePublicationStep.RetiredBeforeSwap);
+
             _current = new CovenantRuntimeGenerationState(
                 retiredGeneration,
                 Keys: null,
@@ -352,7 +354,8 @@ internal sealed class CovenantRuntimeGenerationProvider
 }
 
 /// <summary>
-/// Test-only observation seam at the two sides of a runtime-holder swap.
+/// Test-only observation seam inside the runtime holder lock, at the sides of a publication swap and
+/// before a retirement swap.
 /// </summary>
 /// <remarks>
 /// Called synchronously while the holder lock is held. Implementations carry only the closed step
@@ -374,6 +377,9 @@ internal enum CovenantRuntimePublicationStep : byte
     AvailabilityBeforeSwap = 3,
 
     AvailabilityAfterSwap = 4,
+
+    /// <summary>Inside the holder lock, before a retirement replaces the live generation.</summary>
+    RetiredBeforeSwap = 5,
 }
 
 internal static class CovenantRuntimePublicationCheckpoint
