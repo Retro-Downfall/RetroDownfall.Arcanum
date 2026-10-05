@@ -857,6 +857,244 @@ public sealed class BackupRestoreServiceTests : IDisposable
     }
 
     /// <summary>
+    /// A rollback whose directories went back but whose secrets did not is still unfinished at the
+    /// next start, rather than resolved there as the clean rollback the restore itself refused to report.
+    /// </summary>
+    /// <remarks>
+    /// A verified reversal leaves exactly the tree an interruption before the first rename leaves:
+    /// <c>staged/</c> and the live root present, nothing displaced. Read from that shape alone, the
+    /// startup sweep calls it "the commit had not begun", reports <c>RolledBack</c>, and deletes the
+    /// staging the restore retained, so the journal has to carry the failure itself. The prior values
+    /// existed only in the restoring process, so the advice cannot be to reinstate them: with no safety
+    /// backup taken, it has to say they cannot be recovered.
+    /// </remarks>
+    [Fact]
+    public async Task A_rollback_that_cannot_reinstate_a_secret_still_demands_reconciliation_at_the_next_start()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unreinstated-secret-restart.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        RecordingSecretStore store = new()
+        {
+            GrimoireSecret = "the prior machine secret",
+            FailingGrimoireSecretWrite = 2,
+        };
+
+        BackupRestoreResult result = await Restore(
+                store,
+                new BackupRestoreServiceOptions
+                {
+                    BeforePhaseForTests = phase =>
+                    {
+                        if (phase == BackupRestorePhase.Reconcile)
+                        {
+                            throw new IOException("injected post-commit fault");
+                        }
+                    },
+                })
+            .RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        BackupVerifyIssue issue = Assert.Single(result.Issues);
+
+        Assert.DoesNotContain("reinstate the named secrets", issue.Message, StringComparison.Ordinal);
+
+        Assert.Contains("No pre-restore safety backup was taken", issue.Message, StringComparison.Ordinal);
+
+        string staging = Assert.Single(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_installation));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.Contains("the Grimoire encryption secret (IOException)", report.Detail, StringComparison.Ordinal);
+
+        Assert.True(Directory.Exists(staging));
+
+        Assert.NotNull(BackupRestoreJournal.TryRead(staging));
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+    }
+
+    /// <summary>
+    /// A cancelled restore whose rollback could not reinstate a secret says which one, rather than
+    /// surfacing as a bare cancellation, and leaves the evidence the next start reports.
+    /// </summary>
+    /// <remarks>
+    /// The cancellation catch has no result to return, so before this the failure was recorded only in
+    /// a phase list nobody would ever read: the operator saw a cancellation, and the next start a clean
+    /// rollback, over a prior installation its own secret no longer opened.
+    /// </remarks>
+    [Fact]
+    public async Task A_cancelled_rollback_that_cannot_reinstate_a_secret_reports_it_and_keeps_staging()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("cancelled-unreinstated-secret.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        RecordingSecretStore store = new()
+        {
+            GrimoireSecret = "the prior machine secret",
+            FailingGrimoireSecretWrite = 2,
+        };
+
+        using CancellationTokenSource cancellation = new();
+
+        BackupRestoreServiceOptions options = new()
+        {
+            BeforePhaseForTests = phase =>
+            {
+                if (phase == BackupRestorePhase.Reconcile)
+                {
+                    cancellation.Cancel();
+
+                    cancellation.Token.ThrowIfCancellationRequested();
+                }
+            },
+        };
+
+        OperationCanceledException cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Restore(store, options).RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                cancellation.Token));
+
+        Assert.Equal(cancellation.Token, cancelled.CancellationToken);
+
+        Assert.Contains("the Grimoire encryption secret (IOException)", cancelled.Message, StringComparison.Ordinal);
+
+        string staging = Assert.Single(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+        Assert.Contains(staging, cancelled.Message, StringComparison.Ordinal);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_installation));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.True(Directory.Exists(staging));
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+    }
+
+    /// <summary>
+    /// On the Covenant arm a rollback that could not reinstate a secret still reopens admission over
+    /// the verifiably returned tree, and the next start still refuses to read it as a clean rollback.
+    /// </summary>
+    /// <remarks>
+    /// The reversal proves the filesystem is back, so the arm spends <c>RollbackAndReopen</c> and
+    /// tombstones its anchor. That leaves no authenticated evidence, and startup falls through to the
+    /// plain-journal sweep, which is exactly where the secret failure has to be read from.
+    /// </remarks>
+    [Fact]
+    public async Task A_covenant_rollback_that_cannot_reinstate_a_secret_still_demands_reconciliation_at_the_next_start()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("covenant-unreinstated-secret.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        CovenantRestoreStagingTests.RecordingExclusiveGate gate = new();
+
+        BackupRestoreJournalAnchorStore anchors = new(
+            credentials,
+            new BackupRestoreJournalKeyProvider(credentials),
+            new BackupRestoreJournalInstallationIdentityProvider(credentials));
+
+        BackupRestoreServiceOptions options = new()
+        {
+            RestoreStaging = new CovenantRestoreStagingServices(
+                gate,
+                new CovenantRestoreStagingTests.RecordingRestoreMarkerLifecycle(),
+                anchors,
+                new BackupRestoreJournalInstallationIdentityProvider(credentials),
+                new BackupRestoreJournalKeyProvider(credentials),
+                new BackupRestoreEffectDigestCalculator()),
+            BeforePhaseForTests = phase =>
+            {
+                if (phase == BackupRestorePhase.Reconcile)
+                {
+                    throw new IOException("injected post-commit fault");
+                }
+            },
+        };
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore
+                {
+                    GrimoireSecret = fixture.GrimoireSecret,
+                    FailingGrimoireSecretWrite = 2,
+                },
+                options)
+            .RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal([CovenantExclusiveLeaseDisposition.RollbackAndReopen], gate.Dispositions);
+
+        string staging = Assert.Single(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+        using (ArcanumMaintenanceLock held = ArcanumMaintenanceLock.TryAcquire(_installation)
+            ?? throw new InvalidOperationException("The test could not take the maintenance lock."))
+        {
+            Result<BackupRestorePhysicalRecoveryOutcome> topology = await new BackupRestoreRecovery(
+                    _installation,
+                    anchors,
+                    gate: null,
+                    markers: null)
+                .RecoverPhysicalTopologyBeforeDatabaseAsync(held, CancellationToken.None);
+
+            Assert.True(topology.IsSuccess);
+
+            Assert.Equal(BackupRestorePhysicalRecoveryOutcome.NoActiveJournal, topology.Value);
+        }
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_installation));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.True(Directory.Exists(staging));
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+    }
+
+    /// <summary>
     /// A replacement whose capture cannot tell what a secret it may overwrite holds refuses before it
     /// displaces anything, because a rollback could neither put that secret back nor prove it absent.
     /// </summary>

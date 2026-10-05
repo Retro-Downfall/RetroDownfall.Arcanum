@@ -1134,7 +1134,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 {
                     retainStagingForReconciliation = true;
 
-                    RetainForReconciliation(staging.Path, journal, phases, commitReversal);
+                    RetainForReconciliation(staging.Path, journal, phases, commitReversal, Result.Success());
 
                     return ReversalIncomplete(
                         operationId,
@@ -1184,7 +1184,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     {
                         retainStagingForReconciliation = true;
 
-                        RetainForReconciliation(staging.Path, journal, phases, reversal);
+                        RetainForReconciliation(staging.Path, journal, phases, reversal, secrets);
 
                         return ReversalIncomplete(
                             operationId,
@@ -1340,7 +1340,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 [.. phases],
                 []);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException cancelled) when (cancellationToken.IsCancellationRequested)
         {
             if (commit is { Succeeded: true })
             {
@@ -1354,7 +1354,23 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 {
                     retainStagingForReconciliation = true;
 
-                    RetainForReconciliation(staging.Path, journal, phases, reversal);
+                    // A cancellation has no result to carry this, so it travels on the exception and
+                    // in the log. Logged before the journal write, which can itself fail.
+                    string incomplete = ReversalIncompleteMessage(
+                        "The restore was cancelled after commit.",
+                        staging.Path,
+                        safetyBackupPath,
+                        reversal,
+                        secrets);
+
+                    Log.Warning(
+                        "The cancelled restore {OperationId} could not be rolled back cleanly: {Detail}",
+                        operationId,
+                        incomplete);
+
+                    RetainForReconciliation(staging.Path, journal, phases, reversal, secrets);
+
+                    throw new OperationCanceledException(incomplete, cancelled, cancellationToken);
                 }
             }
 
@@ -1381,7 +1397,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 {
                     retainStagingForReconciliation = true;
 
-                    RetainForReconciliation(staging.Path, journal, phases, reversal);
+                    RetainForReconciliation(staging.Path, journal, phases, reversal, secrets);
 
                     return ReversalIncomplete(
                         operationId,
@@ -1504,22 +1520,33 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// A journal left at a later phase reads to <see cref="BackupRestoreRecovery"/> as "the commit
     /// had already completed; only cleanup remained", which discards the staging root — and with it
     /// the displaced installation the reversal failed to put back.
+    ///
+    /// <para>A secret reinstatement failure is written into the journal as well. Directories that
+    /// went back leave the same tree as a commit that never began, which the startup sweep would
+    /// otherwise report as <c>RolledBack</c> and discard — the opposite of what this restore said.</para>
     /// </remarks>
     private static void RetainForReconciliation(
         string stagingRoot,
         BackupRestoreJournalRecord journal,
         List<BackupRestorePhaseRecord> phases,
-        ReversalOutcome reversal)
+        ReversalOutcome reversal,
+        Result secrets)
     {
-        _ = BackupRestoreJournal.Advance(stagingRoot, journal, BackupRestorePhase.Commit);
+        _ = BackupRestoreJournal.Write(
+            stagingRoot,
+            journal with
+            {
+                Phase = BackupRestorePhase.Commit,
+                SecretReinstatementFailure = secrets.IsFailure ? secrets.Error.Message : null,
+            });
 
         Record(
             phases,
             BackupRestorePhase.Cleanup,
             reversal.Restored
                 ? "The prior installation's local secrets could not all be reinstated, so the restore "
-                    + $"journal and staging were retained under {stagingRoot} rather than reported as a "
-                    + "clean rollback."
+                    + $"journal records that and was retained with staging under {stagingRoot}; the next "
+                    + "start reports ReconciliationRequired rather than a clean rollback."
                 : "The reversal could not be verified, so the restore journal and the displaced "
                     + $"installation were retained under {stagingRoot} for reconciliation at the next start.");
     }
@@ -2744,19 +2771,51 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             [
                 new BackupVerifyIssue(
                     "backup.restore_reversal_incomplete",
-                    (reversal.Restored
-                        ? "The restore failed after commit. The prior installation's files were returned "
-                            + "to their original place, but not every local secret it held was. Nothing was "
-                            + "deleted: the restore journal and staging are preserved under " + stagingRoot
-                            + ". Re-run the restore to adopt the archive's secrets, or reinstate the named "
-                            + "secrets before the next start."
-                        : "The restore failed after commit and the prior installation could not be "
-                            + "verifiably returned to its original state. Nothing was deleted: the restore "
-                            + "journal and the displaced installation are preserved under " + stagingRoot
-                            + " and are resolved at the next start. Diagnostics: "
-                            + (reversal.Diagnostics ?? "the reversal did not complete"))
-                    + (secrets.IsFailure ? " " + secrets.Error.Message : string.Empty)),
+                    ReversalIncompleteMessage(
+                        "The restore failed after commit.",
+                        stagingRoot,
+                        safetyBackupPath,
+                        reversal,
+                        secrets)),
             ]);
+
+    /// <summary>
+    /// What an unfinished rollback left behind and what the next start does with it, for a returned
+    /// result and for a cancellation alike.
+    /// </summary>
+    /// <remarks>
+    /// A secret failure is never advice to reinstate the secret: its prior value was held only by this
+    /// process. The retained journal records the failure, so the next start stops with
+    /// ReconciliationRequired instead of reading the returned tree as a rollback.
+    /// </remarks>
+    private static string ReversalIncompleteMessage(
+        string lead,
+        string stagingRoot,
+        string? safetyBackupPath,
+        ReversalOutcome reversal,
+        Result secrets)
+    {
+        string files = reversal.Restored
+            ? " The prior installation's files were returned to their original place, but not every local "
+                + "secret it held was. Nothing was deleted: the restore journal records the failure and is "
+                + "preserved with staging under " + stagingRoot + ", which holds no part of the prior "
+                + "installation. The next start stops with ReconciliationRequired until an operator deletes it."
+            : " The prior installation could not be verifiably returned to its original state. Nothing was "
+                + "deleted: the restore journal and the displaced installation are preserved under "
+                + stagingRoot + " and are resolved at the next start"
+                + (secrets.IsFailure
+                    ? ", which still stops with ReconciliationRequired because not every local secret "
+                        + "was reinstated"
+                    : string.Empty)
+                + ". Diagnostics: " + (reversal.Diagnostics ?? "the reversal did not complete") + ".";
+
+        return lead
+            + files
+            + (secrets.IsFailure
+                ? " " + secrets.Error.Message + " "
+                    + BackupRestoreRecovery.UnreinstatedSecretsAdvice(safetyBackupPath)
+                : string.Empty);
+    }
 
     private static BackupRestoreResult RolledBack(
         Guid operationId,

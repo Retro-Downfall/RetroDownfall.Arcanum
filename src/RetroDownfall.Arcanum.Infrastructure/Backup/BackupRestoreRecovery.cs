@@ -693,6 +693,20 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 "The restore had already committed; only staging cleanup remained.");
         }
 
+        // Read before the shapes below, because a verified reversal leaves exactly the tree an
+        // interruption before the first rename does. The restore that wrote this refused to call
+        // itself a rollback, and neither does startup.
+        if (journal.SecretReinstatementFailure is { } secretFailure)
+        {
+            return SecretsNotReinstated(
+                stagingRoot,
+                journal,
+                secretFailure,
+                stagedExists,
+                liveExists,
+                displacedExists);
+        }
+
         if (stagedExists && liveExists && !displacedExists)
         {
             Discard(stagingRoot, journal);
@@ -765,6 +779,77 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
             + $"{Presence(displacedExists)}). Staging was left untouched at {stagingRoot} for an operator "
             + "to resolve.");
     }
+
+    /// <summary>
+    /// Resolves a journal whose restore could not reinstate every local secret its rollback owed back.
+    /// </summary>
+    /// <remarks>
+    /// Never <see cref="BackupRestoreRecoveryOutcome.RolledBack"/> and never a discard, whatever the
+    /// shape: the secret store still holds what the restore installed, and the prior values existed only
+    /// in the process that died or gave up. The one repair taken is the one every other journal gets —
+    /// a displaced installation with no live root is moved back — because it only returns the prior
+    /// files to their place. Staging and the journal then stay, so startup stays stopped until an
+    /// operator has chosen how to recover.
+    /// </remarks>
+    private static BackupRestoreRecoveryReport SecretsNotReinstated(
+        string stagingRoot,
+        BackupRestoreJournalRecord journal,
+        string secretFailure,
+        bool stagedExists,
+        bool liveExists,
+        bool displacedExists)
+    {
+        bool priorInPlace = stagedExists && liveExists && !displacedExists;
+
+        if (!liveExists && displacedExists)
+        {
+            try
+            {
+                Directory.Move(journal.DisplacedRoot, journal.LiveRoot);
+
+                priorInPlace = true;
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return new BackupRestoreRecoveryReport(
+            stagingRoot,
+            BackupRestoreRecoveryOutcome.ReconciliationRequired,
+            journal.Phase,
+            "A restore failed after commit. "
+            + secretFailure
+            + " "
+            + (priorInPlace
+                ? "The prior installation's files are in place. Staging at " + stagingRoot + " holds no part "
+                    + "of it and was left untouched; startup stays stopped until an operator deletes it. "
+                : "The prior installation's files could not be verified in place (staged "
+                    + $"{Presence(stagedExists)}, live {Presence(liveExists)}, displaced "
+                    + $"{Presence(displacedExists)}). Staging was left untouched at {stagingRoot} for an "
+                    + "operator to resolve. ")
+            + UnreinstatedSecretsAdvice(journal.SafetyBackupPath));
+    }
+
+    /// <summary>
+    /// What an operator can do about secrets a failed restore could not reinstate, shared by the
+    /// restore's own result and by the startup report so the two never disagree.
+    /// </summary>
+    /// <remarks>
+    /// The prior values were captured in memory and nowhere else, so the advice is never to reinstate
+    /// them. The pre-restore safety backup, when one was taken, is the one place they still exist.
+    /// </remarks>
+    internal static string UnreinstatedSecretsAdvice(string? safetyBackupPath) =>
+        "Their prior values existed only in the restoring process, so nothing Arcanum kept can reinstate "
+        + "them, and the prior installation is left with whatever the restore installed in their place. "
+        + (safetyBackupPath is { } safety
+            ? "The pre-restore safety backup at " + safety + " carries the prior installation's secrets: "
+                + "restore it to return to the prior installation, or restore the archive again to adopt "
+                + "its generation and secrets."
+            : "No pre-restore safety backup was taken, so those prior values cannot be recovered: restore "
+                + "an earlier backup of this installation, or restore the archive again to adopt its "
+                + "generation and secrets.");
 
     private static string Presence(bool exists) => exists ? "present" : "absent";
 

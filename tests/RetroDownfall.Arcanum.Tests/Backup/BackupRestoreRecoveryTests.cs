@@ -14,6 +14,10 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
         Path.GetTempPath(),
         "arcanum-restore-recovery-" + Guid.NewGuid().ToString("N"));
 
+    private const string UnreinstatedGrimoireSecret =
+        "The prior installation's local secrets could not all be reinstated: the Grimoire encryption "
+        + "secret (IOException).";
+
     private readonly string _live;
 
     public BackupRestoreRecoveryTests()
@@ -219,6 +223,100 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
         Assert.Empty(BackupRestoreStagingIndex.Read(_live));
     }
 
+    /// <summary>
+    /// A journal recording that its restore could not reinstate a secret demands reconciliation over a
+    /// tree whose shape alone reads as a commit that never began.
+    /// </summary>
+    /// <remarks>
+    /// <c>staged/</c> and the live root present with nothing displaced is what a verified reversal
+    /// leaves, and it is also what an interruption before the first rename leaves. Only the journal can
+    /// tell them apart, and for the first the secret store still holds what the restore installed.
+    /// </remarks>
+    [Fact]
+    public void A_commit_journal_recording_unreinstated_secrets_demands_reconciliation_over_a_returned_tree()
+    {
+        string safety = Path.Combine(_root, "safety.arcbackup");
+
+        Interrupted interrupted = Interrupt(
+            BackupRestorePhase.Commit,
+            live: true,
+            staged: true,
+            displaced: false,
+            secretReinstatementFailure: UnreinstatedGrimoireSecret,
+            safetyBackupPath: safety);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_live));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.Contains(UnreinstatedGrimoireSecret, report.Detail, StringComparison.Ordinal);
+
+        Assert.Contains(safety, report.Detail, StringComparison.Ordinal);
+
+        Assert.Equal("live", File.ReadAllText(Path.Combine(_live, "marker.txt")));
+
+        Assert.True(Directory.Exists(interrupted.StagedRoot));
+
+        Assert.NotNull(BackupRestoreJournal.TryRead(interrupted.StagingRoot));
+    }
+
+    /// <summary>
+    /// The same journal over a tree whose prior installation is still displaced gets the ordinary
+    /// repair, the move back, and still demands reconciliation rather than reporting a rollback.
+    /// </summary>
+    [Fact]
+    public void A_commit_journal_recording_unreinstated_secrets_moves_the_displaced_installation_back_and_keeps_staging()
+    {
+        Interrupted interrupted = Interrupt(
+            BackupRestorePhase.Commit,
+            live: false,
+            staged: true,
+            displaced: true,
+            secretReinstatementFailure: UnreinstatedGrimoireSecret);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_live));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.Contains("No pre-restore safety backup was taken", report.Detail, StringComparison.Ordinal);
+
+        Assert.Equal("live", File.ReadAllText(Path.Combine(_live, "marker.txt")));
+
+        Assert.False(Directory.Exists(interrupted.DisplacedRoot));
+
+        Assert.NotNull(BackupRestoreJournal.TryRead(interrupted.StagingRoot));
+    }
+
+    /// <summary>
+    /// A journal written before the secret failure was recorded still reads, and its returned tree still
+    /// resolves as the rollback it always was.
+    /// </summary>
+    [Fact]
+    public void A_journal_without_the_secret_failure_member_still_resolves_its_returned_tree_as_rolled_back()
+    {
+        Interrupted interrupted = Interrupt(
+            BackupRestorePhase.Commit,
+            live: true,
+            staged: true,
+            displaced: false);
+
+        string journalPath = Path.Combine(interrupted.StagingRoot, BackupRestoreJournal.FileName);
+
+        string written = File.ReadAllText(journalPath);
+
+        string legacy = written.Replace(",\"secretReinstatementFailure\":null", string.Empty, StringComparison.Ordinal);
+
+        Assert.NotEqual(written, legacy);
+
+        File.WriteAllText(journalPath, legacy);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_live));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.RolledBack, report.Outcome);
+
+        Assert.False(Directory.Exists(interrupted.StagingRoot));
+    }
+
     [Fact]
     public void A_staging_index_entry_whose_staging_root_is_already_gone_is_pruned()
     {
@@ -254,7 +352,9 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
         bool displaced,
         string? liveRootOverride = null,
         string? stagingParent = null,
-        BackupRestoreConflictMode conflictMode = BackupRestoreConflictMode.ReplaceInstallation)
+        BackupRestoreConflictMode conflictMode = BackupRestoreConflictMode.ReplaceInstallation,
+        string? secretReinstatementFailure = null,
+        string? safetyBackupPath = null)
     {
         string stagingRoot = Path.Combine(
             stagingParent ?? _root,
@@ -293,10 +393,11 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
                 liveRootOverride ?? _live,
                 stagedRoot,
                 displacedRoot,
-                SafetyBackupPath: null,
+                safetyBackupPath,
                 Path.Combine(_root, "source.arcbackup"),
                 owned.VolumeId,
-                owned.FileId));
+                owned.FileId,
+                secretReinstatementFailure));
 
         return new Interrupted(stagingRoot, stagedRoot, displacedRoot);
     }
