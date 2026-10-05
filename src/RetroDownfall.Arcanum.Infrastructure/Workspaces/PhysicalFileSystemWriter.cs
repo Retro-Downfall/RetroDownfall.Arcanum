@@ -326,6 +326,21 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             }
             else
             {
+                // .git is protected at any depth, so a directory whose own path is fine can still hold a
+                // nested checkout's .git. DeleteRecursive would remove it as a side effect (the data loss
+                // the guard exists to prevent for a hook), so refuse the whole delete up front.
+                string? protectedEntry = IsProtectedPathWriteAllowed()
+                    ? null
+                    : FindProtectedEntry(workspaceRoot, resolvedPath, ct);
+
+                if (protectedEntry is not null)
+                {
+                    return Task.FromResult<Result<FileDeleteResult>>(
+                        new Error(
+                            ErrorCodes.Workspace.PathNotAllowed,
+                            $"The directory contains protected workspace metadata ('{Path.GetRelativePath(workspaceRoot, protectedEntry)}'), so nothing was deleted. Delete the entries around it individually, or ask the operator to set Arcanum:Workspaces:AllowProtectedPathWrites."));
+                }
+
                 // Refuse before deleting anything: an escaping link inside the tree is never followed or
                 // removed, so deleting around it used to empty the directory, then fail on the final
                 // directory removal with a generic I/O error that named nothing.
@@ -435,15 +450,13 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// The operator opt-out <c>Arcanum:Workspaces:AllowProtectedPathWrites</c> is read from the request's
     /// settings snapshot, so a change applies to the next request without a restart.
     /// </summary>
-    private bool IsProtectedWriteRefused(string workspaceRoot, string resolvedPath)
-    {
-        bool allowProtectedPathWrites =
-            options.Value.Workspaces?.AllowProtectedPathWrites
-            ?? new WorkspaceSettings().AllowProtectedPathWrites;
+    private bool IsProtectedWriteRefused(string workspaceRoot, string resolvedPath) =>
+        !IsProtectedPathWriteAllowed()
+        && WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath);
 
-        return !allowProtectedPathWrites
-            && WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath);
-    }
+    private bool IsProtectedPathWriteAllowed() =>
+        options.Value.Workspaces?.AllowProtectedPathWrites
+        ?? new WorkspaceSettings().AllowProtectedPathWrites;
 
     private long GetMaxFileWriteSizeBytes()
     {
@@ -755,6 +768,40 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity)
         && FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity)
         && WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle);
+
+    /// <summary>
+    /// Walks the directory tree <see cref="DeleteRecursive"/> would delete (never following links) and returns
+    /// the first descendant whose spelling is protected workspace metadata, or <see langword="null"/>. The
+    /// caller has already proved <paramref name="directory"/> itself is not protected, so a descendant's
+    /// canonical location is that directory's plus its own name and the lexical check is exact; a descendant
+    /// link is removed as a link and never traversed, so a link into <c>.git</c> deletes nothing there.
+    /// </summary>
+    private static string? FindProtectedEntry(string workspaceRoot, string directory, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        foreach (string child in Directory.EnumerateFileSystemEntries(directory))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (WorkspaceProtectedPaths.IsProtectedAbsolutePath(workspaceRoot, child))
+            {
+                return child;
+            }
+
+            if (Directory.Exists(child) && new DirectoryInfo(child).LinkTarget is null)
+            {
+                string? nested = FindProtectedEntry(workspaceRoot, child, ct);
+
+                if (nested is not null)
+                {
+                    return nested;
+                }
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// Walks the tree <see cref="DeleteRecursive"/> would delete (never following links) and returns the first

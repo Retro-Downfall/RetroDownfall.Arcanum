@@ -250,6 +250,87 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.True(File.Exists(absolute));
     }
 
+    /// <summary>
+    /// A recursive delete whose own path is not protected still removes everything under it, so a nested
+    /// checkout's <c>.git</c> (protected at any depth) must stop it before anything is deleted, not be
+    /// removed as a side effect of deleting a parent.
+    /// </summary>
+    [Theory]
+    [InlineData("vendored/checkout")]
+    [InlineData("vendored")]
+    public async Task DeleteAsync_recursive_over_a_nested_dot_git_removes_nothing(string relativePath)
+    {
+        string config = _workspace.WriteFile("vendored/checkout/.git/config", "[core]\n");
+
+        string source = _workspace.WriteFile("vendored/checkout/a.txt", "keep");
+
+        string sibling = _workspace.WriteFile("vendored/other/b.txt", "keep");
+
+        Result<FileDeleteResult> result = await CreateWriter().DeleteAsync(
+            MakeWorkspace(),
+            relativePath,
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.Contains(".git", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.True(File.Exists(config));
+
+        Assert.True(File.Exists(source));
+
+        Assert.True(File.Exists(sibling));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_recursive_over_a_nested_dot_git_proceeds_when_the_operator_allows_protected_paths()
+    {
+        string config = _workspace.WriteFile("vendored/checkout/.git/config", "[core]\n");
+
+        PhysicalFileSystemWriter writer = CreateWriter(
+            new ArcanumSettings
+            {
+                Workspaces = new WorkspaceSettings
+                {
+                    EnableFileWrite = true,
+                    AllowProtectedPathWrites = true,
+                },
+            });
+
+        Result<FileDeleteResult> result = await writer.DeleteAsync(
+            MakeWorkspace(),
+            "vendored",
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(File.Exists(config));
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "vendored")));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_recursive_over_an_ordinary_tree_still_removes_it()
+    {
+        _workspace.WriteFile("plain/deep/a.txt", "x");
+
+        _workspace.WriteFile("plain/.github/workflows/build.yml", "x");
+
+        Result<FileDeleteResult> result = await CreateWriter().DeleteAsync(
+            MakeWorkspace(),
+            "plain",
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "plain")));
+    }
+
     [Theory]
     [InlineData(".git/hooks")]
     [InlineData(".arcanum/state")]
