@@ -21,7 +21,6 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
     public HttpsCertificateLoaderTests()
     {
-
         _tempRoot = Path.Combine(Path.GetTempPath(), $"arcanum-https-loader-{Guid.NewGuid():N}");
 
         _ = Directory.CreateDirectory(_tempRoot);
@@ -29,13 +28,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         _originalPassword = System.Environment.GetEnvironmentVariable(PasswordVariable);
 
         System.Environment.SetEnvironmentVariable(PasswordVariable, null);
-
     }
 
     [Fact]
     public void Load_PfxWithExplicitEnvironmentPassword_Succeeds()
     {
-
         (string path, string password) = CreatePfx(password: "test-password");
 
         System.Environment.SetEnvironmentVariable(PasswordVariable, password);
@@ -52,13 +49,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.NotNull(result.Certificate);
 
         Assert.True(result.Certificate.HasPrivateKey);
-
     }
 
     [Fact]
     public void Load_PasswordlessPfx_Succeeds()
     {
-
         (string path, _) = CreatePfx(password: null);
 
         HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
@@ -71,13 +66,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.NotNull(result.Certificate);
-
     }
 
     [Fact]
     public void Load_WrongPfxPassword_ReturnsSanitizedFailure()
     {
-
         (string path, _) = CreatePfx(password: "correct");
 
         System.Environment.SetEnvironmentVariable(PasswordVariable, "wrong");
@@ -98,13 +91,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.Contains("wrong password / unloadable certificate", result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("correct", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Load_MissingFile_ReturnsSanitizedFailure()
     {
-
         string missing = Path.Combine(_tempRoot, "missing.pfx");
 
         HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
@@ -115,13 +106,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.Contains("missing file", result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("CryptographicException", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Load_PemPair_Succeeds_AndIgnoresCertificatePasswordEnvironment()
     {
-
         (string certPath, string keyPath) = CreatePemPair();
 
         System.Environment.SetEnvironmentVariable(
@@ -141,7 +130,6 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.NotNull(result.Certificate);
 
         Assert.True(result.Certificate.HasPrivateKey);
-
     }
 
     /// <summary>
@@ -157,7 +145,6 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
     [SkippableFact]
     public void Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "The PKCS#12 rehydration branch only runs on Windows.");
@@ -170,7 +157,6 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
         try
         {
-
             HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
                 new HttpsSettings
                 {
@@ -179,25 +165,129 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
                 });
 
             Assert.True(result.IsSuccess);
-
         }
         finally
         {
-
             HttpsCertificateLoader.ExportedPkcs12ObserverForTests = null;
-
         }
 
         Assert.NotNull(captured);
 
         Assert.Equal(new byte[captured.Length], captured);
+    }
 
+    [Fact]
+    public void PemRehydrationKeyStorageFlags_DoNotRequestAnEphemeralKeySet()
+    {
+        Assert.False(
+            HttpsCertificateLoader.PemRehydrationKeyStorageFlags.HasFlag(X509KeyStorageFlags.EphemeralKeySet));
+    }
+
+    [Fact]
+    public void RehydrateThroughPkcs12_ExportFailure_DisposesThePemCertificate()
+    {
+        (string certPath, string keyPath) = CreatePemPair();
+
+        X509Certificate2 pemCertificate = X509Certificate2.CreateFromPemFile(certPath, keyPath);
+
+        Assert.NotEqual(IntPtr.Zero, pemCertificate.Handle);
+
+        Assert.Throws<InvalidOperationException>(
+            () => HttpsCertificateLoader.RehydrateThroughPkcs12(
+                pemCertificate,
+                static _ => throw new InvalidOperationException("export failed"),
+                HttpsCertificateLoader.PemRehydrationKeyStorageFlags));
+
+        Assert.Equal(IntPtr.Zero, pemCertificate.Handle);
+    }
+
+    [Fact]
+    public void RehydrateThroughPkcs12_RehydratesWithItsKeyAndZeroesTheExportBuffer()
+    {
+        (string certPath, string keyPath) = CreatePemPair();
+
+        X509Certificate2 pemCertificate = X509Certificate2.CreateFromPemFile(certPath, keyPath);
+
+        byte[]? captured = null;
+
+        HttpsCertificateLoader.ExportedPkcs12ObserverForTests = buffer => captured = buffer;
+
+        try
+        {
+            using X509Certificate2 rehydrated = HttpsCertificateLoader.RehydrateThroughPkcs12(
+                pemCertificate,
+                static certificate => certificate.Export(X509ContentType.Pkcs12),
+                HttpsCertificateLoader.PemRehydrationKeyStorageFlags);
+
+            Assert.True(rehydrated.HasPrivateKey);
+
+            Assert.Equal(IntPtr.Zero, pemCertificate.Handle);
+        }
+        finally
+        {
+            HttpsCertificateLoader.ExportedPkcs12ObserverForTests = null;
+        }
+
+        Assert.NotNull(captured);
+
+        Assert.Equal(new byte[captured.Length], captured);
+    }
+
+    /// <summary>
+    /// The Windows lane of R-253: a PEM-loaded certificate must be usable by Schannel for server
+    /// authentication, which an ephemeral key set is not. Only meaningful on Windows (not run on the
+    /// macOS development host); it skips everywhere else.
+    /// </summary>
+    [SkippableFact]
+    public async Task LoadPem_OnWindows_ProducesSchannelBindableCertificate()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "Schannel server authentication is Windows-only.");
+
+        (string certPath, string keyPath) = CreatePemPair();
+
+        HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
+            new HttpsSettings
+            {
+                CertificatePath = certPath,
+                PrivateKeyPath = keyPath,
+            });
+
+        Assert.True(result.IsSuccess);
+
+        using System.Net.Sockets.TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
+
+        listener.Start();
+
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+
+        Task serverTask = Task.Run(async () =>
+        {
+            using System.Net.Sockets.TcpClient accepted = await listener.AcceptTcpClientAsync();
+
+            using System.Net.Security.SslStream server = new(accepted.GetStream());
+
+            await server.AuthenticateAsServerAsync(result.Certificate!);
+        });
+
+        using System.Net.Sockets.TcpClient client = new();
+
+        await client.ConnectAsync(System.Net.IPAddress.Loopback, port);
+
+        using System.Net.Security.SslStream clientStream = new(
+            client.GetStream(),
+            leaveInnerStreamOpen: false,
+            userCertificateValidationCallback: static (_, _, _, _) => true);
+
+        await clientStream.AuthenticateAsClientAsync("localhost");
+
+        await serverTask;
     }
 
     [Fact]
     public void Load_ExpiredCertificate_Fails()
     {
-
         (string path, string password) = CreatePfx(
             password: "expired",
             notBefore: DateTimeOffset.UtcNow.AddDays(-30),
@@ -215,13 +305,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.False(result.IsSuccess);
 
         Assert.Contains("expired certificate", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Configure_HttpsDisabled_DoesNotThrow()
     {
-
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -237,13 +325,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
             ArcanumSettingClamps.MaxRequestBodyBytes(
                 ArcanumRuntimeDefaults.HostMaxRequestBodyBytes),
             options.Limits.MaxRequestBodySize);
-
     }
 
     [Fact]
     public void Configure_HttpsEnabledWithMissingCert_ThrowsSanitized()
     {
-
         string missing = Path.Combine(_tempRoot, "gone.pfx");
 
         IConfiguration configuration = new ConfigurationBuilder()
@@ -263,13 +349,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.Contains("missing file", ex.Message, StringComparison.Ordinal);
 
         Assert.DoesNotContain("CryptographicException", ex.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Configure_ListenAnyWithMissingCert_ThrowsSanitized()
     {
-
         string missing = Path.Combine(_tempRoot, "listen-any-gone.pfx");
 
         IConfiguration configuration = new ConfigurationBuilder()
@@ -289,7 +373,6 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.Contains("missing file", ex.Message, StringComparison.Ordinal);
 
         Assert.DoesNotContain("CryptographicException", ex.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -302,7 +385,6 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
     [Fact]
     public void Configure_HttpsEnabledWithWrongPassword_LogsUnderlyingException()
     {
-
         (string path, _) = CreatePfx(password: "correct");
 
         System.Environment.SetEnvironmentVariable(PasswordVariable, "wrong");
@@ -327,16 +409,12 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
         try
         {
-
             _ = Assert.Throws<InvalidOperationException>(
                 () => ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: false));
-
         }
         finally
         {
-
             Serilog.Log.Logger = previous;
-
         }
 
         LogEvent? loadFailure = sink.Events.FirstOrDefault(logEvent => logEvent.Exception is not null);
@@ -348,30 +426,23 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         Assert.Contains("PFX", loadFailure.MessageTemplate.Text, StringComparison.Ordinal);
 
         Assert.DoesNotContain("correct", loadFailure.RenderMessage(), StringComparison.Ordinal);
-
     }
 
     public void Dispose()
     {
-
         System.Environment.SetEnvironmentVariable(PasswordVariable, _originalPassword);
 
         try
         {
-
             if (Directory.Exists(_tempRoot))
             {
-
                 Directory.Delete(_tempRoot, recursive: true);
-
             }
-
         }
         catch
         {
             // best-effort cleanup
         }
-
     }
 
     private (string Path, string Password) CreatePfx(
@@ -379,7 +450,6 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         DateTimeOffset? notBefore = null,
         DateTimeOffset? notAfter = null)
     {
-
         using RSA rsa = RSA.Create(2048);
 
         CertificateRequest request = new(
@@ -409,12 +479,10 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         File.WriteAllBytes(path, pfx);
 
         return (path, effectivePassword);
-
     }
 
     private (string CertPath, string KeyPath) CreatePemPair()
     {
-
         using RSA rsa = RSA.Create(2048);
 
         CertificateRequest request = new(
@@ -436,43 +504,29 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         File.WriteAllText(keyPath, rsa.ExportRSAPrivateKeyPem());
 
         return (certPath, keyPath);
-
     }
 
     private sealed class CapturingSink : ILogEventSink
     {
-
         private readonly List<LogEvent> _events = [];
 
         public IReadOnlyList<LogEvent> Events
         {
-
             get
             {
-
                 lock (_events)
                 {
-
                     return [.. _events];
-
                 }
-
             }
-
         }
 
         public void Emit(LogEvent logEvent)
         {
-
             lock (_events)
             {
-
                 _events.Add(logEvent);
-
             }
-
         }
-
     }
-
 }
