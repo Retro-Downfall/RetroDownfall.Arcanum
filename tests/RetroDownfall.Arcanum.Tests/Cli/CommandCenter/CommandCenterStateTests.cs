@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.CommandCenter;
+using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -104,5 +105,61 @@ public sealed class CommandCenterStateTests
         await Task.WhenAll(canceller, owner).WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.True(failures.Count == 0, $"{failures.Count} failures; first: {failures.FirstOrDefault()}");
+    }
+
+    /// <summary>
+    /// A session title is text the host stores from a conversation, so it reaches the sidebar and the
+    /// session picker as attacker-influenced text and must not carry anything a terminal would act on.
+    /// </summary>
+    [Fact]
+    public void A_session_title_from_the_host_is_stripped_before_it_becomes_a_sidebar_row()
+    {
+        SessionSummaryDto summary = new(
+            Guid.NewGuid(),
+            null,
+            "Plan\u001b]52;c;AAAA\u0007 the\u001b[2J trip",
+            "Act\u001b[31mive",
+            3,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        SessionListItem item = SessionListItem.FromSummary(summary);
+
+        Assert.Equal("Plan the trip", item.Title);
+        Assert.Equal("Active", item.Status);
+        Assert.DoesNotContain('\u001b', item.DisplayLine);
+        Assert.DoesNotContain('\u0007', item.DisplayLine);
+    }
+
+    [Fact]
+    public void A_title_that_is_only_control_characters_falls_back_to_untitled()
+    {
+        SessionSummaryDto summary = new(
+            Guid.NewGuid(),
+            null,
+            "\u001b]0;pwned\u0007",
+            "Active",
+            0,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal("Untitled", SessionListItem.FromSummary(summary).Title);
+    }
+
+    [Fact]
+    public void Session_metadata_from_the_host_is_stripped_before_it_reaches_the_header()
+    {
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(
+            Guid.NewGuid(),
+            "Trip\u001b]0;pwned\u0007\nplan",
+            "Active\u001b[31m",
+            2);
+
+        Assert.Equal("Trip plan", state.SessionTitle);
+        Assert.Equal("Active", state.SessionStatus);
+        Assert.DoesNotContain('\u001b', state.HeaderText);
+        Assert.DoesNotContain('\u0007', state.HeaderText);
     }
 }

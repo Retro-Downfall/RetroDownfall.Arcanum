@@ -13,7 +13,11 @@ namespace RetroDownfall.Arcanum.Core.ProvingGrounds;
 public sealed class ProvingGroundsArbiter(
     IArcanumIntelligenceProvider intelligence) : IProvingGroundsArbiter
 {
-    private static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromSeconds(1);
+    /// <summary>
+    /// How long a Regex Inquisitor may take to match one output. Shared with the editor that validates the
+    /// pattern, so a pattern is never constructed with the engine's infinite default.
+    /// </summary>
+    public static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromSeconds(1);
 
     public async Task<IReadOnlyList<InquisitorVerdict>> AdjudicateAsync(
         string output,

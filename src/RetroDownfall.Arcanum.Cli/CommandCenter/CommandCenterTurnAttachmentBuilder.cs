@@ -5,7 +5,6 @@ using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -324,30 +323,16 @@ internal static partial class CommandCenterTurnAttachmentBuilder
 
     /// <summary>
     /// Reads at most <paramref name="maxBytes"/> of UTF-8 text from <paramref name="path"/>, or returns
-    /// <see langword="null"/> when the file holds more than that. The handle is checked again once it is
-    /// open, so a path that became a device after the stat cannot feed an unbounded stream.
+    /// <see langword="null"/> when the file holds more than that. The file is opened without ever waiting
+    /// on the path and judged by its own handle, so a path that became a FIFO or a device after the stat
+    /// is refused instead of blocking the read or feeding it an unbounded stream.
     /// </summary>
-    private static async Task<string?> ReadBoundedTextAsync(
+    internal static async Task<string?> ReadBoundedTextAsync(
         string path,
         long maxBytes,
         CancellationToken cancellationToken)
     {
-        await using FileStream stream = new(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            FileReadBufferBytes,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-        if (!FileHandleIdentityInterop.TryGetHandleMetadata(stream.SafeFileHandle, out FileHandleMetadata opened)
-            || !AttachableFile.IsAttachableFileKind(
-                opened.Kind,
-                OperatingSystem.IsWindows(),
-                () => AttachableFile.IsReparsePointWithoutTarget(path)))
-        {
-            throw new IOException("The path is not a regular file.");
-        }
+        await using FileStream stream = AttachableFile.OpenForRead(path, FileReadBufferBytes);
 
         using MemoryStream content = new();
         byte[] buffer = ArrayPool<byte>.Shared.Rent(FileReadBufferBytes);
@@ -406,6 +391,17 @@ internal static partial class CommandCenterTurnAttachmentBuilder
         }
     }
 }
+
+/// <summary>
+/// Builds a turn's attachments. The chat runner holds one as a seam, so a test can make the build block
+/// the way a read stalled inside the operating system does.
+/// </summary>
+internal delegate Task<TurnAttachmentBuildResult> AttachmentBuildDelegate(
+    string prompt,
+    string workingDirectory,
+    IReadOnlyCollection<string> preStagedPaths,
+    ArcanumSettings settings,
+    CancellationToken cancellationToken);
 
 internal sealed record TurnAttachmentBuildResult(
     string Prompt,

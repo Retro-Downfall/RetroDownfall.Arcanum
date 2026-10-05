@@ -102,12 +102,6 @@ internal sealed class SessionLogBuffer
 
     public int MaxReasoningChars { get; }
 
-    /// <summary>
-    /// How many newline-delimited segments have been wrapped over this buffer's lifetime. A diagnostic
-    /// that lets a test prove a streaming flush wraps only what is new instead of the whole answer.
-    /// </summary>
-    internal long WrappedSegmentCount { get; private set; }
-
     public int Count
     {
         get
@@ -470,9 +464,8 @@ internal sealed class SessionLogBuffer
         return lines;
     }
 
-    private void AddWrappedSegment(List<string> lines, string segment, int wrapWidth)
+    private static void AddWrappedSegment(List<string> lines, string segment, int wrapWidth)
     {
-        WrappedSegmentCount++;
         if (wrapWidth > 1)
         {
             lines.AddRange(WrapLine(segment, wrapWidth));

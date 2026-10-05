@@ -100,6 +100,46 @@ public sealed class ConsoleAskHumanCoordinatorTests
         Assert.False(coordinator.HasPending);
     }
 
+    /// <summary>
+    /// The question is model text and the prompt is written to the operator's terminal, which acts on
+    /// control sequences instead of showing them.
+    /// </summary>
+    [Fact]
+    public async Task The_interactive_prompt_shows_the_question_without_terminal_control_sequences()
+    {
+        TaskCompletionSource<string?> inputGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        string? shownPrompt = null;
+        ConsoleAskHumanCoordinator coordinator = new(
+            CreateApiClient((_, _, _) => true),
+            new FakePalette(),
+            async (promptMarkup, _, ct) =>
+            {
+                shownPrompt = promptMarkup;
+                try
+                {
+                    return await inputGate.Task.WaitAsync(ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return null;
+                }
+            });
+
+        _ = await coordinator.TryBeginAsync(
+            AskHumanToolCall("call-1", "prompt-1", "Which port?\\u001b]52;c;AAAA\\u0007 now\\u001b[2J"),
+            unattended: false,
+            isInteractive: true,
+            CancellationToken.None);
+
+        inputGate.SetResult("8080");
+        _ = await coordinator.DrainAsync().WaitAsync(DrainBudget);
+
+        Assert.NotNull(shownPrompt);
+        Assert.DoesNotContain('\u001b', shownPrompt);
+        Assert.DoesNotContain('\u0007', shownPrompt);
+        Assert.Contains("Which port? now", shownPrompt, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ToolError_DismissesPending_WithoutSubmit()
     {

@@ -444,6 +444,48 @@ public sealed class AskCommandReasoningTests
         Assert.Contains("reasoning truncated", result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Status lines, tool names and tool output arrive from the model and its tools, and the diagnostics
+    /// are written to the operator's terminal on stderr, which acts on control sequences instead of
+    /// showing them. The answer stream on stdout is payload and stays byte-exact.
+    /// </summary>
+    [Fact]
+    public async Task Run_strips_terminal_control_sequences_from_status_and_tool_diagnostics_on_stderr()
+    {
+        const string rawAnswer = "answer\u001b[1mkept";
+        string ndjson = SerializeFrames(
+            new IntelligenceEvent(IntelligenceEventType.Status, "status\u001b]52;c;AAAA\u0007-line", null),
+            new IntelligenceEvent(IntelligenceEventType.ToolError, "tool\u001b[2J-name", null),
+            new IntelligenceEvent(IntelligenceEventType.ToolResult, "unused", "output\u001b]0;pwned\u0007-text"),
+            new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, rawAnswer),
+            new IntelligenceEvent(IntelligenceEventType.Result, rawAnswer, rawAnswer));
+        NdjsonHandler handler = new(ndjson);
+        ServiceCollection services = new();
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+        services.AddSingleton<IHttpClientFactory>(new FakeHttpClientFactory(handler));
+        services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
+        services.AddSingleton<IEyeOfTheWorld, FakeEye>();
+        services.AddSingleton<IGrimoireCliInitialization, NoopGrimoireInitialization>();
+        services.AddSingleton<IChronosyncEngine, NoopChronosyncEngine>();
+        services.AddSingleton<IArcanumServeLauncher, NoopServeLauncher>();
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, ["run", "question"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("status-line", result.Error, StringComparison.Ordinal);
+        Assert.Contains("tool-name", result.Error, StringComparison.Ordinal);
+        Assert.Contains("output-text", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Error);
+        Assert.DoesNotContain('\u0007', result.Error);
+        Assert.Contains(rawAnswer, result.Output, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Ask_fails_closed_before_inference_when_host_chronosync_fails()
     {

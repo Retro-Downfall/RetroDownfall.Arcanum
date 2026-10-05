@@ -1,3 +1,6 @@
+using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
+
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 /// <summary>
@@ -10,6 +13,58 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 /// </summary>
 internal static class CommandCenterUiUpdatePump
 {
+    /// <summary>
+    /// Carries queued updates to <paramref name="apply"/> until the channel completes or
+    /// <paramref name="cancellationToken"/> is cancelled. Whatever arrived while the previous apply was
+    /// running is drained and folded first, so a burst costs one apply per kind.
+    /// </summary>
+    /// <remarks>
+    /// An apply that throws is logged and the loop carries on: one failed refresh must neither freeze the
+    /// screen for the rest of the run nor vanish without a trace.
+    /// </remarks>
+    public static async Task RunAsync(
+        ChannelReader<CommandCenterUiUpdate> updates,
+        Action<CommandCenterUiUpdateKind> apply,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(updates);
+        ArgumentNullException.ThrowIfNull(apply);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        try
+        {
+            List<CommandCenterUiUpdateKind> queued = [];
+            await foreach (CommandCenterUiUpdate update in updates
+                               .ReadAllAsync(cancellationToken)
+                               .ConfigureAwait(false))
+            {
+                queued.Clear();
+                queued.Add(update.Kind);
+                while (updates.TryRead(out CommandCenterUiUpdate? pending))
+                {
+                    queued.Add(pending.Kind);
+                }
+
+                foreach (CommandCenterUiUpdateKind kind in Coalesce(queued))
+                {
+                    try
+                    {
+                        apply(kind);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogError(ex, "Applying a Command Center UI update ({UpdateKind}) failed.", kind);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The run ended: the host cancels this loop's token once the terminal UI has closed.
+        }
+    }
+
     public static bool IsRefreshKind(CommandCenterUiUpdateKind kind) =>
         kind is not (CommandCenterUiUpdateKind.FocusInput
             or CommandCenterUiUpdateKind.FocusSessions

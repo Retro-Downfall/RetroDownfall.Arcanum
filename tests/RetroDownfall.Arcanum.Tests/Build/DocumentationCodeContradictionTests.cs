@@ -843,6 +843,52 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("`attachment export` staging file", design, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The CLI renders no Markdown: the final answer is the raw stream, and Spectre carries only
+    /// diagnostics. The renderer and the swap that erased and repainted a streamed answer were deleted, so
+    /// a reference that still describes them sends a reader looking for code that is not there. The
+    /// source half is that the renderer's file does not exist; the document half is that no reference
+    /// names it or the renderer's swap and Live-region rules.
+    /// </summary>
+    [Fact]
+    public void The_cli_is_not_documented_as_having_a_markdown_renderer_it_no_longer_has()
+    {
+        string cliSource = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src", "RetroDownfall.Arcanum.Cli");
+
+        Assert.Empty(Directory.EnumerateFiles(cliSource, "MarkdigSpectreRenderer.cs", SearchOption.AllDirectories));
+
+        string[] references =
+        [
+            "Arcanum.DESIGN.md",
+            "Arcanum.DEBUGGING.Human.md",
+            "Arcanum.Engineering.md",
+            "Arcanum.CHAT-LOOP.md",
+            "Arcanum.Design.Human.md",
+            "Arcanum.Command.Reference.md",
+        ];
+
+        string[] staleFragments =
+        [
+            "MarkdigSpectreRenderer",
+            "Markdown swap renderer",
+            "Spectre swap renderer",
+            "end-of-turn Markdown render",
+            "The Live region owns the viewport",
+        ];
+
+        foreach (string reference in references)
+        {
+            string text = ReadDocument(reference);
+
+            foreach (string stale in staleFragments)
+            {
+                Assert.True(
+                    !text.Contains(stale, StringComparison.Ordinal),
+                    $"{reference} still describes a renderer the CLI no longer has: {stale}");
+            }
+        }
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))

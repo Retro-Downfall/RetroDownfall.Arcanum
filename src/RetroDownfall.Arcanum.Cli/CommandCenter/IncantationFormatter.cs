@@ -238,65 +238,11 @@ internal static partial class IncantationFormatter
         return head + Ellipsis;
     }
 
-    internal static string Sanitize(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        // Whole escape sequences go first, so coloured tool output reads as plain text instead of leaving
-        // "[31m" debris. Nothing without an ESC in front of it is treated as a sequence.
-        text = TerminalTextSanitizer.StripEscapeSequences(text);
-
-        StringBuilder sb = new(text.Length);
-
-        // Running column rather than re-measuring the accumulated buffer at every tab: the re-measure
-        // copied and rescanned the whole buffer per '\t', making a tab-indented payload quadratic.
-        int col = 0;
-        foreach (Rune rune in text.EnumerateRunes())
-        {
-            int value = rune.Value;
-            if (value == '\t')
-            {
-                int pad = ComposerLayout.TabStop - (col % ComposerLayout.TabStop);
-                if (pad <= 0 || pad > ComposerLayout.TabStop)
-                {
-                    pad = ComposerLayout.TabStop;
-                }
-
-                _ = sb.Append(' ', pad);
-                col += pad;
-                continue;
-            }
-
-            if (value is '\r' or '\n')
-            {
-                _ = sb.Append(' ');
-                col++;
-                continue;
-            }
-
-            // Strip the remaining C0 controls, DEL and the whole 8-bit C1 range (0x80-0x9F).
-            if (TerminalTextSanitizer.IsDroppedControl(value))
-            {
-                continue;
-            }
-
-            if (rune.IsAscii)
-            {
-                _ = sb.Append((char)value);
-                col++;
-                continue;
-            }
-
-            string glyph = rune.ToString();
-            _ = sb.Append(glyph);
-            col += ComposerLayout.MeasureGraphemeCellWidth(glyph, col);
-        }
-
-        return sb.ToString();
-    }
+    /// <summary>
+    /// A tool's text as one safe line: <see cref="TerminalTextSanitizer.SanitizeLine"/>, so the escape
+    /// sequences, control characters and line breaks the Incantations pane cannot show are gone.
+    /// </summary>
+    internal static string Sanitize(string text) => TerminalTextSanitizer.SanitizeLine(text);
 
     internal static IEnumerable<string> WrapToCellWidth(string text, int width)
     {

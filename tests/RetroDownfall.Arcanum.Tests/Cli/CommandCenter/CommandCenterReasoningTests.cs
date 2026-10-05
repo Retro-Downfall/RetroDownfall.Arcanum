@@ -395,8 +395,11 @@ public sealed class CommandCenterReasoningTests
 
         Task run = runner.RunTurnAsync("question", state, updates.Writer, cancellation.Token);
 
-        // The first token stops the spinner, so the runner has consumed it before the cancel lands.
-        await WaitUntilAsync(() => !state.ThinkingActive, AsyncTestTimeout);
+        // The runner asks the stream for more only after it has finished with the token frame (appended
+        // it to the answer, not merely stopped the spinner), so the stream's blocked read is the point at
+        // which the cancel can no longer land before the text exists.
+        await stream.ReadBlocked.WaitAsync(AsyncTestTimeout);
+        Assert.False(state.ThinkingActive);
 
         cancellation.Cancel();
         await run.WaitAsync(AsyncTestTimeout);
@@ -406,6 +409,38 @@ public sealed class CommandCenterReasoningTests
         Assert.Equal(
             "partial\n… [cancelled]",
             Assert.Single(entries, static entry => entry.Kind == SessionLogEntryKind.Assistant).Text);
+    }
+
+    /// <summary>
+    /// The flush cadence holds back a chunk that arrives inside the interval, and with the model then silent
+    /// nothing would ever flush it: the last words of a burst stayed off the screen for as long as the model
+    /// paused. Two chunks arrive back to back, so the second is always inside the interval of the first
+    /// flush, and the stream then goes quiet.
+    /// </summary>
+    [Fact]
+    public async Task A_burst_followed_by_a_pause_reaches_the_transcript_without_waiting_for_the_next_event()
+    {
+        BlockingAfterPayloadStream stream = new(
+            Encoding.UTF8.GetBytes(SerializeFrames(
+                new IntelligenceEvent(IntelligenceEventType.Token, "par", "par"),
+                new IntelligenceEvent(IntelligenceEventType.Token, "tial", "tial"))));
+        CommandCenterChatRunner runner = CreateRunner(new StreamingHandler(stream));
+        CommandCenterState state = new(new SessionLogBuffer());
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        using CancellationTokenSource cancellation = new();
+
+        Task run = runner.RunTurnAsync("question", state, updates.Writer, cancellation.Token);
+        await stream.ReadBlocked.WaitAsync(AsyncTestTimeout);
+
+        // The stream is silent from here on and nothing else can flush the tail.
+        await WaitUntilAsync(
+            () => state.Log.Snapshot().Any(static entry =>
+                entry.Kind == SessionLogEntryKind.Assistant && entry.Text == "partial"),
+            AsyncTestTimeout);
+        Assert.False(run.IsCompleted);
+
+        cancellation.Cancel();
+        await run.WaitAsync(AsyncTestTimeout);
     }
 
     [Fact]
@@ -620,7 +655,12 @@ public sealed class CommandCenterReasoningTests
 
     private sealed class BlockingAfterPayloadStream(byte[] payload) : Stream
     {
+        private readonly TaskCompletionSource _readBlocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private int _position;
+
+        /// <summary>Completes when the reader has taken the whole payload and asked for more.</summary>
+        public Task ReadBlocked => _readBlocked.Task;
 
         public override bool CanRead => true;
 
@@ -666,6 +706,7 @@ public sealed class CommandCenterReasoningTests
                 return Read(buffer.Span);
             }
 
+            _ = _readBlocked.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             return 0;
         }

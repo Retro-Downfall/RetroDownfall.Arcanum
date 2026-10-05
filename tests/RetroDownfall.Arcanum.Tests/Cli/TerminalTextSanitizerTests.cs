@@ -13,6 +13,27 @@ public sealed class TerminalTextSanitizerTests
         Assert.Same(clean, TerminalTextSanitizer.SanitizeBlock(clean));
     }
 
+    /// <summary>
+    /// A single-line sink (a sidebar row, a header, a prompt) cannot take a line break, so a line is the
+    /// block rules plus newlines flattened to spaces.
+    /// </summary>
+    [Theory]
+    [InlineData("a\u001b]52;c;AAAA\u0007b", "ab")]
+    [InlineData("one\r\ntwo\nthree", "one  two three")]
+    [InlineData("x\u001b[31mred\u009b\u007fy", "xredy")]
+    [InlineData("ab\tc", "ab      c")]
+    public void A_line_is_the_block_rules_with_line_breaks_flattened(string input, string expected) =>
+        Assert.Equal(expected, TerminalTextSanitizer.SanitizeLine(input));
+
+    [Fact]
+    public void A_line_without_anything_to_strip_keeps_its_instance_and_null_becomes_empty()
+    {
+        string clean = "plain 你好 line [31m";
+
+        Assert.Same(clean, TerminalTextSanitizer.SanitizeLine(clean));
+        Assert.Equal(string.Empty, TerminalTextSanitizer.SanitizeLine(null));
+    }
+
     [Fact]
     public void Null_and_empty_text_become_empty()
     {

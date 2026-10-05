@@ -24,6 +24,13 @@ internal sealed class CommandCenterChatRunner(
     CommandCenterHumanPromptCoordinator humanPromptCoordinator,
     ILogger<CommandCenterChatRunner> logger)
 {
+    /// <summary>
+    /// Builds the turn's attachments. A seam: production reads the files, and a test substitutes a build
+    /// that blocks the way a read stalled inside the operating system does.
+    /// </summary>
+    internal AttachmentBuildDelegate BuildAttachmentsAsync { get; set; } =
+        CommandCenterTurnAttachmentBuilder.BuildAsync;
+
     public async Task RunTurnAsync(
         string prompt,
         CommandCenterState state,
@@ -86,9 +93,10 @@ internal sealed class CommandCenterChatRunner(
             string workingDirectory = state.WorkingDirectory;
             ArcanumSettings settings = settingsMonitor.CurrentValue;
             string[] pathsToStage = staged.Paths;
+            AttachmentBuildDelegate buildAttachments = BuildAttachmentsAsync;
             TurnAttachmentBuildResult attachments = await AbandonableBlockingWork
                 .RunAsync(
-                    () => CommandCenterTurnAttachmentBuilder.BuildAsync(
+                    () => buildAttachments(
                         prompt,
                         workingDirectory,
                         pathsToStage,
@@ -133,8 +141,13 @@ internal sealed class CommandCenterChatRunner(
                 ScryingFoci: attachments.ScryingFoci?.ToList(),
                 AttachmentReferences: attachmentReferences);
 
-            await foreach (IntelligenceEvent evt in apiClient
-                               .AskStreamAsync(ping, cancellationToken)
+            // The coalescer holds back a chunk that arrives inside its flush interval; wrapping the stream
+            // is what flushes that chunk when the model goes quiet instead of leaving it off the screen
+            // until the next event.
+            await foreach (IntelligenceEvent evt in coalescer
+                               .WithTrailingFlushAsync(
+                                   apiClient.AskStreamAsync(ping, cancellationToken),
+                                   cancellationToken)
                                .ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -356,7 +369,7 @@ internal sealed class CommandCenterChatRunner(
         {
             cancelled = true;
             _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
-            await coalescer.FlushCancelledAsync(CancellationToken.None).ConfigureAwait(false);
+            await coalescer.FlushCancelledAsync().ConfigureAwait(false);
         }
         catch (OperationCanceledException ex)
         {
