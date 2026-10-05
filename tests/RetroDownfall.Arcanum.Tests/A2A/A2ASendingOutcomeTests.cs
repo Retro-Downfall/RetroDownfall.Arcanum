@@ -325,7 +325,7 @@ public sealed class A2ASendingOutcomeTests
 
         using HttpMessageHandler handler = server.CreateHandler();
 
-        OutboundSendingLedger ledger = new();
+        OutboundSendingLedgerFake ledger = new();
 
         A2AClientService client = CreateClient(handler, ledger: ledger);
 
@@ -357,18 +357,59 @@ public sealed class A2ASendingOutcomeTests
         Assert.Empty(ledger.OpenEntries);
     }
 
+    // ── R-045 malformed peer bodies after the task is accepted ─────────────────────────────────────
+
+    [Fact]
+    public async Task DispatchSendingAsync_PeerReturnsMalformedTaskWhilePolling_StopsRenewingAndReturnsFailure()
+    {
+        using StagedAgentHandler agent = new();
+
+        using TestServer server = await CreateAgentAsync(agent, streaming: false);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        using MalformedTaskReadHandler handler = new(serverHandler);
+
+        A2ASendingLeaseRenewer renewer = OutboundSendingLedgerFake.CreateRenewer();
+
+        OutboundSendingLedgerFake ledger = new(renewer);
+
+        A2AClientService client = CreateClient(
+            handler,
+            ledger: ledger,
+            renewer: renewer);
+
+        // A peer that accepts the task and then answers tasks/get with garbage must not make the tool call
+        // throw, and must not leave this process renewing a lease nothing is awaiting any more.
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentUnreachable, result.Error.Code);
+
+        Assert.Single(ledger.Entries);
+
+        Assert.False(renewer.IsHeld(ledger.Entries[0]), "the ledger lease is still being renewed for an abandoned Sending.");
+
+        // Left open on purpose: reconciliation owns cancelling a remote task this process lost track of.
+        Assert.Equal(ledger.Entries.Select(static e => e.OperationId), ledger.OpenEntries);
+    }
+
     // ── harness ────────────────────────────────────────────────────────────────────────────────────
 
     private static A2AClientService CreateClient(
         HttpMessageHandler handler,
         ArcanumSettings? settings = null,
-        IA2ASendingLedger? ledger = null) =>
+        IA2ASendingLedger? ledger = null,
+        A2ASendingLeaseRenewer? renewer = null) =>
         new(
             new SingleHandlerHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(settings ?? EnabledSettings()),
             NullLogger<A2AClientService>.Instance,
             DeterministicDns(),
-            ledger is null ? null : ScopeFactoryFor(ledger));
+            ledger is null ? null : OutboundSendingLedgerFake.ScopeFactoryFor(ledger, renewer));
 
     private static IDnsResolver DeterministicDns()
     {
@@ -378,110 +419,7 @@ public sealed class A2ASendingOutcomeTests
         return dns;
     }
 
-    private static IServiceScopeFactory ScopeFactoryFor(IA2ASendingLedger ledger)
-    {
-        ServiceCollection services = new();
-
-        services.AddSingleton(ledger);
-
-        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-    }
-
-    /// <summary>
-    /// The outbound half of the durable ledger, kept honestly enough that "one row per Sending" is a
-    /// claim this test can actually check.
-    /// </summary>
-    private sealed class OutboundSendingLedger : IA2ASendingLedger
-    {
-        private readonly Dictionary<Guid, string> _open = [];
-
-        public List<string> Registered { get; } = [];
-
-        public List<string> Settled { get; } = [];
-
-        public IReadOnlyCollection<Guid> OpenEntries => _open.Keys;
-
-        public Task<A2ASendingLedgerEntry> RegisterOutboundAsync(
-            string remoteTaskId,
-            string agentUrl,
-            Guid? budgetReservationId = null,
-            CancellationToken cancellationToken = default)
-        {
-            Registered.Add(remoteTaskId);
-
-            A2ASendingLedgerEntry entry = new(Guid.NewGuid(), "test");
-
-            _open[entry.OperationId] = remoteTaskId;
-
-            return Task.FromResult(entry);
-        }
-
-        public Task SettleOutboundAsync(
-            A2ASendingLedgerEntry entry,
-            A2ARemoteCost cost,
-            CancellationToken cancellationToken = default)
-        {
-            if (_open.Remove(entry.OperationId, out string? taskId))
-            {
-                Settled.Add(taskId);
-            }
-
-            return Task.CompletedTask;
-        }
-
-        public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
-        {
-            _open.Remove(entry.OperationId);
-
-            return Task.CompletedTask;
-        }
-
-        public Task<A2ASendingLedgerEntry> RegisterInboundAsync(
-            string taskId,
-            Guid apprenticeId,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(new A2ASendingLedgerEntry(Guid.NewGuid(), "test"));
-
-        public Task MarkParkedAsync(
-            A2ASendingLedgerEntry entry,
-            string? contextId,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public Task<A2AParkedSending?> FindParkedInboundAsync(
-            string taskId,
-            bool takeLease = true,
-            CancellationToken cancellationToken = default) => Task.FromResult<A2AParkedSending?>(null);
-
-        public Task<Guid?> FindInboundApprenticeAsync(string taskId, CancellationToken cancellationToken = default) =>
-            Task.FromResult<Guid?>(null);
-
-        public Task RecordOutboundCallbackAsync(
-            A2ASendingLedgerEntry entry,
-            string callbackConfigId,
-            string callbackTokenHash,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public Task<A2AOutboundCallback?> FindOutboundCallbackAsync(
-            string callbackConfigId,
-            CancellationToken cancellationToken = default) => Task.FromResult<A2AOutboundCallback?>(null);
-
-        public Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
-            string remoteTaskId,
-            CancellationToken cancellationToken = default)
-        {
-            foreach ((Guid operationId, string taskId) in _open)
-            {
-                if (string.Equals(taskId, remoteTaskId, StringComparison.Ordinal))
-                {
-                    return Task.FromResult(new A2ASendingLedgerEntry(operationId, "test"));
-                }
-            }
-
-            return Task.FromResult<A2ASendingLedgerEntry>(default);
-        }
-    }
-
-    private static async Task<TestServer> CreateAgentAsync(IAgentHandler agentHandler)
+    private static async Task<TestServer> CreateAgentAsync(IAgentHandler agentHandler, bool streaming = true)
     {
         AgentCard advertised = new()
         {
@@ -492,7 +430,7 @@ public sealed class A2ASendingOutcomeTests
             [
                 new AgentInterface { Url = $"http://{FakeAgentHost}/agent", ProtocolBinding = "JSONRPC", ProtocolVersion = "1.0" },
             ],
-            Capabilities = new AgentCapabilities { Streaming = true, PushNotifications = false },
+            Capabilities = new AgentCapabilities { Streaming = streaming, PushNotifications = false },
             DefaultInputModes = ["text/plain"],
             DefaultOutputModes = ["text/plain"],
         };
@@ -532,6 +470,32 @@ public sealed class A2ASendingOutcomeTests
     private sealed class SingleHandlerHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    /// <summary>
+    /// Answers every <c>GetTask</c> with a body that is not JSON, after the peer has already accepted the
+    /// task. Every other request reaches the peer untouched.
+    /// </summary>
+    private sealed class MalformedTaskReadHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            string body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+            if (body.Contains("\"GetTask\"", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{ this is not json", System.Text.Encoding.UTF8, "application/json"),
+                };
+            }
+
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Completes immediately and publishes a usage block the way Arcanum's own server does.</summary>

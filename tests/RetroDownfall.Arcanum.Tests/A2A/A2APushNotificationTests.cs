@@ -173,6 +173,27 @@ public sealed class A2APushNotificationTests
     }
 
     [Fact]
+    public async Task Dispatcher_DoesNotBufferTheCallbackResponseBody()
+    {
+        using NeverEndingBodyCallbackHandler handler = new();
+
+        A2APushNotificationDispatcher dispatcher = new(
+            new FakeHttpClientFactory(handler),
+            new TestOptionsMonitor<ArcanumSettings>(Settings(pushEnabled: true)),
+            DeterministicDns(),
+            NullLogger<A2APushNotificationDispatcher>.Instance);
+
+        // Only the status line matters. A callback that answers its headers and then streams (or stalls)
+        // its body must not be buffered for the whole delivery window, let alone into memory.
+        await dispatcher
+            .NotifyAsync(
+                new PushNotificationConfig { Url = $"https://{PeerCallbackHost}/hook" },
+                "task-1",
+                "completed")
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public void AgentCardCapability_TracksTheConfiguredSurface()
     {
         Assert.False(Settings(pushEnabled: false).ResolveA2A().PushNotificationsEnabled);
@@ -498,6 +519,55 @@ public sealed class A2APushNotificationTests
     }
 
     [Fact]
+    public async Task DispatchSendingAsync_CallbackModeCancelledDuringRegistration_StillCancelsTheRemoteTaskAndReleasesTheLedger()
+    {
+        using GateAgentHandler agentHandler = new();
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler, advertisesPush: true);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        using RegistrationHoldingHandler handler = new(serverHandler);
+
+        A2ASendingLeaseRenewer renewer = OutboundSendingLedgerFake.CreateRenewer();
+
+        OutboundSendingLedgerFake ledger = new(renewer);
+
+        A2AClientService client = CreateClient(
+            handler,
+            Settings(pushEnabled: true, callbackBaseUrl: $"https://{PeerCallbackHost}"),
+            new A2ASendingCallbackRegistry(NullLogger<A2ASendingCallbackRegistry>.Instance),
+            OutboundSendingLedgerFake.ScopeFactoryFor(ledger, renewer));
+
+        using CancellationTokenSource cts = new();
+
+        Task<Result<A2ADispatchResult>> dispatch = client.DispatchSendingAsync(
+            "long running work",
+            null,
+            DiscoveryUrl,
+            cancellationToken: cts.Token,
+            mode: A2ADispatchMode.Callback);
+
+        // The remote task already exists and its ledger row is tracked when the registration RPC is in
+        // flight; the existing cancel test only cancels after that RPC has been answered.
+        Assert.True(await handler.WaitForRegistrationStartedAsync(Patience), "the client never began registering a callback.");
+
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatch);
+
+        Assert.True(
+            await agentHandler.WaitForCancelAsync(TimeSpan.FromSeconds(10)),
+            "a cancel during callback registration left the remote task running.");
+
+        Assert.Empty(ledger.OpenEntries);
+
+        Assert.Single(ledger.Released);
+
+        Assert.False(renewer.IsHeld(ledger.Entries.Single()), "the ledger lease is still being renewed for a cancelled Sending.");
+    }
+
+    [Fact]
     public void CallbackPath_IsDerivedFromTheConfiguredServerPath()
     {
         Assert.Equal(
@@ -552,13 +622,14 @@ public sealed class A2APushNotificationTests
     private static A2AClientService CreateClient(
         HttpMessageHandler handler,
         ArcanumSettings settings,
-        A2ASendingCallbackRegistry callbacks) =>
+        A2ASendingCallbackRegistry callbacks,
+        IServiceScopeFactory? scopeFactory = null) =>
         new(
             new FakeHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<A2AClientService>.Instance,
             DeterministicDns(),
-            scopeFactory: null,
+            scopeFactory,
             callbacks);
 
     private static IDnsResolver DeterministicDns()
@@ -717,6 +788,107 @@ public sealed class A2APushNotificationTests
             }
 
             return response;
+        }
+    }
+
+    /// <summary>
+    /// Holds the callback-registration request open until the caller's token cancels it, so a test can
+    /// cancel while the registration RPC is in flight. Every other request reaches the peer untouched.
+    /// </summary>
+    private sealed class RegistrationHoldingHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        private readonly TaskCompletionSource _registrationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<bool> WaitForRegistrationStartedAsync(TimeSpan timeout)
+        {
+            Task completed = await Task.WhenAny(_registrationStarted.Task, Task.Delay(timeout)).ConfigureAwait(false);
+
+            return ReferenceEquals(completed, _registrationStarted.Task);
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            string body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+            if (body.Contains("\"CreateTaskPushNotificationConfig\"", StringComparison.Ordinal))
+            {
+                _registrationStarted.TrySetResult();
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Answers a callback with headers immediately and then a body that never ends, which only a caller
+    /// that buffers the response (rather than reading the status line) would wait on.
+    /// </summary>
+    private sealed class NeverEndingBodyCallbackHandler : HttpMessageHandler
+    {
+        private readonly CancellationTokenSource _release = new();
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.Accepted)
+            {
+                Content = new StreamContent(new NeverEndingStream(_release.Token)),
+            });
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _release.Cancel();
+
+                _release.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+
+        private sealed class NeverEndingStream(CancellationToken release) : Stream
+        {
+            public override bool CanRead => true;
+
+            public override bool CanSeek => false;
+
+            public override bool CanWrite => false;
+
+            public override long Length => throw new NotSupportedException();
+
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, release);
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token).ConfigureAwait(false);
+
+                return 0;
+            }
+
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            public override void Flush()
+            {
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         }
     }
 

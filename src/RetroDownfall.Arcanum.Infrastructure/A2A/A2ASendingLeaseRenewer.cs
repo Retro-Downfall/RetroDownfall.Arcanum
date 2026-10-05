@@ -71,6 +71,9 @@ internal sealed class A2ASendingLeaseRenewer(
         _held.TryRemove(entry.OperationId, out _);
     }
 
+    /// <summary>Whether this process is still renewing the Sending's lease.</summary>
+    internal bool IsHeld(A2ASendingLedgerEntry entry) => entry.IsRecorded && _held.ContainsKey(entry.OperationId);
+
     /// <summary>
     /// Renews every held lease once, and returns how many were renewed.
     /// </summary>

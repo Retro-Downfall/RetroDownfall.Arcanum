@@ -1523,9 +1523,16 @@ public static class ServiceCollectionExtensions
         // A Sending blocks until the remote agent reaches a terminal state, and remote work can run far
         // longer than HttpClient's 100-second default. Per issue #55 the bound is on establishing the
         // connection, not on the operation as a whole; caller/host cancellation ends the work.
+        // Discovery has its own deadline (A2AClientService.DefaultDiscoveryTimeout), and every buffered
+        // response is capped: the peer is a model-named host, and HttpClient's default buffer is 2 GiB.
         services.AddHttpClient(
                 A2AClientService.OutboundHttpClientName,
-                static client => client.Timeout = Timeout.InfiniteTimeSpan)
+                static client =>
+                {
+                    client.Timeout = Timeout.InfiniteTimeSpan;
+
+                    client.MaxResponseContentBufferSize = A2AClientService.MaxRpcResponseBytes;
+                })
             // A peer's agent-card URL can carry a token in a path segment, and default
             // IHttpClientFactory logging writes that URI at Information. Only A2AClientService's
             // own host-only diagnostics are permitted for this named client.
