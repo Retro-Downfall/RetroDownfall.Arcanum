@@ -359,7 +359,12 @@ public sealed class CliSurfaceTests
                 namedByCommand[path] = commandNames;
             }
 
-            commandNames.UnionWith(named);
+            // An option is documented by an entry of its own, which opens with the option's spelling; a
+            // mention inside another option's description (or "global `--yes`") describes that option and
+            // does not document this one, so only the spelling cell and the entry openers count here.
+            commandNames.UnionWith(namedInSpelling);
+
+            commandNames.UnionWith(OptionsOpeningAnEntry(optionsCell));
 
             if (optionsCell.StartsWith("None", StringComparison.Ordinal))
             {
@@ -406,6 +411,24 @@ public sealed class CliSurfaceTests
             "A command-reference row disagrees with the options the command registers:"
                 + global::System.Environment.NewLine
                 + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// A command registers an option, and its rows document it with an entry of its own. Mentioning the
+    /// option inside another option's description, or as the shared global one, documents nothing.
+    /// </summary>
+    [Fact]
+    public void An_option_is_documented_only_by_an_entry_that_opens_with_its_spelling()
+    {
+        const string cell = "`-c, --continue` — Reopen the most recent Session; conflicts with `--resume`.<br>"
+            + "`--campaign`, `-C <id>` — A Campaign.<br>"
+            + "`--limit <1..50>` and `--cursor <token>`.<br>"
+            + "`--a <x>` / `--b <y>` — A pair.<br>"
+            + "Declining discards nothing; the global `--yes` answers the prompt.";
+
+        Assert.Equal(
+            ["--continue", "--campaign", "--limit", "--cursor", "--a", "--b"],
+            OptionsOpeningAnEntry(cell));
     }
 
     /// <summary>
@@ -488,6 +511,26 @@ public sealed class CliSurfaceTests
     private static readonly Regex DocumentedOptionName = new(
         @"(?<=`[^`]*)(?<![\w-])--[a-z][a-z0-9-]*",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The leading run of backticked spellings that opens an entry of an options cell, such as
+    /// <c>`-c, --continue`</c>, <c>`--campaign`, `-C &lt;id&gt;`</c> or <c>`--a &lt;x&gt;` / `--b &lt;y&gt;`</c>.
+    /// </summary>
+    private static readonly Regex EntryOpener = new(
+        @"^(?:`[^`]*`(?:\s*(?:,|/|\||or|and)\s*)?)+",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The long options an options cell documents with an entry of their own. Entries are separated by
+    /// <c>&lt;br&gt;</c> and each opens with the spelling it documents, so an option mentioned only inside
+    /// another entry's description is not among them.
+    /// </summary>
+    internal static IEnumerable<string> OptionsOpeningAnEntry(string optionsCell) =>
+        optionsCell
+            .Split("<br>", StringSplitOptions.None)
+            .Select(static entry => EntryOpener.Match(entry.Trim()))
+            .Where(static opener => opener.Success)
+            .SelectMany(static opener => DocumentedOptionName.Matches(opener.Value).Select(static match => match.Value));
 
     /// <summary>
     /// The command cell and the options cell of every row, in the tables whose last column lists a
