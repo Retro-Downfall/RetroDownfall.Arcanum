@@ -1,3 +1,4 @@
+using System.Text;
 using System.Collections.Concurrent;
 
 using Microsoft.EntityFrameworkCore;
@@ -239,6 +240,79 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
         string errorContent = await ReadArtifactTextAsync(errorPath);
 
         Assert.Contains("\"line\":1", errorContent, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A batch is bound to one endpoint, and every line must say so. A line whose <c>url</c> names
+    /// another endpoint, or whose <c>method</c> is not POST, used to be parsed and run as a chat
+    /// completion anyway. It is now a per-line error that never reaches a provider.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("""{"custom_id":"bad","method":"POST","url":"/v1/embeddings","body":{"model":"m","messages":[{"role":"user","content":"x"}]}}""", "url must be")]
+    [InlineData("""{"custom_id":"bad","method":"GET","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"x"}]}}""", "method must be")]
+    [InlineData("""{"custom_id":"bad","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"x"}]}}""", "method must be")]
+    [InlineData("""{"custom_id":"bad","method":"POST","body":{"model":"m","messages":[{"role":"user","content":"x"}]}}""", "url must be")]
+    public async Task Line_WithMismatchedUrl_IsRecordedAsErrorWithoutProviderCall(string badLine, string expectedField)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider intelligence = new() { NextText = "ok", NextFinishReason = "stop" };
+
+        string jsonl =
+            """{"custom_id":"req-good","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}""" + "\n"
+            + badLine + "\n";
+
+        (BatchRecord finished, string errorContent) = await RunToCompletionAsync(jsonl, intelligence);
+
+        Assert.Equal(1, intelligence.ExecutePromptCallCount);
+
+        Assert.Equal(2, finished.TotalRequestCount);
+
+        Assert.Equal(1, finished.CompletedRequestCount);
+
+        Assert.Equal(1, finished.FailedRequestCount);
+
+        Assert.Contains("\"line\":2", errorContent, StringComparison.Ordinal);
+
+        Assert.Contains(expectedField, errorContent, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>custom_id</c> is how a client matches a result to its request, so two lines sharing one make
+    /// the output ambiguous. The first line wins and the later one is an error, across page
+    /// boundaries as well as within a page.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(2)]
+    [InlineData(70)]
+    public async Task Line_WithDuplicateCustomId_IsRecordedAsErrorWithoutProviderCall(int duplicateLine)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider intelligence = new() { NextText = "ok", NextFinishReason = "stop" };
+
+        StringBuilder jsonl = new();
+
+        for (int line = 1; line <= duplicateLine; line++)
+        {
+            string customId = line == duplicateLine ? "req-1" : $"req-{line}";
+
+            _ = jsonl
+                .Append("{\"custom_id\":\"")
+                .Append(customId)
+                .Append("\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}}")
+                .Append('\n');
+        }
+
+        (BatchRecord finished, string errorContent) = await RunToCompletionAsync(jsonl.ToString(), intelligence);
+
+        Assert.Equal(duplicateLine - 1, intelligence.ExecutePromptCallCount);
+
+        Assert.Equal(1, finished.FailedRequestCount);
+
+        Assert.Contains($"\"line\":{duplicateLine}", errorContent, StringComparison.Ordinal);
+
+        Assert.Contains("custom_id", errorContent, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -952,120 +1026,61 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
 
         await _batches!.CreateAsync(batch, CancellationToken.None);
 
-        try
-        {
-            await service.ProcessBatchAsync(batch, CancellationToken.None);
-        }
-        catch (OperationCanceledException)
-        {
-            // The failure may still surface to the worker, which logs it; the status is what matters.
-        }
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
 
         BatchRecord finished = Assert.IsType<BatchRecord>(
             await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
 
-        Assert.NotEqual(BatchStatuses.Cancelled, finished.Status);
+        Assert.Equal(BatchStatuses.Failed, finished.Status);
     }
 
+    /// <summary>
+    /// One unexpected line failure used to leave the whole batch <c>in_progress</c> until a restart or
+    /// a manual reset. The batch now stops by itself: it is published as <c>failed</c> with what was
+    /// checkpointed, the in-doubt line is sealed (never replayed, since the provider may have charged
+    /// it), and the reason names the exception type only.
+    /// </summary>
     [SkippableFact]
-
-    public async Task TickAsync_UnexpectedProviderException_LeavesClaimedLineRecoverable()
-
+    public async Task TickAsync_UnexpectedLineException_RequeuesOrFailsTheBatchWithoutRestart()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ThrowingIntelligenceProvider firstProvider = new();
+        ThrowingIntelligenceProvider provider = new();
 
-        ServiceProvider firstRoot = BuildServiceProvider(firstProvider);
+        ServiceProvider root = BuildServiceProvider(provider);
 
-        BatchProcessingService firstService = CreateService(
-            firstRoot,
-
-            maxConcurrentRequestsPerBatch: 1);
+        BatchProcessingService service = CreateService(root, maxConcurrentRequestsPerBatch: 1);
 
         Guid inputFileId = await SeedInputFileAsync(
             """{"custom_id":"unexpected-failure","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
-
             + "\n");
 
         BatchRecord batch = new(
             Guid.NewGuid(),
-
             inputFileId,
-
             "/v1/chat/completions",
-
             BatchStatuses.Validating,
-
             DateTimeOffset.UtcNow,
-
             null,
-
             null,
-
             null);
 
         await _batches!.CreateAsync(batch, CancellationToken.None);
 
-        await firstService.TickAsync(CancellationToken.None);
+        await service.TickAsync(CancellationToken.None);
 
         Assert.True(await WaitForAsync(
-            () => firstService.IsBatchInFlight(batch.Id),
-
+            () => service.IsBatchInFlight(batch.Id),
             TimeSpan.FromSeconds(5)));
 
         Assert.True(await WaitForAsync(
-            () => !firstService.IsBatchInFlight(batch.Id),
-
+            () => !service.IsBatchInFlight(batch.Id),
             TimeSpan.FromSeconds(10)));
-
-        BatchRecord stranded = Assert.IsType<BatchRecord>(
-            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
-
-        Assert.Equal(BatchStatuses.InProgress, stranded.Status);
-
-        BatchLineCheckpoint checkpoint = Assert.Single(await _batches.ListLineCheckpointsAsync(
-            batch.Id,
-
-            1,
-
-            1,
-
-            CancellationToken.None));
-
-        Assert.Equal(BatchLineCheckpointState.Dispatched, checkpoint.State);
-
-        BatchRecoveryService recovery = new(
-            firstRoot.GetRequiredService<IServiceScopeFactory>(),
-
-            firstService,
-
-            _blobStore,
-
-            NullLogger<BatchRecoveryService>.Instance);
-
-        await recovery.ReconcileStrandedAsync(CancellationToken.None);
-
-        BatchRecord resumable = Assert.IsType<BatchRecord>(
-            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
-
-        Assert.Equal(BatchStatuses.Validating, resumable.Status);
-
-        FakeIntelligenceProvider resumedProvider = new();
-
-        BatchProcessingService resumedService = CreateService(
-            resumedProvider,
-
-            maxConcurrentRequestsPerBatch: 1);
-
-        await resumedService.ProcessBatchAsync(resumable, CancellationToken.None);
-
-        Assert.Equal(0, resumedProvider.ExecutePromptCallCount);
 
         BatchRecord finished = Assert.IsType<BatchRecord>(
             await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
 
-        Assert.Equal(BatchStatuses.Completed, finished.Status);
+        Assert.Equal(BatchStatuses.Failed, finished.Status);
 
         Assert.Equal(1, finished.TotalRequestCount);
 
@@ -1084,6 +1099,79 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
         Assert.Contains("unexpected-failure", output, StringComparison.Ordinal);
 
         Assert.Contains("batch_interrupted_after_dispatch", output, StringComparison.Ordinal);
+
+        Assert.Contains(nameof(InvalidOperationException), output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Injected unexpected provider failure.", output, StringComparison.Ordinal);
+
+        Assert.Empty(await _batches.ListLineCheckpointsAsync(
+            batch.Id,
+            1,
+            1,
+            CancellationToken.None));
+    }
+
+    /// <summary>
+    /// When the failing line is not the last on its page, the first line that never started carries
+    /// the reason in the error file, so the operator can see where to resume.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProcessBatchAsync_UnexpectedLineException_RecordsTheReasonOnTheFirstUnstartedLine()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        BatchProcessingService service = CreateService(
+            BuildServiceProvider(new ThrowingIntelligenceProvider()),
+            maxConcurrentRequestsPerBatch: 1);
+
+        Guid inputFileId = await SeedInputFileAsync(
+            """{"custom_id":"first","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+            + "\n"
+            + """{"custom_id":"second","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"two"}]}}"""
+            + "\n");
+
+        BatchRecord batch = new(
+            Guid.NewGuid(),
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Failed, finished.Status);
+
+        Assert.NotNull(finished.OutputFileId);
+
+        Assert.NotNull(finished.ErrorFileId);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId.Value);
+
+        string errorPath = UploadedFileStorage.ResolvePath(finished.ErrorFileId.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        _createdFilePaths.Add(errorPath);
+
+        string output = await ReadArtifactTextAsync(outputPath);
+
+        string error = await ReadArtifactTextAsync(errorPath);
+
+        Assert.Contains("first", output, StringComparison.Ordinal);
+
+        Assert.Contains("batch_interrupted_after_dispatch", output, StringComparison.Ordinal);
+
+        Assert.Contains("\"line\":2", error, StringComparison.Ordinal);
+
+        Assert.Contains(nameof(InvalidOperationException), error, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -1359,6 +1447,47 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
         Assert.Equal(BatchStatuses.Completed, finished!.Status);
 
         Assert.True(File.Exists(inputPath));
+    }
+
+    private async Task<(BatchRecord Finished, string ErrorContent)> RunToCompletionAsync(
+        string jsonl,
+        FakeIntelligenceProvider intelligence)
+    {
+        BatchProcessingService service = CreateService(intelligence);
+
+        Guid inputFileId = await SeedInputFileAsync(jsonl);
+
+        BatchRecord batch = new(
+            Guid.NewGuid(),
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Completed, finished.Status);
+
+        Assert.NotNull(finished.ErrorFileId);
+
+        string errorPath = UploadedFileStorage.ResolvePath(finished.ErrorFileId.Value);
+
+        _createdFilePaths.Add(errorPath);
+
+        if (finished.OutputFileId is { } outputFileId)
+        {
+            _createdFilePaths.Add(UploadedFileStorage.ResolvePath(outputFileId));
+        }
+
+        return (finished, await ReadArtifactTextAsync(errorPath));
     }
 
     private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)

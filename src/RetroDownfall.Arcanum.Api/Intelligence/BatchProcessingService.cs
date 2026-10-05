@@ -1,6 +1,9 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -285,6 +288,16 @@ internal sealed class BatchProcessingService(
         internal bool CancelledMidway { get; set; }
 
         internal bool BudgetRejected { get; set; }
+
+        /// <summary>An unexpected failure stopped the batch; it publishes what was checkpointed as failed.</summary>
+        internal bool UnexpectedFailure { get; set; }
+
+        /// <summary>
+        /// Settling a page's accounting (run row, reservation) failed. The batch then stays
+        /// <c>in_progress</c> for durable recovery, which reconciles the reservation; publishing it
+        /// as failed would strand that reservation until it expires.
+        /// </summary>
+        internal bool AccountingSettlementFailed { get; set; }
     }
 
     internal async Task ProcessBatchAsync(BatchRecord batch, CancellationToken stoppingToken)
@@ -375,6 +388,10 @@ internal sealed class BatchProcessingService(
 
             using BatchJsonlRecordReader.Cursor reader = new(input);
 
+            // Rebuilt on every pass over the input, so a resumed batch sees the same first-wins
+            // duplicates it saw before.
+            BatchCustomIdTracker customIds = new();
+
             while (await reader.HasNextRecordAsync(stoppingToken).ConfigureAwait(false))
             {
                 state.HasRecords = true;
@@ -386,14 +403,36 @@ internal sealed class BatchProcessingService(
 
                 await using (pageGroup!)
                 {
-                    IReadOnlyList<PreparedBatchRequestLine> page = await ReadRequestPageAsync(reader, stoppingToken)
-                        .ConfigureAwait(false);
+                    IReadOnlyList<PreparedBatchRequestLine>? page = null;
 
-                    await ProcessRequestPageAsync(batch.Id, page, state, scope.ServiceProvider,
-                        batches, settings, stoppingToken).ConfigureAwait(false);
+                    try
+                    {
+                        page = await ReadRequestPageAsync(reader, batch.Endpoint, customIds, stoppingToken)
+                            .ConfigureAwait(false);
+
+                        await ProcessRequestPageAsync(batch.Id, page, state, scope.ServiceProvider,
+                            batches, settings, stoppingToken).ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (!stoppingToken.IsCancellationRequested
+                        && !state.AccountingSettlementFailed
+                        && !IsMaintenanceUnavailable(exception))
+                    {
+                        // An unexpected failure would otherwise leave the batch in_progress until a
+                        // restart or a manual reset. Stop it here instead: seal what is in doubt,
+                        // note where it stopped, and publish what was checkpointed as failed. If
+                        // even that cannot be recorded, the original failure propagates and
+                        // startup reconciliation recovers the batch as before.
+                        if (!await TryStopAfterUnexpectedFailureAsync(batch.Id, page, batches, exception)
+                                .ConfigureAwait(false))
+                        {
+                            throw;
+                        }
+
+                        state.UnexpectedFailure = true;
+                    }
                 }
 
-                if (state.CancelledMidway || state.BudgetRejected)
+                if (state.CancelledMidway || state.BudgetRejected || state.UnexpectedFailure)
                 {
                     break;
                 }
@@ -438,7 +477,7 @@ internal sealed class BatchProcessingService(
                     .ConfigureAwait(false);
 
                 string finalStatus = state.CancelledMidway ? BatchStatuses.Cancelled
-                    : state.BudgetRejected ? BatchStatuses.Failed : BatchStatuses.Completed;
+                    : state.BudgetRejected || state.UnexpectedFailure ? BatchStatuses.Failed : BatchStatuses.Completed;
 
                 await FinalizeBatchStatusAsync(batch.Id, finalStatus, publication, batches).ConfigureAwait(false);
 
@@ -564,6 +603,8 @@ internal sealed class BatchProcessingService(
         catch (Exception exception)
         {
             accountingFailure = exception;
+
+            state.AccountingSettlementFailed = true;
         }
 
         if (processingFailure is not null && accountingFailure is not null)
@@ -704,12 +745,92 @@ internal sealed class BatchProcessingService(
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// True when the failure (or anything it wraps) is the Grimoire closing for maintenance. That is a
+    /// transient admission condition the batch already waits out, not a processing failure.
+    /// </summary>
+    private static bool IsMaintenanceUnavailable(Exception exception) =>
+        exception switch
+        {
+            GrimoireMaintenanceUnavailableException => true,
+            AggregateException aggregate => aggregate.InnerExceptions.Any(IsMaintenanceUnavailable),
+            _ => exception.InnerException is { } inner && IsMaintenanceUnavailable(inner),
+        };
+
+    /// <summary>
+    /// Records an unexpected page failure durably: every line left in doubt is sealed as interrupted
+    /// (never replayed, since the provider may have charged it) with the exception type as the
+    /// reason, and the first line that never started carries a note in the error file saying where to
+    /// resume. Runs on <see cref="CancellationToken.None"/> because the failure has already happened
+    /// and this is its bookkeeping. Returns <see langword="false"/> when the bookkeeping itself
+    /// failed, so the caller can let the original failure propagate.
+    /// </summary>
+    private async Task<bool> TryStopAfterUnexpectedFailureAsync(
+        Guid batchId,
+        IReadOnlyList<PreparedBatchRequestLine>? page,
+        IBatchRepository batches,
+        Exception failure)
+    {
+        string exceptionType = failure.GetType().FullName ?? failure.GetType().Name;
+
+        logger.LogError(
+            "Batch {BatchId} stopped after an unexpected failure (exception type {ExceptionType}); it will be published as failed with its checkpointed lines.",
+            batchId,
+            exceptionType);
+
+        try
+        {
+            await CompleteDispatchedLinesAsync(
+                batchId,
+                batches,
+                CancellationToken.None,
+                $"Arcanum stopped processing this batch after an unexpected host error (exception type {exceptionType}) once this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired.")
+                .ConfigureAwait(false);
+
+            if (page is { Count: > 0 })
+            {
+                IReadOnlyList<BatchLineCheckpoint> checkpoints = await batches.ListLineCheckpointsAsync(
+                    batchId,
+                    page[0].Line,
+                    page[^1].Line,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                HashSet<long> started = [.. checkpoints.Select(static checkpoint => checkpoint.LineNumber)];
+
+                PreparedBatchRequestLine? firstUnstarted = page.FirstOrDefault(line => !started.Contains(line.Line));
+
+                if (firstUnstarted is not null)
+                {
+                    await PersistNonProviderErrorAsync(
+                        batchId,
+                        firstUnstarted,
+                        $"Processing stopped before this line after an unexpected host error (exception type {exceptionType}). Earlier lines were checkpointed; submit this line and the lines after it to continue.",
+                        batches,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+
+            return true;
+        }
+        catch (Exception bookkeeping)
+        {
+            logger.LogError(
+                bookkeeping,
+                "Batch {BatchId} could not record its unexpected failure; it remains durable for startup reconciliation.",
+                batchId);
+
+            return false;
+        }
+    }
+
     internal static async Task CompleteInterruptedLineAsync(
         BatchLineCheckpoint checkpoint,
 
         IBatchRepository batches,
 
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+
+        string? detail = null)
 
     {
         BatchJsonlResponseLine responseLine = new(
@@ -722,7 +843,8 @@ internal sealed class BatchProcessingService(
             Error: new BatchJsonlError(
                 "batch_interrupted_after_dispatch",
 
-                "The host stopped after this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired."));
+                detail
+                    ?? "The host stopped after this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired."));
 
         await batches.CompleteLineAsync(
             checkpoint.BatchId,
@@ -743,7 +865,9 @@ internal sealed class BatchProcessingService(
 
         IBatchRepository batches,
 
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+
+        string? detail = null)
 
     {
         long afterLine = 0;
@@ -776,7 +900,9 @@ internal sealed class BatchProcessingService(
 
                     batches,
 
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+
+                    detail).ConfigureAwait(false);
             }
             afterLine = page[^1].LineNumber;
         }
@@ -865,7 +991,10 @@ internal sealed class BatchProcessingService(
     /// processed, and flushed before the next page is read; the page size is not a total-work cap.
     /// </summary>
     private static async Task<IReadOnlyList<PreparedBatchRequestLine>> ReadRequestPageAsync(
-        BatchJsonlRecordReader.Cursor reader, CancellationToken cancellationToken)
+        BatchJsonlRecordReader.Cursor reader,
+        string batchEndpoint,
+        BatchCustomIdTracker customIds,
+        CancellationToken cancellationToken)
     {
         List<PreparedBatchRequestLine> page = new(RequestPageSize);
 
@@ -875,13 +1004,76 @@ internal sealed class BatchProcessingService(
 
             page.Add(new PreparedBatchRequestLine(record.PhysicalLine, record.Request,
                 record.Error ?? (record.Request?.Body is null
-                    ? "Line did not contain a 'body' object." : null)));
+                    ? "Line did not contain a 'body' object."
+                    : ValidateEnvelope(record.Request, batchEndpoint, customIds))));
         }
 
         while (page.Count < RequestPageSize
             && await reader.HasNextRecordAsync(cancellationToken).ConfigureAwait(false));
 
         return page;
+    }
+
+    /// <summary>
+    /// Checks the wrapper around the request body. A batch is bound to the endpoint it was created
+    /// for, so a line naming another <c>url</c> or a <c>method</c> other than POST is an error of its
+    /// own rather than a chat completion that happens to parse; and <c>custom_id</c> is how a client
+    /// matches results to requests, so a repeat of an earlier line's id is refused. Returns the
+    /// per-line error text, or <see langword="null"/> when the line is acceptable.
+    /// </summary>
+    private static string? ValidateEnvelope(
+        BatchJsonlRequestLine request,
+        string batchEndpoint,
+        BatchCustomIdTracker customIds)
+    {
+        // Registered first, so every id is remembered even when the line is refused for another reason.
+        bool repeatedCustomId = !string.IsNullOrWhiteSpace(request.CustomId)
+            && customIds.IsRepeat(request.CustomId);
+
+        if (!string.Equals(request.Method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Line method must be POST.";
+        }
+
+        if (!string.Equals(request.Url, batchEndpoint, StringComparison.Ordinal))
+        {
+            return $"Line url must be {batchEndpoint}, the endpoint this batch was created for.";
+        }
+
+        return repeatedCustomId
+            ? "Line custom_id repeats the custom_id of an earlier line; custom_id values must be unique within a batch."
+            : null;
+    }
+
+    /// <summary>
+    /// Remembers the <c>custom_id</c> values one pass over a batch input has read, as 64-bit digests so
+    /// the memory cost per line is eight bytes rather than the id. Tracking stops at a fixed ceiling:
+    /// the input has no total line limit, so this must not grow without bound, and ids first seen
+    /// beyond the ceiling are simply not checked for repeats.
+    /// </summary>
+    private sealed class BatchCustomIdTracker
+    {
+        private const int MaxTrackedIds = 1 << 20;
+
+        private readonly HashSet<ulong> _seen = [];
+
+        internal bool IsRepeat(string customId)
+        {
+            ulong digest = BinaryPrimitives.ReadUInt64LittleEndian(
+                SHA256.HashData(Encoding.UTF8.GetBytes(customId)));
+
+            if (_seen.Contains(digest))
+            {
+                return true;
+            }
+
+            if (_seen.Count < MaxTrackedIds)
+            {
+                _ = _seen.Add(digest);
+            }
+
+            return false;
+        }
     }
 
     /// <summary>
