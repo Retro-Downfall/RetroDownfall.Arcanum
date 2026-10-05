@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -205,6 +206,57 @@ public sealed class CommandCenterTerminationTests
             exit: code => steps.Add($"exit {code}"));
 
         Assert.Equal(["restore", "exit 143"], steps);
+    }
+
+    /// <summary>
+    /// The backstop exists for a hung host. A terminal that has stopped reading (flow control, a frozen
+    /// emulator) blocks the restore's write, and a restore that is waited on without a bound would then
+    /// keep the process from ever ending, which is what the backstop is there to prevent.
+    /// </summary>
+    [Fact]
+    public async Task A_terminal_restore_that_never_returns_cannot_keep_the_process_from_ending()
+    {
+        using ManualResetEventSlim stuck = new();
+        int exitedWith = -1;
+
+        try
+        {
+            Task ended = Task.Run(() => CommandCenterTermination.EndProcess(
+                143,
+                restoreTerminal: () => stuck.Wait(),
+                exit: code => exitedWith = code,
+                restoreBudget: TimeSpan.FromMilliseconds(100)));
+
+            Task finished = await Task.WhenAny(ended, Task.Delay(AsyncTestTimeout));
+
+            Assert.Same(ended, finished);
+            Assert.Equal(143, exitedWith);
+        }
+        finally
+        {
+            stuck.Set();
+        }
+    }
+
+    [Fact]
+    public void The_restore_is_waited_on_for_a_bounded_time_that_is_well_inside_the_grace_window()
+    {
+        Assert.True(CommandCenterTermination.TerminalRestoreBudget > TimeSpan.Zero);
+        Assert.True(
+            CommandCenterTermination.TerminalRestoreBudget < CliApplicationFactory.ProcessTerminationGrace);
+    }
+
+    [Fact]
+    public void A_terminal_restore_that_throws_still_ends_the_process()
+    {
+        int exitedWith = -1;
+
+        CommandCenterTermination.EndProcess(
+            129,
+            restoreTerminal: static () => throw new IOException("the terminal is gone"),
+            exit: code => exitedWith = code);
+
+        Assert.Equal(129, exitedWith);
     }
 
     [Fact]

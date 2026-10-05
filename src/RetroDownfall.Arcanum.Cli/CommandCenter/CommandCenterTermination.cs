@@ -18,6 +18,12 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 /// </remarks>
 internal sealed class CommandCenterTermination : IDisposable
 {
+    /// <summary>
+    /// The longest the backstop waits for the terminal restore before it ends the process regardless; the
+    /// restore is a handful of bytes, so a terminal that has not taken them in this long is not reading.
+    /// </summary>
+    internal static readonly TimeSpan TerminalRestoreBudget = TimeSpan.FromSeconds(2);
+
     private readonly CancellationTokenSource _source = new();
 
     private readonly CancellationTokenSource _unwound = new();
@@ -75,13 +81,55 @@ internal sealed class CommandCenterTermination : IDisposable
     /// the terminal itself first: a hung interface would otherwise leave the shell with mouse reporting on
     /// and the alternate screen up.
     /// </summary>
-    internal static void EndProcess(int exitCode, Action restoreTerminal, Action<int> exit)
+    /// <remarks>
+    /// The backstop is for a host that has hung, and the restore is a write to the terminal, which can hang
+    /// too: a terminal that has stopped reading (flow control, a frozen emulator) blocks the write, and
+    /// the thread that holds the console's lock may be the stuck interface itself. So the restore runs on
+    /// its own thread and is waited on for at most <paramref name="restoreBudget"/>; the process ends
+    /// whether the restore finished, failed or is still blocked.
+    /// </remarks>
+    /// <param name="exitCode">The conventional <c>128 + signal</c> code to end the process with.</param>
+    /// <param name="restoreTerminal">Puts the terminal's modes back; replaced by a test.</param>
+    /// <param name="exit">Ends the process with the given code; replaced by a test.</param>
+    /// <param name="restoreBudget">
+    /// The longest the restore is waited on; <see cref="TerminalRestoreBudget"/> when omitted.
+    /// </param>
+    internal static void EndProcess(
+        int exitCode,
+        Action restoreTerminal,
+        Action<int> exit,
+        TimeSpan? restoreBudget = null)
     {
         ArgumentNullException.ThrowIfNull(restoreTerminal);
         ArgumentNullException.ThrowIfNull(exit);
 
-        restoreTerminal();
+        // A dedicated thread, not the pool: a hung host can have starved the pool, and a restore stuck in a
+        // write must not be able to hold anything the exit needs. It is a background thread, so a restore
+        // that never returns cannot keep the process alive either.
+        Thread restore = new(() => RestoreBestEffort(restoreTerminal))
+        {
+            IsBackground = true,
+            Name = "Command Center terminal restore",
+        };
+
+        restore.Start();
+
+        _ = restore.Join(restoreBudget ?? TerminalRestoreBudget);
+
         exit(exitCode);
+    }
+
+    private static void RestoreBestEffort(Action restoreTerminal)
+    {
+        try
+        {
+            restoreTerminal();
+        }
+        catch (Exception)
+        {
+            // The terminal is already unreliable and the process is about to end; a failed restore must not
+            // be what keeps it from ending, and there is nowhere left to report it.
+        }
     }
 
     /// <summary>Cancelled when the process is asked to end by SIGTERM or SIGHUP.</summary>

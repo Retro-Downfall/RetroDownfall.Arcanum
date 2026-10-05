@@ -676,6 +676,78 @@ public sealed class CommandCenterAttachmentFileKindTests : IDisposable
                 && line.Contains("not a regular file", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// A regular file the account may not read passes the stat gate and fails at the open, and the
+    /// operator is told it is a permission problem. Reporting it as "not a regular file" would send them
+    /// looking at the file's type instead of its mode.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task An_unreadable_regular_file_is_reported_as_access_denied_and_not_as_a_non_regular_file()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "File modes are POSIX-only.");
+
+        string path = WriteNotes();
+        File.SetUnixFileMode(path, UnixFileMode.None);
+
+        try
+        {
+            Skip.If(CanOpenForRead(path), "This account reads a mode-000 file (privileged).");
+
+            _ = Assert.Throws<UnauthorizedAccessException>(() => AttachableFile.OpenForRead(path, 4096).Dispose());
+
+            TurnAttachmentBuildResult result = await BuildAsync("read @notes.txt");
+
+            Assert.Null(result.AttachedFiles);
+            Assert.Contains(
+                result.StatusLines,
+                static line => line.Contains("Cannot stage notes.txt", StringComparison.Ordinal)
+                    && line.Contains("denied", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(
+                result.StatusLines,
+                static line => line.Contains("not a regular file", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    /// <summary>
+    /// Every way the non-blocking open can end names its own cause, so none of them is read as another.
+    /// </summary>
+    [Theory]
+    [InlineData("NotFound", typeof(IOException), "no longer exists")]
+    [InlineData("Rejected", typeof(IOException), "not a regular file")]
+    [InlineData("AccessDenied", typeof(UnauthorizedAccessException), "denied")]
+    [InlineData("IoError", typeof(IOException), "could not be opened")]
+    public void Each_open_status_is_reported_as_its_own_cause(
+        string statusName,
+        Type expectedType,
+        string expectedWords)
+    {
+        SecureFileOpenStatus status = Enum.Parse<SecureFileOpenStatus>(statusName);
+
+        Exception failure = AttachableFile.OpenFailureFor(status);
+
+        Assert.Equal(expectedType, failure.GetType());
+        Assert.Contains(expectedWords, failure.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CanOpenForRead(string path)
+    {
+        try
+        {
+            using FileStream stream = File.OpenRead(path);
+
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     private string WriteNotes()
     {
         string path = Path.Combine(_root, "notes.txt");

@@ -76,7 +76,9 @@ internal static class AttachableFile
     /// <summary>
     /// Opens <paramref name="fullPath"/> for a sequential read and confirms that what was opened is
     /// attachable, so the read never depends on what the path named a moment earlier. Throws
-    /// <see cref="IOException"/> when the open handle is not a regular file.
+    /// <see cref="IOException"/> when the open handle is not a regular file or the open fails, and
+    /// <see cref="UnauthorizedAccessException"/> when the account may not read it, as the framework's own
+    /// open does.
     /// </summary>
     /// <remarks>
     /// The stat in <see cref="TryConfirmRegularFile"/> and this open are two steps, and a path can change
@@ -122,14 +124,27 @@ internal static class AttachableFile
         if (status is not SecureFileOpenStatus.Success || handle is null)
         {
             handle?.Dispose();
-            throw new IOException(
-                status is SecureFileOpenStatus.NotFound
-                    ? "The path no longer exists."
-                    : NotRegularFileMessage);
+            throw OpenFailureFor(status);
         }
 
         return new FileStream(handle, FileAccess.Read, bufferSize, isAsync: false);
     }
+
+    /// <summary>
+    /// The failure a non-blocking open that ended with <paramref name="status"/> is reported as. Each cause
+    /// keeps its own words, because the staging loop shows <see cref="Exception.Message"/> to the operator
+    /// and a file they may not read is a different thing to fix from one that is not a file: the old
+    /// <see cref="FileStream"/> open threw <see cref="UnauthorizedAccessException"/> for the first, and so
+    /// does this.
+    /// </summary>
+    internal static Exception OpenFailureFor(SecureFileOpenStatus status) =>
+        status switch
+        {
+            SecureFileOpenStatus.NotFound => new IOException("The path no longer exists."),
+            SecureFileOpenStatus.AccessDenied => new UnauthorizedAccessException("Access to the file is denied."),
+            SecureFileOpenStatus.IoError => new IOException("The file could not be opened."),
+            _ => new IOException(NotRegularFileMessage),
+        };
 
     /// <summary>
     /// True when an opened handle of <paramref name="kind"/> may be read as an attachment. A handle is the
