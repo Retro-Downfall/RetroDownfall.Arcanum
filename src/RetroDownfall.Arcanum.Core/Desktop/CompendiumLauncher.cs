@@ -18,6 +18,8 @@ internal enum CompendiumLaunchPlatform
 /// <summary>
 /// Locates Compendium via an installed binary, sibling build output, or <c>dotnet run</c> on the
 /// solution project, then starts it with <see cref="ProcessStartInfo.ArgumentList"/> (no shell).
+/// The <c>dotnet run</c> arm obeys the same <c>ARCANUM_DEV_LAUNCHER</c> opt-in as
+/// <see cref="ApplicationLauncher"/> (see <see cref="ApplicationDiscoveryEnvironment"/>).
 /// </summary>
 public sealed class CompendiumLauncher : ICompendiumLauncher
 {
@@ -36,6 +38,8 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
     private readonly CompendiumLaunchPlatform? _platformOverride;
 
     private readonly Architecture? _processArchitectureOverride;
+
+    private readonly bool? _developmentProjectAllowedOverride;
 
     public CompendiumLauncher()
     {
@@ -65,6 +69,18 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         _platformOverride = platform;
 
         _processArchitectureOverride = processArchitecture;
+    }
+
+    internal CompendiumLauncher(
+        Func<string> baseDirectory,
+        Func<string, bool> fileExists,
+        Func<ProcessStartInfo, bool> startProcess,
+        CompendiumLaunchPlatform platform,
+        Architecture processArchitecture,
+        bool allowDevelopmentProject)
+        : this(baseDirectory, fileExists, startProcess, platform, processArchitecture)
+    {
+        _developmentProjectAllowedOverride = allowDevelopmentProject;
     }
 
     public string ConfigPath => Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
@@ -107,7 +123,12 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
             executableFailureType = failureType ?? executableFailureType;
         }
 
-        if (TryFindProject(out string? projectPath) && projectPath is not null)
+        // The repository project is only ever executed when this process is allowed to run it: a
+        // Native AOT image needs the ARCANUM_DEV_LAUNCHER opt-in (R-009), the same gate the
+        // `arcanum open` launcher applies. It stays in the printed discovery locations either way.
+        if (DevelopmentProjectAllowed()
+            && TryFindProject(out string? projectPath)
+            && projectPath is not null)
         {
             ProcessStartInfo startInfo = CreateDevelopmentStartInfo(
                 projectPath,
@@ -349,6 +370,10 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
 
     private string GetBaseDirectory() =>
         _baseDirectoryOverride?.Invoke() ?? AppContext.BaseDirectory;
+
+    private bool DevelopmentProjectAllowed() =>
+        _developmentProjectAllowedOverride
+        ?? ApplicationDiscoveryEnvironment.DevelopmentProjectLaunchAllowed();
 
     private bool FileExists(string path) =>
         _fileExistsOverride?.Invoke(path) ?? File.Exists(path);
