@@ -1,8 +1,14 @@
 using System.Text;
 using RetroDownfall.Arcanum.Core.Primitives;
 
-namespace RetroDownfall.Arcanum.Cli.CommandCenter;
+namespace RetroDownfall.Arcanum.Cli.UX;
 
+/// <summary>
+/// Accumulates streamed text up to a fixed number of characters, then appends a marker and drops
+/// everything after it. The cut is surrogate-safe, so a capped stream never ends in half a glyph. Shared
+/// by the Command Center transcript and the CLI's reasoning panel, which previously each carried their
+/// own copy of this logic.
+/// </summary>
 internal sealed class BoundedStreamingTextBuffer
 {
     private readonly int _maxChars;
@@ -55,5 +61,17 @@ internal sealed class BoundedStreamingTextBuffer
         _truncated = true;
     }
 
+    /// <summary>Characters currently held, including the truncation marker once it has been appended.</summary>
+    public int Length => _text.Length;
+
     public string Snapshot() => _text.ToString();
+
+    /// <summary>Returns the text held so far and starts over, so the buffer can bound the next batch.</summary>
+    public string Drain()
+    {
+        string text = _text.ToString();
+        _ = _text.Clear();
+        _truncated = false;
+        return text;
+    }
 }

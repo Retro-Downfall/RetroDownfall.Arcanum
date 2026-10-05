@@ -1,6 +1,6 @@
-using RetroDownfall.Arcanum.Cli.CommandCenter;
+using RetroDownfall.Arcanum.Cli.UX;
 
-namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
+namespace RetroDownfall.Arcanum.Tests.Cli;
 
 /// <summary>
 /// The streaming assistant/reasoning buffer caps transcript growth. DESIGN §16.7 requires every
@@ -10,18 +10,14 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class BoundedStreamingTextBufferTests
 {
-
     private const string Marker = "\n… [truncated]";
 
     private static void AssertWellFormed(string text)
     {
-
         for (int i = 0; i < text.Length; i++)
         {
-
             if (char.IsHighSurrogate(text[i]))
             {
-
                 Assert.True(
                     i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]),
                     $"lone high surrogate at index {i} of {text.Length}.");
@@ -29,15 +25,12 @@ public sealed class BoundedStreamingTextBufferTests
                 i++;
 
                 continue;
-
             }
 
             Assert.False(
                 char.IsLowSurrogate(text[i]),
                 $"lone low surrogate at index {i} of {text.Length}.");
-
         }
-
     }
 
     /// <summary>
@@ -47,7 +40,6 @@ public sealed class BoundedStreamingTextBufferTests
     [Fact]
     public void Rewinding_the_buffered_text_keeps_a_surrogate_pair_whole()
     {
-
         BoundedStreamingTextBuffer buffer = new(24, Marker);
 
         // Content limit is 24 - 14 = 10, so the rocket straddles indices 9/10 — exactly the cut.
@@ -60,14 +52,12 @@ public sealed class BoundedStreamingTextBufferTests
         AssertWellFormed(snapshot);
 
         Assert.EndsWith(Marker, snapshot, StringComparison.Ordinal);
-
     }
 
     /// <summary>The slice taken from the arriving chunk has the same obligation.</summary>
     [Fact]
     public void Slicing_the_incoming_chunk_keeps_a_surrogate_pair_whole()
     {
-
         BoundedStreamingTextBuffer buffer = new(24, Marker);
 
         buffer.Append(new string('a', 9));
@@ -80,13 +70,11 @@ public sealed class BoundedStreamingTextBufferTests
         AssertWellFormed(snapshot);
 
         Assert.EndsWith(Marker, snapshot, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Plain_text_still_fills_the_content_limit_before_the_marker()
     {
-
         BoundedStreamingTextBuffer buffer = new(24, Marker);
 
         buffer.Append(new string('a', 6));
@@ -94,13 +82,11 @@ public sealed class BoundedStreamingTextBufferTests
         buffer.Append(new string('b', 40));
 
         Assert.Equal(new string('a', 6) + new string('b', 4) + Marker, buffer.Snapshot());
-
     }
 
     [Fact]
     public void Appends_stop_once_the_buffer_is_truncated()
     {
-
         BoundedStreamingTextBuffer buffer = new(24, Marker);
 
         buffer.Append(new string('a', 40));
@@ -110,7 +96,31 @@ public sealed class BoundedStreamingTextBufferTests
         buffer.Append("more");
 
         Assert.Equal(truncated, buffer.Snapshot());
-
     }
 
+    /// <summary>
+    /// The CLI reasoning panel drains the buffer after each flush; the next batch of reasoning is bounded
+    /// afresh rather than inheriting the previous batch's truncated state.
+    /// </summary>
+    [Fact]
+    public void Draining_returns_the_text_and_bounds_the_next_batch_afresh()
+    {
+        BoundedStreamingTextBuffer buffer = new(24, Marker);
+
+        buffer.Append(new string('a', 40));
+
+        string drained = buffer.Drain();
+
+        Assert.EndsWith(Marker, drained, StringComparison.Ordinal);
+
+        Assert.Equal(0, buffer.Length);
+
+        buffer.Append("fresh");
+
+        Assert.Equal("fresh", buffer.Snapshot());
+
+        buffer.Append(new string('b', 40));
+
+        Assert.EndsWith(Marker, buffer.Snapshot(), StringComparison.Ordinal);
+    }
 }
