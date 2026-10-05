@@ -4,12 +4,14 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -20,9 +22,10 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// substitute; sharing one instance across the whole class (instead of one per test) keeps concurrent
 /// Grimoire bootstrap load bounded — xUnit already runs the methods within a class sequentially by
 /// default, so a single shared host is safe and avoids the SQLCipher-bootstrap contention a
-/// per-test-isolated-host pattern causes at this test count. Two tests (<see cref="PostEmbeddings_OversizedInput_Returns400"/>,
-/// <see cref="PostEmbeddings_EmbeddingsDisabled_Returns503"/>) need settings the shared host cannot
-/// provide and get their own dedicated (short-lived) factories.
+/// per-test-isolated-host pattern causes at this test count. Four tests (<see cref="PostEmbeddings_OversizedInput_Returns400"/>,
+/// <see cref="PostEmbeddings_EmbeddingsDisabled_Returns503"/> and the two provider-answers-fewer-vectors
+/// tests) need settings or a real <c>WeaveService</c> the shared host cannot provide and get their own
+/// dedicated (short-lived) factories.
 /// </summary>
 /// <remarks>
 /// Tagged <c>[Collection("ApiHost")]</c> — like every other test class that constructs its own
@@ -38,20 +41,17 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 {
-
     private ArcanumWebApplicationFactory _factory = null!;
 
     private FakeWeaveService _fake = null!;
 
     public Task InitializeAsync()
     {
-
         _fake = new FakeWeaveService();
 
         _factory = CreateEnabledFactory(_fake);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync() => await _factory.DisposeAsync();
@@ -59,7 +59,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
     [SkippableFact]
     public async Task PostEmbeddings_WithStringInput_ReturnsFloatEmbedding()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -85,13 +84,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         Assert.True(body.Usage.PromptTokens > 0);
 
         Assert.Equal(body.Usage.PromptTokens, body.Usage.TotalTokens);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_WithArrayInput_ReturnsOneEmbeddingPerInputInOrder()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -102,20 +99,16 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
         for (int i = 0; i < 3; i++)
         {
-
             Assert.Equal(i, body.Data[i].Index);
-
         }
 
         // Distinct inputs must not collide onto the same vector.
         Assert.NotEqual(body.Data[0].Embedding.Values, body.Data[1].Embedding.Values);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         int before = _fake.EmbedCallCount + _fake.EmbedBatchCallCount;
@@ -128,7 +121,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
         async Task<HttpResponseMessage> SendAsync()
         {
-
             HttpRequestMessage req = new(HttpMethod.Post, "/v1/embeddings")
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
@@ -137,7 +129,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             req.Headers.Add("Idempotency-Key", key);
 
             return await client.SendAsync(req);
-
         }
 
         HttpResponseMessage firstResponse = await SendAsync();
@@ -157,13 +148,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         Assert.Equal(firstBody, secondBody);
 
         Assert.Equal(before + 1, _fake.EmbedCallCount + _fake.EmbedBatchCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_OmittedModel_UsesConfiguredDefault()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -171,13 +160,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         OpenAiEmbeddingResponse body = await PostAndReadAsync(client, """{"input":"no model specified"}""");
 
         Assert.Equal("test-embed", body.Model);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_MismatchedModel_Returns404ModelNotFound()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -195,13 +182,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         Assert.NotNull(error);
 
         Assert.Equal("model_not_found", error.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_Base64EncodingFormat_DecodesToSameVectorAsFloat()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -221,13 +206,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         float[] decoded = EmbeddingBlobCodec.Decode(Convert.FromBase64String(base64Entry.Embedding.Base64!));
 
         Assert.Equal(floatBody.Data[0].Embedding.Values, decoded);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_InvalidEncodingFormat_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -243,13 +226,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("invalid_value", error!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_TokenArrayInput_DecodesAndEmbeds()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -260,13 +241,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         OpenAiEmbeddingResponse body = await PostAndReadAsync(client, """{"input":[15339,1917]}""");
 
         Assert.Single(body.Data);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_TokenArrayOfArrays_ProducesOneEmbeddingPerArray()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -274,13 +253,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         OpenAiEmbeddingResponse body = await PostAndReadAsync(client, """{"input":[[15339],[1917,11]]}""");
 
         Assert.Equal(2, body.Data.Count);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_EmptyInput_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -296,13 +273,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("invalid_value", error!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_MissingInput_Returns400MissingRequiredParameter()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -318,7 +293,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("missing_required_parameter", error!.Error.Code);
-
     }
 
     [SkippableTheory]
@@ -328,7 +302,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
     [InlineData("""{"dimensions":"512","input":"hi"}""")]
     public async Task PostEmbeddings_UnparsableBody_Returns400WithTheOpenAiErrorEnvelope(string payload)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -352,13 +325,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         Assert.Equal("invalid_json", error.Error.Code);
 
         Assert.False(string.IsNullOrWhiteSpace(error.Error.Message));
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_NonJsonContentType_Returns415WithTheOpenAiErrorEnvelope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -376,13 +347,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         Assert.NotNull(error);
 
         Assert.Equal("unsupported_media_type", error!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_LongInputExceedingChunkSize_MeanPoolsIntoUnitVector()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -405,22 +374,20 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         double normSquared = entry.Embedding.Values!.Sum(v => (double)v * v);
 
         Assert.InRange(Math.Sqrt(normSquared), 0.99, 1.01);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_ProviderReturnsFewerVectorsThanInputs_Returns503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // An OpenAI-compatible embedding server (Ollama, vLLM, a proxy) can answer a batch with fewer
-        // `data` entries than inputs, and Microsoft.Extensions.AI does not enforce the 1:1 contract —
-        // so the endpoint must reject the short batch as a sanitized 503 rather than indexing off the
-        // end of the array and surfacing an unhandled 500.
-        _fake.BatchVectorLimit = 1;
+        // `data` entries than inputs, and Microsoft.Extensions.AI does not enforce the 1:1 contract.
+        // The real WeaveService enforces it once, at the provider boundary, so the endpoint answers a
+        // sanitized 503 rather than indexing off the end of the array and surfacing an unhandled 500.
+        await using ArcanumWebApplicationFactory factory = CreateShortAnsweringProviderFactory();
 
-        HttpClient client = _factory.CreateAuthenticatedClient();
+        HttpClient client = factory.CreateAuthenticatedClient();
 
         HttpResponseMessage response = await client.PostAsync(
             "/v1/embeddings",
@@ -433,13 +400,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_ProviderReturnsRaggedVectorsForShortInputs_Returns503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // The short-input path never throws on ragged widths — it just emits one response whose
@@ -460,7 +425,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
-
     }
 
     [SkippableTheory]
@@ -468,7 +432,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
     [InlineData(2)]
     public async Task PostEmbeddings_ProviderReturnsRaggedVectorsForLongInput_Returns503(int trailingDelta)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // WeaveService issues one round trip per BatchSize sub-batch, so a load-balanced or
@@ -499,7 +462,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("embedding_provider_unavailable", raggedError!.Error.Code);
-
     }
 
     [SkippableTheory]
@@ -507,7 +469,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
     [InlineData(2)]
     public async Task PostEmbeddings_ProviderWidthChangesBetweenBatches_Returns503(int subsequentBatchDelta)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // The per-batch width guards each pass here: the short-input batch is internally consistent, and
@@ -540,7 +501,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
-
     }
 
     /// <summary>
@@ -551,7 +511,6 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
     [SkippableFact]
     public async Task PostEmbeddings_MixedShortAndLongInputs_ReturnsEqualWidthVectorsPerInput()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -573,20 +532,19 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         Assert.Equal(
             _fake.Dimensions,
             Assert.Single(body.Data.Select(static entry => entry.Embedding.Values!.Length).Distinct()));
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_ProviderReturnsFewerVectorsThanChunksForLongInput_Returns503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // Same provider misbehavior on the long-input path: a short chunk batch must not be
-        // mean-pooled (a silently wrong vector), and an empty one must not throw.
-        _fake.BatchVectorLimit = 0;
+        // mean-pooled (a silently wrong vector). The real WeaveService fails it before the endpoint
+        // sees any vectors.
+        await using ArcanumWebApplicationFactory factory = CreateShortAnsweringProviderFactory();
 
-        HttpClient client = _factory.CreateAuthenticatedClient();
+        HttpClient client = factory.CreateAuthenticatedClient();
 
         string longText = string.Concat(Enumerable.Repeat("The quick brown fox jumps over the lazy dog. ", 30));
 
@@ -606,13 +564,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_WithoutApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -622,13 +578,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             new StringContent("""{"input":"hello"}""", Encoding.UTF8, "application/json"));
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_OversizedInput_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -652,13 +606,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("invalid_value", error!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostEmbeddings_EmbeddingsDisabled_Returns503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // Needs a dedicated factory (distinct from the shared one) because it uses the real
@@ -684,11 +636,31 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
-
     }
 
     private static ArcanumWebApplicationFactory CreateEnabledFactory(
         FakeWeaveService weaveService) =>
+        CreateEnabledFactory(services =>
+        {
+            services.RemoveAll<IWeaveService>();
+
+            services.AddSingleton<IWeaveService>(weaveService);
+        });
+
+    /// <summary>
+    /// An enabled host that keeps the real <c>WeaveService</c> and swaps only the provider beneath it,
+    /// for the faults that service is responsible for catching.
+    /// </summary>
+    private static ArcanumWebApplicationFactory CreateShortAnsweringProviderFactory() =>
+        CreateEnabledFactory(services =>
+        {
+            services.RemoveAll<IEmbeddingGeneratorFactory>();
+
+            services.AddSingleton<IEmbeddingGeneratorFactory>(new ShortAnsweringEmbeddingGeneratorFactory());
+        });
+
+    private static ArcanumWebApplicationFactory CreateEnabledFactory(
+        Action<IServiceCollection> overrideServices) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -703,19 +675,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
                     },
                 },
             },
-            ServiceOverrides = services =>
-            {
-
-                services.RemoveAll<IWeaveService>();
-
-                services.AddSingleton<IWeaveService>(weaveService);
-
-            },
+            ServiceOverrides = overrideServices,
         };
 
     private static async Task<OpenAiEmbeddingResponse> PostAndReadAsync(HttpClient client, string jsonBody)
     {
-
         HttpResponseMessage response = await client.PostAsync(
             "/v1/embeddings",
             new StringContent(jsonBody, Encoding.UTF8, "application/json"));
@@ -729,12 +693,10 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         Assert.NotNull(body);
 
         return body;
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         public bool Available { get; set; } = true;
 
         public int Dimensions { get; set; } = 4;
@@ -746,22 +708,13 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken)
         {
-
             EmbedCallCount++;
 
             return Task.FromResult(Result<Embedding<float>>.Success(new Embedding<float>(MakeVector(text))));
-
         }
 
         /// <summary>Counts <see cref="EmbedBatchAsync"/> calls — see <see cref="EmbedCallCount"/>.</summary>
         public int EmbedBatchCallCount { get; private set; }
-
-        /// <summary>
-        /// Caps how many vectors a batch answer carries, reproducing an OpenAI-compatible provider
-        /// that returns fewer <c>data</c> entries than inputs. <see cref="int.MaxValue"/> (the
-        /// default) keeps the honest one-vector-per-input behavior.
-        /// </summary>
-        public int BatchVectorLimit { get; set; } = int.MaxValue;
 
         /// <summary>
         /// Widens or narrows every vector after the first by this many components, reproducing a
@@ -782,70 +735,54 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
-
             EmbedBatchCallCount++;
 
             int batchDimensions = EmbedBatchCallCount == 1
                 ? Dimensions
                 : Dimensions + SubsequentBatchDimensionDelta;
 
-            int count = Math.Min(texts.Count, BatchVectorLimit);
+            Embedding<float>[] result = new Embedding<float>[texts.Count];
 
-            Embedding<float>[] result = new Embedding<float>[count];
-
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < texts.Count; i++)
             {
-
                 int width = i == 0 ? batchDimensions : batchDimensions + TrailingVectorDimensionDelta;
 
                 result[i] = new Embedding<float>(MakeVector(texts[i], width));
-
             }
 
             return Task.FromResult(Result<Embedding<float>[]>.Success(result));
-
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken)
         {
-
             const int chunkSize = 100;
 
             List<(string Chunk, int Offset)> chunks = [];
 
             for (int offset = 0; offset < text.Length; offset += chunkSize)
             {
-
                 int length = Math.Min(chunkSize, text.Length - offset);
 
                 chunks.Add((text.Substring(offset, length), offset));
-
             }
 
             return Task.FromResult(Result<(string Chunk, int Offset)[]>.Success(chunks.ToArray()));
-
         }
 
         private float[] MakeVector(string text) => MakeVector(text, Dimensions);
 
         private static float[] MakeVector(string text, int dimensions)
         {
-
             Random random = new(text.GetHashCode());
 
             float[] vector = new float[dimensions];
 
             for (int i = 0; i < dimensions; i++)
             {
-
                 vector[i] = (float)(random.NextDouble() * 2.0 - 1.0);
-
             }
 
             return vector;
-
         }
-
     }
-
 }

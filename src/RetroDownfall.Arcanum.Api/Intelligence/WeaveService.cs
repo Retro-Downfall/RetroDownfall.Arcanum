@@ -53,18 +53,9 @@ public sealed class WeaveService(
             return Result<Embedding<float>>.Failure(batchResult.Error);
         }
 
-        // A provider may answer 200 with no vectors at all (model still loading, input silently
-        // dropped). That is a provider fault, not an index bug — and this method sits outside
-        // EmbedBatchAsync's catch-all, so it has to be converted here.
-        if (batchResult.Value.Length == 0)
-        {
-            logger.LogWarning("Embedding provider returned no vectors for a single-text request; The Weave will be treated as unavailable for this request.");
-
-            return Result<Embedding<float>>.Failure(new Error(
-                ErrorCodes.Embeddings.ProviderUnavailable,
-                "The embedding provider returned no vectors. See server logs for detail."));
-        }
-
+        // EmbedBatchAsync guarantees one vector per input on success. A provider that answered 200
+        // with no vectors at all (model still loading, input silently dropped) has already become a
+        // ProviderUnavailable failure above, so index zero always exists here.
         return Result<Embedding<float>>.Success(batchResult.Value[0]);
     }
 

@@ -415,22 +415,8 @@ internal sealed class TapestryWeaver(
                 return new LeafLayer([], 0, 0);
             }
 
-            // A response whose vector count does not match the request is a shape mismatch, not a
-            // benign edge case. Pairing it positionally would give every leaf from the omission
-            // onward its neighbour's vector, and those wrong-but-well-formed vectors pass the
-            // quarantine check below and get persisted as this generation's leaf embeddings.
-            if (embedded.Value.Length != needsEmbedding.Count)
-            {
-                logger.LogWarning(
-                    "Tapestry leaf embedding for {ScopeKind} {ScopeId} returned {ActualCount} vector(s) for {ExpectedCount} input(s); the previous complete generation remains current.",
-                    scope.Kind,
-                    scope.Id,
-                    embedded.Value.Length,
-                    needsEmbedding.Count);
-
-                return new LeafLayer([], 0, 0);
-            }
-
+            // IWeaveService answers exactly one vector per input or fails, so a short answer can
+            // never pair a leaf with its neighbour's vector here.
             for (int index = 0; index < needsEmbedding.Count; index++)
             {
                 minted[needsEmbedding[index].SourceId] = embedded.Value[index].Vector.ToArray();

@@ -339,7 +339,8 @@ public sealed class WeaveServiceTests
     /// An OpenAI-compatible backend can answer 200 with an empty <c>data</c> array (model still
     /// loading, input silently dropped). The single-text overload must degrade to a
     /// <see cref="Result{T}"/> failure like every other provider fault instead of throwing out of an
-    /// API documented as never throwing.
+    /// API documented as never throwing. The single-text overload has no vector-count check of its
+    /// own: it relies on the batch guard, so this pins that the guard covers the empty answer.
     /// </summary>
     [Fact]
     public async Task EmbedAsync_ProviderReturnsNoVectors_ReturnsProviderUnavailable_NeverThrows()
