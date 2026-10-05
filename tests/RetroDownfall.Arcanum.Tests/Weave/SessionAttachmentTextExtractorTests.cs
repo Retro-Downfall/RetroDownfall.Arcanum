@@ -8,12 +8,10 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed class SessionAttachmentTextExtractorTests
 {
-
     [Fact]
 
     public void SupportedMimeTypes_are_all_extension_reachable()
     {
-
         IReadOnlySet<string> supportedMimeTypes = SessionAttachmentTextExtractor.SupportedMimeTypes;
 
         HashSet<string> extensionMimeTypes = AttachmentMimeDetector.ExtensionMimeTypes.Values
@@ -22,44 +20,37 @@ public sealed class SessionAttachmentTextExtractorTests
         Assert.Equal(29, supportedMimeTypes.Count);
 
         Assert.All(supportedMimeTypes, mimeType => Assert.Contains(mimeType, extensionMimeTypes));
-
     }
 
     [Fact]
 
     public void Detector_produced_textual_mime_types_are_all_extractable()
     {
-
         IEnumerable<string> textualMimeTypes = AttachmentMimeDetector.ExtensionMimeTypes.Values
             .Where(mimeType => SessionAttachmentContentPolicy.Classify(mimeType) == SessionAttachmentKind.Text)
             .Distinct(StringComparer.OrdinalIgnoreCase);
 
         Assert.All(textualMimeTypes, mimeType =>
         {
-
             SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
                 "alpha\nbeta"u8,
                 mimeType,
                 "source.txt");
 
             Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
-
         });
-
     }
 
     [Fact]
 
     public void Extract_recognized_source_mime_type_with_nul_bytes_is_not_eligible()
     {
-
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
             "print('safe')\0"u8,
             "text/x-python",
             "source.py");
 
         Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
-
     }
 
     public static TheoryData<string, string> SupportedTextTypes => new()
@@ -87,7 +78,6 @@ public sealed class SessionAttachmentTextExtractorTests
 
     public void Extract_SupportedTextType_ReturnsDeterministicText(string mimeType, string fileName)
     {
-
         byte[] bytes = Encoding.UTF8.GetBytes("alpha\r\nbeta\rcharlie");
 
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
@@ -100,14 +90,12 @@ public sealed class SessionAttachmentTextExtractorTests
         Assert.Equal("alpha\nbeta\ncharlie", result.Text);
 
         Assert.False(result.WasTruncated);
-
     }
 
     [Fact]
 
     public void Extract_Html_ReturnsBoundedVisibleTextWithoutScriptsOrStyles()
     {
-
         byte[] bytes = Encoding.UTF8.GetBytes(
             "<html><head><style>.x{color:red}</style><script>alert(1)</script></head>"
             + "<body><h1>Heading &amp; More</h1><p>Hello<br>world</p></body></html>");
@@ -128,7 +116,6 @@ public sealed class SessionAttachmentTextExtractorTests
         Assert.DoesNotContain("alert", result.Text, StringComparison.Ordinal);
 
         Assert.DoesNotContain("color:red", result.Text, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -145,7 +132,6 @@ public sealed class SessionAttachmentTextExtractorTests
 
     public void Extract_UnsupportedOrBinaryType_IsNotEligible(string mimeType, string fileName)
     {
-
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
             [0x00, 0x01, 0x02, 0xFF],
             mimeType,
@@ -154,14 +140,12 @@ public sealed class SessionAttachmentTextExtractorTests
         Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
 
         Assert.Equal(string.Empty, result.Text);
-
     }
 
     [Fact]
 
     public void Extract_InvalidUtf8_FailsWithoutReplacementDecoding()
     {
-
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
             [0xC3, 0x28],
             "text/plain",
@@ -170,14 +154,12 @@ public sealed class SessionAttachmentTextExtractorTests
         Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
 
         Assert.Equal(string.Empty, result.Text);
-
     }
 
     [Fact]
 
     public void Extract_ReturnsCompleteTextBeyondFormerCharacterCeiling()
     {
-
         string text = new('a', 200_001);
 
         byte[] bytes = Encoding.UTF8.GetBytes(text);
@@ -192,14 +174,12 @@ public sealed class SessionAttachmentTextExtractorTests
         Assert.Equal(text, result.Text);
 
         Assert.False(result.WasTruncated);
-
     }
 
     [Fact]
 
     public void Chunk_ContinuesUntilAllTextIsCovered()
     {
-
         string text = "one\ntwo😀\nthree\nfour";
 
         SessionAttachmentTextChunk[] chunks = SessionAttachmentChunker.Chunk(
@@ -223,20 +203,16 @@ public sealed class SessionAttachmentTextExtractorTests
 
         Assert.All(chunks, static chunk =>
         {
-
             Assert.False(chunk.Text.Length > 0 && char.IsHighSurrogate(chunk.Text[^1]));
 
             Assert.False(chunk.Text.Length > 0 && char.IsLowSurrogate(chunk.Text[0]));
-
         });
-
     }
 
     [Fact]
 
     public void Chunk_ContinuesBeyondFormerPerAttachmentChunkCeiling()
     {
-
         string text = new('x', 2_000);
 
         SessionAttachmentTextChunk[] chunks = SessionAttachmentChunker.Chunk(
@@ -247,7 +223,100 @@ public sealed class SessionAttachmentTextExtractorTests
         Assert.True(chunks.Length > 256);
 
         Assert.Equal(text.Length, chunks[^1].CharacterEnd);
+    }
 
+    /// <summary>
+    /// With no overlap the chunks are the text, end to end. A window that backs off a high surrogate at its
+    /// end used to start the next one a whole step later, on the matching low surrogate, which is skipped:
+    /// the astral character then belonged to no chunk at all.
+    /// </summary>
+    [Theory]
+
+    [InlineData(7)]
+
+    [InlineData(6)]
+
+    [InlineData(5)]
+
+    public void Chunk_with_zero_overlap_preserves_every_character(int leadingCharacters)
+    {
+        string text = new string('x', leadingCharacters) + "😀" + new string('y', 6) + "😀" + "😀" + "tail";
+
+        SessionAttachmentTextChunk[] chunks = SessionAttachmentChunker.Chunk(
+            text,
+            chunkSizeCharacters: 8,
+            overlapCharacters: 0);
+
+        AssertEveryCharacterIsCovered(text, chunks);
+
+        Assert.Equal(text, string.Concat(chunks.Select(static chunk => chunk.Text)));
+    }
+
+    [Theory]
+
+    [InlineData(1)]
+
+    [InlineData(2)]
+
+    [InlineData(3)]
+
+    public void Chunk_with_overlap_still_covers_every_character(int overlapCharacters)
+    {
+        string text = new string('x', 7) + "😀" + new string('y', 6) + "😀" + "😀" + "tail";
+
+        SessionAttachmentTextChunk[] chunks = SessionAttachmentChunker.Chunk(
+            text,
+            chunkSizeCharacters: 8,
+            overlapCharacters: overlapCharacters);
+
+        AssertEveryCharacterIsCovered(text, chunks);
+    }
+
+    [Fact]
+
+    public async Task ReadChunksAsync_with_zero_overlap_preserves_every_character_and_matches_the_oracle()
+    {
+        string text = new string('x', 7) + "😀" + new string('y', 6) + "😀" + "😀" + "tail";
+
+        SessionAttachmentTextChunk[] expected = SessionAttachmentChunker.Chunk(
+            text,
+            chunkSizeCharacters: 8,
+            overlapCharacters: 0);
+
+        await using ChunkedReadStream stream = new(Encoding.UTF8.GetBytes(text), maxReadBytes: 3);
+
+        List<SessionAttachmentTextChunk> actual = [];
+
+        await foreach (SessionAttachmentTextChunk chunk in SessionAttachmentTextExtractor.ReadChunksAsync(
+                           stream,
+                           "text/plain",
+                           "streamed.txt",
+                           chunkSizeCharacters: 8,
+                           overlapCharacters: 0))
+        {
+            actual.Add(chunk);
+        }
+
+        Assert.Equal(expected, actual);
+
+        Assert.Equal(text, string.Concat(actual.Select(static chunk => chunk.Text)));
+    }
+
+    private static void AssertEveryCharacterIsCovered(string text, SessionAttachmentTextChunk[] chunks)
+    {
+        bool[] covered = new bool[text.Length];
+
+        foreach (SessionAttachmentTextChunk chunk in chunks)
+        {
+            Assert.Equal(text[chunk.CharacterStart..chunk.CharacterEnd], chunk.Text);
+
+            for (int index = chunk.CharacterStart; index < chunk.CharacterEnd; index++)
+            {
+                covered[index] = true;
+            }
+        }
+
+        Assert.DoesNotContain(false, covered);
     }
 
     [Theory]
@@ -262,7 +331,6 @@ public sealed class SessionAttachmentTextExtractorTests
         string mimeType,
         string source)
     {
-
         byte[] bytes = Encoding.UTF8.GetBytes(source);
 
         SessionAttachmentExtractionResult extraction = SessionAttachmentTextExtractor.Extract(
@@ -286,37 +354,29 @@ public sealed class SessionAttachmentTextExtractorTests
                            chunkSizeCharacters: 8,
                            overlapCharacters: 2))
         {
-
             actual.Add(chunk);
-
         }
 
         Assert.Equal(expected, actual);
 
         Assert.True(stream.ReadCallCount > 1);
-
     }
 
     private sealed class ChunkedReadStream(
         byte[] bytes,
         int maxReadBytes) : MemoryStream(bytes, writable: false)
     {
-
         public int ReadCallCount { get; private set; }
 
         public override ValueTask<int> ReadAsync(
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-
             ReadCallCount++;
 
             return base.ReadAsync(
                 buffer[..Math.Min(buffer.Length, maxReadBytes)],
                 cancellationToken);
-
         }
-
     }
-
 }
