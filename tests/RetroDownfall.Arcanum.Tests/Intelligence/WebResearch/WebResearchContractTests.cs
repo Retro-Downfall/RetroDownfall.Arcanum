@@ -13,7 +13,6 @@ public sealed class WebResearchContractTests
     [Fact]
     public void Research_request_uses_an_optional_source_target_without_a_hop_ceiling()
     {
-
         Assert.Null(typeof(WebResearchWorkflowRequest).GetProperty("MaxHops"));
 
         Assert.Null(typeof(WebResearchWorkflowRequest).GetProperty("MaxSources"));
@@ -23,7 +22,6 @@ public sealed class WebResearchContractTests
             typeof(WebResearchWorkflowRequest)
                 .GetProperty("SourceTarget")?
                 .PropertyType);
-
     }
 
     [Fact]
@@ -115,7 +113,7 @@ public sealed class WebResearchContractTests
                 "https://example.test/page",
                 "Example Page",
                 hostile)],
-            maximumCharacters: 100_000);
+            maximumCharacters: 100_000).Text;
 
         // The page body must sit inside an adaptive fence so it cannot forge the [n] source
         // framing or append a trailing instruction block.
@@ -143,7 +141,7 @@ public sealed class WebResearchContractTests
                 "https://attacker.test",
                 "Oversized",
                 oversized)],
-            maximumCharacters: 2_000);
+            maximumCharacters: 2_000).Text;
 
         Assert.True(prompt.Length <= 2_000);
 
@@ -160,6 +158,52 @@ public sealed class WebResearchContractTests
         Assert.Contains("xxxxxxxxxx", prompt, StringComparison.Ordinal);
 
         Assert.Equal(2, CountOccurrences(prompt, "```"));
+    }
+
+    /// <summary>
+    /// A source the prompt budget could not carry is one the model never read, so it must not be cited
+    /// as if it had been. The builder reports exactly which source indexes it emitted, and only those
+    /// become citations.
+    /// </summary>
+    [Fact]
+    public void Synthesis_prompt_reports_dropped_sources()
+    {
+        WebResearchWorkflowService.SynthesisPrompt prompt = WebResearchWorkflowService.BuildSynthesisPrompt(
+            "What is the answer?",
+            [],
+            [
+                new WebResearchWorkflowService.ResearchSource(1, "https://one.test", "One", new string('a', 600)),
+                new WebResearchWorkflowService.ResearchSource(2, "https://two.test", "Two", new string('b', 600)),
+                new WebResearchWorkflowService.ResearchSource(3, "https://three.test", "Three", "tail"),
+            ],
+            maximumCharacters: 1_500);
+
+        Assert.Contains("Source [1]", prompt.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("https://three.test", prompt.Text, StringComparison.Ordinal);
+
+        Assert.Equal(
+            [.. new[] { 1, 2, 3 }.Where(index => prompt.Text.Contains($"Source [{index}]", StringComparison.Ordinal))],
+            prompt.EmittedSourceIndexes);
+
+        Assert.DoesNotContain(3, prompt.EmittedSourceIndexes);
+
+        Assert.True(prompt.EmittedSourceIndexes.Count < 3);
+    }
+
+    [Fact]
+    public void Synthesis_prompt_reports_every_source_when_all_fit()
+    {
+        WebResearchWorkflowService.SynthesisPrompt prompt = WebResearchWorkflowService.BuildSynthesisPrompt(
+            "What is the answer?",
+            [],
+            [
+                new WebResearchWorkflowService.ResearchSource(1, "https://one.test", "One", "alpha"),
+                new WebResearchWorkflowService.ResearchSource(2, "https://two.test", "Two", "beta"),
+            ],
+            maximumCharacters: 100_000);
+
+        Assert.Equal([1, 2], prompt.EmittedSourceIndexes);
     }
 
     private static int CountOccurrences(string haystack, string needle)
