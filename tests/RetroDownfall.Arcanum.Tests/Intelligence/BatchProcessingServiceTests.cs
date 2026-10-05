@@ -917,6 +917,56 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
             CancellationToken.None));
     }
 
+    /// <summary>
+    /// A provider-side timeout surfaces as an <see cref="OperationCanceledException"/> that neither the
+    /// host token nor the external-cancel watcher raised. It is a failure, not an operator cancel, so
+    /// the batch must not be sealed as <c>cancelled</c> with its in-flight line reported as interrupted.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProcessBatchAsync_ProviderTimeoutOce_DoesNotMarkBatchCancelled()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ThrowingIntelligenceProvider provider = new()
+        {
+            Failure = new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing."),
+        };
+
+        BatchProcessingService service = CreateService(
+            BuildServiceProvider(provider),
+            maxConcurrentRequestsPerBatch: 1);
+
+        Guid inputFileId = await SeedInputFileAsync(
+            """{"custom_id":"provider-timeout","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+            + "\n");
+
+        BatchRecord batch = new(
+            Guid.NewGuid(),
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        try
+        {
+            await service.ProcessBatchAsync(batch, CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+            // The failure may still surface to the worker, which logs it; the status is what matters.
+        }
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.NotEqual(BatchStatuses.Cancelled, finished.Status);
+    }
+
     [SkippableFact]
 
     public async Task TickAsync_UnexpectedProviderException_LeavesClaimedLineRecoverable()
@@ -1691,6 +1741,8 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     private sealed class ThrowingIntelligenceProvider : IArcanumIntelligenceProvider
 
     {
+        public Exception Failure { get; init; } = new InvalidOperationException("Injected unexpected provider failure.");
+
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
 
@@ -1700,7 +1752,7 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
 
             InferenceAuditContext? auditContext = null) =>
 
-            throw new InvalidOperationException("Injected unexpected provider failure.");
+            throw Failure;
 
         public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,

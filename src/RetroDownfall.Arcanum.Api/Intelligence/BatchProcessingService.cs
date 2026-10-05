@@ -950,9 +950,11 @@ internal sealed class BatchProcessingService(
                     }
                 }).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (linkedCts.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
         {
-            // Cancelled via the watcher (external POST .../cancel), not host shutdown.
+            // Cancelled via the watcher (external POST .../cancel), not host shutdown. Only the
+            // watcher can have cancelled the linked source here; any other OperationCanceledException
+            // (a provider-side timeout, say) is a processing failure and takes the arm below.
             cancelledMidway = true;
         }
         catch (Exception ex)
