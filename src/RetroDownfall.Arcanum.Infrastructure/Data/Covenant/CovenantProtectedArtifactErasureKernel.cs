@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -397,6 +398,20 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             CovenantIdentitySql.Key(item.ArtifactId),
             CovenantArtifactPlanMode.Delete,
             cancellationToken).ConfigureAwait(false);
+
+        // The Session's hierarchical summary of its entries is derived from the entry being erased, and
+        // is the one derivative the plan above does not reach: it is keyed by the Session, not by the
+        // artifact, so no per-artifact predicate can name it. Dropping the whole Session tree here, in
+        // the same transaction as the entry, is what keeps a summary of the erased words from staying
+        // retrievable behind a purge that reported success; the sweep rebuilds it from what is left.
+        if (item.Kind == SensitiveArtifactKind.AssistantEntry && item.SessionId is { } owningSession)
+        {
+            _ = await TapestryStore.DeleteSessionTreesAsync(
+                connection,
+                transaction,
+                owningSession,
+                cancellationToken).ConfigureAwait(false);
+        }
 
         // The label is the one table whose identities have a single writer. ArtifactSensitivityLedger
         // is the sole INSERT into artifact_sensitivity and spells every identity the way Format does,

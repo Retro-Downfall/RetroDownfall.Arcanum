@@ -680,6 +680,35 @@ internal sealed class TapestryStore(
             cancellationToken);
 
     /// <summary>
+    /// Deletes every <c>Session</c>-kind tree of one Session, in the caller's transaction, whatever each
+    /// generation's status.
+    /// </summary>
+    /// <remarks>
+    /// A Session tree is a model-written summary of that Session's entries, so it is derived from every
+    /// entry an erasure removes. The erasure kernel calls this inside the transaction that deletes the
+    /// entry: a summary of the erased words must not stay retrievable behind a purge that reported
+    /// success. The next sweep rebuilds the tree from what remains. The attachment tree of the same
+    /// Session is not derived from its entries and is left alone, and the scope id is the spelling the
+    /// sweep keyed the tree by, so an exact comparison finds it.
+    /// </remarks>
+    /// <returns>The generations removed.</returns>
+    internal static Task<int> DeleteSessionTreesAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        string scopeId = TapestryScope.ForSession(sessionId).Id;
+
+        return DeleteGenerationsAsync(
+            connection,
+            transaction,
+            "\"ScopeKind\" = 'Session' AND \"ScopeId\" = @scopeId",
+            command => AddParameter(command, "@scopeId", scopeId),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Deletes matching generations. The optional vector mirror has no foreign key, so its rows are
     /// removed explicitly before the cascade takes the BLOB rows with the nodes.
     /// </summary>
