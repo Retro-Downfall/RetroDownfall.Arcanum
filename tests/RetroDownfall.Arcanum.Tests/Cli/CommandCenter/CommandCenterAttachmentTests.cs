@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
+using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -492,7 +493,7 @@ public sealed class CommandCenterAttachmentFileKindTests : IDisposable
         FileSystemObjectKind kind = Enum.Parse<FileSystemObjectKind>(kindName);
         int asked = 0;
 
-        bool attachable = CommandCenterTurnAttachmentBuilder.IsAttachableFileKind(
+        bool attachable = AttachableFile.IsAttachableFileKind(
             kind,
             onWindows,
             () =>

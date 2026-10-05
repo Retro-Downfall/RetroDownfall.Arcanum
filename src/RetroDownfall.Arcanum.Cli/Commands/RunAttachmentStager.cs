@@ -151,6 +151,15 @@ internal sealed class RunAttachmentStager(
                     $"The --with path '{requestedPath}' cannot be staged because {reason}.");
             }
 
+            // A FIFO passes File.Exists and then blocks the open until a writer appears, which nothing can
+            // interrupt; a device has no end. Only a regular file is a bounded source, so anything else is
+            // refused before it is opened, as the Command Center refuses it.
+            if (!AttachableFile.TryConfirmRegularFile(fullPath, out string? notRegularReason))
+            {
+                return Failure(
+                    $"The --with path '{requestedPath}' cannot be staged because it is {notRegularReason}.");
+            }
+
             string relativePath = Path.GetRelativePath(
                 fullWorkingDirectory,
                 fullPath);
