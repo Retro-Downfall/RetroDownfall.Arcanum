@@ -302,6 +302,12 @@ internal static class ChildProcessFilesystemJail
         IdentityOwnedFileSystemArtifact? config = null;
         IdentityOwnedFileSystemArtifact? journal = null;
         IdentityOwnedFileSystemArtifact? jobSignal = null;
+
+        // TMP and TEMP are pointed at the per-run temp directory before the remaining artifacts are
+        // written; a failure after that deletes the directory, so the entries are put back for an
+        // operator-escaped run.
+        EnvironmentEntrySnapshot tempEnvironment = EnvironmentEntrySnapshot.Capture(startInfo, "TMP", "TEMP");
+
         try
         {
             List<string> readWrite = NormalizeExistingRoots(request.ReadWriteRoots);
@@ -374,6 +380,7 @@ internal static class ChildProcessFilesystemJail
             if (journal is not null) cleanup.Add(journal.Value);
             if (jobSignal is not null) cleanup.Add(jobSignal.Value);
             CleanupTempPaths(cleanup);
+            tempEnvironment.Restore(startInfo);
             logger?.LogError(ex, "Failed to prepare Windows AppContainer broker.");
             return WindowsFailClosedOrEscape(request, logger, "Windows AppContainer setup failed.");
         }
@@ -425,6 +432,11 @@ internal static class ChildProcessFilesystemJail
         IdentityOwnedFileSystemArtifact? invocationTempArtifact = null;
 
         IdentityOwnedFileSystemArtifact? profileArtifact = null;
+
+        // The per-run temp variables are pointed at the invocation temp directory before the profile is
+        // built, so a failure after that point leaves them naming a directory the catch below deletes.
+        // The operator escape then runs the child with no jail and those dangling variables.
+        EnvironmentEntrySnapshot tempEnvironment = EnvironmentEntrySnapshot.Capture(startInfo, "TMPDIR", "TMP", "TEMP");
 
         try
         {
@@ -514,6 +526,8 @@ internal static class ChildProcessFilesystemJail
 
             CleanupTempPaths(cleanup);
 
+            tempEnvironment.Restore(startInfo);
+
             logger?.LogError(ex, "Failed to prepare macOS sandbox-exec wrapper.");
 
             return FailClosedOrEscape(request, logger, "Failed to prepare macOS sandbox-exec wrapper.");
@@ -557,6 +571,47 @@ internal static class ChildProcessFilesystemJail
 
             Detail = detail,
         };
+    }
+
+    /// <summary>
+    /// The state of a few <see cref="ProcessStartInfo.Environment"/> entries before a prepare step
+    /// rewrote them, so a prepare that fails can hand the caller back the environment it was given.
+    /// </summary>
+    private readonly struct EnvironmentEntrySnapshot
+    {
+        private readonly (string Name, bool Present, string? Value)[] _entries;
+
+        private EnvironmentEntrySnapshot((string Name, bool Present, string? Value)[] entries) =>
+            _entries = entries;
+
+        internal static EnvironmentEntrySnapshot Capture(ProcessStartInfo startInfo, params string[] names)
+        {
+            (string Name, bool Present, string? Value)[] entries = new (string, bool, string?)[names.Length];
+
+            for (int index = 0; index < names.Length; index++)
+            {
+                bool present = startInfo.Environment.TryGetValue(names[index], out string? value);
+
+                entries[index] = (names[index], present, value);
+            }
+
+            return new EnvironmentEntrySnapshot(entries);
+        }
+
+        internal void Restore(ProcessStartInfo startInfo)
+        {
+            foreach ((string name, bool present, string? value) in _entries)
+            {
+                if (present)
+                {
+                    startInfo.Environment[name] = value;
+                }
+                else
+                {
+                    _ = startInfo.Environment.Remove(name);
+                }
+            }
+        }
     }
 
     private static string GetPlatformLabel()

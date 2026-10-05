@@ -112,6 +112,155 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
                 """));
     }
 
+    [Fact]
+    public void Profile_scopes_signal_to_the_sandbox()
+    {
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            ["/Users/arcanum-test/workspace"],
+            ["/usr", "/bin", "/System"],
+            "/private/tmp/arcanum-sb-test-invocation");
+
+        // A bare (allow signal) lets a model-directed child signal any process the operator owns, so a
+        // jailed `kill` or `pkill` reaches the operator's editor, terminal and browser. The runner kills
+        // descendants from outside the sandbox, which no sandbox rule governs, so nothing needs the
+        // unrestricted grant.
+        Assert.DoesNotContain("(allow signal)", profile, StringComparison.Ordinal);
+
+        Assert.Contains("(allow signal (target self))", profile, StringComparison.Ordinal);
+
+        Assert.Contains("(allow signal (target same-sandbox))", profile, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void Prepare_failure_with_escape_hatch_leaves_environment_untouched()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && File.Exists("/usr/bin/sandbox-exec"),
+            "The macOS prepare path creates the per-run temp directory before it can fail.");
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "/bin/echo",
+            WorkingDirectory = _workspace,
+            UseShellExecute = false,
+        };
+
+        startInfo.Environment["TMPDIR"] = "/operator/original-tmpdir";
+
+        startInfo.Environment["TEMP"] = "/operator/original-temp";
+
+        _ = startInfo.Environment.Remove("TMP");
+
+        // A whole-volume read-write root is the one thing the profile builder refuses, and it refuses
+        // only after the runner has already pointed TMPDIR/TMP/TEMP at the per-run temp directory.
+        ChildProcessSandboxRequest request = new()
+        {
+            ReadWriteRoots = ["/"],
+
+            ReadExecuteRoots = [],
+
+            AllowUnsandboxed = true,
+
+            WindowsPathBoundaryRequired = false,
+
+            ToolName = "execute_command",
+        };
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            request,
+            NullLogger.Instance);
+
+        // The operator escape runs the child with no jail, and the failed prepare already deleted the
+        // temp directory those variables named. The child must see the environment it would have had.
+        Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
+
+        Assert.Equal("/operator/original-tmpdir", startInfo.Environment["TMPDIR"]);
+
+        Assert.Equal("/operator/original-temp", startInfo.Environment["TEMP"]);
+
+        Assert.False(startInfo.Environment.ContainsKey("TMP"));
+    }
+
+    [SkippableFact]
+    public async Task MacOsSandbox_DeniesSignalsToProcessesOutsideTheSandbox()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt signal scoping requires a host where sandbox-exec can apply a profile.");
+
+        using global::System.Diagnostics.Process outsider = new();
+
+        outsider.StartInfo = new ProcessStartInfo("/bin/sleep", "60")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        _ = outsider.Start();
+
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = "/bin/sh",
+
+                UseShellExecute = false,
+
+                RedirectStandardOutput = true,
+
+                RedirectStandardError = true,
+
+                CreateNoWindow = true,
+
+                WorkingDirectory = _workspace,
+            };
+
+            // Signal 0 only asks whether the signal would be permitted. The jailed child may signal
+            // its own descendant (a build tool stopping a worker) but not a process outside the jail.
+            psi.ArgumentList.Add("-c");
+
+            psi.ArgumentList.Add(
+                "sleep 30 & own=$!; "
+                + "if kill -0 \"$own\" 2>/dev/null; then echo own-ok; else echo own-denied; fi; "
+                + $"if kill -0 {outsider.Id} 2>/dev/null; then echo outside-ok; else echo outside-denied; fi; "
+                + "kill \"$own\" 2>/dev/null");
+
+            ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
+                _workspace,
+                sanctumAllowedPaths: null,
+                allowUnsandboxed: false,
+                windowsPathBoundaryRequired: false);
+
+            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.ToolExec,
+                64 * 1024,
+                TimeSpan.FromSeconds(20),
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None,
+                request,
+                NullLogger.Instance);
+
+            Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+            Assert.Contains("own-ok", result.Stdout.Text, StringComparison.Ordinal);
+
+            Assert.Contains("outside-denied", result.Stdout.Text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("outside-ok", result.Stdout.Text, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!outsider.HasExited)
+            {
+                outsider.Kill(entireProcessTree: true);
+            }
+        }
+    }
+
     [SkippableFact]
     public void MacOsApply_carries_no_follow_owned_cleanup_artifacts()
     {
