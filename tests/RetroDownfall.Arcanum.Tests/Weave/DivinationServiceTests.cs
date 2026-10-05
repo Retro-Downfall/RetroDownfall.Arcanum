@@ -341,11 +341,75 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
+        // One Warning for the whole scan, not one per skipped row, and it carries every count: four rows skipped
+        // in all (two of another width, one unreadable, one with no direction) against a 3-dimension query.
         TestLogEntry warning = Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Warning);
 
-        Assert.Contains("2", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("skipped 4 stored embedding(s)", warning.Message, StringComparison.Ordinal);
+
+        Assert.Contains("with a 3-dimension query", warning.Message, StringComparison.Ordinal);
+
+        Assert.Contains(": 2 of another width, 1 unreadable, 1 with no direction.", warning.Message, StringComparison.Ordinal);
 
         Assert.Contains("embeddings reset", warning.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A stored embedding that is SQL NULL is a row nothing can be compared with, so it is counted as unreadable
+    /// like a corrupt blob, never as a vector of another width. The production tables declare the column NOT
+    /// NULL, so the scan is pointed at a table that allows it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Managed_search_counts_a_null_embedding_as_unreadable_not_as_another_width()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using (DbCommand create = connection.CreateCommand())
+        {
+            create.CommandText = """CREATE TABLE "nullable_embeddings" ("Id" TEXT PRIMARY KEY, "Embedding" BLOB);""";
+
+            _ = await create.ExecuteNonQueryAsync();
+        }
+
+        await using (DbCommand insert = connection.CreateCommand())
+        {
+            insert.CommandText =
+                """
+                INSERT INTO "nullable_embeddings" ("Id", "Embedding") VALUES ('good', @good), ('missing', NULL);
+                """;
+
+            AddParam(insert, "@good", EmbeddingBlobCodec.Encode([1f, 0f, 0f]));
+
+            _ = await insert.ExecuteNonQueryAsync();
+        }
+
+        TestCapturingLogger<DivinationService> logger = new();
+
+        DivinationService service = CreateService(vecAvailable: false, logger);
+
+        Result<DivinationResult[]> result = await service.SearchAsync(
+            "nullable_embeddings_vec",
+            "Id",
+            "Embedding",
+            new Embedding<float>(new float[] { 1f, 0f, 0f }),
+            maxResults: 10,
+            similarityThreshold: 0f,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("good", Assert.Single(result.Value).Id);
+
+        TestLogEntry warning = Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains(": 0 of another width, 1 unreadable, 0 with no direction.", warning.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
