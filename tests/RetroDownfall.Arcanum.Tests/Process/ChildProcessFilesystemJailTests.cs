@@ -131,6 +131,23 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.Contains("(allow signal (target same-sandbox))", profile, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Root_normalization_drops_every_root_that_is_neither_a_directory_nor_a_file()
+    {
+        // Every jail — the Seatbelt profile and the Windows broker payload — is built from this list.
+        // A missing root is inert in a Seatbelt profile but makes the broker's grant throw, failing the
+        // run with exit 73 and no output, so it is dropped on every platform rather than passed on.
+        string missingDirectory = Path.Combine(_workspace, "missing-" + Guid.NewGuid().ToString("N"));
+        string missingFile = Path.Combine(missingDirectory, "tool.txt");
+        string file = Path.Combine(_workspace, "inside.txt");
+
+        List<string> roots = ChildProcessFilesystemJail.NormalizeExistingRoots(
+            [missingDirectory, _workspace, missingFile, _outsideDir, file, "   "]);
+
+        // An existing file stands for its directory, which is already present, so it adds nothing.
+        Assert.Equal([_workspace, _outsideDir], roots);
+    }
+
     [SkippableFact]
     public void Prepare_failure_with_escape_hatch_leaves_environment_untouched()
     {

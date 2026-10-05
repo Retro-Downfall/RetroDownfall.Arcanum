@@ -21,7 +21,8 @@ internal sealed record WindowsBrokerTarget(
 /// <remarks>
 /// Deliberately narrower than the Win32 search order: only fully qualified PATH entries are searched,
 /// never the current, application or workspace directory, so a <c>git.exe</c> planted in a cloned
-/// repository cannot shadow the real one. Batch scripts are refused rather than wrapped in
+/// repository cannot shadow the real one, and a path the caller names is used only when it is
+/// drive-qualified or plainly relative to the working directory. Batch scripts are refused rather than wrapped in
 /// <c>cmd.exe /c</c>: <c>CreateProcessW</c> cannot start them as an application name, and wrapping
 /// would re-parse model-supplied arguments through cmd's metacharacter rules.
 /// </remarks>
@@ -54,9 +55,14 @@ internal static class WindowsBrokerTargetResolver
 
         if (name.Contains('\\') || name.Contains('/') || name.Contains(':'))
         {
+            // Only a drive-qualified path is used as given, and only a plain relative path resolves
+            // against the working directory. Root-relative (`\Windows\…`), UNC and device
+            // (`\\server\share\…`, `\\?\…`) and drive-relative (`C:tool`) names all name a file outside
+            // the working directory: joining them onto it would launch a different file than the one
+            // named, and a UNC target would load code from a network share, so they are refused.
             string? candidate = IsFullyQualified(name)
                 ? name
-                : workingDirectory is not null && IsFullyQualified(workingDirectory) && !name.Contains(':')
+                : workingDirectory is not null && IsFullyQualified(workingDirectory) && IsPlainRelative(name)
                     ? Join(workingDirectory, name)
                     : null;
 
@@ -94,11 +100,34 @@ internal static class WindowsBrokerTargetResolver
         {
             return Result<WindowsBrokerTarget>.Failure(new Error(
                 BatchTargetRefusedCode,
-                $"'{requested}' resolves to the batch script '{resolved}', which the Windows sandbox cannot start directly; "
-                + $"the command was not started. Run it through the command interpreter explicitly (for example `cmd.exe /c {requested}`) if that is intended."));
+                BatchRefusalMessage(requested, resolved, readExecuteRoot)));
         }
 
         return Result<WindowsBrokerTarget>.Success(new WindowsBrokerTarget(resolved, readExecuteRoot));
+    }
+
+    /// <summary>
+    /// The <c>cmd.exe /c</c> route starts cmd from System32, which every AppContainer can read, but it
+    /// grants nothing else: cmd's own search for the script runs inside the sandbox. Only a bare name
+    /// the host resolved on a user-profile PATH directory gets that directory granted, so a shim there
+    /// (npm, scoop) cannot be reached through cmd at all, and the message says so rather than
+    /// suggesting a route that fails.
+    /// </summary>
+    private static string BatchRefusalMessage(
+        string requested,
+        string resolved,
+        string? profileDirectory)
+    {
+        string refused =
+            $"'{requested}' resolves to the batch script '{resolved}', which the Windows sandbox cannot start directly; the command was not started.";
+
+        return profileDirectory is not null
+            ? refused
+                + $" Running it as `cmd.exe /c {requested}` will not work either: that route does not grant the sandbox access to the script's directory '{profileDirectory}' inside the user profile, so cmd cannot read the script there."
+                + " Run the program the script wraps directly instead."
+            : refused
+                + $" Run it through the command interpreter explicitly (for example `cmd.exe /c {requested}`) if that is intended;"
+                + " that route does not grant the sandbox access to the script's directory, so it only works for a script the sandbox can already read, such as one inside the workspace.";
     }
 
     private static Result<WindowsBrokerTarget> NotFound(string requested) =>
@@ -190,6 +219,16 @@ internal static class WindowsBrokerTargetResolver
             ? extensions
             : DefaultPathExtensions.Split(';');
     }
+
+    /// <summary>
+    /// A relative path Win32 resolves against the current directory: no drive designator and no
+    /// leading separator, so neither root-relative, UNC, device nor drive-relative.
+    /// </summary>
+    private static bool IsPlainRelative(string value) =>
+        value.Length > 0
+        && !value.Contains(':')
+        && value[0] != '\\'
+        && value[0] != '/';
 
     /// <summary>A drive-qualified Windows path (<c>C:\…</c> or <c>C:/…</c>), whatever OS is running.</summary>
     private static bool IsFullyQualified(string value) =>

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
@@ -41,8 +42,22 @@ internal static class WindowsAppContainerRestoreJournal
     /// </summary>
     private const string GrantTag = "G";
 
-    /// <summary>Longest string-form SID: "S-1-" plus a 48-bit authority and 15 32-bit sub-authorities.</summary>
-    private const int MaxSidStringLength = 184;
+    /// <summary>
+    /// Every per-run profile SID starts here: SECURITY_APP_PACKAGE_AUTHORITY (15) and
+    /// SECURITY_APP_PACKAGE_BASE_RID (2).
+    /// </summary>
+    private const string AppContainerSidPrefix = "S-1-15-2-";
+
+    /// <summary>
+    /// SECURITY_APP_PACKAGE_RID_COUNT is 8: the base RID plus the seven sub-authorities
+    /// <c>DeriveAppContainerSidFromAppContainerName</c> hashes from the profile name. The built-in
+    /// package SIDs (ALL APPLICATION PACKAGES <c>S-1-15-2-1</c>, ALL RESTRICTED APPLICATION PACKAGES
+    /// <c>S-1-15-2-2</c>) carry only one.
+    /// </summary>
+    private const int AppContainerSidSubAuthorityCount = 7;
+
+    /// <summary>The prefix plus seven ten-digit sub-authorities and their six separators.</summary>
+    private const int MaxAppContainerSidLength = 85;
 
     /// <summary>
     /// Records the profile that must be deleted. Called before the profile is created, so a kill in
@@ -58,9 +73,9 @@ internal static class WindowsAppContainerRestoreJournal
     /// </summary>
     internal static void RecordGrant(string journalPath, string path, string sid)
     {
-        if (!IsSidString(sid))
+        if (!IsAppContainerSidString(sid))
         {
-            throw new ArgumentException("The AppContainer SID is not in string form.", nameof(sid));
+            throw new ArgumentException("The SID is not a per-run AppContainer SID in string form.", nameof(sid));
         }
 
         Append(
@@ -117,7 +132,7 @@ internal static class WindowsAppContainerRestoreJournal
             if (fields.Length == 3
                 && fields[0] == GrantTag
                 && TryDecode(fields[1], out string path)
-                && IsSidString(fields[2]))
+                && IsAppContainerSidString(fields[2]))
             {
                 grants.Add(new WindowsAppContainerGrantRecord(path, fields[2]));
                 continue;
@@ -189,41 +204,30 @@ internal static class WindowsAppContainerRestoreJournal
     }
 
     /// <summary>
-    /// The string form of a SID (<c>S-1-15-2-…</c>): what the broker records and what the restore
-    /// parses back. Anything else is not a record this broker wrote.
+    /// The canonical string form of a per-run AppContainer SID — <c>S-1-15-2-</c> and exactly seven
+    /// 32-bit sub-authorities, as <c>SecurityIdentifier.Value</c> prints it: what the broker records and
+    /// what the restore parses back. Replay purges every explicit ACE the recorded SID holds on the
+    /// recorded root, so anything broader — a user, group or well-known SID, ALL APPLICATION PACKAGES, a
+    /// capability SID — is not a record this broker wrote, and acting on it would strip access no run
+    /// ever granted.
     /// </summary>
-    internal static bool IsSidString(string? value)
+    internal static bool IsAppContainerSidString(string? value)
     {
         if (string.IsNullOrEmpty(value)
-            || value.Length > MaxSidStringLength
-            || !value.StartsWith("S-1-", StringComparison.Ordinal))
+            || value.Length > MaxAppContainerSidLength
+            || !value.StartsWith(AppContainerSidPrefix, StringComparison.Ordinal))
         {
             return false;
         }
 
-        bool previousWasSeparator = true;
-        foreach (char character in value.AsSpan(4))
-        {
-            if (character == '-')
-            {
-                if (previousWasSeparator)
-                {
-                    return false;
-                }
+        string[] subAuthorities = value[AppContainerSidPrefix.Length..].Split('-');
 
-                previousWasSeparator = true;
-                continue;
-            }
-
-            if (!char.IsAsciiDigit(character))
-            {
-                return false;
-            }
-
-            previousWasSeparator = false;
-        }
-
-        return !previousWasSeparator;
+        return subAuthorities.Length == AppContainerSidSubAuthorityCount
+            && subAuthorities.All(static subAuthority =>
+                subAuthority.Length > 0
+                && (subAuthority.Length == 1 || subAuthority[0] != '0')
+                && subAuthority.All(char.IsAsciiDigit)
+                && uint.TryParse(subAuthority, NumberStyles.None, CultureInfo.InvariantCulture, out _));
     }
 
     private static void Append(string journalPath, string record)

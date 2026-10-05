@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 public sealed class WindowsAppContainerRestoreJournalTests : IDisposable
 {
     private const string RunA =
-        "S-1-15-2-1111111111-2222222222-3333333333-4444444444-1555555555-1666666666-1777777777";
+        "S-1-15-2-1111111111-2222222222-3333333333-1444444444-1555555555-1666666666-1777777777";
 
     private const string RunB =
         "S-1-15-2-1888888888-1999999999-1212121212-1343434343-1565656565-1787878787-1909090909";
@@ -259,6 +259,54 @@ public sealed class WindowsAppContainerRestoreJournalTests : IDisposable
         Assert.False(complete);
         Assert.Empty(removed);
         Assert.Equal(1, WindowsAppContainerRestoreJournal.Read(_journal).UnreadableRecords);
+    }
+
+    [Theory]
+    [InlineData("S-1-5-32-544")]
+    [InlineData("S-1-5-21-1-2-3-1001")]
+    [InlineData("S-1-15-2-1")]
+    [InlineData("S-1-15-2-2")]
+    [InlineData("S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122")]
+    [InlineData("S-1-15-2-1-2-3-4-5-6")]
+    [InlineData("S-1-15-2-1-2-3-4-5-6-7-8")]
+    [InlineData("S-1-15-2-1-2-3-4294967296-5-6-7")]
+    [InlineData("S-1-15-2-1-2-3-04-5-6-7")]
+    public void Grant_for_anything_but_a_per_run_AppContainer_sid_is_refused_before_it_is_recorded(string sid)
+    {
+        // Replay removes every explicit ACE the recorded SID holds on the recorded root. A record naming
+        // Administrators, the user, ALL APPLICATION PACKAGES or a capability would strip access this run
+        // never granted, so only the shape a per-run profile SID has — S-1-15-2 plus seven 32-bit
+        // sub-authorities — is ever written.
+        Assert.Throws<ArgumentException>(() =>
+            WindowsAppContainerRestoreJournal.RecordGrant(_journal, @"C:\workspace", sid));
+
+        Assert.Empty(File.ReadAllBytes(_journal));
+    }
+
+    [Fact]
+    public void Replay_never_removes_a_recorded_sid_that_is_not_a_per_run_AppContainer_sid()
+    {
+        // The log is owner-only, but a record that names a broad SID must still never reach the ACL
+        // edit: it is residue to report, not an ACE to purge.
+        string workspace = Convert.ToBase64String("C:\\workspace"u8.ToArray());
+        File.AppendAllText(_journal, "G " + workspace + " S-1-5-32-544\n");
+        File.AppendAllText(_journal, "G " + workspace + " S-1-15-2-1\n");
+        WindowsAppContainerRestoreJournal.RecordGrant(_journal, @"C:\workspace", RunA);
+
+        List<string> removed = [];
+
+        bool complete = WindowsAppContainerRestoreJournal.Replay(
+            _journal,
+            (path, sid) =>
+            {
+                removed.Add(sid);
+                return true;
+            },
+            static profile => true);
+
+        Assert.False(complete);
+        Assert.Equal([RunA], removed);
+        Assert.Equal(2, WindowsAppContainerRestoreJournal.Read(_journal).UnreadableRecords);
     }
 
     [Fact]

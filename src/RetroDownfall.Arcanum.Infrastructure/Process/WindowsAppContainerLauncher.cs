@@ -19,26 +19,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// </summary>
 [SupportedOSPlatform("windows")]
 // Windows kernel/ACL integration. Its only end-to-end coverage is the Windows-lane
-// WindowsAppContainerBrokerTests / WindowsAppContainerAclTests, which need a published apphost and
-// have not yet run in CI; the pure parts it relies on are covered on every host.
+// WindowsAppContainerBrokerTests (whose smoke needs a published apphost) and
+// WindowsAppContainerAclTests, which have not yet run in CI; the pure parts it relies on
+// (WindowsAppContainerBrokerExit, WindowsAppContainerRootLockBudget, the journal and the resolver)
+// are covered on every host.
 [ExcludeFromCodeCoverage]
 internal static partial class WindowsAppContainerLauncher
 {
-    /// <summary>Malformed payload: nothing was attempted.</summary>
-    internal const int InvalidPayloadExitCode = 70;
-
-    /// <summary>The host never confirmed this broker's Job Object assignment.</summary>
-    internal const int HostJobNotConfirmedExitCode = 71;
-
-    /// <summary>The AppContainer profile could not be created.</summary>
-    internal const int ProfileCreationFailedExitCode = 72;
-
-    /// <summary>Granting a root or launching the target failed.</summary>
-    internal const int SetupFailedExitCode = 73;
-
     private static readonly TimeSpan HostJobConfirmationTimeout = TimeSpan.FromSeconds(5);
-
-    private static readonly TimeSpan RootLockTimeout = TimeSpan.FromSeconds(30);
 
     private const uint CreateSuspended = 0x00000004;
 
@@ -51,23 +39,32 @@ internal static partial class WindowsAppContainerLauncher
     private const int StartupInfoStdHandles = 0x00000100;
     private const int Infinite = -1;
 
-    internal static int Run(SandboxExecHelperPayload payload)
+    internal static int Run(SandboxExecHelperPayload payload) => Run(payload, Console.Error);
+
+    /// <summary>
+    /// Every exit the broker takes for its own failure writes one <c>sandbox-exec:</c> line to
+    /// <paramref name="error"/>, the stderr the target shares, so the runner hands the model a reason
+    /// along with the exit code.
+    /// </summary>
+    internal static int Run(SandboxExecHelperPayload payload, TextWriter error)
     {
-        if (!OperatingSystem.IsWindows()
-            || string.IsNullOrWhiteSpace(payload.WindowsProfileName)
-            || string.IsNullOrWhiteSpace(payload.WindowsRestoreJournalPath)
-            || string.IsNullOrWhiteSpace(payload.WindowsJobAssignedSignalPath)
-            || string.IsNullOrWhiteSpace(payload.Target))
+        string? missing = WindowsAppContainerBrokerExit.MissingPayloadMember(payload);
+        if (missing is not null)
         {
-            return InvalidPayloadExitCode;
+            return WindowsAppContainerBrokerExit.Fail(
+                error,
+                WindowsAppContainerBrokerExit.InvalidPayload,
+                WindowsAppContainerBrokerExit.InvalidPayloadMessage(missing));
         }
 
-        string journalPath = payload.WindowsRestoreJournalPath;
-        string signalPath = payload.WindowsJobAssignedSignalPath;
+        string profileName = payload.WindowsProfileName!;
+        string journalPath = payload.WindowsRestoreJournalPath!;
+        string signalPath = payload.WindowsJobAssignedSignalPath!;
         nint sid = 0;
         string? sidValue = null;
         bool profileCreated = false;
         List<string> grantedRoots = [];
+        WindowsAppContainerRootLockBudget? lockBudget = null;
         try
         {
             // "In a job" is not enough: a host that itself runs inside a job (a CI agent, a service
@@ -80,16 +77,18 @@ internal static partial class WindowsAppContainerLauncher
                     static () => DateTime.UtcNow,
                     static delay => Thread.Sleep(delay)))
             {
-                WriteBrokerError(WindowsAppContainerJobAssignment.HostJobTimeoutMessage);
-                return HostJobNotConfirmedExitCode;
+                return WindowsAppContainerBrokerExit.Fail(
+                    error,
+                    WindowsAppContainerBrokerExit.HostJobNotConfirmed,
+                    WindowsAppContainerJobAssignment.HostJobTimeoutMessage);
             }
 
             // Journal before creating, not after: a kill in that window would otherwise strand a
             // registered profile that nothing remembers the name of.
-            WindowsAppContainerRestoreJournal.RecordProfile(journalPath, payload.WindowsProfileName);
+            WindowsAppContainerRestoreJournal.RecordProfile(journalPath, profileName);
             int profileResult = CreateAppContainerProfile(
-                payload.WindowsProfileName,
-                payload.WindowsProfileName,
+                profileName,
+                profileName,
                 "Arcanum tool child",
                 0,
                 0,
@@ -97,39 +96,46 @@ internal static partial class WindowsAppContainerLauncher
             profileCreated = profileResult == 0 && sid != 0;
             if (!profileCreated)
             {
-                WriteBrokerError(
+                return WindowsAppContainerBrokerExit.Fail(
+                    error,
+                    WindowsAppContainerBrokerExit.ProfileCreationFailed,
                     $"the per-run AppContainer profile could not be created (HRESULT 0x{profileResult:X8}); the command was not started.");
-                return ProfileCreationFailedExitCode;
             }
 
             SecurityIdentifier identity = new(sid);
             sidValue = identity.Value;
+
+            // One deadline for every root-lock wait from here on, grants and removals alike, so several
+            // contended roots cannot each stack a full timeout.
+            lockBudget = WindowsAppContainerRootLockBudget.StartPerRun();
             foreach (string root in payload.ReadWriteRoots)
             {
-                Grant(journalPath, root, identity, FileSystemRights.Modify | FileSystemRights.ReadAndExecute, grantedRoots);
+                Grant(journalPath, root, identity, FileSystemRights.Modify | FileSystemRights.ReadAndExecute, lockBudget, grantedRoots);
             }
 
             foreach (string root in payload.ReadOnlyRoots.Concat(payload.ReadExecuteRoots))
             {
-                Grant(journalPath, root, identity, FileSystemRights.ReadAndExecute, grantedRoots);
+                Grant(journalPath, root, identity, FileSystemRights.ReadAndExecute, lockBudget, grantedRoots);
             }
 
-            return LaunchSuspended(payload, sid);
+            return LaunchSuspended(payload, sid, error);
         }
         catch (Exception ex)
         {
-            WriteBrokerError(
+            return WindowsAppContainerBrokerExit.Fail(
+                error,
+                WindowsAppContainerBrokerExit.SetupFailed,
                 $"AppContainer setup failed ({ex.GetType().Name}: {ex.Message}); the command was not started.");
-            return SetupFailedExitCode;
         }
         finally
         {
             bool undone = true;
+            WindowsAppContainerRootLockBudget removalBudget = lockBudget ?? WindowsAppContainerRootLockBudget.StartPerRun();
             for (int index = grantedRoots.Count - 1; index >= 0; index--)
             {
                 try
                 {
-                    undone &= RemoveGrant(grantedRoots[index], sidValue!);
+                    undone &= RemoveGrant(grantedRoots[index], sidValue!, removalBudget);
                 }
                 catch (Exception)
                 {
@@ -146,7 +152,7 @@ internal static partial class WindowsAppContainerLauncher
 
             if (profileCreated)
             {
-                undone &= DeleteProfile(payload.WindowsProfileName);
+                undone &= DeleteProfile(profileName);
             }
 
             // Only a complete self-restore retires the journal. Anything left is the host's to undo.
@@ -168,10 +174,17 @@ internal static partial class WindowsAppContainerLauncher
     /// leaving every other entry — including another concurrent run's grant on the same root — as it
     /// is now. Restoring a snapshot instead would delete that run's live ACE and later resurrect this
     /// run's dead SID. A directory that no longer exists carries no ACE to remove. Host replay uses
-    /// this too.
+    /// this too. Only a per-run AppContainer SID is ever purged: anything broader would strip access
+    /// no run granted. The root-lock wait draws on <paramref name="lockBudget"/>, shared by the whole
+    /// broker run or host replay.
     /// </summary>
-    internal static bool RemoveGrant(string path, string sid)
+    internal static bool RemoveGrant(string path, string sid, WindowsAppContainerRootLockBudget lockBudget)
     {
+        if (!WindowsAppContainerRestoreJournal.IsAppContainerSidString(sid))
+        {
+            return false;
+        }
+
         if (!Directory.Exists(path))
         {
             return !File.Exists(path);
@@ -184,7 +197,7 @@ internal static partial class WindowsAppContainerLauncher
         }
 
         SecurityIdentifier identity = new(sid);
-        return WithRootLock(path, () =>
+        return WithRootLock(path, lockBudget, () =>
         {
             DirectoryInfo directory = new(path);
             DirectorySecurity security = directory.GetAccessControl(AccessControlSections.Access);
@@ -200,13 +213,15 @@ internal static partial class WindowsAppContainerLauncher
 
     /// <summary>
     /// Adds an inheritable Allow ACE for <paramref name="identity"/> to <paramref name="path"/>, after
-    /// journaling the root and SID so a killed broker's grant can still be removed by the host.
+    /// journaling the root and SID so a killed broker's grant can still be removed by the host. The
+    /// root-lock wait draws on <paramref name="lockBudget"/>, shared by the whole broker run.
     /// </summary>
     internal static void Grant(
         string journalPath,
         string path,
         SecurityIdentifier identity,
         FileSystemRights rights,
+        WindowsAppContainerRootLockBudget lockBudget,
         List<string>? grantedRoots = null)
     {
         if (!WindowsAppContainerPolicy.IsSafeRoot(path)
@@ -222,7 +237,7 @@ internal static partial class WindowsAppContainerLauncher
         // first is always safe to replay.
         WindowsAppContainerRestoreJournal.RecordGrant(journalPath, path, identity.Value);
         grantedRoots?.Add(path);
-        _ = WithRootLock(path, () =>
+        _ = WithRootLock(path, lockBudget, () =>
         {
             DirectoryInfo directory = new(path);
             DirectorySecurity security = directory.GetAccessControl(AccessControlSections.Access);
@@ -240,20 +255,16 @@ internal static partial class WindowsAppContainerLauncher
     /// <summary>
     /// Serialises the read-modify-write of one root's DACL across concurrent brokers and host replays,
     /// so two runs granting or removing on a shared root at the same moment cannot lose each other's
-    /// update. The lock is held only for that one read and write, never for the run.
+    /// update. The lock is held only for that one read and write, never for the run, and the wait for
+    /// it is bounded by what is left of <paramref name="lockBudget"/>.
     /// </summary>
-    private static bool WithRootLock(string path, Func<bool> update)
+    private static bool WithRootLock(string path, WindowsAppContainerRootLockBudget lockBudget, Func<bool> update)
     {
-        byte[] key = System.Text.Encoding.UTF8.GetBytes(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)).ToUpperInvariant());
-        string name = @"Local\RetroDownfall.Arcanum.AclRoot."
-            + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(key));
-
-        using Mutex mutex = new(initiallyOwned: false, name);
+        using Mutex mutex = new(initiallyOwned: false, RootLockName(path));
         bool acquired;
         try
         {
-            acquired = mutex.WaitOne(RootLockTimeout);
+            acquired = lockBudget.TryAcquire(timeout => mutex.WaitOne(timeout));
         }
         catch (AbandonedMutexException)
         {
@@ -277,21 +288,19 @@ internal static partial class WindowsAppContainerLauncher
         }
     }
 
+    /// <summary>The session-local mutex name serialising one root's DACL updates.</summary>
+    internal static string RootLockName(string path)
+    {
+        byte[] key = System.Text.Encoding.UTF8.GetBytes(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)).ToUpperInvariant());
+        return @"Local\RetroDownfall.Arcanum.AclRoot."
+            + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(key));
+    }
+
     private static bool IsInAnyJob() =>
         IsProcessInJob(GetCurrentProcess(), 0, out bool inJob) && inJob;
 
-    private static void WriteBrokerError(string message)
-    {
-        try
-        {
-            Console.Error.WriteLine("sandbox-exec: " + message);
-        }
-        catch (Exception)
-        {
-        }
-    }
-
-    private static unsafe int LaunchSuspended(SandboxExecHelperPayload payload, nint sid)
+    private static unsafe int LaunchSuspended(SandboxExecHelperPayload payload, nint sid, TextWriter error)
     {
         nuint size = 0;
         _ = InitializeProcThreadAttributeList(0, 2, 0, ref size);
@@ -350,18 +359,32 @@ internal static partial class WindowsAppContainerLauncher
                     CreateSuspended | ExtendedStartupInfoPresent, 0,
                     payload.WorkingDirectory, ref startup, out ProcessInformation process))
             {
-                throw new Win32Exception(Marshal.GetLastPInvokeError());
+                // Access denied here is the AppContainer failing to read the image: a tool outside the
+                // directories it can reach. The broker grants nothing more; the line says so.
+                return WindowsAppContainerBrokerExit.Fail(
+                    error,
+                    WindowsAppContainerBrokerExit.SetupFailed,
+                    WindowsAppContainerBrokerExit.LaunchFailedMessage(payload.Target, Marshal.GetLastPInvokeError()));
             }
 
             using SafeFileHandle processHandle = new(process.Process, true);
             using SafeFileHandle threadHandle = new(process.Thread, true);
             if (ResumeThread(process.Thread) == uint.MaxValue)
             {
-                _ = TerminateProcess(process.Process, 74);
-                return 74;
+                int resumeError = Marshal.GetLastPInvokeError();
+                _ = TerminateProcess(process.Process, WindowsAppContainerBrokerExit.ResumeFailed);
+                return WindowsAppContainerBrokerExit.Fail(
+                    error,
+                    WindowsAppContainerBrokerExit.ResumeFailed,
+                    WindowsAppContainerBrokerExit.ResumeFailedMessage(resumeError));
             }
             _ = WaitForSingleObject(process.Process, Infinite);
-            return GetExitCodeProcess(process.Process, out uint code) ? unchecked((int)code) : 75;
+            return GetExitCodeProcess(process.Process, out uint code)
+                ? unchecked((int)code)
+                : WindowsAppContainerBrokerExit.Fail(
+                    error,
+                    WindowsAppContainerBrokerExit.TargetExitCodeUnavailable,
+                    WindowsAppContainerBrokerExit.ExitCodeUnavailableMessage(Marshal.GetLastPInvokeError()));
         }
         finally
         {
