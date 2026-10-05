@@ -49,6 +49,15 @@ public sealed class MacOsDaemonManager : IDaemonManager
         }
 
         string guiDomain = string.Create(CultureInfo.InvariantCulture, $"gui/{uid}");
+
+        // A label that is already loaded makes bootstrap fail with an opaque I/O error, so a reinstall
+        // boots it out first. A label that is not loaded is the ordinary first install.
+        Result bootedOut = await BootoutAsync(guiDomain, cancellationToken).ConfigureAwait(false);
+        if (bootedOut.IsFailure)
+        {
+            return bootedOut;
+        }
+
         DaemonProcessOutcome bootstrapOutcome = await _runner.RunAsync(
             "/bin/launchctl",
             ["bootstrap", guiDomain, _plistPath],
@@ -85,23 +94,12 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
         string uid = uidResult.Value;
         string guiDomain = string.Create(CultureInfo.InvariantCulture, $"gui/{uid}");
-        DaemonProcessOutcome bootoutOutcome = await _runner.RunAsync(
-            "/bin/launchctl",
-            ["bootout", guiDomain, _plistPath],
-            cancellationToken).ConfigureAwait(false);
-        if (bootoutOutcome.FatalError is { } fatalBootout)
+        // An agent that is not loaded (never bootstrapped, or already unloaded by a logout or a manual
+        // bootout) leaves nothing to stop, so the plist is still removed rather than kept forever.
+        Result bootedOut = await BootoutAsync(guiDomain, cancellationToken).ConfigureAwait(false);
+        if (bootedOut.IsFailure)
         {
-            return Result.Failure(fatalBootout);
-        }
-
-        if (bootoutOutcome.ExitCode != 0)
-        {
-            return Result.Failure(
-                ToolError(
-                    "DaemonBootout",
-                    "launchctl bootout failed.",
-                    bootoutOutcome.StdErr,
-                    bootoutOutcome.ExitCode));
+            return bootedOut;
         }
 
         try
@@ -171,6 +169,50 @@ public sealed class MacOsDaemonManager : IDaemonManager
         }
 
         return Result<string>.Success(string.Create(CultureInfo.InvariantCulture, $"Daemon is running (PID {pid})."));
+    }
+
+    /// <summary>
+    /// Boots the agent out of the user's GUI domain. Success covers both a loaded agent that was unloaded and
+    /// one that was not loaded to begin with; any other failure keeps its launchctl diagnostics.
+    /// </summary>
+    private async Task<Result> BootoutAsync(string guiDomain, CancellationToken cancellationToken)
+    {
+        DaemonProcessOutcome bootoutOutcome = await _runner.RunAsync(
+            "/bin/launchctl",
+            ["bootout", guiDomain, _plistPath],
+            cancellationToken).ConfigureAwait(false);
+        if (bootoutOutcome.FatalError is { } fatalBootout)
+        {
+            return Result.Failure(fatalBootout);
+        }
+
+        if (bootoutOutcome.ExitCode != 0 && !IndicatesNotLoaded(bootoutOutcome.ExitCode, bootoutOutcome.StdErr))
+        {
+            return Result.Failure(
+                ToolError(
+                    "DaemonBootout",
+                    "launchctl bootout failed.",
+                    bootoutOutcome.StdErr,
+                    bootoutOutcome.ExitCode));
+        }
+
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// launchctl reports an agent that is not loaded as ESRCH (3), EIO (5), 36 or 113 ("Could not find specified
+    /// service"), depending on the macOS release; the stderr text is matched too for releases that exit 1.
+    /// </summary>
+    private static bool IndicatesNotLoaded(int exitCode, string stderr)
+    {
+        if (exitCode is 3 or 5 or 36 or 113)
+        {
+            return true;
+        }
+
+        return stderr.Contains("No such process", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("Could not find specified service", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("Could not find service", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IndicatesPermissionDenied(string stderr)
