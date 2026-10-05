@@ -3538,6 +3538,10 @@ public sealed partial class WizardIntelligenceProvider(
 
                         Task<ToolExecutionPipeline.ProcessedToolCall>? processTask = null;
 
+                        // Set once the happy path has recorded this call (or its receipt already
+                        // did), so the finally records a returned tool only when that never happened.
+                        bool toolInteractionRecorded = false;
+
                         try
                         {
                             if (IsAskHumanTool(fcc))
@@ -3762,6 +3766,8 @@ public sealed partial class WizardIntelligenceProvider(
                                     .ConfigureAwait(false);
                             }
 
+                            toolInteractionRecorded = true;
+
                             foreach (IntelligenceEvent wardEvent in processed.WardEvents)
                             {
                                 yield return wardEvent;
@@ -3841,6 +3847,38 @@ public sealed partial class WizardIntelligenceProvider(
                                 else if (pendingToolTask.IsFaulted)
                                 {
                                     _ = pendingToolTask.Exception;
+                                }
+                            }
+
+                            if (!toolInteractionRecorded
+                                && processTask is { IsCompletedSuccessfully: true } finishedToolTask)
+                            {
+                                // The turn unwound before recording a call whose tool did return —
+                                // the caller cancelled while it ran and it finished inside the grace,
+                                // or it finished just as the pump gave up. Its effect has happened
+                                // either way, so the call is recorded as the happy path would have,
+                                // and nothing here may replace the exception unwinding this finally.
+                                ToolExecutionPipeline.ProcessedToolCall late = finishedToolTask.Result;
+
+                                if (!late.ReceiptHandled)
+                                {
+                                    try
+                                    {
+                                        await grimoireTurnWriter.TryAppendToolInteractionAsync(
+                                            grimoireTurn.SessionId,
+                                            late.ToolName,
+                                            late.ArgsSnapshot,
+                                            late.ResultText,
+                                            targetModel,
+                                            CancellationToken.None)
+                                            .ConfigureAwait(false);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        logger.LogWarning(
+                                            "A tool call that returned after its turn was abandoned could not be recorded; exception type {ExceptionType}.",
+                                            ex.GetType().FullName);
+                                    }
                                 }
                             }
                         }
