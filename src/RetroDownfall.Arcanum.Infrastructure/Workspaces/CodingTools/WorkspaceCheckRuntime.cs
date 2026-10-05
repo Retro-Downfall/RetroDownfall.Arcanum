@@ -442,7 +442,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                         request.WorkspaceRoot,
                         seeded.InputManifest!,
                         seedOptions,
-                        preflightToken);
+                        preflightToken,
+                        seeded.Projects);
 
             if (!restoreInputsValid)
             {
