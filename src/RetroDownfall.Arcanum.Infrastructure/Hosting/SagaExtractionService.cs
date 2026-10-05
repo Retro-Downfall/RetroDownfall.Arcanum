@@ -201,8 +201,21 @@ public sealed class SagaExtractionService : BackgroundService
         init => _erasureKeyDeferralDelay = value;
     }
 
-    internal IReadOnlyCollection<SagaExtractionRequest> PendingRequestsForTests =>
-        [.. _pending.Values.Select(AggregateForDiagnostics)];
+    /// <summary>
+    /// A snapshot of the pending work. It is taken under the policy lock because abandonment removes the
+    /// pending work and retains its segment in one critical section: a snapshot that is empty has then
+    /// always seen the abandoned segment too, which tests that poll for an empty snapshot rely on.
+    /// </summary>
+    internal IReadOnlyCollection<SagaExtractionRequest> PendingRequestsForTests
+    {
+        get
+        {
+            lock (_pendingPolicySync)
+            {
+                return [.. _pending.Values.Select(AggregateForDiagnostics)];
+            }
+        }
+    }
 
     internal IReadOnlyList<SagaExtractionRequest> PendingSegmentsForTests(Guid sessionId) =>
         _pending.TryGetValue(sessionId, out SagaExtractionPendingWork? pending)
