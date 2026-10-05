@@ -4468,11 +4468,11 @@ The desktop Inference IDE is part of `RetroDownfall.Arcanum.slnx`:
 
 | Project | Responsibility | Dependency |
 |---------|----------------|------------|
-| `RetroDownfall.TheForge.Core` | Forge-local models, mirrored API DTOs, settings, source-generated JSON contexts, API-key resolution; no Avalonia | `RetroDownfall.Arcanum.Core` |
-| `RetroDownfall.TheForge.Ux` | Avalonia desktop application | `RetroDownfall.TheForge.Core` |
-| `RetroDownfall.TheForge.Tests` | xUnit tests | `RetroDownfall.TheForge.Ux` |
+| `RetroDownfall.TheForge.Core` | Forge-local models, mirrored API DTOs, settings, source-generated JSON contexts, API-key resolution; no Avalonia | `RetroDownfall.Arcanum.Core`, `RetroDownfall.Arcanum.Secrets` (the OS keychain read of API-key resolution) |
+| `RetroDownfall.TheForge.Ux` | Avalonia desktop application | `RetroDownfall.TheForge.Core`, `RetroDownfall.Arcanum.Infrastructure` (installation mutation coordination and the shared outbound address policy only) |
+| `RetroDownfall.TheForge.Tests` | xUnit tests | `RetroDownfall.TheForge.Ux`, `RetroDownfall.Arcanum.Infrastructure` (the mutation coordination the local-write tests drive) |
 
-All inherit `0.1.0-beta` from `Directory.Build.props`. Core references only the portable Arcanum Core leaf. DTOs that live in the ASP.NET-heavy Api assembly are re-declared locally rather than adding an Api project reference.
+All inherit `0.1.0-beta` from `Directory.Build.props`. Core references the portable Arcanum Core leaf and the isolated Secrets project, through which `ApiKeyResolver` reads the OS keychain. DTOs that live in the ASP.NET-heavy Api assembly are re-declared locally rather than adding an Api project reference. The Ux is an HTTP client of the host and names Infrastructure for two things only: the installation mutation coordination around local file writes (`AddArcanumClientMutationCoordination`, driven by `TheForgeLocalMutationRunner`), and the shared outbound address policy `OutboundUrlGuard.IsBlockedForUntrustedEgress`, by which `MarkdownImageSsrfPolicy` judges the addresses its pinned image sockets connect to (§11.11). `CliInfrastructureBoundaryTests` pins the Forge sources that name Infrastructure, and pins this table's dependency column to each project's references.
 
 The Ux follows MVVM with `CommunityToolkit.Mvvm`; every ViewModel derives from `ViewModelBase`. `ServiceCollectionConfigurator` composes `Microsoft.Extensions.DependencyInjection` without a service locator. Only the named-HTTP `ArcanumApiClient` calls `HttpClient` directly; per-route services wrap it. `ArcanumSseClient` handles server-sent events. `ArcanumConnectionService` polls `GET /api/health` every five seconds while `AutoConnect` is true and exposes connection state to The Anvil.
 
