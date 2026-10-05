@@ -83,6 +83,67 @@ public sealed class AtomicFileTests : IDisposable
         Assert.Equal([destination + "=replacement"], flushed);
     }
 
+    /// <summary>
+    /// A rollback renames twice more — the unverified destination aside, the backup back — and a
+    /// rolled-back replace is only as durable as those directory entries. The barrier runs again once
+    /// the restored entry is in place.
+    /// </summary>
+    [Fact]
+    public async Task ReplaceAsync_flushes_the_destination_directory_again_after_a_rollback()
+    {
+        string destination = Path.Combine(_root, "artifact.txt");
+
+        await File.WriteAllTextAsync(destination, "original");
+
+        List<string> flushed = [];
+
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+            destination,
+            TempPathFor(destination),
+            (stream, ct) => WriteTextAsync(stream, "replacement", ct),
+            CancellationToken.None,
+            afterReplace: () => false,
+            flushParentDirectory: path =>
+            {
+                flushed.Add(path + "=" + File.ReadAllText(path));
+
+                return DurableDirectoryFlush.TryFlushParentOf(path);
+            });
+
+        Assert.Equal(AtomicReplaceStatus.RolledBack, status);
+
+        Assert.Equal([destination + "=replacement", destination + "=original"], flushed);
+    }
+
+    /// <summary>
+    /// A rollback with no prior file moves the destination into quarantine, which removes its name;
+    /// that rename is flushed too.
+    /// </summary>
+    [Fact]
+    public async Task ReplaceAsync_flushes_the_destination_directory_after_a_quarantine()
+    {
+        string destination = Path.Combine(_root, "artifact.txt");
+
+        List<string> flushed = [];
+
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+            destination,
+            TempPathFor(destination),
+            (stream, ct) => WriteTextAsync(stream, "unverified", ct),
+            CancellationToken.None,
+            afterReplace: () => false,
+            flushParentDirectory: path =>
+            {
+                flushed.Add(path + "=" + (File.Exists(path) ? File.ReadAllText(path) : "<absent>"));
+
+                return DurableDirectoryFlush.TryFlushParentOf(path);
+            });
+
+        Assert.Equal(AtomicReplaceStatus.RolledBack, status);
+
+        Assert.Equal([destination + "=unverified", destination + "=<absent>"], flushed);
+    }
+
     [Fact]
     public async Task ReplaceAsync_atomically_overwrites_existing_destination()
     {

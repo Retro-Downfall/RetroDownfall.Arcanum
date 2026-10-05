@@ -23,7 +23,11 @@ public sealed class BlobEncryptionLifecycleService(
     /// No blob body is opened, decrypted, or hashed here. Content verification (authentication, length,
     /// SHA-256, key availability) is the explicit, bounded and throttled <see cref="VerifyAsync"/>, so
     /// status stays cheap on a large store and <see cref="BlobEncryptionStatus.InvalidFiles"/> counts only
-    /// what the inventory itself can see: a catalogued blob whose file is missing or unreadable.
+    /// what the inventory itself can see: a catalogued blob whose file is missing. A present file whose
+    /// envelope header cannot be read (access denied, locked) is not distinguished here: the header peek
+    /// reports it as carrying no envelope, so it is counted as legacy plaintext, and as needing
+    /// reconciliation when its metadata says encrypted. <see cref="VerifyAsync"/> is what reports it,
+    /// as <see cref="BlobEncryptionVerificationIssue.IoError"/>.
     /// </remarks>
     public async Task<BlobEncryptionStatus> GetStatusAsync(
         CancellationToken cancellationToken = default)

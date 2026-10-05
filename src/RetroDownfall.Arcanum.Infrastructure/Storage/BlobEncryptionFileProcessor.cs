@@ -241,6 +241,17 @@ public sealed class BlobEncryptionFileProcessor(
             };
         }
 
+        // Read-only, so it cannot upgrade an older envelope; it reports one instead of calling it valid,
+        // because a version-1 envelope binds no final chunk and a boundary truncation would still pass.
+        if (inspected.Descriptor is { } descriptor
+            && descriptor.Version < EncryptedBlobFormat.CurrentVersion)
+        {
+            return inspected with
+            {
+                Issue = BlobEncryptionVerificationIssue.OutdatedEnvelopeVersion,
+            };
+        }
+
         return inspected;
     }
 
@@ -311,9 +322,9 @@ public sealed class BlobEncryptionFileProcessor(
         }
     }
 
-    // FileShare.Delete is required: MigrateAsync writes the encrypted replacement over this exact
-    // path while this reader is still open, and File.Move(overwrite: true) on Windows needs DELETE
-    // access on the destination, which a plain FileShare.Read handle denies.
+    // FileShare.Delete is required: MigrateAsync publishes the encrypted replacement over this exact
+    // path through the blob store's ReplaceOrMove while this reader is still open, and on Windows
+    // ReplaceFile needs DELETE access on the destination, which a plain FileShare.Read handle denies.
     private static FileStream OpenLegacy(string path) =>
         new(
             path,
