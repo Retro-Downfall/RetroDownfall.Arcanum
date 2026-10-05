@@ -1960,28 +1960,28 @@ public sealed class CovenantErasureSameProcessTests
     /// route must keep the dedicated lease-lost handling around the coordinator now that the
     /// coordinator runs outside the maintainer: a warning and a maintenance failure, never an error log
     /// and never an owner-guarded durable write for an owner it has just been told it no longer is.
+    ///
+    /// <para>The row is handed to another owner while the continuation waits at its first gate, so the
+    /// refusal is the real read-back's own, inside the deletion transaction. The write goes through
+    /// the fixture's unpooled handle because ordinary admission is shut for the closed period.</para>
     /// </remarks>
     [SkippableFact]
     public async Task Factory_route_reports_a_continuation_lease_loss_as_a_maintenance_failure()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        CoordinatorPause pause = new();
+        CoordinatorPause continuationPause = new();
 
         RouteStoreFaults faults = new(RouteStoreFault.None);
 
         TestCapturingLogger<DataRetentionService> retentionLog = new();
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
-            coordinatorPause: pause,
+            factoryContinuationPause: continuationPause,
             fastLeaseHeartbeat: true,
             storeFaults: faults,
             serviceOverrides: services =>
             {
-                services.RemoveAll<IManagedLogMutationGate>();
-
-                services.AddSingleton<IManagedLogMutationGate>(new LeaseLosingManagedLogMutationGate());
-
                 services.RemoveAll<ILogger<DataRetentionService>>();
 
                 services.AddSingleton<ILogger<DataRetentionService>>(retentionLog);
@@ -1997,11 +1997,18 @@ public sealed class CovenantErasureSameProcessTests
 
         Task<Result<DataRetentionApplyResult>> applying = harness.ApplyFactoryAsync(confirmed.PlanId);
 
-        await pause.WaitUntilPausedAsync();
+        await continuationPause.WaitUntilPausedAsync();
 
-        int planning = faults.RenewalAttempts;
+        int closedPeriod = faults.RenewalAttempts;
 
-        pause.Release();
+        try
+        {
+            await harness.ReplaceRunningFactoryLeaseOwnerAsync("review-replacement-owner");
+        }
+        finally
+        {
+            continuationPause.Release();
+        }
 
         Result<DataRetentionApplyResult> applied = await applying.WaitAsync(TimeSpan.FromSeconds(45));
 
@@ -2016,11 +2023,95 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Contains(
             retentionLog.Entries,
             static entry => entry.Level == LogLevel.Warning
-                && entry.Exception is DataRetentionLeaseLostException);
+                && entry.Exception is DataRetentionLeaseLostException
+                {
+                    Message: "Factory reset no longer owns the durable operation it was launched under.",
+                });
 
         Assert.Equal(0, faults.MaintenanceFailureTransitionAttempts);
 
-        Assert.Equal(planning, faults.RenewalAttempts);
+        Assert.Equal(closedPeriod, faults.RenewalAttempts);
+    }
+
+    /// <summary>
+    /// The factory route hands the coordinator the launch row as it stands after the last lease
+    /// renewal, so a rollback before the first journal can still terminalize it.
+    /// </summary>
+    /// <remarks>
+    /// A heartbeat that lands after the launch row was read back but before the maintainer stops
+    /// advances the row's revision past the copy the route is holding. The coordinator's one
+    /// compare-exchange before a journal exists - the rollback of a refused quiesce - is made against
+    /// that copy, so a stale one turns a clean pre-effect rollback into a maintenance failure. The
+    /// hook holds the first read of the launched row open for three intervals of the fast heartbeat:
+    /// a maintainer that is still running renews inside that window, and one that has stopped never
+    /// does.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_route_rereads_the_launch_row_after_the_lease_maintainer_stops()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
+        int renewalsAtLaunchReload = -1;
+
+        faults.AfterFactoryLaunchReload = async () =>
+        {
+            int renewals = faults.RenewalAttempts;
+
+            renewalsAtLaunchReload = renewals;
+
+            using CancellationTokenSource window = new(TimeSpan.FromMilliseconds(1_500));
+
+            while (faults.RenewalAttempts == renewals && !window.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(25), CancellationToken.None);
+            }
+        };
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            fastLeaseHeartbeat: true,
+            storeFaults: faults,
+            serviceOverrides: static services =>
+            {
+                services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
+
+                services.AddSingleton<ICovenantDisclosureWriterLifecycle>(
+                    static provider => new QuiesceRefusingDisclosureWriterLifecycle(
+                        provider.GetRequiredService<CovenantDisclosureWriter>()));
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        _ = await harness.SeedOrdinarySessionAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        Result<DataRetentionApplyResult> applied = await harness
+            .ApplyFactoryAsync(confirmed.PlanId)
+            .WaitAsync(TimeSpan.FromSeconds(45));
+
+        Assert.True(applied.IsFailure);
+
+        Assert.True(
+            applied.Error.Code == QuiesceRefusingDisclosureWriterLifecycle.RefusalCode,
+            $"{applied.Error.Code}: {applied.Error.Message}{harness.CoordinatorDiagnostics()}");
+
+        Assert.NotEqual(-1, renewalsAtLaunchReload);
+
+        Assert.Equal(renewalsAtLaunchReload, faults.RenewalAttempts);
+
+        LongRunningOperation operation = await harness.ReadFactoryOperationAsync();
+
+        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode,
+            operation.TerminalErrorCode);
+
+        Assert.Equal(1, await harness.CountOrdinarySessionsAsync());
     }
 
     /// <summary>
@@ -3374,6 +3465,39 @@ public sealed class CovenantErasureSameProcessTests
             return Assert.Single(operations);
         }
 
+        /// <summary>
+        /// Hands the running factory launch row to another owner through the fixture's own unpooled
+        /// handle, which ordinary admission does not govern, and lets that handle go again.
+        /// </summary>
+        internal async Task ReplaceRunningFactoryLeaseOwnerAsync(string ownerId)
+        {
+            await _fixture.ReopenAsync(CancellationToken.None);
+
+            try
+            {
+                await using SqliteCommand command = _fixture.Connection.CreateCommand();
+
+                command.CommandText = """
+                    UPDATE LongRunningOperations
+                    SET LeaseOwner = $owner
+                    WHERE Kind = $kind
+                      AND State = $running
+                    """;
+
+                _ = command.Parameters.AddWithValue("$owner", ownerId);
+
+                _ = command.Parameters.AddWithValue("$kind", LongRunningOperationKinds.DataRetentionFactoryReset);
+
+                _ = command.Parameters.AddWithValue("$running", (int)LongRunningOperationState.Running);
+
+                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            }
+            finally
+            {
+                await _fixture.Connection.CloseAsync();
+            }
+        }
+
         internal async Task<LongRunningOperationLeaseResult> TryAdoptFactoryAsync(
             Guid operationId,
             DateTimeOffset utcNow)
@@ -4333,15 +4457,6 @@ public sealed class CovenantErasureSameProcessTests
         }
     }
 
-    private sealed class LeaseLosingManagedLogMutationGate : IManagedLogMutationGate
-    {
-        public ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromException<IAsyncDisposable>(
-                new DataRetentionLeaseLostException(
-                    "Factory reset no longer owns the durable operation it was launched under."));
-    }
-
     private sealed class RecordingManagedLogMutationGate : IManagedLogMutationGate
     {
         private int _acquisitions;
@@ -5016,6 +5131,20 @@ public sealed class CovenantErasureSameProcessTests
 
         internal Func<CancellationToken, Task>? AfterFactoryStarted { get; set; }
 
+        private Func<Task>? _afterFactoryLaunchReload;
+
+        /// <summary>
+        /// Runs once, on the first read that returns the factory row carrying its launch checkpoint,
+        /// after that read and before the row is handed back.
+        /// </summary>
+        internal Func<Task>? AfterFactoryLaunchReload
+        {
+            set => _ = Interlocked.Exchange(ref _afterFactoryLaunchReload, value);
+        }
+
+        internal Func<Task>? TakeAfterFactoryLaunchReload() =>
+            Interlocked.Exchange(ref _afterFactoryLaunchReload, null);
+
         internal CoordinatorPause? FactoryCheckpointPause { get; init; }
 
         internal RouteStoreFault Fault { get; } = fault;
@@ -5208,15 +5337,30 @@ public sealed class CovenantErasureSameProcessTests
             return started;
         }
 
-        public Task<LongRunningOperation?> GetAsync(
+        public async Task<LongRunningOperation?> GetAsync(
             Guid operationId,
             CancellationToken cancellationToken = default)
         {
             operationWrites?.RecordAccess();
 
-            return faults.TakeThrowNextGet()
-                ? throw new InvalidOperationException("Injected post-checkpoint ledger read failure.")
-                : inner.GetAsync(operationId, cancellationToken);
+            if (faults.TakeThrowNextGet())
+            {
+                throw new InvalidOperationException("Injected post-checkpoint ledger read failure.");
+            }
+
+            LongRunningOperation? operation = await inner.GetAsync(operationId, cancellationToken);
+
+            if (operation is { CheckpointVersion: DataRetentionFactoryTransitionLaunchV2.CurrentVersion }
+                && string.Equals(
+                    operation.Kind,
+                    LongRunningOperationKinds.DataRetentionFactoryReset,
+                    StringComparison.Ordinal)
+                && faults.TakeAfterFactoryLaunchReload() is { } afterFactoryLaunchReload)
+            {
+                await afterFactoryLaunchReload();
+            }
+
+            return operation;
         }
 
         public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
@@ -5814,6 +5958,25 @@ public sealed class CovenantErasureSameProcessTests
 
             return inner.ReopenAsync(cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Refuses the first quiesce: the one refusal a fresh erasure answers before any journal exists.
+    /// </summary>
+    private sealed class QuiesceRefusingDisclosureWriterLifecycle(
+        ICovenantDisclosureWriterLifecycle inner) : ICovenantDisclosureWriterLifecycle
+    {
+        internal const string RefusalCode = ErrorCodes.Covenant.IntegrityFailure;
+
+        private int _refused;
+
+        public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) =>
+            Interlocked.Exchange(ref _refused, 1) == 0
+                ? ValueTask.FromResult(Result.Failure(new Error(RefusalCode, "Injected quiesce refusal.")))
+                : inner.QuiesceAsync(cancellationToken);
+
+        public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken) =>
+            inner.ReopenAsync(cancellationToken);
     }
 
     private sealed class RecordingDisclosureWriterLifecycle : ICovenantDisclosureWriterLifecycle

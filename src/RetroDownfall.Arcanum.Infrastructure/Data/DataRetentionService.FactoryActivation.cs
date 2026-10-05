@@ -240,18 +240,17 @@ internal sealed partial class DataRetentionService
                         await DescribeRetentionConflictAsync(cancellationToken).ConfigureAwait(false)));
             }
 
-            FactoryErasureLaunch launch;
+            Result<CovenantResetCheckpointInitiator.GateAdmission> published;
 
             try
             {
                 // Re-plan, healthy-catalog proof and launch publication keep the durable lease renewed,
-                // and the maintained scope ends there. The closed period below runs outside the
-                // maintainer entirely - not merely on a different token - because a maintainer that is
-                // still ticking advances the row's revision whether or not the work it wraps is
-                // listening, and that revision is the one the transition journal has bound itself to.
-                // With ordinary admission shut the renewal would also be refused outright, and the
-                // maintainer would then cancel the erasure or report a finished one as failed.
-                launch = await _leaseMaintainer.RunAsync(
+                // and the maintained scope ends at that publication. Everything after it runs outside
+                // the maintainer entirely - not merely on a different token - because a maintainer that
+                // is still ticking advances the row's revision whether or not the work it wraps is
+                // listening. With ordinary admission shut the renewal would also be refused outright,
+                // and the maintainer would then cancel the erasure or report a finished one as failed.
+                published = await _leaseMaintainer.RunAsync(
                     operation.Id,
                     ownerId,
                     async maintainedToken =>
@@ -276,7 +275,7 @@ internal sealed partial class DataRetentionService
                                 ? new Error(ErrorCodes.Data.Blocked, revalidated.Blockers[0].Message)
                                 : new Error(ErrorCodes.Data.Conflict, revalidatedConflict!.Message);
 
-                            return FactoryErasureLaunch.Refused(
+                            return RecordedLaunchRefusal(
                                 await FailCovenantResetAsync(
                                     operation,
                                     ownerId,
@@ -286,7 +285,7 @@ internal sealed partial class DataRetentionService
 
                         if (!string.Equals(revalidated.PlanId, current.PlanId, StringComparison.Ordinal))
                         {
-                            return FactoryErasureLaunch.Refused(
+                            return RecordedLaunchRefusal(
                                 await FailCovenantResetAsync(
                                     operation,
                                     ownerId,
@@ -302,7 +301,7 @@ internal sealed partial class DataRetentionService
 
                         if (currentLease.IsFailure)
                         {
-                            return FactoryErasureLaunch.Refused(
+                            return RecordedLaunchRefusal(
                                 await FailCovenantResetAsync(
                                     operation,
                                     ownerId,
@@ -321,81 +320,14 @@ internal sealed partial class DataRetentionService
                                     maintainedCancellation.Token)
                                 .ConfigureAwait(false);
 
-                        if (prepared.IsFailure)
-                        {
-                            return FactoryErasureLaunch.Refused(
+                        return prepared.IsSuccess
+                            ? prepared
+                            : RecordedLaunchRefusal(
                                 await FailCovenantResetAsync(
                                     operation,
                                     ownerId,
                                     prepared.Error,
                                     LongRunningOperationState.Failed).ConfigureAwait(false));
-                        }
-
-                        LongRunningOperation? committed = await operations
-                            .GetAsync(operation.Id, maintainedCancellation.Token)
-                            .ConfigureAwait(false);
-
-                        if (committed?.CheckpointPayload is not { Length: > 0 } payload)
-                        {
-                            return FactoryErasureLaunch.Refused(
-                                await FailCovenantResetAsync(
-                                    operation,
-                                    ownerId,
-                                    new Error(
-                                        ErrorCodes.Covenant.ManualRecoveryRequired,
-                                        "The committed factory-erasure checkpoint could not be reloaded."),
-                                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false));
-                        }
-
-                        Result<CovenantErasureCheckpointState> checkpoint =
-                            CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
-                                committed.Id,
-                                committed.CheckpointVersion,
-                                payload);
-
-                        // Compared as a whole launch rather than as an owner, for the reason the reset
-                        // arm gives: an owner is three of a launch's eleven fields, and the eight it
-                        // leaves out are the ones that say which dataset this erasure was admitted to
-                        // replace.
-                        Result<GrimoireOfflineTransitionLaunchBinding> relaunched =
-                            GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
-                                committed.CheckpointVersion,
-                                payload);
-
-                        if (checkpoint.IsFailure
-                            || relaunched.IsFailure
-                            || relaunched.Value.Digest != prepared.Value.Launch.Digest)
-                        {
-                            Error invalid = checkpoint.IsFailure
-                                ? checkpoint.Error
-                                : new Error(
-                                    ErrorCodes.Covenant.ManualRecoveryRequired,
-                                    "The committed factory-erasure checkpoint did not preserve its admitted owner.");
-
-                            return FactoryErasureLaunch.Refused(
-                                await FailCovenantResetAsync(
-                                    committed,
-                                    ownerId,
-                                    invalid,
-                                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false));
-                        }
-
-                        Result planningLeaseReleased = await TryDisposeCovenantPlanningLeaseAsync(
-                            installationLease).ConfigureAwait(false);
-
-                        planningLease = null;
-
-                        if (planningLeaseReleased.IsFailure)
-                        {
-                            return FactoryErasureLaunch.Refused(
-                                await FailCovenantResetAsync(
-                                    committed,
-                                    ownerId,
-                                    planningLeaseReleased.Error,
-                                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false));
-                        }
-
-                        return FactoryErasureLaunch.Published(committed, checkpoint.Value);
                     },
                     CancellationToken.None).ConfigureAwait(false);
             }
@@ -408,9 +340,73 @@ internal sealed partial class DataRetentionService
                 return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
             }
 
-            if (launch is not { Committed: { } launched, Checkpoint: { } launchedCheckpoint })
+            if (published.IsFailure)
             {
-                return launch.Refusal ?? Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
+                return Result<DataRetentionApplyResult>.Failure(published.Error);
+            }
+
+            // Read back only now that the maintainer has stopped. Its last renewal has landed by the
+            // time it returns and no later one can start, so this is the exact revision the closed
+            // period begins from and makes its compare-exchanges against; a copy read while the
+            // maintainer was still running could already be a revision behind the row.
+            LongRunningOperation? committed = await operations
+                .GetAsync(operation.Id, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (committed?.CheckpointPayload is not { Length: > 0 } payload)
+            {
+                return await FailCovenantResetAsync(
+                    operation,
+                    ownerId,
+                    new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "The committed factory-erasure checkpoint could not be reloaded."),
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
+            }
+
+            Result<CovenantErasureCheckpointState> checkpoint =
+                CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
+                    committed.Id,
+                    committed.CheckpointVersion,
+                    payload);
+
+            // Compared as a whole launch rather than as an owner, for the reason the reset arm gives:
+            // an owner is three of a launch's eleven fields, and the eight it leaves out are the ones
+            // that say which dataset this erasure was admitted to replace.
+            Result<GrimoireOfflineTransitionLaunchBinding> relaunched =
+                GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                    committed.CheckpointVersion,
+                    payload);
+
+            if (checkpoint.IsFailure
+                || relaunched.IsFailure
+                || relaunched.Value.Digest != published.Value.Launch.Digest)
+            {
+                Error invalid = checkpoint.IsFailure
+                    ? checkpoint.Error
+                    : new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "The committed factory-erasure checkpoint did not preserve its admitted owner.");
+
+                return await FailCovenantResetAsync(
+                    committed,
+                    ownerId,
+                    invalid,
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
+            }
+
+            Result planningLeaseReleased = await TryDisposeCovenantPlanningLeaseAsync(
+                installationLease).ConfigureAwait(false);
+
+            planningLease = null;
+
+            if (planningLeaseReleased.IsFailure)
+            {
+                return await FailCovenantResetAsync(
+                    committed,
+                    ownerId,
+                    planningLeaseReleased.Error,
+                    LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
             }
 
             Result connectionClosed = await CloseFactoryServiceConnectionAsync().ConfigureAwait(false);
@@ -418,7 +414,7 @@ internal sealed partial class DataRetentionService
             if (connectionClosed.IsFailure)
             {
                 return await FailCovenantResetAsync(
-                    launched,
+                    committed,
                     ownerId,
                     connectionClosed.Error,
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
@@ -426,18 +422,18 @@ internal sealed partial class DataRetentionService
 
             DataRetentionApplyResult? ordinaryResult = null;
 
-            // No durable lease is renewed across the closed period, and the coordinator runs on the
-            // caller's token exactly as the direct reset arm's does. What the lease was protecting
-            // against is held instead by the installation maintenance lock, the journal's own slot,
-            // and the process-local ownership the coordinator claims for the length of the run.
+            // The coordinator runs on the caller's token exactly as the direct reset arm's does. What
+            // the lease was protecting against is held instead by the installation maintenance lock,
+            // the journal's own slot, and the process-local ownership the coordinator claims for the
+            // length of the run.
             Result<CovenantErasureCompletion> erased;
 
             try
             {
                 erased = await _covenantErasureCoordinator
                     .RunAsync(
-                        launched,
-                        launchedCheckpoint,
+                        committed,
+                        checkpoint.Value,
                         ownerId,
                         async continuationToken =>
                         {
@@ -475,7 +471,7 @@ internal sealed partial class DataRetentionService
             if (erased.IsFailure)
             {
                 return await FailCovenantResetAsync(
-                    launched,
+                    committed,
                     ownerId,
                     erased.Error,
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
@@ -484,7 +480,7 @@ internal sealed partial class DataRetentionService
             if (erased.Value.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen)
             {
                 return await FailCovenantResetAsync(
-                    launched,
+                    committed,
                     ownerId,
                     CovenantResetFailure(erased.Value.BlockingErrorCode),
                     LongRunningOperationState.Failed).ConfigureAwait(false);
@@ -500,7 +496,7 @@ internal sealed partial class DataRetentionService
                 || ordinaryResult is null)
             {
                 return await FailCovenantResetAsync(
-                    launched,
+                    committed,
                     ownerId,
                     CovenantResetFailure(erased.Value.BlockingErrorCode),
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
@@ -513,7 +509,7 @@ internal sealed partial class DataRetentionService
             if (completed.IsFailure)
             {
                 return await FailCovenantResetAsync(
-                    launched,
+                    committed,
                     ownerId,
                     completed.Error,
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
@@ -566,22 +562,12 @@ internal sealed partial class DataRetentionService
     private static DataRetentionConflict? FirstUndrainableFactoryConflict(DataRetentionPlan plan) =>
         plan.Conflicts.FirstOrDefault(static conflict => conflict.Code != "Data.InferenceRunActive");
 
-    // What the lease-maintained segment of a factory erasure hands to the closed period: either the
-    // typed refusal it has already recorded durably, or the committed launch row and the checkpoint
-    // the coordinator resumes from.
-    private sealed record FactoryErasureLaunch(
-        LongRunningOperation? Committed,
-        CovenantErasureCheckpointState? Checkpoint,
-        Result<DataRetentionApplyResult>? Refusal)
-    {
-        internal static FactoryErasureLaunch Published(
-            LongRunningOperation committed,
-            CovenantErasureCheckpointState checkpoint) =>
-            new(committed, checkpoint, null);
-
-        internal static FactoryErasureLaunch Refused(Result<DataRetentionApplyResult> refusal) =>
-            new(null, null, refusal);
-    }
+    // A refusal the lease-maintained segment has already recorded durably, carried out of that
+    // segment as the error it recorded so the caller returns it unchanged.
+    private static Result<CovenantResetCheckpointInitiator.GateAdmission> RecordedLaunchRefusal(
+        Result<DataRetentionApplyResult> recorded) =>
+        Result<CovenantResetCheckpointInitiator.GateAdmission>.Failure(
+            recorded.IsFailure ? recorded.Error : CovenantMaintenanceFailure());
 
     private static Result<DataRetentionApplyResult> MapFactoryErasureReplay(
         LongRunningOperationRequestIdentityMatch match,
