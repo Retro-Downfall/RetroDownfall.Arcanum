@@ -1210,6 +1210,106 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The undersized-cluster merge ranks siblings by <see cref="TapestryWeaver.MergeSimilarity"/> over
+    /// unit vectors (DESIGN §21.11), so which sibling a singleton joins is decided by that function alone.
+    /// </summary>
+    /// <remarks>
+    /// The orphan sits exactly between two clusters under the real cosine (orthogonal to both), so the
+    /// only thing that can send it to the second cluster is the injected similarity. Every vector is three
+    /// times its direction, so a similarity handed raw embeddings instead of unit vectors is caught too.
+    /// A merge that went back to a lane-width cosine would never call the injected function and would
+    /// break the tie by stable id instead, into the first cluster.
+    /// </remarks>
+    [SkippableFact]
+    public async Task WeaveAsync_MergesAnUndersizedClusterByTheUnitVectorSimilarityItIsGiven()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _weave!.VectorsByText["a1 body"] = Scaled(3f, Direction(0, (5, 0.01f)));
+
+        _weave.VectorsByText["a2 body"] = Scaled(3f, Direction(0, (6, 0.01f)));
+
+        _weave.VectorsByText["b1 body"] = Scaled(3f, Direction(1, (5, 0.01f)));
+
+        _weave.VectorsByText["b2 body"] = Scaled(3f, Direction(1, (6, 0.01f)));
+
+        _weave.VectorsByText["orphan body"] = Scaled(3f, Direction(2));
+
+        await SeedChunksAsync(
+            ("a1", "a1.cs", "a1 body"),
+            ("a2", "a2.cs", "a2 body"),
+            ("b1", "b1.cs", "b1 body"),
+            ("b2", "b2.cs", "b2 body"),
+            ("orphan", "o.cs", "orphan body"));
+
+        List<(double LeftNorm, double RightNorm)> norms = [];
+
+        TapestryWeaver weaver = new(_store!, _weave, _summarizer!, _backoff, TimeProvider.System, _logger)
+        {
+            MergeSimilarity = (left, right) =>
+            {
+                norms.Add((Norm(left), Norm(right)));
+
+                // Prefers the cluster on axis 1, which the real cosine cannot tell from the one on axis 0.
+                return right[1] > 0.5f ? 0.9d : 0.1d;
+            },
+        };
+
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(
+            Scope,
+            Settings(target: 2, maxChildren: 3),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        Assert.NotEmpty(norms);
+
+        Assert.All(norms, pair =>
+        {
+            Assert.Equal(1d, pair.LeftNorm, 5);
+
+            Assert.Equal(1d, pair.RightNorm, 5);
+        });
+
+        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None);
+
+        string? ParentOf(string chunkId) => leaves.Single(leaf => leaf.SourceId == chunkId).ParentNodeId;
+
+        Assert.Equal(ParentOf("b1"), ParentOf("orphan"));
+
+        Assert.Equal(ParentOf("b1"), ParentOf("b2"));
+
+        Assert.NotEqual(ParentOf("a1"), ParentOf("orphan"));
+    }
+
+    /// <summary>Unless a test replaces it, the merge compares siblings with the scalar cosine clustering uses.</summary>
+    [SkippableFact]
+    public void MergeSimilarity_defaults_to_the_scalar_double_accumulated_direction_cosine()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.Equal<Func<float[], float[], double>>(
+            SphericalKMeans.DirectionCosine,
+            CreateWeaver().MergeSimilarity);
+    }
+
+    private static float[] Scaled(float factor, float[] vector) => [.. vector.Select(component => component * factor)];
+
+    private static double Norm(float[] vector)
+    {
+        double sum = 0;
+
+        foreach (float component in vector)
+        {
+            sum += (double)component * component;
+        }
+
+        return Math.Sqrt(sum);
+    }
+
+    /// <summary>
     /// A deterministic stand-in for The Weave: content-derived vectors so the same corpus always
     /// yields the same directions, with switches for the degradation paths.
     /// </summary>

@@ -47,6 +47,15 @@ internal sealed class TapestryWeaver(
     /// </summary>
     private const char StableKeyFieldSeparator = (char)0x1F;
 
+    /// <summary>
+    /// The similarity the undersized-cluster merge ranks siblings by: the cosine of two unit vectors, and
+    /// by default the scalar, double-accumulated one the clustering contract is stated in
+    /// (<see cref="SphericalKMeans.DirectionCosine"/>). It is a seam only so a test can prove the merge
+    /// asks <i>this</i> function, over unit vectors, rather than a lane-width cosine whose low bits depend
+    /// on the machine (DESIGN §21.11). Production never replaces it.
+    /// </summary>
+    internal Func<float[], float[], double> MergeSimilarity { get; init; } = SphericalKMeans.DirectionCosine;
+
     public async Task<TapestryWeaveOutcome> WeaveAsync(
         TapestryScope scope,
         EmbeddingSettings embeddings,
@@ -823,6 +832,24 @@ internal sealed class TapestryWeaver(
             return;
         }
 
+        // Unit vectors for the merge's comparisons, made only for the nodes it actually compares and
+        // dropped with this call. A node that is never compared (every layer with no singleton, and every
+        // member no singleton reaches) never pays for a second copy of its vector, so the rebuild's
+        // working set stays one vector per node rather than two.
+        Dictionary<string, float[]> directions = new(StringComparer.Ordinal);
+
+        float[] DirectionOf(WorkingNode node)
+        {
+            if (!directions.TryGetValue(node.StableKey, out float[]? direction))
+            {
+                direction = SphericalKMeans.NormalizedDirection(node.Embedding);
+
+                directions[node.StableKey] = direction;
+            }
+
+            return direction;
+        }
+
         for (int index = candidates.Count - 1; index >= 0; index--)
         {
             if (candidates[index].Members.Count > 1)
@@ -831,6 +858,8 @@ internal sealed class TapestryWeaver(
             }
 
             WorkingNode orphan = candidates[index].Members[0];
+
+            float[] orphanDirection = DirectionOf(orphan);
 
             int best = -1;
 
@@ -854,7 +883,7 @@ internal sealed class TapestryWeaver(
                 // near-tie between siblings could resolve differently on another machine and the same
                 // persisted vectors would stop producing the same memberships.
                 double similarity = candidates[other].Members.Max(
-                    member => SphericalKMeans.DirectionCosine(orphan.Direction, member.Direction));
+                    member => MergeSimilarity(orphanDirection, DirectionOf(member)));
 
                 // Stable-id tie-break keeps the merge target reproducible when two siblings are
                 // equally close.
@@ -1098,11 +1127,7 @@ internal sealed class TapestryWeaver(
         float[] Embedding,
         string Content,
         string ContentHash,
-        int DescendantLeafCount)
-    {
-        /// <summary>The unit vector of <see cref="Embedding"/>, computed once for the merge's comparisons.</summary>
-        public float[] Direction { get; } = SphericalKMeans.NormalizedDirection(Embedding);
-    }
+        int DescendantLeafCount);
 
     private sealed record PlanCandidate(List<WorkingNode> Members, TapestryPartitionReason Reason);
 
