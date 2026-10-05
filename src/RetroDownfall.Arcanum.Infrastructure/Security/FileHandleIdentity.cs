@@ -1209,7 +1209,11 @@ internal static partial class FileHandleIdentityInterop
 
         if (isMacOS)
         {
-            if (architecture is not (Architecture.X64 or Architecture.Arm64)
+            // Only the arm64 layout is read. The plain `stat` symbol on macOS x64 is the legacy struct with
+            // a 32-bit inode, whose fields sit at different offsets than the 64-bit-inode layout parsed
+            // below; reading it this way would fabricate an identity from the wrong bytes. x64 is not a
+            // shipping RID, so it fails closed rather than carrying a second layout nobody can verify.
+            if (architecture is not Architecture.Arm64
                 || buffer.Length < MacOsStatMinimumSize)
             {
                 return false;

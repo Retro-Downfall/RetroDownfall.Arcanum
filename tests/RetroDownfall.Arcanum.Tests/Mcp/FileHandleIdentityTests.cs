@@ -368,6 +368,59 @@ public sealed class FileHandleIdentityTests : IDisposable
     }
 
     [Fact]
+    public void Macos_arm64_metadata_layout_reads_dev_mode_nlink_and_inode()
+    {
+        byte[] buffer = new byte[144];
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(0), 0x01020304U);
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), 0x81A4);
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(6), 3);
+
+        BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(8), 0x1112131415161718UL);
+
+        Assert.True(
+            FileHandleIdentityInterop.TryParseUnixFileMetadataForTests(
+                buffer,
+                isMacOS: true,
+                Architecture.Arm64,
+                out FileHandleMetadata metadata));
+
+        Assert.Equal(
+            new FileHandleMetadata(
+                new FileHandleIdentity(0x01020304UL, 0x1112131415161718UL),
+                3UL),
+            metadata);
+    }
+
+    [Fact]
+    public void Macos_x64_layout_is_rejected()
+    {
+        // The plain `stat` symbol on macOS x64 is the legacy struct with a 32-bit inode, so reading it
+        // through the 64-bit-inode offsets would fabricate an identity from the wrong bytes. Only the
+        // arm64 layout is read; x64 is not a shipping RID and fails closed.
+        byte[] buffer = new byte[144];
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(0), 0x01020304U);
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), 0x81A4);
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(6), 3);
+
+        BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(8), 0x1112131415161718UL);
+
+        Assert.False(
+            FileHandleIdentityInterop.TryParseUnixFileMetadataForTests(
+                buffer,
+                isMacOS: true,
+                Architecture.X64,
+                out FileHandleMetadata metadata));
+
+        Assert.Equal(default, metadata);
+    }
+
+    [Fact]
     public void Linux_x64_metadata_layout_reads_nlink_before_mode()
     {
         byte[] buffer = new byte[32];
