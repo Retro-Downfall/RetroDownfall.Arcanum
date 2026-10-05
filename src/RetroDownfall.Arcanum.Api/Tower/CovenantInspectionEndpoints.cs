@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.AspNetCore.Builder;
 
 using Microsoft.AspNetCore.Http;
@@ -35,10 +37,8 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// </remarks>
 internal static class CovenantInspectionEndpoints
 {
-
     public static RouteGroupBuilder MapCovenantInspectionEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapPost(
             "/memory/covenant/list",
             static async Task<IResult> (
@@ -168,7 +168,6 @@ internal static class CovenantInspectionEndpoints
             .RequireCovenantReadAuthority();
 
         return apiGroup;
-
     }
 
     /// <summary>
@@ -185,25 +184,20 @@ internal static class CovenantInspectionEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         if (request is null)
         {
-
             return Refuse(
                 httpContext,
                 new Error(ErrorCodes.Validation.InvalidBody, "A Covenant explain request is required."),
                 ArcanumJsonContext.Default.ApiResponseCovenantExplainDto);
-
         }
 
         if (service is null)
         {
-
             return Refuse(
                 httpContext,
                 UnavailableError,
                 ArcanumJsonContext.Default.ApiResponseCovenantExplainDto);
-
         }
 
         CovenantLeasedServiceResult<CovenantExplainDto> explained = await service
@@ -216,7 +210,6 @@ internal static class CovenantInspectionEndpoints
             lease,
             payload,
             ArcanumJsonContext.Default.ApiResponseCovenantExplainDto);
-
     }
 
     private static async Task<IResult> ReadAsync<TRequest, TResponse>(
@@ -232,22 +225,17 @@ internal static class CovenantInspectionEndpoints
         CancellationToken cancellationToken)
         where TRequest : class
     {
-
         if (request is null || selection is not { } scopeSelection)
         {
-
             return Refuse(
                 httpContext,
                 new Error(ErrorCodes.Validation.InvalidBody, "A Covenant inspection request is required."),
                 typeInfo);
-
         }
 
         if (service is null || gate is null)
         {
-
             return Refuse(httpContext, UnavailableError, typeInfo);
-
         }
 
         // An all-scopes read crosses every Campaign, which a scoped lease does not cover. The store
@@ -261,16 +249,13 @@ internal static class CovenantInspectionEndpoints
 
         if (lease.IsFailure)
         {
-
             return Refuse(httpContext, lease.Error, typeInfo);
-
         }
 
         ICovenantSnapshotReadLease? owned = lease.Value;
 
         try
         {
-
             Result<TResponse> answered = await read(service, request, owned, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -279,20 +264,14 @@ internal static class CovenantInspectionEndpoints
             owned = null;
 
             return response;
-
         }
         finally
         {
-
             if (owned is not null)
             {
-
                 await owned.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private static Result<ICovenantSnapshotReadLease> Widen<TLease>(Result<TLease> lease)
@@ -310,8 +289,7 @@ internal static class CovenantInspectionEndpoints
         Error error,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo) =>
         Results.Json(
-            ApiResponse<T>.FromResult(Result<T>.Failure(error), httpContext.TraceIdentifier),
+            ApiResponse<T>.FromResult(Result<T>.Failure(error), Activity.Current?.Id ?? httpContext.TraceIdentifier),
             typeInfo,
             statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
-
 }
