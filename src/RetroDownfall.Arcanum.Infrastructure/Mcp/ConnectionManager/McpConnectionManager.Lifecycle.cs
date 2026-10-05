@@ -48,7 +48,7 @@ public sealed partial class McpConnectionManager
             if (!detachedDisposal.IsCompleted)
             {
                 return new Error(
-                    "Mcp.ClientDisposalIncomplete",
+                    ErrorCodes.Mcp.ClientDisposalIncomplete,
                     "The previous MCP client is still shutting down.");
             }
 

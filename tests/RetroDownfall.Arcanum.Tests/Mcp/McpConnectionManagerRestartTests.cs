@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Mcp;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -44,7 +46,7 @@ public sealed class McpConnectionManagerRestartTests
         // bare cancellation the caller cannot tell from "nothing happened".
         Assert.True(result.IsFailure);
 
-        Assert.Equal("Mcp.RestartCanceled", result.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.RestartCanceled, result.Error.Code);
 
         Assert.Contains("stopped", result.Error.Message, StringComparison.OrdinalIgnoreCase);
 
@@ -102,7 +104,7 @@ public sealed class McpConnectionManagerRestartTests
         // rather than surface as a bare cancellation that reads as "nothing happened".
         Assert.True(result.IsFailure);
 
-        Assert.Equal("Mcp.RestartCanceled", result.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.RestartCanceled, result.Error.Code);
 
         Assert.Contains("not running", result.Error.Message, StringComparison.OrdinalIgnoreCase);
 
@@ -118,6 +120,81 @@ public sealed class McpConnectionManagerRestartTests
         Assert.Equal(1, replacement.DisposeCount);
 
         Assert.Equal(2, clients.Created.Count);
+    }
+
+    [Fact]
+    public async Task Stop_cancelled_after_the_server_stopped_reports_success_and_still_publishes_the_stopped_event()
+    {
+        ScriptedMcpClientFactory clients = new();
+
+        RecordingEventBus events = new();
+
+        await using McpConnectionManager manager = McpConnectionManagerHarness.Create(eventBus: events);
+
+        manager.ClientFactoryForTests = clients.Create;
+
+        await RegisterAsync(manager);
+
+        Result started = await manager.StartAsync(ServerName, workingDirectory: null);
+
+        Assert.True(started.IsSuccess, started.IsFailure ? started.Error.Message : null);
+
+        ManagedMcpServerEntry entry = Assert.IsType<ManagedMcpServerEntry>(
+            manager.GetManagedEntryForTests(ServerName, workingDirectory: null));
+
+        ScriptedMcpClient first = Assert.Single(clients.Created);
+
+        using CancellationTokenSource cancellation = new();
+
+        // The caller gives up at the instant the server finishes stopping. The stop is already committed
+        // (the client is gone and the entry is Stopped), so the answer is the stop's own result and the
+        // Stopped event still reaches subscribers; a bare cancellation would say "nothing happened" about
+        // a server that is no longer running.
+        first.OnDispose = cancellation.Cancel;
+
+        Result result = await manager.StopAsync(ServerName, workingDirectory: null, cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(McpServerState.Stopped, entry.State);
+
+        Assert.Null(entry.Client);
+
+        Assert.Equal(1, first.DisposeCount);
+
+        McpServerEvent stopped = Assert.Single(
+            events.Published.OfType<McpServerEvent>(),
+            static published => published.State == McpServerState.Stopped);
+
+        Assert.Equal(ServerName, stopped.ServerName);
+    }
+
+    [Fact]
+    public async Task Stop_cancelled_before_it_begins_changes_nothing_and_still_throws()
+    {
+        ScriptedMcpClientFactory clients = new();
+
+        await using McpConnectionManager manager = McpConnectionManagerHarness.Create();
+
+        manager.ClientFactoryForTests = clients.Create;
+
+        await RegisterAsync(manager);
+
+        _ = await manager.StartAsync(ServerName, workingDirectory: null);
+
+        ManagedMcpServerEntry entry = Assert.IsType<ManagedMcpServerEntry>(
+            manager.GetManagedEntryForTests(ServerName, workingDirectory: null));
+
+        using CancellationTokenSource cancellation = new();
+
+        await cancellation.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => manager.StopAsync(ServerName, workingDirectory: null, cancellation.Token));
+
+        Assert.Equal(McpServerState.Running, entry.State);
+
+        Assert.Equal(0, Assert.Single(clients.Created).DisposeCount);
     }
 
     [Fact]
@@ -142,6 +219,37 @@ public sealed class McpConnectionManagerRestartTests
         Assert.Equal(1, clients.Created[0].DisposeCount);
 
         Assert.Equal(0, clients.Created[1].DisposeCount);
+    }
+
+    private sealed class RecordingEventBus : IEventBus
+    {
+        private readonly object _gate = new();
+
+        private readonly List<object> _published = [];
+
+        public IReadOnlyList<object> Published
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _published];
+                }
+            }
+        }
+
+        public void Publish<T>(T @event)
+            where T : notnull
+        {
+            lock (_gate)
+            {
+                _published.Add(@event);
+            }
+        }
+
+        public IAsyncEnumerable<T> Subscribe<T>(CancellationToken cancellationToken)
+            where T : notnull =>
+            AsyncEnumerable.Empty<T>();
     }
 
     private static Task RegisterAsync(McpConnectionManager manager) =>

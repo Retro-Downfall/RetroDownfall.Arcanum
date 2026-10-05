@@ -499,6 +499,18 @@ public static class ErrorCodes
 
         /// <summary>Diagnostic MCP Invocation: the route exists only on the Development edition.</summary>
         public const string DiagnosticDisabled = "Mcp.DiagnosticDisabled";
+
+        /// <summary>
+        /// A restart was cancelled after the old server had already stopped, so the answer says what the
+        /// server was left in rather than surfacing a bare cancellation. No status arm: it stays 400.
+        /// </summary>
+        public const string RestartCanceled = "Mcp.RestartCanceled";
+
+        /// <summary>
+        /// The previous MCP client has not finished shutting down, so a start or restart that would
+        /// replace it cannot proceed yet. No status arm: it stays 400.
+        /// </summary>
+        public const string ClientDisposalIncomplete = "Mcp.ClientDisposalIncomplete";
     }
 
     /// <summary>Daemon — background job orchestration.</summary>
