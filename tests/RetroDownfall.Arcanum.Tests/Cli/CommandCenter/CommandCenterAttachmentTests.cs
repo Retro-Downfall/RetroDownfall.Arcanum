@@ -283,6 +283,53 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// A path that is gone by the time it is opened (it was there for the stat) is an ordinary I/O failure
+    /// the staging loop reports, not a crash and not a hang.
+    /// </summary>
+    [Fact]
+    public async Task Reading_a_path_that_vanished_after_the_stat_fails_with_an_io_error()
+    {
+        string gone = Path.Combine(_root, "gone.txt");
+
+        _ = await Assert.ThrowsAnyAsync<IOException>(() =>
+            CommandCenterTurnAttachmentBuilder.ReadBoundedTextAsync(gone, 1024, CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task Reading_a_symbolic_link_loop_fails_with_an_io_error_instead_of_following_it_for_ever()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege on Windows.");
+
+        string first = Path.Combine(_root, "first.txt");
+        string second = Path.Combine(_root, "second.txt");
+        File.CreateSymbolicLink(first, second);
+        File.CreateSymbolicLink(second, first);
+
+        _ = await Assert.ThrowsAnyAsync<IOException>(() =>
+            CommandCenterTurnAttachmentBuilder.ReadBoundedTextAsync(first, 1024, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// The Windows lane. The open there is an ordinary one followed by a judgement of the handle's own
+    /// kind, so an ordinary file must read and a directory must be refused. Not run on a non-Windows host.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_the_open_reads_an_ordinary_file_and_refuses_a_directory()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The Windows lane runs this.");
+
+        string path = Path.Combine(_root, "windows.txt");
+        File.WriteAllText(path, "read through the handle", Encoding.UTF8);
+
+        string? text = await CommandCenterTurnAttachmentBuilder.ReadBoundedTextAsync(path, 1024, CancellationToken.None);
+
+        Assert.Equal("read through the handle", text);
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(() =>
+            CommandCenterTurnAttachmentBuilder.ReadBoundedTextAsync(_root, 1024, CancellationToken.None));
+    }
+
     [SkippableFact]
     public async Task A_symbolic_link_to_a_regular_file_still_stages()
     {
