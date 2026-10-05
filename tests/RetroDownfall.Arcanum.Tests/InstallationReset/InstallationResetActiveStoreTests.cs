@@ -2815,6 +2815,174 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
                 CancellationToken.None)).IsFailure);
     }
 
+    [Fact]
+    public async Task Advance_accepts_the_same_phase_checkpoints_a_completed_reset_writes_and_refuses_taking_back_a_recorded_removal()
+    {
+        // The reset service finishes a Completed record by writing the removals it just made, by
+        // checkpointing a cancellation, and by writing again once a later run has cleared that code,
+        // all in the one phase. The service tests prove what the service writes against a double that
+        // copies this store's credential rule; this proves the rule the double copies, so the two
+        // cannot drift apart without a test failing.
+        string guardedRoot = _workspace.CreateSubdir("completed-same-phase-checkpoints");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("31111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord completed = CreateRecord(
+            InstallationResetPhase.Completed) with
+        {
+            PointOfNoReturn = true,
+        };
+
+        InstallationResetActivePublication publication = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            completed,
+            CancellationToken.None));
+
+        InstallationResetActiveRecord deleted = completed with
+        {
+            CredentialResults =
+            [
+                new InstallationResetCredentialResult(
+                    "master-api-key",
+                    InstallationResetItemStatus.Deleted),
+            ],
+        };
+
+        InstallationResetActiveRecord[] accepted =
+        [
+            // The removal the completion just made, recorded before verification or retirement.
+            deleted,
+
+            // A later pass that finds the account already gone.
+            deleted with
+            {
+                CredentialResults =
+                [
+                    new InstallationResetCredentialResult(
+                        "master-api-key",
+                        InstallationResetItemStatus.Absent),
+                ],
+            },
+
+            // The checkpoint written for a cancellation at the final retirement.
+            deleted with
+            {
+                CredentialResults =
+                [
+                    new InstallationResetCredentialResult(
+                        "master-api-key",
+                        InstallationResetItemStatus.Absent),
+                ],
+                LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            },
+
+            // What a later run writes once it has cleared that code.
+            deleted with
+            {
+                CredentialResults =
+                [
+                    new InstallationResetCredentialResult(
+                        "master-api-key",
+                        InstallationResetItemStatus.Absent),
+                ],
+                LastErrorCode = null,
+            },
+        ];
+
+        foreach (InstallationResetActiveRecord candidate in accepted)
+        {
+            publication = Value(await store.AdvanceAsync(
+                heldLock,
+                publication,
+                candidate,
+                CancellationToken.None));
+        }
+
+        InstallationResetActiveRecord[] refused =
+        [
+            // A checkpoint built from progress that never saw the removal.
+            completed with { LastErrorCode = ErrorCodes.Data.RecoveryRequired },
+
+            // A removal read back as failed.
+            deleted with
+            {
+                CredentialResults =
+                [
+                    new InstallationResetCredentialResult(
+                        "master-api-key",
+                        InstallationResetItemStatus.Failed,
+                        ErrorCodes.Data.ReconciliationFailed),
+                ],
+            },
+        ];
+
+        foreach (InstallationResetActiveRecord candidate in refused)
+        {
+            Assert.True(
+                (await store.AdvanceAsync(
+                    heldLock,
+                    publication,
+                    candidate,
+                    CancellationToken.None)).IsFailure);
+        }
+    }
+
+    [Fact]
+    public async Task Recover_and_retire_observe_a_cancelled_token_before_doing_anything()
+    {
+        // The reset service's cancellation handling reads the store back before the first thing a
+        // continuation does, and retires last. Both rely on the store refusing a cancelled token at its
+        // entry rather than half-running, so the service can answer a cancellation with a resumable
+        // result and no durable change.
+        string guardedRoot = _workspace.CreateSubdir("cancelled-token-entry");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("41111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord record = CreateRecord(InstallationResetPhase.Prepared);
+
+        InstallationResetActivePublication publication = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            record,
+            CancellationToken.None));
+
+        using CancellationTokenSource cancellation = new();
+
+        await cancellation.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => store.RecoverAsync(heldLock, cancellation.Token));
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => store.RetireAsync(heldLock, record.OperationId, cancellation.Token));
+
+        // Nothing was retired: the record is exactly where it was.
+        Result<InstallationResetActiveRecoveryState> inspected = await store.InspectAsync(
+            CancellationToken.None);
+
+        Assert.True(inspected.IsSuccess, inspected.IsFailure ? inspected.Error.Message : null);
+
+        Assert.Equal(
+            publication.EnvelopeDigest,
+            Assert.IsType<InstallationResetActivePublication>(inspected.Value.Publication)
+                .EnvelopeDigest);
+    }
+
     private static InstallationResetActiveRecord CreateRecord(
         InstallationResetPhase phase)
     {
