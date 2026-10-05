@@ -455,6 +455,17 @@ public static class OutboundUrlGuard
         return host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The untrusted-egress address policy on its own, for a client that pins its own sockets (TheForge's
+    /// markdown image loader) and must refuse exactly what this guard refuses.
+    /// </summary>
+    public static bool IsBlockedForUntrustedEgress(IPAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+
+        return IsBlockedAddress(address, allowPrivateAndLoopback: false);
+    }
+
     internal static bool IsBlockedAddress(IPAddress address, bool allowPrivateAndLoopback)
     {
         if (address.IsIPv4MappedToIPv6)
@@ -486,8 +497,16 @@ public static class OutboundUrlGuard
 
         byte[] ipv6Bytes = address.GetAddressBytes();
 
-        // NAT64, 6to4 and Teredo carry an IPv4 destination inside the IPv6 address; a translator on the
-        // path would reach that IPv4 host, so the embedded address meets the same IPv4 policy.
+        // The RFC 8215 local-use NAT64 prefix names a translator inside the local network, so it is the
+        // IPv6 spelling of the IPv4 hosts behind it and untrusted egress refuses it as it refuses RFC1918.
+        if (!allowPrivateAndLoopback && IsLocalUseNat64(ipv6Bytes))
+        {
+            return true;
+        }
+
+        // NAT64, 6to4, Teredo and the IPv4-compatible and IPv4-translated forms carry an IPv4 destination
+        // inside the IPv6 address; a translator on the path would reach that IPv4 host, so the embedded
+        // address meets the same IPv4 policy.
         foreach (byte[] embedded in EmbeddedIPv4Addresses(ipv6Bytes))
         {
             if (IsBlockedIPv4(embedded, allowPrivateAndLoopback))
@@ -575,6 +594,40 @@ public static class OutboundUrlGuard
             yield break;
         }
 
+        // Local-use NAT64 64:ff9b:1::/48 (RFC 8215). The operator chooses the prefix length, and RFC 6052
+        // places the IPv4 address differently for each, skipping the reserved octet at bits 64-71, so every
+        // position a prefix inside this /48 can use is judged.
+        if (IsLocalUseNat64(ipv6Bytes))
+        {
+            // /48
+            yield return [ipv6Bytes[6], ipv6Bytes[7], ipv6Bytes[9], ipv6Bytes[10]];
+
+            // /56
+            yield return [ipv6Bytes[7], ipv6Bytes[9], ipv6Bytes[10], ipv6Bytes[11]];
+
+            // /64
+            yield return ipv6Bytes[9..13];
+
+            // /96
+            yield return ipv6Bytes[12..16];
+
+            yield break;
+        }
+
+        // IPv4-compatible ::a.b.c.d (RFC 4291, deprecated) and IPv4-translated ::ffff:0:a.b.c.d (RFC 2765):
+        // the IPv4 address is the final 32 bits. The unspecified address was refused before this point.
+        if (HasZeroBytes(ipv6Bytes, 0, 12)
+            || (HasZeroBytes(ipv6Bytes, 0, 8)
+                && ipv6Bytes[8] == 0xFF
+                && ipv6Bytes[9] == 0xFF
+                && ipv6Bytes[10] == 0x00
+                && ipv6Bytes[11] == 0x00))
+        {
+            yield return ipv6Bytes[12..16];
+
+            yield break;
+        }
+
         // 6to4 2002::/16 (RFC 3056): the IPv4 address follows the prefix.
         if (ipv6Bytes[0] == 0x20 && ipv6Bytes[1] == 0x02)
         {
@@ -601,6 +654,14 @@ public static class OutboundUrlGuard
             ];
         }
     }
+
+    private static bool IsLocalUseNat64(byte[] ipv6Bytes) =>
+        ipv6Bytes[0] == 0x00
+        && ipv6Bytes[1] == 0x64
+        && ipv6Bytes[2] == 0xFF
+        && ipv6Bytes[3] == 0x9B
+        && ipv6Bytes[4] == 0x00
+        && ipv6Bytes[5] == 0x01;
 
     private static bool HasZeroBytes(byte[] bytes, int start, int end)
     {

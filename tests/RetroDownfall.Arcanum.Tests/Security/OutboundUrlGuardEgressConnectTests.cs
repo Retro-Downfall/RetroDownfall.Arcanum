@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
-using System.Reflection;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -291,13 +290,7 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
 
         NetworkStream networkStream = Assert.IsType<NetworkStream>(captured);
 
-        PropertyInfo socketProperty = typeof(NetworkStream).GetProperty(
-            "Socket",
-            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
-
-        Socket socket = Assert.IsType<Socket>(socketProperty.GetValue(networkStream));
-
-        Assert.True(socket.NoDelay);
+        Assert.True(networkStream.Socket.NoDelay);
     }
 
     private SocketsHttpHandler CreateUntrustedEgressHandler(TimeSpan? connectTimeout = null) =>
