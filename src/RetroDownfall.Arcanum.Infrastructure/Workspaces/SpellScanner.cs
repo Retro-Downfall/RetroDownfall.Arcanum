@@ -1389,7 +1389,7 @@ internal static class SpellScanner
     /// length of 0 — comfortably under the size cap — and be published to the catalog under its directory
     /// fallback name even though nothing can ever be read from it.
     /// </summary>
-    private static bool TryGetRegularFileLength(string filePath, out long length)
+    internal static bool TryGetRegularFileLength(string filePath, out long length)
     {
         length = 0L;
 

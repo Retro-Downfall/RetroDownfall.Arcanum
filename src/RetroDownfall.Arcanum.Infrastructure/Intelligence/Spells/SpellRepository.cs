@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Caching;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
@@ -467,8 +468,6 @@ internal sealed partial class SpellRepository : ISpellRepository
             return null;
         }
 
-        ArcanumSettings settings = _settingsMonitor.CurrentValue;
-
         long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
         // Spell export has a code-owned aggregate script-byte envelope. Reuse the clamped workspace
@@ -476,13 +475,55 @@ internal sealed partial class SpellRepository : ISpellRepository
         long aggregateScriptCap = ArcanumSettingClamps.MaxFileReadSizeBytes(
             ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
 
+        // Every file the export reads goes through the scanner's hardened path (DESIGN section 11.6):
+        // workspace containment, a regular-file stat gate (a FIFO stats as length 0 and a blocking open
+        // never returns), then SecureFileReader's no-follow open of the same object under a bounded read.
+        // A workspace spell is revalidated against its workspace root; a built-in spell lives under the
+        // owner-controlled global directory, which has no workspace root to contain it.
+        string? workspaceRoot = detail.Source == SpellSource.Workspace && !string.IsNullOrWhiteSpace(workingDirectory)
+            ? Path.GetFullPath(workingDirectory.Trim())
+            : null;
+
+        int maxReadBytes = (int)Math.Min(perFileCap, int.MaxValue - 1);
+
+        string? fullContent = null;
+
+        if (workspaceRoot is null || WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, detail.FilePath))
+        {
+            SecureUtf8FileReadResult specRead = await SecureFileReader
+                .ReadUtf8TextAsync(detail.FilePath, maxReadBytes, ct)
+                .ConfigureAwait(false);
+
+            if (specRead.Status is SecureFileReadStatus.Success)
+            {
+                fullContent = specRead.Text;
+            }
+        }
+
+        if (fullContent is null)
+        {
+            _logger.LogWarning(
+                "Spell {SpellName} export refused: {SpellFile} is not a readable regular file inside its root.",
+                name,
+                Path.GetFileName(detail.FilePath));
+
+            return null;
+        }
+
         SkillMetadata? metadata = null;
 
         string? sidecarPath = SkillJsonIO.ResolveSidecarPath(dir);
 
         if (sidecarPath is not null)
         {
-            if (TryGetFileLength(sidecarPath, out long sidecarLength) && sidecarLength > perFileCap)
+            if (!TryGetExportableFileLength(sidecarPath, workspaceRoot, out long sidecarLength))
+            {
+                _logger.LogWarning(
+                    "Skipping non-regular {SidecarFile} for spell {SpellName} export.",
+                    Path.GetFileName(sidecarPath),
+                    name);
+            }
+            else if (sidecarLength > perFileCap)
             {
                 _logger.LogWarning(
                     "Skipping oversized {SidecarFile} for spell {SpellName} export: {Size} bytes exceeds {Cap} bytes.",
@@ -495,23 +536,20 @@ internal sealed partial class SpellRepository : ISpellRepository
             {
                 try
                 {
-                    string json = await File.ReadAllTextAsync(sidecarPath, ct).ConfigureAwait(false);
+                    SecureUtf8FileReadResult sidecarRead = await SecureFileReader
+                        .ReadUtf8TextAsync(sidecarPath, maxReadBytes, ct)
+                        .ConfigureAwait(false);
 
-                    metadata = JsonSerializer.Deserialize(json, Core.Serialization.ArcanumCoreJsonContext.Default.SkillMetadata);
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
+                    if (sidecarRead.Status is SecureFileReadStatus.Success && sidecarRead.Text is not null)
+                    {
+                        metadata = JsonSerializer.Deserialize(sidecarRead.Text, Core.Serialization.ArcanumCoreJsonContext.Default.SkillMetadata);
+                    }
                 }
                 catch (JsonException)
                 {
                 }
             }
         }
-
-        string fullContent = await File.ReadAllTextAsync(detail.FilePath, ct).ConfigureAwait(false);
 
         var scripts = new List<SpellExportScriptDto>();
 
@@ -523,8 +561,15 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             foreach (string path in Directory.EnumerateFiles(scriptsDir))
             {
-                if (!TryGetFileLength(path, out long fileLength))
+                ct.ThrowIfCancellationRequested();
+
+                if (!TryGetExportableFileLength(path, workspaceRoot, out long fileLength))
                 {
+                    _logger.LogWarning(
+                        "Skipping non-regular script {ScriptPath} for spell {SpellName} export.",
+                        path,
+                        name);
+
                     continue;
                 }
 
@@ -552,24 +597,26 @@ internal sealed partial class SpellRepository : ISpellRepository
                     break;
                 }
 
-                byte[] bytes;
+                // Scripts are binary, so the bytes go out as read: the secure read returns raw bytes and
+                // nothing here decodes or re-encodes them as text.
+                using SecureFileReadResult scriptRead = await SecureFileReader
+                    .ReadBytesAsync(path, maxReadBytes, ct)
+                    .ConfigureAwait(false);
 
-                try
+                if (scriptRead.Status is not SecureFileReadStatus.Success)
                 {
-                    bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
-                }
-                catch (IOException)
-                {
+                    _logger.LogWarning(
+                        "Skipping script {ScriptPath} for spell {SpellName} export: the secure read reported {Status}.",
+                        path,
+                        name,
+                        scriptRead.Status);
+
                     continue;
                 }
-                catch (UnauthorizedAccessException)
-                {
-                    continue;
-                }
 
-                scripts.Add(new SpellExportScriptDto(Path.GetFileName(path), Convert.ToBase64String(bytes)));
+                scripts.Add(new SpellExportScriptDto(Path.GetFileName(path), Convert.ToBase64String(scriptRead.Bytes.Span)));
 
-                totalScriptBytes += fileLength;
+                totalScriptBytes += scriptRead.Bytes.Length;
             }
         }
 
@@ -993,6 +1040,28 @@ internal sealed partial class SpellRepository : ISpellRepository
                     new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" does not exist for spell \"{trimmedName}\"."));
             }
 
+            // The version file is read first, through the scanner's hardened path, so a version that is a FIFO or
+            // a link out of the workspace fails before the backup is written rather than leaving it half done.
+            string? newActiveContent = null;
+
+            if (WorkspacePathPolicy.RevalidatePathBeforeIo(Path.GetFullPath(workspaceRoot), versionPath))
+            {
+                SecureUtf8FileReadResult versionRead = await SecureFileReader
+                    .ReadUtf8TextAsync(versionPath, (int)Math.Min(GetMaxSpellFileSizeBytes(), int.MaxValue - 1), ct)
+                    .ConfigureAwait(false);
+
+                if (versionRead.Status is SecureFileReadStatus.Success)
+                {
+                    newActiveContent = versionRead.Text;
+                }
+            }
+
+            if (newActiveContent is null)
+            {
+                return Result<SpellVersionDto>.Failure(
+                    new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" is not a readable regular file for spell \"{trimmedName}\"."));
+            }
+
             string? recordedActiveVersion = workspaceSpell.SkillMetadata?.ActiveVersion;
 
             string previousLabel = recordedActiveVersion
@@ -1013,8 +1082,6 @@ internal sealed partial class SpellRepository : ISpellRepository
             {
                 await SpellAtomicFile.WriteAllTextAsync(previousBackupPath, workspaceSpell.FullContent, ct).ConfigureAwait(false);
             }
-
-            string newActiveContent = await File.ReadAllTextAsync(versionPath, ct).ConfigureAwait(false);
 
             await SpellAtomicFile.WriteAllTextAsync(workspaceSpell.FilePath, newActiveContent, ct).ConfigureAwait(false);
 
@@ -1564,26 +1631,16 @@ internal sealed partial class SpellRepository : ISpellRepository
         return key;
     }
 
-    private static bool TryGetFileLength(string filePath, out long length)
+    /// <summary>
+    /// Stat gate for a file the export is about to read: inside the workspace root when one applies, and an
+    /// unaliased regular file. A FIFO or device stats as length 0, so the length alone proves nothing.
+    /// </summary>
+    private static bool TryGetExportableFileLength(string filePath, string? workspaceRoot, out long length)
     {
-        try
-        {
-            length = new FileInfo(filePath).Length;
+        length = 0L;
 
-            return true;
-        }
-        catch (IOException)
-        {
-            length = 0L;
-
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            length = 0L;
-
-            return false;
-        }
+        return (workspaceRoot is null || WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, filePath))
+            && SpellScanner.TryGetRegularFileLength(filePath, out length);
     }
 
     [GeneratedRegex("^[A-Za-z0-9_-]+$")]

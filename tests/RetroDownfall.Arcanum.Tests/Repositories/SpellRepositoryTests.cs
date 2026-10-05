@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -1105,6 +1106,178 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Equal(scriptsWithinAggregateCap, exported!.Scripts.Count);
     }
 
+    [SkippableFact]
+    public async Task ExportAsync_skips_a_script_symlinked_outside_the_spell_directory()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows lane does not hold.");
+
+        string spellDir = await WriteExportableSpellAsync("symlink-script");
+
+        string scriptsDir = Path.Combine(spellDir, "scripts");
+
+        Directory.CreateDirectory(scriptsDir);
+
+        await File.WriteAllBytesAsync(Path.Combine(scriptsDir, "real.sh"), "echo ok"u8.ToArray());
+
+        string secretDir = Path.Combine(Path.GetTempPath(), "arcanum-spell-secret", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(secretDir);
+
+        try
+        {
+            byte[] secret = "SECRET-KEY-MATERIAL-NEVER-EXPORT"u8.ToArray();
+
+            string secretPath = Path.Combine(secretDir, "id_ed25519");
+
+            await File.WriteAllBytesAsync(secretPath, secret);
+
+            File.CreateSymbolicLink(Path.Combine(scriptsDir, "loot"), secretPath);
+
+            SpellRepository repository = CreateRepository();
+
+            SpellExportDto? exported = await repository.ExportAsync("symlink-script", _workspaceRoot, CancellationToken.None);
+
+            Assert.NotNull(exported);
+
+            SpellExportScriptDto single = Assert.Single(exported!.Scripts);
+
+            Assert.Equal("real.sh", single.FileName);
+
+            Assert.DoesNotContain(
+                exported.Scripts,
+                script => Convert.FromBase64String(script.Base64Content).AsSpan().IndexOf(secret) >= 0);
+        }
+        finally
+        {
+            Directory.Delete(secretDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ActivateVersionAsync_refuses_a_version_file_symlinked_outside_the_spell_directory()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows lane does not hold.");
+
+        string spellDir = await WriteExportableSpellAsync("symlink-version");
+
+        string secretDir = Path.Combine(Path.GetTempPath(), "arcanum-spell-secret", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(secretDir);
+
+        try
+        {
+            string secretPath = Path.Combine(secretDir, "outside.md");
+
+            await File.WriteAllTextAsync(secretPath, "OUTSIDE-CONTENT-NEVER-ACTIVATED");
+
+            File.CreateSymbolicLink(Path.Combine(spellDir, "SPELL.v2.0.md"), secretPath);
+
+            SpellRepository repository = CreateRepository();
+
+            Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
+                "symlink-version",
+                "2.0",
+                _workspaceRoot,
+                CancellationToken.None);
+
+            Assert.True(activated.IsFailure);
+
+            string active = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+
+            Assert.DoesNotContain("OUTSIDE-CONTENT-NEVER-ACTIVATED", active, StringComparison.Ordinal);
+
+            Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
+        }
+        finally
+        {
+            Directory.Delete(secretDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ExportAsync_skips_a_fifo_script()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string spellDir = await WriteExportableSpellAsync("fifo-script");
+
+        string scriptsDir = Path.Combine(spellDir, "scripts");
+
+        Directory.CreateDirectory(scriptsDir);
+
+        await File.WriteAllBytesAsync(Path.Combine(scriptsDir, "real.sh"), "echo ok"u8.ToArray());
+
+        string fifo = Path.Combine(scriptsDir, "wedge.sh");
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        SpellRepository repository = CreateRepository();
+
+        Task<SpellExportDto?> export = Task.Run(
+            () => repository.ExportAsync("fifo-script", _workspaceRoot, CancellationToken.None));
+
+        Task finished = await Task.WhenAny(export, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        if (!ReferenceEquals(finished, export))
+        {
+            // Pair the blocked open(2) with a writer so the stuck thread is released before the test fails.
+            await Task.WhenAny(Task.Run(() => File.WriteAllBytes(fifo, [])), Task.Delay(TimeSpan.FromSeconds(5)));
+
+            Assert.Fail("ExportAsync blocked opening a FIFO script instead of skipping it.");
+        }
+
+        SpellExportDto? exported = await export;
+
+        Assert.NotNull(exported);
+
+        SpellExportScriptDto single = Assert.Single(exported!.Scripts);
+
+        Assert.Equal("real.sh", single.FileName);
+    }
+
+    [SkippableFact]
+    public async Task ExportAsync_ignores_a_sidecar_symlinked_outside_the_spell_directory()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows lane does not hold.");
+
+        string spellDir = await WriteExportableSpellAsync("symlink-sidecar");
+
+        string secretDir = Path.Combine(Path.GetTempPath(), "arcanum-spell-secret", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(secretDir);
+
+        try
+        {
+            string secretPath = Path.Combine(secretDir, "outside.json");
+
+            await File.WriteAllTextAsync(
+                secretPath,
+                """{"name":"symlink-sidecar","version":"9.9.9","description":"OUTSIDE-SIDECAR","tags":[],"declaredTools":[],"dependencies":[]}""");
+
+            File.CreateSymbolicLink(Path.Combine(spellDir, "SPELL.json"), secretPath);
+
+            SpellRepository repository = CreateRepository();
+
+            SpellExportDto? exported = await repository.ExportAsync("symlink-sidecar", _workspaceRoot, CancellationToken.None);
+
+            Assert.NotNull(exported);
+
+            Assert.Null(exported!.Metadata);
+        }
+        finally
+        {
+            Directory.Delete(secretDir, recursive: true);
+        }
+    }
+
     [Fact]
     public void TryResolveDeleteTarget_rejects_directory_outside_workspace()
     {
@@ -1219,6 +1392,25 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
                 Directory.Delete(tempHome, recursive: true);
             }
         }
+    }
+
+    private async Task<string> WriteExportableSpellAsync(string name)
+    {
+        string spellDir = Path.Combine(_workspaceRoot, "spells", name);
+
+        Directory.CreateDirectory(spellDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            $"""
+            ---
+            name: {name}
+            description: export fixture
+            ---
+            body
+            """);
+
+        return spellDir;
     }
 
     private SpellRepository CreateRepository(
