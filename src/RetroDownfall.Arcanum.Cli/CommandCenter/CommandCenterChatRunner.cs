@@ -40,8 +40,7 @@ internal sealed class CommandCenterChatRunner(
         // Everything the turn does from here on, including building the attachments, sits inside the
         // try/finally below: the host's gate and Ctrl+C both rely on the finally to clear
         // ThinkingActive and complete the entries, whatever the build or the stream throws.
-        string[] stagedPathSnapshot = [];
-        Guid[] stagedRefSnapshot = [];
+        StagedAttachmentSnapshot staged = new([], []);
         SessionLogEntry? assistantEntry = null;
         SessionLogEntry? reasoningEntry = null;
         BoundedStreamingTextBuffer assistant = new(
@@ -75,8 +74,7 @@ internal sealed class CommandCenterChatRunner(
         try
         {
             // Snapshot staging at turn start — clear only this snapshot after terminal Result.
-            stagedPathSnapshot = state.StagedAttachmentPaths.ToArray();
-            stagedRefSnapshot = state.StagedAttachmentReferences.ToArray();
+            staged = state.SnapshotStaged();
 
             // Off the caller's thread on purpose: submit reaches here straight from the Terminal.Gui key
             // handler with nothing awaited in between, and the build reads every staged text file and
@@ -86,7 +84,7 @@ internal sealed class CommandCenterChatRunner(
             // inside the operating system instead of waiting for it.
             string workingDirectory = state.WorkingDirectory;
             ArcanumSettings settings = settingsMonitor.CurrentValue;
-            string[] pathsToStage = stagedPathSnapshot;
+            string[] pathsToStage = staged.Paths;
             TurnAttachmentBuildResult attachments = await AbandonableBlockingWork
                 .RunAsync(
                     () => CommandCenterTurnAttachmentBuilder.BuildAsync(
@@ -103,9 +101,9 @@ internal sealed class CommandCenterChatRunner(
                 state.Log.Append(SessionLogEntryKind.Status, line);
             }
 
-            List<Guid>? attachmentReferences = stagedRefSnapshot.Length == 0
+            List<Guid>? attachmentReferences = staged.References.Length == 0
                 ? null
-                : stagedRefSnapshot.ToList();
+                : staged.References.ToList();
 
             state.Log.Append(SessionLogEntryKind.User, attachments.Prompt);
             SessionLogEntry assistantLine = state.Log.Append(
@@ -408,15 +406,7 @@ internal sealed class CommandCenterChatRunner(
 
             if (sawResult && !cancelled && !sawError)
             {
-                foreach (string path in stagedPathSnapshot)
-                {
-                    _ = state.StagedAttachmentPaths.Remove(path);
-                }
-
-                foreach (Guid id in stagedRefSnapshot)
-                {
-                    _ = state.StagedAttachmentReferences.Remove(id);
-                }
+                state.ClearStaged(staged);
             }
 
             try

@@ -13,9 +13,9 @@ public sealed class CommandCenterComposerPreservationTests
         Assert.False(state.TryBeginTurn());
 
         // Staged attachments remain until a successful Result path clears them.
-        _ = state.StagedAttachmentPaths.Add("/tmp/note.txt");
+        _ = state.StageAttachmentPath("/tmp/note.txt");
         Guid stagedId = Guid.NewGuid();
-        _ = state.StagedAttachmentReferences.Add(stagedId);
+        _ = state.StageAttachmentReference(stagedId);
 
         Assert.False(state.TryBeginTurn());
         Assert.Contains("/tmp/note.txt", state.StagedAttachmentPaths);

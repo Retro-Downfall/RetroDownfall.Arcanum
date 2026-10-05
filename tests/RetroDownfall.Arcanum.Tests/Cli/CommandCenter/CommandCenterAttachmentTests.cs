@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -619,6 +620,95 @@ public sealed class AbandonableBlockingWorkTests
     }
 }
 
+public sealed class CommandCenterAttachmentTests
+{
+    /// <summary>
+    /// The composer thread stages paths and references while a turn on a worker thread snapshots the same
+    /// sets and clears what it sent. Unsynchronised <c>HashSet</c> access made that throw (and can corrupt
+    /// the set); one lock on the state now covers both sets.
+    /// </summary>
+    [Fact]
+    public async Task Staging_while_a_turn_clears_its_snapshot_is_race_free()
+    {
+        CommandCenterState state = new(new SessionLogBuffer());
+        using CancellationTokenSource stop = new(TimeSpan.FromSeconds(2));
+        ConcurrentQueue<Exception> failures = new();
+
+        Task stager = Task.Run(() =>
+        {
+            int next = 0;
+            while (!stop.IsCancellationRequested)
+            {
+                try
+                {
+                    _ = state.StageAttachmentPath("staged-" + (next++ % 5_000));
+                    _ = state.StageAttachmentReference(Guid.NewGuid());
+                }
+                catch (Exception ex)
+                {
+                    failures.Enqueue(ex);
+                }
+            }
+        });
+
+        Task turn = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                try
+                {
+                    StagedAttachmentSnapshot snapshot = state.SnapshotStaged();
+                    state.ClearStaged(snapshot);
+                    _ = state.StagedAttachmentPaths.Count;
+                    _ = state.StagedAttachmentReferences.Count;
+                }
+                catch (Exception ex)
+                {
+                    failures.Enqueue(ex);
+                }
+            }
+        });
+
+        await Task.WhenAll(stager, turn).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(
+            failures.IsEmpty,
+            $"{failures.Count} failures under concurrent staging; first: {failures.FirstOrDefault()}");
+    }
+
+    [Fact]
+    public void Clearing_a_snapshot_keeps_what_was_staged_after_it_was_taken()
+    {
+        CommandCenterState state = new(new SessionLogBuffer());
+        Guid before = Guid.NewGuid();
+        Guid after = Guid.NewGuid();
+        _ = state.StageAttachmentPath("sent.txt");
+        _ = state.StageAttachmentReference(before);
+
+        StagedAttachmentSnapshot snapshot = state.SnapshotStaged();
+        _ = state.StageAttachmentPath("next.txt");
+        _ = state.StageAttachmentReference(after);
+
+        state.ClearStaged(snapshot);
+
+        Assert.Equal(["next.txt"], state.StagedAttachmentPaths);
+        Assert.Equal([after], state.StagedAttachmentReferences);
+    }
+
+    [Fact]
+    public void The_exposed_sets_are_copies_so_a_caller_cannot_mutate_the_state_through_them()
+    {
+        CommandCenterState state = new(new SessionLogBuffer());
+        _ = state.StageAttachmentPath("one.txt");
+
+        IReadOnlyCollection<string> view = state.StagedAttachmentPaths;
+        _ = state.StageAttachmentPath("two.txt");
+
+        Assert.Equal(["one.txt"], view);
+        Assert.Equal(2, state.StagedAttachmentPaths.Count);
+    }
+}
+
 public sealed class ShellCommandParserAttachTests
 {
     private readonly ShellCommandParser _parser = new();
@@ -1111,9 +1201,9 @@ public sealed class ShellCommandDispatcherAttachmentsTests
     {
         CommandCenterState state = new(new SessionLogBuffer());
         Guid id = Guid.NewGuid();
-        _ = state.StagedAttachmentReferences.Add(id);
+        _ = state.StageAttachmentReference(id);
         Assert.Single(state.StagedAttachmentReferences);
-        state.StagedAttachmentReferences.Clear();
+        state.ClearAllStaged();
         Assert.Empty(state.StagedAttachmentReferences);
     }
 
