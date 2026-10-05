@@ -14,7 +14,9 @@ internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider t
             async () =>
             {
                 await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
+
                 await using SqliteCommand command = CreateCommand();
+
                 command.CommandText = """
                     SELECT "Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
                            "ContentVersion", "CreatedAt", "UpdatedAt"
@@ -22,10 +24,13 @@ internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider t
                     WHERE "SessionId" = $sessionId
                     ORDER BY "CreatedAt", "Id";
                     """;
+
                 command.Parameters.AddWithValue("$sessionId", sessionId);
 
                 List<SessionContextPinRecord> rows = [];
+
                 await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     rows.Add(Read(reader));
@@ -52,7 +57,9 @@ internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider t
             async () =>
             {
                 await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
+
                 await using SqliteCommand command = CreateCommand();
+
                 command.CommandText = """
                     INSERT INTO "SessionContextPins"
                         ("Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
@@ -65,14 +72,23 @@ internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider t
                     RETURNING "Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
                               "ContentVersion", "CreatedAt", "UpdatedAt";
                     """;
+
                 command.Parameters.AddWithValue("$id", id);
+
                 command.Parameters.AddWithValue("$sessionId", sessionId);
+
                 command.Parameters.AddWithValue("$kind", (int)kind);
+
                 command.Parameters.AddWithValue("$target", targetIdentifier);
+
                 command.Parameters.AddWithValue("$label", displayLabel);
+
                 command.Parameters.AddWithValue("$version", (object?)contentVersion ?? DBNull.Value);
+
                 command.Parameters.AddWithValue("$now", UtcInstantText.Format(now));
+
                 await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
                 _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
 
                 return Read(reader);
@@ -88,12 +104,16 @@ internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider t
             async () =>
             {
                 await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
+
                 await using SqliteCommand command = CreateCommand();
+
                 command.CommandText = """
                     DELETE FROM "SessionContextPins"
                     WHERE "SessionId" = $sessionId AND "Id" = $id;
                     """;
+
                 command.Parameters.AddWithValue("$sessionId", sessionId);
+
                 command.Parameters.AddWithValue("$id", pinId);
 
                 return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;

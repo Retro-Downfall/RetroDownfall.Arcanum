@@ -880,6 +880,7 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
                 if (Interlocked.Exchange(ref interceptNextComparison, 0) == 1)
                 {
                     losingReadEntered.TrySetResult();
+
                     allowLosingRead.Task.GetAwaiter().GetResult();
                 }
 

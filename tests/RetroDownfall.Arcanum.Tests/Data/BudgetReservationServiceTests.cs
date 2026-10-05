@@ -288,6 +288,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
             Enabled = true,
             DailyLimitUsd = 1m,
         };
+
         BudgetReservationService first = CreateService(budget);
 
         await using ArcanumDbContext secondDb = _fixture.CreateContext(_dbPath);

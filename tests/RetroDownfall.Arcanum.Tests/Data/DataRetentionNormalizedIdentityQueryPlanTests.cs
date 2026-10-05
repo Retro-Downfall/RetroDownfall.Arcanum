@@ -172,7 +172,6 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     /// shape; the run ledger grows with every turn, so a scan per candidate Session is the expensive one.
     /// </remarks>
     [SkippableFact]
-
     public async Task The_inference_run_session_lookup_is_answered_by_an_expression_index()
     {
         RequireSqlCipher();
