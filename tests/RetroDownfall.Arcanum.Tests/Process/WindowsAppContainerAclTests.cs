@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 public sealed class WindowsAppContainerAclTests : IDisposable
 {
     private const string RunA =
-        "S-1-15-2-1111111111-2222222222-3333333333-4444444444-1555555555-1666666666-1777777777";
+        "S-1-15-2-1111111111-2222222222-3333333333-1444444444-1555555555-1666666666-1777777777";
 
     private const string RunB =
         "S-1-15-2-1888888888-1999999999-1212121212-1343434343-1565656565-1787878787-1909090909";
@@ -67,6 +67,24 @@ public sealed class WindowsAppContainerAclTests : IDisposable
 
         Assert.True(WindowsAppContainerLauncher.RemoveGrant(shared, RunB));
 
+        Assert.Equal(original, Sddl(shared));
+    }
+
+    [SkippableFact]
+    [SupportedOSPlatform("windows")]
+    public void Removing_a_sid_that_is_not_a_per_run_AppContainer_sid_leaves_the_dacl_alone()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The AppContainer ACL removal is Windows-only.");
+
+        string shared = Directory.CreateDirectory(Path.Combine(_root, "workspace")).FullName;
+        string original = Sddl(shared);
+        string currentUser = WindowsIdentity.GetCurrent().User!.Value;
+
+        // The owner's own explicit ACE and the built-in Administrators group are exactly what a tampered
+        // undo record could name; the purge must refuse both rather than strip them.
+        Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, currentUser));
+        Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, "S-1-5-32-544"));
+        Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, "S-1-15-2-1"));
         Assert.Equal(original, Sddl(shared));
     }
 

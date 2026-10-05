@@ -168,10 +168,16 @@ internal static partial class WindowsAppContainerLauncher
     /// leaving every other entry — including another concurrent run's grant on the same root — as it
     /// is now. Restoring a snapshot instead would delete that run's live ACE and later resurrect this
     /// run's dead SID. A directory that no longer exists carries no ACE to remove. Host replay uses
-    /// this too.
+    /// this too. Only a per-run AppContainer SID is ever purged: anything broader would strip access
+    /// no run granted.
     /// </summary>
     internal static bool RemoveGrant(string path, string sid)
     {
+        if (!WindowsAppContainerRestoreJournal.IsAppContainerSidString(sid))
+        {
+            return false;
+        }
+
         if (!Directory.Exists(path))
         {
             return !File.Exists(path);

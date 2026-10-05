@@ -115,19 +115,146 @@ public sealed class WindowsBrokerTargetResolverTests
             "claude",
             SearchPath,
             PathExt,
-            files.Contains);
+            files.Contains,
+            userProfile: UserProfile);
 
         Result<WindowsBrokerTarget> explicitPath = WindowsBrokerTargetResolver.Resolve(
             @"C:\tools\build.bat",
             SearchPath,
             PathExt,
-            static _ => true);
+            static _ => true,
+            userProfile: UserProfile);
 
         Assert.True(bare.IsFailure);
         Assert.Equal(WindowsBrokerTargetResolver.BatchTargetRefusedCode, bare.Error.Code);
         Assert.Contains("cmd.exe /c", bare.Error.Message, StringComparison.Ordinal);
+
+        // `cmd.exe /c claude` would start cmd from System32, but cmd's own PATH search inside the
+        // AppContainer cannot read the npm directory: only a bare name the host resolved gets a
+        // user-profile PATH directory granted. The message must not promise a route that fails.
+        Assert.Contains("does not grant", bare.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(@"C:\Users\dev\AppData\Roaming\npm", bare.Error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("user profile", bare.Error.Message, StringComparison.Ordinal);
         Assert.True(explicitPath.IsFailure);
         Assert.Equal(WindowsBrokerTargetResolver.BatchTargetRefusedCode, explicitPath.Error.Code);
+        Assert.Contains("cmd.exe /c", explicitPath.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("does not grant", explicitPath.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(@"\Windows\System32\cmd.exe")]
+    [InlineData("/Windows/System32/cmd.exe")]
+    [InlineData(@"\\server\share\tool.exe")]
+    [InlineData("//server/share/tool.exe")]
+    [InlineData(@"\\?\C:\Windows\System32\cmd.exe")]
+    [InlineData(@"C:tool.exe")]
+    public void Root_relative_UNC_and_drive_relative_targets_are_refused_not_rebased(string fileName)
+    {
+        // Each of these names a file that is not under the working directory. Joining it onto the
+        // working directory would launch a different file than the one named, and a UNC target would
+        // load code from a network share, so they are refused exactly like drive-relative `C:tool`.
+        List<string> probed = [];
+
+        Result<WindowsBrokerTarget> result = WindowsBrokerTargetResolver.Resolve(
+            fileName,
+            SearchPath,
+            PathExt,
+            candidate =>
+            {
+                probed.Add(candidate);
+                return true;
+            },
+            workingDirectory: @"C:\work\repo",
+            userProfile: UserProfile);
+
+        Assert.True(result.IsFailure, result.IsSuccess ? result.Value.Path : null);
+        Assert.Equal(WindowsBrokerTargetResolver.CommandNotFoundCode, result.Error.Code);
+        Assert.Empty(probed);
+    }
+
+    [Fact]
+    public void Mixed_case_names_and_extensions_match_PATHEXT_without_regard_to_case()
+    {
+        // Win32 compares extensions case-insensitively: `GIT.Exe` already carries an executable
+        // extension under a lower-case PATHEXT, so nothing is appended, and an upper-case `.Cmd`
+        // shim is still a batch script. A probe that only answers for the exact spelling shows the
+        // name was searched as given.
+        List<string> probed = [];
+
+        Result<WindowsBrokerTarget> git = WindowsBrokerTargetResolver.Resolve(
+            "GIT.Exe",
+            SearchPath,
+            ".com;.exe;.bat;.cmd",
+            candidate =>
+            {
+                probed.Add(candidate);
+                return string.Equals(candidate, @"C:\Program Files\Git\cmd\GIT.Exe", StringComparison.Ordinal);
+            });
+
+        Result<WindowsBrokerTarget> shim = WindowsBrokerTargetResolver.Resolve(
+            "NPM",
+            SearchPath,
+            ".com;.exe;.bat;.CmD",
+            static candidate => string.Equals(
+                candidate,
+                @"C:\Users\dev\AppData\Roaming\npm\NPM.CmD",
+                StringComparison.Ordinal));
+
+        Result<WindowsBrokerTarget> profileTool = WindowsBrokerTargetResolver.Resolve(
+            "rg",
+            @"c:\USERS\Dev\.cargo\bin",
+            PathExt,
+            static candidate => string.Equals(candidate, @"c:\USERS\Dev\.cargo\bin\rg.COM", StringComparison.Ordinal),
+            userProfile: @"C:\Users\dev");
+
+        Assert.True(git.IsSuccess, git.IsFailure ? git.Error.Message : null);
+        Assert.Equal(@"C:\Program Files\Git\cmd\GIT.Exe", git.Value.Path);
+        Assert.DoesNotContain(probed, static candidate => candidate.EndsWith(".Exe.com", StringComparison.OrdinalIgnoreCase));
+        Assert.True(shim.IsFailure);
+        Assert.Equal(WindowsBrokerTargetResolver.BatchTargetRefusedCode, shim.Error.Code);
+        Assert.True(profileTool.IsSuccess, profileTool.IsFailure ? profileTool.Error.Message : null);
+        Assert.Equal(@"c:\USERS\Dev\.cargo\bin", profileTool.Value.ReadExecuteRoot);
+    }
+
+    [Fact]
+    public void Name_with_an_extension_outside_PATHEXT_has_every_PATHEXT_extension_appended()
+    {
+        // `python3.11` and `script.ps1` carry a dot but not an executable extension, so Win32 appends
+        // PATHEXT to them; the bare file itself is never returned, because CreateProcessW cannot start
+        // a script or a versioned name that is not a PE image.
+        HashSet<string> files = new(StringComparer.OrdinalIgnoreCase)
+        {
+            @"C:\Users\dev\.cargo\bin\python3.11",
+            @"C:\Users\dev\.cargo\bin\python3.11.exe",
+            @"C:\Windows\system32\script.ps1",
+            @"C:\Windows\system32\tool.cmd",
+        };
+
+        Result<WindowsBrokerTarget> versioned = WindowsBrokerTargetResolver.Resolve(
+            "python3.11",
+            SearchPath,
+            PathExt,
+            files.Contains);
+
+        Result<WindowsBrokerTarget> script = WindowsBrokerTargetResolver.Resolve(
+            "script.ps1",
+            SearchPath,
+            PathExt,
+            files.Contains);
+
+        // `.cmd` is not executable under this PATHEXT, so `tool.cmd` is a name to extend, not a match.
+        Result<WindowsBrokerTarget> outsideNarrowPathExt = WindowsBrokerTargetResolver.Resolve(
+            "tool.cmd",
+            SearchPath,
+            ".EXE",
+            files.Contains);
+
+        Assert.True(versioned.IsSuccess, versioned.IsFailure ? versioned.Error.Message : null);
+        Assert.Equal(@"C:\Users\dev\.cargo\bin\python3.11.exe", versioned.Value.Path, ignoreCase: true);
+        Assert.True(script.IsFailure);
+        Assert.Equal(WindowsBrokerTargetResolver.CommandNotFoundCode, script.Error.Code);
+        Assert.True(outsideNarrowPathExt.IsFailure);
+        Assert.Equal(WindowsBrokerTargetResolver.CommandNotFoundCode, outsideNarrowPathExt.Error.Code);
     }
 
     [Fact]
