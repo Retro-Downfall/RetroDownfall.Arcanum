@@ -725,6 +725,122 @@ public sealed class BackupRestoreServiceTests : IDisposable
             await File.ReadAllTextAsync(Path.Combine(displaced, "CODEX.md")));
     }
 
+    /// <summary>
+    /// A rollback whose directories went back but whose prior Grimoire secret did not is reported as
+    /// unfinished, with its staging retained, rather than as a clean return to the original state.
+    /// </summary>
+    /// <remarks>
+    /// The second Grimoire secret write is the rollback's reinstatement: the first is the rewrap of the
+    /// archive's secret. With that write failing, the restored database's secret stays installed
+    /// against the prior, differently keyed database, which is exactly the state <c>RolledBack</c>
+    /// would deny.
+    /// </remarks>
+    [Fact]
+    public async Task A_rollback_that_cannot_reinstate_the_prior_grimoire_secret_is_not_reported_as_clean()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unreinstated-secret.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        RecordingSecretStore store = new()
+        {
+            GrimoireSecret = "the prior machine secret",
+            FailingGrimoireSecretWrite = 2,
+        };
+
+        BackupRestoreResult result = await Restore(
+                store,
+                new BackupRestoreServiceOptions
+                {
+                    BeforePhaseForTests = phase =>
+                    {
+                        if (phase == BackupRestorePhase.Reconcile)
+                        {
+                            throw new IOException("injected post-commit fault");
+                        }
+                    },
+                })
+            .RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        BackupVerifyIssue issue = Assert.Single(result.Issues);
+
+        Assert.Equal("backup.restore_reversal_incomplete", issue.Code);
+
+        Assert.Contains("the Grimoire encryption secret (IOException)", issue.Message, StringComparison.Ordinal);
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+
+        string staging = Assert.Single(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+        Assert.Contains(staging, issue.Message, StringComparison.Ordinal);
+
+        Assert.Equal(
+            BackupRestorePhase.Commit,
+            Assert.IsType<BackupRestoreJournalRecord>(BackupRestoreJournal.TryRead(staging)).Phase);
+    }
+
+    /// <summary>
+    /// A replacement whose capture cannot tell what a secret it may overwrite holds refuses before it
+    /// displaces anything, because a rollback could neither put that secret back nor prove it absent.
+    /// </summary>
+    [Fact]
+    public async Task A_replacement_is_refused_before_commit_when_a_prior_secret_cannot_be_read()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unreadable-prior-secret.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        RecordingSecretStore store = new()
+        {
+            GrimoireSecret = fixture.GrimoireSecret,
+            FileEncryptionReadOverride = SecretStoreReadResult.Unreadable("access denied"),
+        };
+
+        BackupRestoreResult result = await Restore(store).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        BackupVerifyIssue issue = Assert.Single(result.Issues);
+
+        Assert.Equal("backup.restore_prior_secret_unreadable", issue.Code);
+
+        Assert.Contains("file-encryption key ring", issue.Message, StringComparison.Ordinal);
+
+        Assert.Equal(fixture.GrimoireSecret, store.GrimoireSecret);
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+
+        Assert.Empty(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+    }
+
     [Fact]
     public async Task A_fault_before_commit_leaves_the_installation_unchanged()
     {
@@ -2637,22 +2753,59 @@ public sealed class BackupRestoreServiceTests : IDisposable
             return Task.FromResult(GrimoireSecret);
         }
 
+        /// <summary>
+        /// The 1-based Grimoire secret write that fails the way an unwritable store does, or null.
+        /// </summary>
+        public int? FailingGrimoireSecretWrite { get; set; }
+
+        private int _grimoireSecretWrites;
+
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
+            if (++_grimoireSecretWrites == FailingGrimoireSecretWrite)
+            {
+                throw new IOException("The Grimoire secret store is not writable.");
+            }
+
             GrimoireSecret = encryptionSecret;
 
             return Task.CompletedTask;
         }
 
+        /// <summary>Replaces what a file-encryption key ring read answers, when set.</summary>
+        public SecretStoreReadResult? FileEncryptionReadOverride { get; set; }
+
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
             Task.FromResult(
-                FileEncryptionSecret is null
+                FileEncryptionReadOverride
+                ?? (FileEncryptionSecret is null
                     ? SecretStoreReadResult.Missing()
-                    : SecretStoreReadResult.Ok(FileEncryptionSecret));
+                    : SecretStoreReadResult.Ok(FileEncryptionSecret)));
 
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
         {
             FileEncryptionSecret = encryptionSecret;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteApiKeyAsync()
+        {
+            ApiKey = null;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteGrimoireEncryptionSecretAsync()
+        {
+            GrimoireSecret = null;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteFileEncryptionSecretAsync()
+        {
+            FileEncryptionSecret = null;
 
             return Task.CompletedTask;
         }

@@ -183,4 +183,29 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 
         return _fileEncryptionKey.SaveAsync(encryptionSecret, CancellationToken.None);
     }
+
+    /// <summary>Removes the OS credential and its encrypted mirror, then drops the cached digest.</summary>
+    public async Task DeleteApiKeyAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await _masterApiKey.DeleteAsync(CancellationToken.None).ConfigureAwait(false);
+
+        _apiKeyDigestCache.Invalidate();
+    }
+
+    /// <summary>
+    /// Forwards to <see cref="DataProtectionSecretStore.DeleteGrimoireEncryptionSecretAsync"/>; the
+    /// Grimoire secret has no OS copy.
+    /// </summary>
+    public Task DeleteGrimoireEncryptionSecretAsync() =>
+        _dataProtectionStore.DeleteGrimoireEncryptionSecretAsync();
+
+    /// <summary>Removes the OS credential and its encrypted mirror.</summary>
+    public Task DeleteFileEncryptionSecretAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return _fileEncryptionKey.DeleteAsync(CancellationToken.None);
+    }
 }

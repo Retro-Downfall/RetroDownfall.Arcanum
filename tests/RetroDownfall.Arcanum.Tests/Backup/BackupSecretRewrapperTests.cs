@@ -6,6 +6,8 @@ using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -14,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 
 public sealed class BackupSecretRewrapperTests : IDisposable
 {
-
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "arcanum-secret-rewrap-" + Guid.NewGuid().ToString("N"));
@@ -23,20 +24,15 @@ public sealed class BackupSecretRewrapperTests : IDisposable
 
     public void Dispose()
     {
-
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Portable_material_is_rewrapped_into_local_protection_without_the_source_credential_store()
     {
-
         byte[] first = RandomNumberGenerator.GetBytes(32);
 
         byte[] second = RandomNumberGenerator.GetBytes(32);
@@ -71,13 +67,11 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         Assert.Contains($"active={KeyId(first)}", ring, StringComparison.Ordinal);
 
         Assert.Contains($"{KeyId(second)}={Convert.ToBase64String(second)}", ring, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task The_master_api_key_is_restored_only_when_explicitly_requested()
     {
-
         string path = WriteRecovery(
             "grimoire-secret",
             activeKeyId: null,
@@ -101,13 +95,11 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         Assert.True(restored.MasterApiKeyWritten);
 
         Assert.Equal("master-key", withRequest.ApiKey);
-
     }
 
     [Fact]
     public async Task Requesting_an_absent_master_api_key_is_reported_rather_than_silently_skipped()
     {
-
         string path = WriteRecovery(
             "grimoire-secret",
             activeKeyId: null,
@@ -124,13 +116,11 @@ public sealed class BackupSecretRewrapperTests : IDisposable
             static issue => issue.Code == "backup.restore_master_api_key_absent");
 
         Assert.False(result.MasterApiKeyWritten);
-
     }
 
     [Fact]
     public async Task Missing_recovery_material_is_a_typed_refusal()
     {
-
         BackupSecretRewrapResult result = await new BackupSecretRewrapper(new RecordingSecretStore())
             .RewrapAsync(
                 Path.Combine(_root, "absent.json"),
@@ -140,13 +130,11 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         Assert.Contains(
             result.Issues,
             static issue => issue.Code == "backup.restore_recovery_material_missing");
-
     }
 
     [Fact]
     public async Task Malformed_recovery_material_is_a_typed_refusal_and_writes_nothing()
     {
-
         string path = Path.Combine(_root, "malformed.json");
 
         await File.WriteAllTextAsync(path, "{ not json");
@@ -161,13 +149,11 @@ public sealed class BackupSecretRewrapperTests : IDisposable
             static issue => issue.Code == "backup.restore_recovery_material_invalid");
 
         Assert.Null(store.GrimoireSecret);
-
     }
 
     [Fact]
     public async Task A_key_whose_id_does_not_match_its_bytes_is_refused_before_any_write()
     {
-
         byte[] key = RandomNumberGenerator.GetBytes(32);
 
         string path = WriteRecovery(
@@ -188,13 +174,11 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         Assert.Null(store.GrimoireSecret);
 
         Assert.Null(store.FileEncryptionSecret);
-
     }
 
     [Fact]
     public async Task Recovery_material_without_file_keys_still_rewraps_the_grimoire_secret()
     {
-
         string path = WriteRecovery(
             "grimoire-secret",
             activeKeyId: null,
@@ -213,7 +197,6 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         Assert.Null(store.FileEncryptionSecret);
 
         Assert.Equal(0, result.FileEncryptionKeysWritten);
-
     }
 
     /// <summary>
@@ -230,7 +213,6 @@ public sealed class BackupSecretRewrapperTests : IDisposable
     [Fact]
     public async Task A_crlf_key_ring_left_by_an_older_windows_build_still_accepts_imported_keys()
     {
-
         byte[] existing = RandomNumberGenerator.GetBytes(32);
 
         byte[] imported = RandomNumberGenerator.GetBytes(32);
@@ -269,7 +251,94 @@ public sealed class BackupSecretRewrapperTests : IDisposable
 
         // The active id survived the CRLF, so the ring still names a key it actually holds.
         Assert.Contains($"active={KeyId(existing)}\n", merged, StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// A rollback returns a secret that did not exist before the restore to not existing, rather than
+    /// leaving the archive's copy behind.
+    /// </summary>
+    /// <remarks>
+    /// Reinstating only the values that were captured cannot undo a write over nothing: a machine with
+    /// no master API key that adopted the archive's with <c>--restore-master-api-key</c> would keep
+    /// authenticating callers with it after the restore reported a clean rollback. Absence is captured
+    /// as a value of its own so the rollback can delete what the restore created.
+    /// </remarks>
+    [Fact]
+    public async Task Restore_removes_secrets_that_were_absent_at_capture()
+    {
+        byte[] key = RandomNumberGenerator.GetBytes(32);
+
+        string path = WriteRecovery(
+            "grimoire-secret",
+            activeKeyId: KeyId(key),
+            keys: [(KeyId(key), key)],
+            masterApiKey: "archived-master-key");
+
+        RecordingSecretStore store = new();
+
+        store.SeedGrimoireSecret("the prior grimoire secret");
+
+        BackupSecretRewrapper rewrapper = new(store);
+
+        BackupSecretSnapshot prior = await rewrapper.CaptureAsync();
+
+        BackupSecretRewrapResult rewrap = await rewrapper.RewrapAsync(
+            path,
+            restoreMasterApiKey: true,
+            CancellationToken.None);
+
+        Assert.True(rewrap.MasterApiKeyWritten);
+
+        Assert.Equal("archived-master-key", store.ApiKey);
+
+        _ = await rewrapper.RestoreAsync(prior);
+
+        Assert.Null(store.ApiKey);
+
+        Assert.Null(store.FileEncryptionSecret);
+
+        Assert.Equal("the prior grimoire secret", store.GrimoireSecret);
+    }
+
+    /// <summary>
+    /// A rollback that cannot put the prior Grimoire secret back says so, rather than letting the
+    /// restore report a clean rollback over a database the remaining secret no longer opens.
+    /// </summary>
+    [Fact]
+    public async Task Restore_reports_failure_when_the_prior_grimoire_secret_cannot_be_reinstated()
+    {
+        string path = WriteRecovery(
+            "archived-grimoire-secret",
+            activeKeyId: null,
+            keys: [],
+            masterApiKey: null);
+
+        RecordingSecretStore store = new();
+
+        store.SeedGrimoireSecret("the prior grimoire secret");
+
+        BackupSecretRewrapper rewrapper = new(store);
+
+        BackupSecretSnapshot prior = await rewrapper.CaptureAsync();
+
+        BackupSecretRewrapResult rewrap = await rewrapper.RewrapAsync(
+            path,
+            restoreMasterApiKey: false,
+            CancellationToken.None);
+
+        Assert.True(rewrap.GrimoireSecretWritten);
+
+        store.FailGrimoireSecretWrites = true;
+
+        Result restored = await rewrapper.RestoreAsync(prior);
+
+        Assert.True(restored.IsFailure);
+
+        Assert.Contains("Grimoire", restored.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains(nameof(IOException), restored.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal("archived-grimoire-secret", store.GrimoireSecret);
     }
 
     private static string KeyId(byte[] key) =>
@@ -281,14 +350,12 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         (string KeyId, byte[] Key)[] keys,
         string? masterApiKey)
     {
-
         string path = Path.Combine(_root, "portable-keys-" + Guid.NewGuid().ToString("N") + ".json");
 
         using MemoryStream buffer = new();
 
         using (Utf8JsonWriter writer = new(buffer))
         {
-
             writer.WriteStartObject();
 
             writer.WriteNumber("version", 1);
@@ -299,22 +366,17 @@ public sealed class BackupSecretRewrapperTests : IDisposable
 
             if (activeKeyId is null)
             {
-
                 writer.WriteNull("activeFileEncryptionKeyId");
-
             }
             else
             {
-
                 writer.WriteString("activeFileEncryptionKeyId", activeKeyId);
-
             }
 
             writer.WriteStartArray("fileEncryptionKeys");
 
             foreach ((string keyId, byte[] key) in keys)
             {
-
                 writer.WriteStartObject();
 
                 writer.WriteString("keyId", keyId);
@@ -322,33 +384,27 @@ public sealed class BackupSecretRewrapperTests : IDisposable
                 writer.WriteBase64String("keyBytes", key);
 
                 writer.WriteEndObject();
-
             }
 
             writer.WriteEndArray();
 
             if (masterApiKey is not null)
             {
-
                 writer.WriteBase64String(
                     "masterApiKeyUtf8",
                     Encoding.UTF8.GetBytes(masterApiKey));
-
             }
 
             writer.WriteEndObject();
-
         }
 
         File.WriteAllBytes(path, buffer.ToArray());
 
         return path;
-
     }
 
     private sealed class RecordingSecretStore : ISecretStore
     {
-
         public string? ApiKey { get; private set; }
 
         public string? GrimoireSecret { get; private set; }
@@ -360,6 +416,30 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         /// </summary>
         public void Seed(string encryptionSecret) => FileEncryptionSecret = encryptionSecret;
 
+        /// <summary>Plants the destination's own Grimoire secret, so a capture has one to keep.</summary>
+        public void SeedGrimoireSecret(string encryptionSecret) => GrimoireSecret = encryptionSecret;
+
+        public Task DeleteApiKeyAsync()
+        {
+            ApiKey = null;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteGrimoireEncryptionSecretAsync()
+        {
+            GrimoireSecret = null;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteFileEncryptionSecretAsync()
+        {
+            FileEncryptionSecret = null;
+
+            return Task.CompletedTask;
+        }
+
         public Task<string?> GetApiKeyAsync() => Task.FromResult(ApiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -370,23 +450,27 @@ public sealed class BackupSecretRewrapperTests : IDisposable
 
         public Task SaveApiKeyAsync(string apiKey)
         {
-
             ApiKey = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() =>
             Task.FromResult(GrimoireSecret);
 
+        /// <summary>Makes every later Grimoire secret write fail the way an unwritable store does.</summary>
+        public bool FailGrimoireSecretWrites { get; set; }
+
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
+            if (FailGrimoireSecretWrites)
+            {
+                throw new IOException("The Grimoire secret store is not writable.");
+            }
 
             GrimoireSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
 
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
@@ -397,13 +481,9 @@ public sealed class BackupSecretRewrapperTests : IDisposable
 
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
         {
-
             FileEncryptionSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
-
     }
-
 }
