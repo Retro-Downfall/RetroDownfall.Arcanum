@@ -85,7 +85,6 @@ internal sealed class ArcanumTestHomeScope : IDisposable
         }
 
         try
-
         {
             if (Directory.Exists(Root))
             {
@@ -93,12 +92,10 @@ internal sealed class ArcanumTestHomeScope : IDisposable
             }
         }
         catch (IOException)
-
         {
             // Best-effort cleanup.
         }
         catch (UnauthorizedAccessException)
-
         {
             // Best-effort cleanup.
         }
