@@ -74,12 +74,14 @@ internal sealed partial class WorkspaceIndexingService
                 {
                     wait = _sweep is not null
                         ? Timeout.InfiniteTimeSpan
-                        : _nextReconciliation - DateTimeOffset.UtcNow;
+                        : NextSweepDueLocked() - DateTimeOffset.UtcNow;
 
                     if (wait != Timeout.InfiniteTimeSpan && wait <= TimeSpan.Zero)
                     {
-                        // An empty, still-due sweep owns no waiter or execution handle.
-                        wait = TimeSpan.FromSeconds(1);
+                        // An empty, still-due sweep owns no waiter or execution handle. With entries
+                        // registered, due work that was not started yet became due after the sweep
+                        // started above, so only a short pause separates it from its start.
+                        wait = _entries.Count == 0 ? TimeSpan.FromSeconds(1) : TimeSpan.FromMilliseconds(10);
                     }
                 }
 
@@ -135,17 +137,44 @@ internal sealed partial class WorkspaceIndexingService
 
         lock (_schedulerGate)
         {
-            if (_intakeClosed || _sweep is not null || _nextReconciliation > DateTimeOffset.UtcNow || _entries.Count == 0)
+            if (_intakeClosed || _sweep is not null || _entries.Count == 0)
+            {
+                return;
+            }
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+
+            // A full sweep covers every entry when the reconciliation cadence is due. Otherwise only
+            // the failed entries whose own backoff elapsed are retried, so one vanished workspace does
+            // not re-walk every healthy one.
+            bool fullDue = _nextReconciliation <= now;
+
+            int included = 0;
+
+            foreach (WorkspaceEntry entry in _entries.Values)
+            {
+                if (fullDue || IsRetryDue(entry, now))
+                {
+                    included++;
+                }
+            }
+
+            if (included == 0)
             {
                 return;
             }
 
             int interval = ArcanumSettingClamps.EmbeddingsCodebaseReconciliationIntervalMinutes(embeddings.Codebase.ReconciliationIntervalMinutes);
 
-            _sweep = new ScheduledSweep(_entries.Count, interval);
+            _sweep = new ScheduledSweep(included, interval, retryOnly: !fullDue);
 
             foreach (WorkspaceEntry entry in _entries.Values)
             {
+                if (!fullDue && !IsRetryDue(entry, now))
+                {
+                    continue;
+                }
+
                 entry.Sweep = _sweep;
 
                 entry.Pending.Full = true;
@@ -171,25 +200,59 @@ internal sealed partial class WorkspaceIndexingService
         StartHandle(second);
     }
 
-    private void SettleSweepLocked(WorkspaceEntry entry, bool failed = false)
+    private static bool IsRetryDue(WorkspaceEntry entry, DateTimeOffset now) =>
+        entry.RetryAt is { } retryAt && retryAt <= now;
+
+    private void SettleSweepLocked(WorkspaceEntry entry, bool failed = false, bool rootUnavailable = false)
     {
         ScheduledSweep? sweep = entry.Sweep;
 
         entry.Sweep = null;
 
-        if (sweep is not null)
+        if (sweep is null)
         {
-            sweep.Failed |= failed;
+            return;
         }
 
-        if (sweep is not null && --sweep.Outstanding == 0 && ReferenceEquals(sweep, _sweep))
+        if (!entry.Retired)
+        {
+            RecordSweepOutcomeLocked(entry, sweep, failed, rootUnavailable);
+        }
+
+        if (--sweep.Outstanding == 0 && ReferenceEquals(sweep, _sweep))
         {
             _sweep = null;
 
-            _nextReconciliation = sweep.Failed
-                ? DateTimeOffset.UtcNow.AddSeconds(1)
-                : DateTimeOffset.UtcNow.AddMinutes(sweep.IntervalMinutes);
+            // A failure no longer shortens the cadence for everyone: the failed entries carry their own
+            // retry time, and a retry-only sweep leaves the full cadence where it was.
+            if (!sweep.RetryOnly)
+            {
+                _nextReconciliation = DateTimeOffset.UtcNow.AddMinutes(sweep.IntervalMinutes);
+            }
         }
+    }
+
+    /// <summary>
+    /// Records how an entry's share of a sweep ended: a success clears its failure state, a failure
+    /// schedules its next retry on an exponential backoff capped at the reconciliation interval.
+    /// </summary>
+    private void RecordSweepOutcomeLocked(WorkspaceEntry entry, ScheduledSweep sweep, bool failed, bool rootUnavailable)
+    {
+        if (!failed)
+        {
+            entry.ClearFailureState();
+
+            return;
+        }
+
+        entry.ConsecutiveFailures++;
+
+        entry.ConsecutiveRootFailures = rootUnavailable ? entry.ConsecutiveRootFailures + 1 : 0;
+
+        entry.RetryAt = DateTimeOffset.UtcNow + NextRetryDelay(
+            entry.ConsecutiveFailures,
+            RetryBackoffBaseDelay,
+            TimeSpan.FromMinutes(sweep.IntervalMinutes));
     }
 
     private void EnsureWatcher(WorkspaceEntry entry)
