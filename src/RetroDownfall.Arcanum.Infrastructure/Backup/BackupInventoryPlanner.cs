@@ -24,7 +24,6 @@ public sealed record BackupStatePaths(
     string AuditLogBasePath,
     string GuardrailLogBasePath)
 {
-
     public static BackupStatePaths Default => new(
         ArcanumPaths.GrimoireDirectory,
         ArcanumPaths.SecretStoreDirectory,
@@ -40,7 +39,6 @@ public sealed record BackupStatePaths(
     public string FilesDirectory => Path.Combine(GrimoireDirectory, "files");
 
     public string BackupsDirectory => Path.Combine(GrimoireDirectory, "backups");
-
 }
 
 public sealed record BackupInventoryFile(
@@ -59,7 +57,6 @@ public sealed record BackupInventory(
 
 public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 {
-
     private static readonly BackupComponent[] ExplicitOnlyComponents =
     [
         BackupComponent.TrustedMcpWorkspaceMetadata,
@@ -74,7 +71,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         string databasePassphrase,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ValidateRequest(request);
@@ -110,7 +106,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (selected.Contains(BackupComponent.GrimoireDatabase))
         {
-
             AddRequiredFile(
                 BackupComponent.GrimoireDatabase,
                 databasePath,
@@ -119,12 +114,10 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 components,
                 missing,
                 cancellationToken);
-
         }
 
         if (selected.Contains(BackupComponent.GrimoireKdfMetadata))
         {
-
             string kdfPath = databasePath + ".kdf";
 
             if (!File.Exists(kdfPath)
@@ -133,9 +126,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     Path.GetFullPath(paths.DatabasePath),
                     StringComparison.Ordinal))
             {
-
                 kdfPath = paths.KdfPath;
-
             }
 
             AddRequiredFile(
@@ -146,7 +137,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 components,
                 missing,
                 cancellationToken);
-
         }
 
         bool databaseAvailable = File.Exists(databasePath);
@@ -159,7 +149,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     BackupComponent.BatchArtifacts,
                 ]))
         {
-
             await AddDatabaseBackedFilesAsync(
                 request,
                 selected,
@@ -170,7 +159,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 missing,
                 requiredKeyIds,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         BackupComponent? configurationOwner = selected.Contains(BackupComponent.Configuration)
@@ -181,11 +169,9 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (configurationOwner is BackupComponent owner)
         {
-
             _ = await ArcanumConfigurationTransaction.RunAsync(
                     () =>
                     {
-
                         AddConfigurationFiles(
                             owner,
                             files,
@@ -193,11 +179,9 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                             cancellationToken);
 
                         return Task.FromResult(true);
-
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         AddOptionalFile(
@@ -293,13 +277,11 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         if (selected.Contains(BackupComponent.CompendiumSettings)
             && selected.Contains(BackupComponent.Configuration))
         {
-
             ComponentAccumulator config = components[BackupComponent.Configuration];
 
             components[BackupComponent.CompendiumSettings].Set(
                 config.Status,
                 "Compendium uses the shared arcanum.json entry; no duplicate file is stored.");
-
         }
 
         files.Sort(
@@ -307,7 +289,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 left.ArchivePath,
                 right.ArchivePath));
 
-        EnsureUniqueArchivePaths(files);
+        FailCollidingArchivePaths(files, components);
 
         BackupPlanComponent[] planComponents = components.Values
             .OrderBy(static component => component.Component)
@@ -325,7 +307,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             [.. warnings.Distinct(StringComparer.Ordinal)]);
 
         return new BackupInventory(plan, files, requiredKeyIds);
-
     }
 
     private static HashSet<BackupComponent> DefaultComponents(BackupScope scope) =>
@@ -381,86 +362,64 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
     private static void ValidateRequest(BackupPlanRequest request)
     {
-
         if (!Enum.IsDefined(request.Scope))
         {
-
             throw new ArgumentOutOfRangeException(nameof(request));
-
         }
 
         if (request.Scope == BackupScope.SpecificSession && request.SessionId is null)
         {
-
             throw new ArgumentException("A specific-session backup requires a session id.", nameof(request));
-
         }
 
         if (request.Include.Any(static component => !Enum.IsDefined(component))
             || request.Exclude.Any(static component => !Enum.IsDefined(component)))
         {
-
             throw new ArgumentException("Backup include/exclude values must use the typed component catalog.");
-
         }
-
     }
 
     private static List<string> BuildWarnings(
         BackupPlanRequest request,
         IReadOnlySet<BackupComponent> selected)
     {
-
         List<string> warnings = [];
 
         if (selected.Contains(BackupComponent.McpConfiguration))
         {
-
             warnings.Add("Global MCP configuration can contain literal environment values and is sensitive.");
-
         }
 
         if (selected.Contains(BackupComponent.TrustedMcpWorkspaceMetadata))
         {
-
             warnings.Add("Trusted MCP workspace metadata can contain nonportable absolute workspace paths.");
-
         }
 
         if (selected.Contains(BackupComponent.AuditLogs))
         {
-
             warnings.Add("Inference audit logs were explicitly selected and can contain sensitive operational metadata.");
-
         }
 
         if (selected.Contains(BackupComponent.GuardrailLogs))
         {
-
             warnings.Add("Guardrail audit logs were explicitly selected and can contain sensitive violation metadata.");
-
         }
 
         if (selected.Contains(BackupComponent.MasterApiKey))
         {
-
             warnings.Add("The master API key was explicitly selected as sensitive recovery material.");
-
         }
 
         if (request.Scope is BackupScope.SessionsAndMemory or BackupScope.SpecificSession)
         {
-
             warnings.Add(
                 "The version-1 physical Grimoire snapshot is indivisible and includes collateral global/accounting rows; the manifest discloses this explicitly.");
-
         }
 
         warnings.Add(
             "Environment secrets, OS credential-store internals, raw Data Protection keys, external workspace trees, daemon registration, and ephemeral process state are not portable backup components.");
 
         return warnings;
-
     }
 
     private async Task AddDatabaseBackedFilesAsync(
@@ -474,7 +433,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         HashSet<string> requiredKeyIds,
         CancellationToken cancellationToken)
     {
-
         string connectionString = BuildConnectionString(databasePath, databasePassphrase);
 
         // The planner opens its own connection rather than going through BackupRestoreDatabaseWorker,
@@ -490,7 +448,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (selected.Contains(BackupComponent.SessionAttachments))
         {
-
             await AddAttachmentsAsync(
                 connection,
                 request,
@@ -499,13 +456,11 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 missing,
                 requiredKeyIds,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (selected.Contains(BackupComponent.UploadedFiles)
             || selected.Contains(BackupComponent.BatchArtifacts))
         {
-
             await AddUploadedAndBatchFilesAsync(
                 connection,
                 selected,
@@ -514,9 +469,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 missing,
                 requiredKeyIds,
                 cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     private async Task AddAttachmentsAsync(
@@ -528,7 +481,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         HashSet<string> requiredKeyIds,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = request.Scope == BackupScope.SpecificSession
@@ -544,7 +496,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (request.Scope == BackupScope.SpecificSession)
         {
-
             // Canonical, because that is what "SessionAttachments"."SessionId" holds. A bare ToString()
             // matched nothing under BINARY collation, and the failure was silent in the worst possible
             // way: the reader below simply never iterated, so a session-scoped archive reported no
@@ -553,7 +504,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             command.Parameters.AddWithValue(
                 "$sessionId",
                 request.SessionId!.Value.ToString().ToUpperInvariant());
-
         }
 
         await using SqliteDataReader reader = await command
@@ -561,7 +511,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string relative = reader.GetString(0).Replace('\\', '/');
 
             int encryptionVersion = reader.GetInt32(1);
@@ -575,7 +524,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     relative,
                     out string source))
             {
-
                 component.Set(
                     BackupComponentStatus.Failed,
                     "A database-backed path is non-canonical or crosses a symbolic link or reparse point.");
@@ -583,7 +531,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 component.NonportablePaths.Add(relative);
 
                 continue;
-
             }
 
             if (!await TryAddRequiredBlobCandidateAsync(
@@ -599,13 +546,9 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     requiredKeyIds,
                     cancellationToken).ConfigureAwait(false))
             {
-
                 continue;
-
             }
-
         }
-
     }
 
     private async Task AddUploadedAndBatchFilesAsync(
@@ -617,12 +560,10 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         HashSet<string> requiredKeyIds,
         CancellationToken cancellationToken)
     {
-
         HashSet<Guid> batchIds = [];
 
         await using (SqliteCommand batchCommand = connection.CreateCommand())
         {
-
             batchCommand.CommandText = """
                 SELECT "InputFileId", "OutputFileId", "ErrorFileId"
                 FROM "Batches";
@@ -633,21 +574,16 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
             while (await batchReader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 for (int ordinal = 0; ordinal < 3; ordinal++)
                 {
-
                     if (!batchReader.IsDBNull(ordinal))
                     {
-
                         string id = batchReader.GetString(ordinal);
 
                         if (!Guid.TryParse(id, out Guid batchFileId))
                         {
-
                             if (selected.Contains(BackupComponent.BatchArtifacts))
                             {
-
                                 components[BackupComponent.BatchArtifacts].Set(
                                     BackupComponentStatus.Failed,
                                     "Batch metadata contains a non-canonical uploaded-file id.");
@@ -655,21 +591,15 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                                 components[BackupComponent.BatchArtifacts]
                                     .NonportablePaths
                                     .Add(id);
-
                             }
 
                             continue;
-
                         }
 
                         _ = batchIds.Add(batchFileId);
-
                     }
-
                 }
-
             }
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -686,14 +616,11 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string id = reader.GetString(0);
 
             if (!Guid.TryParse(id, out Guid fileId))
             {
-
                 throw new InvalidDataException("UploadedFiles contains an invalid file id.");
-
             }
 
             _ = uploadedIds.Add(fileId);
@@ -704,9 +631,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
             if (!selected.Contains(owner))
             {
-
                 continue;
-
             }
 
             int encryptionVersion = reader.GetInt32(1);
@@ -722,7 +647,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     relative,
                     out string source))
             {
-
                 components[owner].Set(
                     BackupComponentStatus.Failed,
                     "A database-backed path is non-canonical or crosses a symbolic link or reparse point.");
@@ -730,7 +654,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 components[owner].NonportablePaths.Add(relative);
 
                 continue;
-
             }
 
             EncryptedBlobPurpose purpose = UploadedFileStorage.ResolveEncryptionPurpose(
@@ -749,19 +672,14 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     requiredKeyIds,
                     cancellationToken).ConfigureAwait(false))
             {
-
                 continue;
-
             }
-
         }
 
         if (selected.Contains(BackupComponent.BatchArtifacts))
         {
-
             foreach (Guid missingBatchId in batchIds.Except(uploadedIds))
             {
-
                 components[BackupComponent.BatchArtifacts].Set(
                     BackupComponentStatus.Failed,
                     "A batch references uploaded-file metadata that is missing.");
@@ -770,11 +688,8 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     Path.Combine(
                         paths.FilesDirectory,
                         missingBatchId.ToString("N")));
-
             }
-
         }
-
     }
 
     private static void FailEncryptedMetadataWithoutEnvelope(
@@ -782,12 +697,9 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         string? encryptionKeyId,
         ComponentAccumulator component)
     {
-
         if (encryptionVersion <= 0)
         {
-
             return;
-
         }
 
         component.Set(
@@ -795,7 +707,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             string.IsNullOrWhiteSpace(encryptionKeyId)
                 ? "Encrypted blob metadata is missing its key id, and the captured file has no ARCABLOB envelope."
                 : "Encrypted blob metadata and key id identify encrypted content, but the captured file has no ARCABLOB envelope.");
-
     }
 
     private void AddOptionalFiles(
@@ -807,26 +718,20 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         IReadOnlyDictionary<BackupComponent, ComponentAccumulator> components,
         CancellationToken cancellationToken)
     {
-
         if (!selected.Contains(component))
         {
-
             return;
-
         }
 
         bool any = false;
 
         foreach (string name in names)
         {
-
             string source = Path.Combine(paths.GrimoireDirectory, name);
 
             if (!File.Exists(source))
             {
-
                 continue;
-
             }
 
             AddCandidate(
@@ -838,18 +743,14 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 cancellationToken);
 
             any = true;
-
         }
 
         if (!any)
         {
-
             components[component].Set(
                 BackupComponentStatus.Unavailable,
                 "No state exists for this optional component.");
-
         }
-
     }
 
     private void AddConfigurationFiles(
@@ -858,7 +759,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         ComponentAccumulator accumulator,
         CancellationToken cancellationToken)
     {
-
         string configuration = Path.Combine(
             paths.GrimoireDirectory,
             "arcanum.json");
@@ -877,24 +777,20 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (File.Exists(journal))
         {
-
             accumulator.Set(
                 BackupComponentStatus.Failed,
                 "An interrupted preset transaction must be recovered before configuration backup.");
 
             return;
-
         }
 
         if (!File.Exists(configuration))
         {
-
             accumulator.Set(
                 BackupComponentStatus.Unavailable,
                 "No state exists for this optional component.");
 
             return;
-
         }
 
         int configurationStart = files.Count;
@@ -909,9 +805,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (files.Count != configurationStart + 1)
         {
-
             return;
-
         }
 
         bool stateExists = File.Exists(state);
@@ -920,20 +814,16 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (!stateExists && !rollbackExists)
         {
-
             return;
-
         }
 
         if (!stateExists || !rollbackExists)
         {
-
             accumulator.Set(
                 BackupComponentStatus.Failed,
                 "Preset state and rollback must both exist before configuration backup.");
 
             return;
-
         }
 
         int sidecarStart = files.Count;
@@ -962,26 +852,21 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (pairCaptured)
         {
-
             return;
-
         }
 
         for (int index = files.Count - 1; index >= sidecarStart; index--)
         {
-
             BackupInventoryFile removed = files[index];
 
             files.RemoveAt(index);
 
             accumulator.Remove(removed.Size);
-
         }
 
         accumulator.Set(
             BackupComponentStatus.Failed,
             "Preset state and rollback were linked, changed, or did not describe the same committed generation.");
-
     }
 
     private void AddTrustedMcpWorkspaceFiles(
@@ -992,23 +877,18 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         IReadOnlyDictionary<BackupComponent, ComponentAccumulator> components,
         CancellationToken cancellationToken)
     {
-
         if (!selected.Contains(component))
         {
-
             return;
-
         }
 
         if (!File.Exists(primaryPath))
         {
-
             components[component].Set(
                 BackupComponentStatus.Unavailable,
                 "No state exists for this optional component.");
 
             return;
-
         }
 
         AddCandidate(
@@ -1023,16 +903,13 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         for (long pageIndex = 1; ; pageIndex++)
         {
-
             string pageName = $"trusted-mcp-workspaces.page-{pageIndex:D8}.json";
 
             string pagePath = Path.Combine(directory, pageName);
 
             if (!File.Exists(pagePath))
             {
-
                 return;
-
             }
 
             AddCandidate(
@@ -1045,9 +922,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 files,
                 components[component],
                 cancellationToken);
-
         }
-
     }
 
     private void AddOptionalFile(
@@ -1059,23 +934,18 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         IReadOnlyDictionary<BackupComponent, ComponentAccumulator> components,
         CancellationToken cancellationToken)
     {
-
         if (!selected.Contains(component))
         {
-
             return;
-
         }
 
         if (!File.Exists(source))
         {
-
             components[component].Set(
                 BackupComponentStatus.Unavailable,
                 "No state exists for this optional component.");
 
             return;
-
         }
 
         AddCandidate(
@@ -1085,7 +955,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             files,
             components[component],
             cancellationToken);
-
     }
 
     private static void AddRequiredFile(
@@ -1118,10 +987,8 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         HashSet<string> requiredKeyIds,
         CancellationToken cancellationToken)
     {
-
         if (!File.Exists(source))
         {
-
             accumulator.Set(
                 BackupComponentStatus.Failed,
                 "A required database-backed blob is missing.");
@@ -1129,7 +996,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             missing.Add(source);
 
             return false;
-
         }
 
         string fullPath = Path.GetFullPath(source);
@@ -1142,7 +1008,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (status != SecureFileOpenStatus.Success || stream is null)
         {
-
             accumulator.Set(
                 BackupComponentStatus.Failed,
                 "A selected database-backed blob is missing, linked, changed, or not an unaliased regular file.");
@@ -1150,23 +1015,19 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             accumulator.NonportablePaths.Add(fullPath);
 
             return false;
-
         }
 
         using (stream)
         {
-
             EncryptedBlobDescriptor? descriptorBeforeHash;
 
             try
             {
-
                 descriptorBeforeHash = await BackupEncryptedBlobEnvelopeInspector.TryInspectAsync(
                         stream,
                         purpose,
                         cancellationToken)
                     .ConfigureAwait(false);
-
             }
             catch (Exception exception) when (
                 exception is CryptographicException
@@ -1175,19 +1036,16 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     or NotSupportedException
                     or UnauthorizedAccessException)
             {
-
                 accumulator.Set(
                     BackupComponentStatus.Failed,
                     "A selected database-backed blob has an invalid ARCABLOB envelope or purpose: "
                         + exception.Message);
 
                 return false;
-
             }
 
             try
             {
-
                 BackupInventoryFile candidate = CaptureOpenedCandidate(
                     component,
                     fullPath,
@@ -1209,13 +1067,11 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                         descriptorBeforeHash,
                         descriptorAfterHash))
                 {
-
                     accumulator.Set(
                         BackupComponentStatus.Failed,
                         "A selected database-backed blob envelope changed while its exact archive bytes were fingerprinted.");
 
                     return false;
-
                 }
 
                 files.Add(candidate);
@@ -1223,7 +1079,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 accumulator.Add(candidate.Size);
 
                 descriptorBeforeHash = descriptorAfterHash;
-
             }
             catch (Exception exception) when (
                 exception is CryptographicException
@@ -1232,22 +1087,18 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     or NotSupportedException
                     or UnauthorizedAccessException)
             {
-
                 accumulator.Set(
                     BackupComponentStatus.Failed,
                     "A selected database-backed blob changed while its exact archive bytes were fingerprinted.");
 
                 return false;
-
             }
 
             if (descriptorBeforeHash is not null)
             {
-
                 _ = requiredKeyIds.Add(descriptorBeforeHash.KeyId);
 
                 return true;
-
             }
 
             FailEncryptedMetadataWithoutEnvelope(
@@ -1256,21 +1107,16 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 accumulator);
 
             return encryptionVersion <= 0;
-
         }
-
     }
 
     private static bool EnvelopeDescriptorsMatch(
         EncryptedBlobDescriptor? first,
         EncryptedBlobDescriptor? second)
     {
-
         if (first is null || second is null)
         {
-
             return first is null && second is null;
-
         }
 
         return first.Version == second.Version
@@ -1282,7 +1128,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             && first.Purpose == second.Purpose
             && first.AuthenticatedMetadata.Span.SequenceEqual(
                 second.AuthenticatedMetadata.Span);
-
     }
 
     private static bool TryAddRequiredCandidate(
@@ -1294,10 +1139,8 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         List<string> missing,
         CancellationToken cancellationToken)
     {
-
         if (!File.Exists(source))
         {
-
             accumulator.Set(
                 BackupComponentStatus.Failed,
                 "A required manifest-listed source file is missing.");
@@ -1305,7 +1148,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             missing.Add(source);
 
             return false;
-
         }
 
         AddCandidate(
@@ -1317,7 +1159,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             cancellationToken);
 
         return true;
-
     }
 
     private static void AddCandidate(
@@ -1328,7 +1169,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         ComponentAccumulator accumulator,
         CancellationToken cancellationToken)
     {
-
         string fullPath = Path.GetFullPath(source);
 
         SecureFileOpenStatus status = SecureFileReader.TryOpenRegularFile(
@@ -1339,7 +1179,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (status != SecureFileOpenStatus.Success || stream is null)
         {
-
             accumulator.Set(
                 BackupComponentStatus.Failed,
                 "A selected source is missing, linked, changed, or not an unaliased regular file.");
@@ -1347,12 +1186,10 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             accumulator.NonportablePaths.Add(fullPath);
 
             return;
-
         }
 
         using (stream)
         {
-
             BackupInventoryFile candidate = CaptureOpenedCandidate(
                 component,
                 fullPath,
@@ -1364,9 +1201,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             files.Add(candidate);
 
             accumulator.Add(candidate.Size);
-
         }
-
     }
 
     private static BackupInventoryFile CaptureOpenedCandidate(
@@ -1377,7 +1212,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         FileHandleMetadata metadata,
         CancellationToken cancellationToken)
     {
-
         long size = stream.Length;
 
         string sha256 = HashSource(
@@ -1395,7 +1229,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             sha256,
             metadata.Identity.VolumeId,
             metadata.Identity.FileId);
-
     }
 
     private static string HashSource(
@@ -1405,7 +1238,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         long openedLength,
         CancellationToken cancellationToken)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(
             HashAlgorithmName.SHA256);
 
@@ -1413,23 +1245,18 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         try
         {
-
             while (true)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 int read = stream.Read(buffer);
 
                 if (read == 0)
                 {
-
                     break;
-
                 }
 
                 hash.AppendData(buffer.AsSpan(0, read));
-
             }
 
             if (stream.Length != openedLength
@@ -1446,37 +1273,27 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     openedMetadata.Identity,
                     currentMetadata.Identity))
             {
-
                 throw new IOException(
                     "A selected backup source changed while its inventory fingerprint was captured.");
-
             }
 
             byte[] digest = hash.GetHashAndReset();
 
             try
             {
-
                 return Convert.ToHexString(digest).ToLowerInvariant();
-
             }
             finally
             {
-
                 CryptographicOperations.ZeroMemory(digest);
-
             }
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(buffer);
 
             ArrayPool<byte>.Shared.Return(buffer);
-
         }
-
     }
 
     private void AddDirectoryTree(
@@ -1489,23 +1306,18 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         List<string> missing,
         CancellationToken cancellationToken)
     {
-
         if (!selected.Contains(component))
         {
-
             return;
-
         }
 
         if (!Directory.Exists(sourceRoot))
         {
-
             components[component].Set(
                 BackupComponentStatus.Unavailable,
                 "No state exists for this optional component.");
 
             return;
-
         }
 
         Stack<string> directories = new();
@@ -1514,14 +1326,12 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         while (directories.Count > 0)
         {
-
             string directory = directories.Pop();
 
             DirectoryInfo directoryInfo = new(directory);
 
             if ((directoryInfo.Attributes & FileAttributes.ReparsePoint) != 0)
             {
-
                 components[component].Set(
                     BackupComponentStatus.Failed,
                     "A selected directory tree contains a symbolic link or reparse point.");
@@ -1529,19 +1339,15 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 components[component].NonportablePaths.Add(directory);
 
                 continue;
-
             }
 
             foreach (string childDirectory in Directory.EnumerateDirectories(directory))
             {
-
                 directories.Push(childDirectory);
-
             }
 
             foreach (string file in Directory.EnumerateFiles(directory))
             {
-
                 string relative = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
 
                 AddCandidate(
@@ -1551,21 +1357,16 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                     files,
                     components[component],
                     cancellationToken);
-
             }
-
         }
 
         if (components[component].Files == 0
             && components[component].Status == BackupComponentStatus.Complete)
         {
-
             components[component].Set(
                 BackupComponentStatus.Unavailable,
                 "The optional component directory is empty.");
-
         }
-
     }
 
     private static void AddDatedLogs(
@@ -1576,12 +1377,9 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         IReadOnlyDictionary<BackupComponent, ComponentAccumulator> components,
         CancellationToken cancellationToken)
     {
-
         if (!selected.Contains(component))
         {
-
             return;
-
         }
 
         string fullBasePath = Path.GetFullPath(basePath);
@@ -1592,13 +1390,11 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         if (!Directory.Exists(directory))
         {
-
             components[component].Set(
                 BackupComponentStatus.Unavailable,
                 "No selected dated logs exist.");
 
             return;
-
         }
 
         string[] candidates = Directory
@@ -1608,7 +1404,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         foreach (string candidate in candidates)
         {
-
             AddCandidate(
                 component,
                 candidate,
@@ -1616,18 +1411,14 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 files,
                 components[component],
                 cancellationToken);
-
         }
 
         if (candidates.Length == 0)
         {
-
             components[component].Set(
                 BackupComponentStatus.Unavailable,
                 "No selected dated logs exist.");
-
         }
-
     }
 
     private static bool TryResolveContainedPath(
@@ -1635,19 +1426,15 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         string relative,
         out string fullPath)
     {
-
         fullPath = string.Empty;
 
         try
         {
-
             if (Path.IsPathRooted(relative)
                 || relative.Contains('\0')
                 || relative.Split('/').Any(static segment => segment is "" or "." or ".."))
             {
-
                 return false;
-
             }
 
             string fullRoot = Path.GetFullPath(root);
@@ -1665,36 +1452,27 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
             if (!fullPath.StartsWith(prefix, comparison))
             {
-
                 return false;
-
             }
 
             if (!IsPathComponentPortable(fullRoot))
             {
-
                 return false;
-
             }
 
             string current = fullRoot;
 
             foreach (string segment in relative.Split('/'))
             {
-
                 current = Path.Combine(current, segment);
 
                 if (!IsPathComponentPortable(current))
                 {
-
                     return false;
-
                 }
-
             }
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is ArgumentException
@@ -1703,90 +1481,118 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 or PathTooLongException
                 or UnauthorizedAccessException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool IsPathComponentPortable(string path)
     {
-
         try
         {
-
             FileAttributes attributes = File.GetAttributes(path);
 
             return (attributes & FileAttributes.ReparsePoint) == 0;
-
         }
         catch (FileNotFoundException)
         {
-
             return true;
-
         }
         catch (DirectoryNotFoundException)
         {
-
             return true;
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or NotSupportedException
                 or UnauthorizedAccessException)
         {
-
             return false;
-
         }
-
     }
 
-    private static void EnsureUniqueArchivePaths(IReadOnlyList<BackupInventoryFile> files)
+    /// <summary>
+    /// Fails every component that owns a file whose archive path collides with another's, and
+    /// withdraws those files from the inventory.
+    /// </summary>
+    /// <remarks>
+    /// The planner reports the collision rather than publishing it: an archive whose entries cannot all
+    /// become files on a destination is created and verifies, because verification compares against
+    /// hashes taken from the decrypted stream, and then cannot be restored. Every member of a
+    /// colliding group is withdrawn rather than an arbitrary survivor, because neither of them is
+    /// the one the operator meant. An exact duplicate is the same condition, so it takes the same
+    /// route instead of aborting the whole plan with an exception.
+    /// </remarks>
+    private static void FailCollidingArchivePaths(
+        List<BackupInventoryFile> files,
+        IReadOnlyDictionary<BackupComponent, ComponentAccumulator> components)
     {
+        Dictionary<string, List<int>> groups = new(BackupArchivePathFolding.KeyComparer);
 
-        HashSet<string> paths = new(StringComparer.Ordinal);
-
-        foreach (BackupInventoryFile file in files)
+        for (int index = 0; index < files.Count; index++)
         {
+            string key = BackupArchivePathFolding.CollisionKey(
+                files[index].ArchivePath.Normalize(NormalizationForm.FormC));
 
-            if (!paths.Add(file.ArchivePath.Normalize(NormalizationForm.FormC)))
+            if (!groups.TryGetValue(key, out List<int>? members))
             {
+                members = [];
 
-                throw new InvalidDataException("Backup inventory contains a duplicate canonical archive path.");
-
+                groups.Add(key, members);
             }
 
+            members.Add(index);
         }
 
+        HashSet<int> colliding = [];
+
+        foreach (List<int> members in groups.Values)
+        {
+            if (members.Count > 1)
+            {
+                colliding.UnionWith(members);
+            }
+        }
+
+        for (int index = files.Count - 1; index >= 0; index--)
+        {
+            if (!colliding.Contains(index))
+            {
+                continue;
+            }
+
+            BackupInventoryFile removed = files[index];
+
+            files.RemoveAt(index);
+
+            ComponentAccumulator accumulator = components[removed.Component];
+
+            accumulator.Remove(removed.Size);
+
+            accumulator.Set(
+                BackupComponentStatus.Failed,
+                "Selected files have archive paths that collide when compared without case or trailing dots and spaces, so no destination volume can restore them all.");
+
+            accumulator.NonportablePaths.Add(removed.SourcePath);
+        }
     }
 
     private static string BuildConnectionString(string path, string passphrase)
     {
-
         SqliteConnectionStringBuilder builder = new()
         {
-
             DataSource = path,
 
             Mode = SqliteOpenMode.ReadOnly,
 
             Pooling = false,
-
         };
 
         if (!string.IsNullOrEmpty(passphrase))
         {
-
             builder.Password = passphrase;
-
         }
 
         return builder.ToString();
-
     }
 
     private sealed class ComponentAccumulator(
@@ -1794,7 +1600,6 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         BackupComponentStatus status,
         string detail)
     {
-
         public BackupComponent Component { get; } = component;
 
         public BackupComponentStatus Status { get; private set; } = status;
@@ -1809,44 +1614,34 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         public void Add(long bytes)
         {
-
             Files++;
 
             Bytes = checked(Bytes + bytes);
 
             if (Status == BackupComponentStatus.Complete)
             {
-
                 Detail = "Included through the typed component catalog.";
-
             }
-
         }
 
         public void Remove(long bytes)
         {
-
             Files = checked(Files - 1);
 
             Bytes = checked(Bytes - bytes);
-
         }
 
         public void Set(BackupComponentStatus next, string nextDetail)
         {
-
             if (Status == BackupComponentStatus.Failed
                 && next != BackupComponentStatus.Failed)
             {
-
                 return;
-
             }
 
             Status = next;
 
             Detail = nextDetail;
-
         }
 
         public BackupPlanComponent ToPlanComponent() =>
@@ -1857,7 +1652,5 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 Files,
                 Bytes,
                 [.. NonportablePaths.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)]);
-
     }
-
 }

@@ -216,12 +216,16 @@ public sealed class BackupRestoreServiceTests : IDisposable
     /// with one file standing in for both.
     /// </summary>
     /// <remarks>
-    /// Entered at <see cref="BackupRestoreService.RestoreAsync"/> over a real archive the real backup
-    /// service wrote, because the collision is only interesting where it is invisible: extraction
-    /// tracks entries ordinally and writes each one with a create-or-truncate open, the manifest
-    /// comparison verifies against hashes taken from the decrypted stream rather than from the files
-    /// on disk, and staging then copies both entries over each other. Every check passes and the
-    /// restore reports completed while one attachment silently carries the other's bytes.
+    /// Entered at <see cref="BackupRestoreService.RestoreAsync"/> over a real archive, because the
+    /// collision is only interesting where it is invisible: extraction tracks entries ordinally and
+    /// writes each one with a create-or-truncate open, the manifest comparison verifies against hashes
+    /// taken from the decrypted stream rather than from the files on disk, and staging then copies both
+    /// entries over each other. Every check passes and the restore reports completed while one
+    /// attachment silently carries the other's bytes.
+    ///
+    /// <para>The archive is rewritten by hand, because the planner no longer lets this build create one
+    /// (see <see cref="A_backup_whose_attachment_paths_differ_only_in_case_is_incomplete"/>); what this
+    /// pins is the restore side, for an archive an older build or another tool wrote.</para>
     ///
     /// <para>The refusal asserted here is unconditional rather than filesystem-dependent, and that is
     /// deliberate: whether the two entries collide on the destination volume is a property of the
@@ -231,9 +235,12 @@ public sealed class BackupRestoreServiceTests : IDisposable
     [Fact]
     public async Task An_archive_whose_entry_paths_differ_only_in_case_is_refused()
     {
-        Fixture fixture = await CreateFixtureAsync(caseCollidingAttachment: true);
+        Fixture fixture = await CreateFixtureAsync();
 
-        string archive = await fixture.CreateBackupAsync("case-collision.arcbackup");
+        string archive = await fixture.CreateArchiveWithDuplicatedEntryAsync(
+            "case-collision.arcbackup",
+            "attachments/session/note.bin",
+            "attachments/session/NOTE.bin");
 
         WipeInstallation();
 
@@ -248,6 +255,64 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
         // Refused before anything was laid down: the destination is as empty as the wipe left it.
         Assert.False(File.Exists(Path.Combine(_installation, "arcanum.db")));
+    }
+
+    /// <summary>
+    /// Windows drops trailing dots and spaces from a name, so two entries differing only in those are
+    /// one file there; the restore refuses the pair on every platform, as it does a case pair.
+    /// </summary>
+    [Fact]
+    public async Task An_archive_whose_entry_paths_differ_only_in_a_trailing_dot_is_refused()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateArchiveWithDuplicatedEntryAsync(
+            "dot-collision.arcbackup",
+            "attachments/session/note.bin",
+            "attachments/session/note.bin.");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(result.Issues, static issue => issue.Code == "backup.invalid_archive");
+
+        Assert.False(File.Exists(Path.Combine(_installation, "arcanum.db")));
+    }
+
+    /// <summary>
+    /// A backup whose planned attachment paths differ only in case is reported incomplete and writes no
+    /// archive, rather than verifying cleanly and then failing to restore.
+    /// </summary>
+    [Fact]
+    public async Task A_backup_whose_attachment_paths_differ_only_in_case_is_incomplete()
+    {
+        Fixture fixture = await CreateFixtureAsync(caseCollidingAttachment: true);
+
+        string archive = Path.Combine(_archives, "case-collision-create.arcbackup");
+
+        BackupCreateResult created = await fixture.BackupService.CreateAsync(
+            new BackupCreateRequest(
+                new BackupPlanRequest(BackupScope.Full, SessionId: null, [], Exclude: []),
+                archive,
+                Overwrite: true),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupCreateStatus.Incomplete, created.Status);
+
+        Assert.Contains(
+            created.Plan.Components,
+            static component => component.Component == BackupComponent.SessionAttachments
+                && component.Status == BackupComponentStatus.Failed
+                && component.NonportablePaths.Length == 2);
+
+        Assert.False(File.Exists(archive));
     }
 
     /// <summary>
@@ -2736,6 +2801,93 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 CancellationToken.None);
 
             Assert.Equal(BackupCreateStatus.Complete, created.Status);
+
+            return archive;
+        }
+
+        /// <summary>
+        /// A real archive rewritten so that one of its entries also appears under a second path.
+        /// </summary>
+        /// <remarks>
+        /// The planner refuses to create an archive whose entry paths collide, so the only way to hold
+        /// one is to write it below the planner, through the codec. Everything else about the archive
+        /// is the real one: the entries are the ones the real backup service captured, and the
+        /// manifest's component totals are adjusted so the rewritten archive is still self-consistent.
+        /// </remarks>
+        public async Task<string> CreateArchiveWithDuplicatedEntryAsync(
+            string name,
+            string existingEntryPath,
+            string duplicateEntryPath)
+        {
+            string original = await CreateBackupAsync("original-" + name);
+
+            string extractRoot = Path.Combine(archives, "extract-" + Guid.NewGuid().ToString("N"));
+
+            string scratchRoot = Path.Combine(archives, "scratch-" + Guid.NewGuid().ToString("N"));
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(extractRoot);
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(scratchRoot);
+
+            BackupArchiveExtraction extraction = await codec.ExtractAsync(
+                original,
+                Passphrase.AsMemory(),
+                extractRoot,
+                scratchRoot,
+                CancellationToken.None);
+
+            BackupManifest manifest = extraction.Manifest!;
+
+            BackupManifestEntry existing = manifest.Entries.Single(
+                entry => entry.Path == existingEntryPath);
+
+            BackupManifestEntry duplicate = existing with { Path = duplicateEntryPath };
+
+            BackupManifestEntry[] entries =
+            [
+                .. manifest.Entries,
+                duplicate,
+            ];
+
+            entries = [.. entries.OrderBy(static entry => entry.Path, StringComparer.Ordinal)];
+
+            BackupManifest rewritten = manifest with
+            {
+                Entries = entries,
+                Components =
+                [
+                    .. manifest.Components.Select(
+                        component => component.Component == existing.Component
+                            ? component with
+                            {
+                                Files = component.Files + 1,
+                                Bytes = component.Bytes + existing.Size,
+                            }
+                            : component),
+                ],
+            };
+
+            BackupArchiveSource[] sources =
+            [
+                .. entries.Select(
+                    entry => new BackupArchiveSource(
+                        entry.Path,
+                        Path.Combine(
+                            extractRoot,
+                            (entry.Path == duplicateEntryPath
+                                ? existingEntryPath
+                                : entry.Path).Replace('/', Path.DirectorySeparatorChar)))),
+            ];
+
+            string archive = Path.Combine(archives, name);
+
+            _ = await codec.WriteAsync(
+                archive,
+                rewritten,
+                sources,
+                Passphrase.AsMemory(),
+                overwrite: true,
+                CancellationToken.None);
 
             return archive;
         }
