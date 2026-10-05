@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </remarks>
 public sealed class HostProcessToolsTransitionServiceTests
 {
-
     private static readonly Guid Transition = Guid.Parse("3E5A7C90-1B2D-4F6A-8C0E-9D1F3A5B7C90");
 
     private static readonly Guid OtherTransition = Guid.Parse("11112222-3333-4444-5555-666677778888");
@@ -27,7 +26,6 @@ public sealed class HostProcessToolsTransitionServiceTests
     [Fact]
     public async Task A_stopped_clean_development_installation_persists_both_markers_and_advances_authority()
     {
-
         Harness harness = Harness.Create();
 
         Result<HostProcessToolsTransitionResult> result = await harness.Service.EnableAsync(
@@ -57,13 +55,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.NotNull(harness.Markers.Stored);
 
         Assert.True(harness.Lock.Released);
-
     }
 
     [Fact]
     public async Task The_transition_is_refused_outside_development_and_without_the_environment_opt_in()
     {
-
         Harness local = Harness.Create(edition: ArcanumEdition.Local);
 
         Result<HostProcessToolsTransitionResult> refusedEdition = await local.Service.EnableAsync(
@@ -85,13 +81,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Equal(HostProcessToolsTransitionOutcome.Refused, refusedOptIn.Value.Outcome);
 
         Assert.Null(withoutOptIn.Markers.Stored);
-
     }
 
     [Fact]
     public async Task A_running_host_refuses_the_transition_before_any_marker_is_touched()
     {
-
         Harness harness = Harness.Create();
 
         harness.Lock.Available = false;
@@ -107,13 +101,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Null(harness.Markers.Stored);
 
         Assert.Equal(CovenantHostToolsState.Clean, harness.Authority.Row.State);
-
     }
 
     [Fact]
     public async Task A_process_that_has_already_opened_covenant_cannot_taint_itself()
     {
-
         Harness harness = Harness.Create();
 
         harness.Environment.CovenantOpenedInThisProcess = true;
@@ -125,13 +117,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Equal(HostProcessToolsTransitionOutcome.Refused, result.Value.Outcome);
 
         Assert.Equal(HostProcessToolsTransitionBlocker.CovenantAlreadyOpened, result.Value.Blocker);
-
     }
 
     [Fact]
     public async Task Residual_covenant_or_protected_state_refuses_the_transition()
     {
-
         Harness harness = Harness.Create();
 
         harness.Authority.CanonicalRowCount = 1;
@@ -157,13 +147,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Equal(CovenantHostToolsState.Clean, harness.Authority.Row.State);
 
         Assert.Null(harness.Markers.Stored);
-
     }
 
     [Fact]
     public async Task An_uncertain_operating_system_write_leaves_the_installation_pending_and_blocked()
     {
-
         Harness harness = Harness.Create();
 
         harness.Markers.WriteStatus = HostProcessToolsMarkerWriteStatus.Uncertain;
@@ -180,13 +168,11 @@ public sealed class HostProcessToolsTransitionServiceTests
 
         // Compensation is forbidden once the operating-system boundary may have been written.
         Assert.Equal(0, harness.Markers.CompareDeleteCount);
-
     }
 
     [Fact]
     public async Task A_proven_refused_write_compensates_only_its_own_pending_row()
     {
-
         Harness harness = Harness.Create();
 
         harness.Markers.WriteStatus = HostProcessToolsMarkerWriteStatus.Refused;
@@ -200,13 +186,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Equal(HostProcessToolsTransitionBlocker.MarkerWriteRefused, result.Value.Blocker);
 
         Assert.Equal(CovenantHostToolsState.Clean, harness.Authority.Row.State);
-
     }
 
     [Fact]
     public async Task A_readback_that_does_not_match_leaves_the_installation_pending()
     {
-
         Harness harness = Harness.Create();
 
         harness.Markers.CorruptOnReadback = true;
@@ -220,13 +204,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Equal(HostProcessToolsTransitionBlocker.MarkerReadbackMismatch, result.Value.Blocker);
 
         Assert.Equal(CovenantHostToolsState.PendingHostToolsTaint, harness.Authority.Row.State);
-
     }
 
     [Fact]
     public async Task A_database_failure_after_the_marker_is_written_leaves_the_installation_pending()
     {
-
         Harness harness = Harness.Create();
 
         harness.Authority.FailTaintCommit = true;
@@ -244,13 +226,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.NotNull(harness.Markers.Stored);
 
         Assert.Equal(0, harness.Markers.CompareDeleteCount);
-
     }
 
     [Fact]
     public async Task The_same_transition_identity_resumes_from_a_pending_row_and_an_existing_marker()
     {
-
         Harness harness = Harness.Create();
 
         harness.Authority.FailTaintCommit = true;
@@ -273,13 +253,11 @@ public sealed class HostProcessToolsTransitionServiceTests
 
         // The marker already read back exactly, so resuming must not rewrite the slot.
         Assert.Equal(writesBeforeResume, harness.Markers.WriteCount);
-
     }
 
     [Fact]
     public async Task A_completed_transition_replays_as_already_completed_for_the_same_identity_only()
     {
-
         Harness harness = Harness.Create();
 
         _ = await harness.Service.EnableAsync(
@@ -301,13 +279,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Equal(HostProcessToolsTransitionOutcome.Refused, other.Value.Outcome);
 
         Assert.Equal(HostProcessToolsTransitionBlocker.ForeignTransitionIdentity, other.Value.Blocker);
-
     }
 
     [Fact]
     public async Task A_different_transition_identity_cannot_take_over_a_pending_row()
     {
-
         Harness harness = Harness.Create();
 
         harness.Markers.WriteStatus = HostProcessToolsMarkerWriteStatus.Uncertain;
@@ -327,13 +303,11 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Equal(HostProcessToolsTransitionBlocker.ForeignTransitionIdentity, takeover.Value.Blocker);
 
         Assert.Equal(Transition, harness.Authority.Row.TransitionId);
-
     }
 
     [Fact]
     public async Task A_clean_row_beside_a_stray_marker_is_manual_remediation_rather_than_a_fresh_transition()
     {
-
         Harness harness = Harness.Create();
 
         harness.Markers.SeedForeignMarker();
@@ -347,13 +321,123 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.Equal(HostProcessToolsTransitionBlocker.MarkerPairMismatch, result.Value.Blocker);
 
         Assert.Equal(CovenantHostToolsState.Clean, harness.Authority.Row.State);
+    }
 
+    [Fact]
+    public async Task Cancellation_after_the_marker_write_still_commits_taint()
+    {
+        Harness harness = Harness.Create();
+
+        using CancellationTokenSource cancellation = new();
+
+        // The marker is the point of no return: from the moment it is written the installation either
+        // reaches the tainted row or stays pending, and a caller's cancellation must not choose.
+        harness.Markers.AfterWrite = cancellation.Cancel;
+
+        Result<HostProcessToolsTransitionResult> result = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            cancellation.Token);
+
+        Assert.Equal(HostProcessToolsTransitionOutcome.Completed, result.Value.Outcome);
+
+        Assert.Equal(CovenantHostToolsState.HostToolsTainted, harness.Authority.Row.State);
+
+        Assert.NotNull(harness.Markers.Stored);
+    }
+
+    [Fact]
+    public async Task Cancellation_while_resuming_a_pending_row_with_a_written_marker_still_commits_taint()
+    {
+        Harness harness = Harness.Create();
+
+        harness.Authority.FailTaintCommit = true;
+
+        _ = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            CancellationToken.None);
+
+        harness.Authority.FailTaintCommit = false;
+
+        using CancellationTokenSource cancelled = new();
+
+        // Cancelled once the pending row has been read, which is after everything the caller's token
+        // may still govern: the marker was written by the earlier attempt.
+        harness.Authority.AfterRead = cancelled.Cancel;
+
+        Result<HostProcessToolsTransitionResult> result = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            cancelled.Token);
+
+        Assert.Equal(HostProcessToolsTransitionOutcome.Completed, result.Value.Outcome);
+
+        Assert.Equal(CovenantHostToolsState.HostToolsTainted, harness.Authority.Row.State);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unreadable_marker_is_not_reported_as_a_pair_mismatch(bool malformed)
+    {
+        Harness harness = Harness.Create();
+
+        harness.Markers.ReadStatusOverride = malformed
+            ? HostProcessToolsMarkerReadStatus.Malformed
+            : HostProcessToolsMarkerReadStatus.Unavailable;
+
+        Result<HostProcessToolsTransitionResult> result = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            CancellationToken.None);
+
+        Assert.Equal(HostProcessToolsTransitionOutcome.PendingManualRemediation, result.Value.Outcome);
+
+        Assert.Equal(HostProcessToolsTransitionBlocker.MarkerUnreadable, result.Value.Blocker);
+
+        Assert.Equal(CovenantHostToolsState.Clean, harness.Authority.Row.State);
+    }
+
+    [Fact]
+    public async Task Unreadable_marker_beside_a_pending_row_is_not_reported_as_a_readback_mismatch()
+    {
+        Harness harness = Harness.Create();
+
+        harness.Authority.FailTaintCommit = true;
+
+        _ = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            CancellationToken.None);
+
+        harness.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Unavailable;
+
+        Result<HostProcessToolsTransitionResult> result = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            CancellationToken.None);
+
+        Assert.Equal(HostProcessToolsTransitionBlocker.MarkerUnreadable, result.Value.Blocker);
+
+        Assert.Equal(CovenantHostToolsState.PendingHostToolsTaint, harness.Authority.Row.State);
+    }
+
+    [Fact]
+    public async Task Unreadable_marker_beside_a_tainted_row_is_not_reported_as_a_pair_mismatch()
+    {
+        Harness harness = Harness.Create();
+
+        _ = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            CancellationToken.None);
+
+        harness.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Unavailable;
+
+        Result<HostProcessToolsTransitionResult> result = await harness.Service.EnableAsync(
+            new HostProcessToolsTransitionRequest(Transition),
+            CancellationToken.None);
+
+        Assert.Equal(HostProcessToolsTransitionBlocker.MarkerUnreadable, result.Value.Blocker);
     }
 
     [Fact]
     public void The_outcome_and_blocker_codes_are_literal_and_exhaustive()
     {
-
         Assert.Equal(1, (byte)HostProcessToolsTransitionOutcome.Completed);
 
         Assert.Equal(2, (byte)HostProcessToolsTransitionOutcome.AlreadyCompleted);
@@ -367,12 +451,10 @@ public sealed class HostProcessToolsTransitionServiceTests
         Assert.DoesNotContain(
             Enum.GetValues<HostProcessToolsTransitionOutcome>(),
             static value => (byte)value == 0);
-
     }
 
     private sealed class Harness
     {
-
         private Harness(
             HostProcessToolsTransitionService service,
             FakeHostProcessToolsAuthorityStore authority,
@@ -380,7 +462,6 @@ public sealed class HostProcessToolsTransitionServiceTests
             FakeHostProcessToolsEnvironmentProbe environment,
             FakeHostProcessToolsInstallationLockSource installationLock)
         {
-
             Service = service;
 
             Authority = authority;
@@ -390,7 +471,6 @@ public sealed class HostProcessToolsTransitionServiceTests
             Environment = environment;
 
             Lock = installationLock;
-
         }
 
         internal HostProcessToolsTransitionService Service { get; }
@@ -407,7 +487,6 @@ public sealed class HostProcessToolsTransitionServiceTests
             ArcanumEdition edition = ArcanumEdition.Development,
             bool escapeHatchOptIn = true)
         {
-
             FakeHostProcessToolsAuthorityStore authority = new();
 
             FakeHostProcessToolsMarkerStore markers = new();
@@ -430,9 +509,6 @@ public sealed class HostProcessToolsTransitionServiceTests
                 HostProcessToolsTestGate.Shared);
 
             return new Harness(service, authority, markers, environment, installationLock);
-
         }
-
     }
-
 }

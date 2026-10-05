@@ -37,48 +37,38 @@ internal sealed class HostProcessToolsTransitionService(
     IHostProcessToolsMarkerPairJoiner joiner,
     HostProcessToolsMarkerMutationGate markerMutationGate) : IHostProcessToolsTransitionService
 {
-
     public async Task<Result<HostProcessToolsTransitionResult>> EnableAsync(
         HostProcessToolsTransitionRequest request,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         if (request.TransitionId == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Validation.InvalidBody,
                 "The host-process-tools transition requires a random transition identity.");
-
         }
 
         HostProcessToolsTransitionEnvironment probe = environment.Read();
 
         if (probe.Edition is not ArcanumEdition.Development || !probe.EscapeHatchOptIn)
         {
-
             return Refused(request, HostProcessToolsTransitionBlocker.EditionOrOptInMissing);
-
         }
 
         if (probe.CovenantOpenedInThisProcess)
         {
-
             // A process that has already decrypted Covenant pages cannot be the one that authorizes
             // arbitrary same-process code: the residue is exactly what the taint exists to prevent.
             return Refused(request, HostProcessToolsTransitionBlocker.CovenantAlreadyOpened);
-
         }
 
         using IDisposable? held = installationLock.TryAcquire();
 
         if (held is null)
         {
-
             return Refused(request, HostProcessToolsTransitionBlocker.HostRunning);
-
         }
 
         // The cross-process installation lock keeps another Arcanum out; this keeps the other
@@ -92,22 +82,18 @@ internal sealed class HostProcessToolsTransitionService(
             .ConfigureAwait(false);
 
         return await RunUnderInstallationLockAsync(request, cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<Result<HostProcessToolsTransitionResult>> RunUnderInstallationLockAsync(
         HostProcessToolsTransitionRequest request,
         CancellationToken cancellationToken)
     {
-
         Result<HostProcessToolsAuthorityRow> read = await authority.ReadAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (read.IsFailure)
         {
-
             return Refused(request, HostProcessToolsTransitionBlocker.AuthorityUnreadable);
-
         }
 
         HostProcessToolsAuthorityRow row = read.Value;
@@ -122,7 +108,6 @@ internal sealed class HostProcessToolsTransitionService(
 
             _ => await BeginFromCleanAsync(request, row, cancellationToken).ConfigureAwait(false),
         };
-
     }
 
     /// <summary>
@@ -137,15 +122,21 @@ internal sealed class HostProcessToolsTransitionService(
         HostProcessToolsTransitionRequest request,
         HostProcessToolsAuthorityRow row)
     {
-
         if (row.TransitionId != request.TransitionId)
         {
-
             return Refused(request, HostProcessToolsTransitionBlocker.ForeignTransitionIdentity);
-
         }
 
-        HostProcessToolsMarkerPairJoinResult join = joiner.Join(row.ToEvidence(), ReadMarker());
+        HostProcessToolsMarkerReadResult marker = markers.Read();
+
+        if (IsUnreadable(marker))
+        {
+            return Blocked(request, HostProcessToolsTransitionBlocker.MarkerUnreadable);
+        }
+
+        HostProcessToolsMarkerPairJoinResult join = joiner.Join(
+            row.ToEvidence(),
+            marker is { Status: HostProcessToolsMarkerReadStatus.Present, Marker: { } present } ? present : null);
 
         return join.Disposition is HostProcessToolsMarkerPairDisposition.TaintedMatched
             ? Result<HostProcessToolsTransitionResult>.Success(new HostProcessToolsTransitionResult(
@@ -153,7 +144,6 @@ internal sealed class HostProcessToolsTransitionService(
                 HostProcessToolsTransitionOutcome.AlreadyCompleted,
                 RestartRequired: true))
             : Blocked(request, HostProcessToolsTransitionBlocker.MarkerPairMismatch);
-
     }
 
     /// <summary>
@@ -170,32 +160,32 @@ internal sealed class HostProcessToolsTransitionService(
         HostProcessToolsAuthorityRow row,
         CancellationToken cancellationToken)
     {
-
         if (row.TransitionId != request.TransitionId)
         {
-
             return Refused(request, HostProcessToolsTransitionBlocker.ForeignTransitionIdentity);
-
         }
 
         HostProcessToolsMarkerReadResult existing = markers.Read();
 
         if (existing.Status is HostProcessToolsMarkerReadStatus.Present)
         {
-
             HostProcessToolsMarkerPairJoinResult join = joiner.Join(row.ToEvidence(), existing.Marker);
 
+            // The marker is already written, so committing the taint is the only thing left that can be
+            // done for this installation and a caller's cancellation no longer gets a say.
             return join.Disposition is HostProcessToolsMarkerPairDisposition.PendingBlocked
-                ? await CommitTaintedAsync(request, row, cancellationToken).ConfigureAwait(false)
+                ? await CommitTaintedAsync(request, row, CancellationToken.None).ConfigureAwait(false)
                 : Blocked(request, HostProcessToolsTransitionBlocker.MarkerPairMismatch);
+        }
 
+        if (IsUnreadable(existing))
+        {
+            return Blocked(request, HostProcessToolsTransitionBlocker.MarkerUnreadable);
         }
 
         if (existing.Status is not HostProcessToolsMarkerReadStatus.Absent)
         {
-
             return Blocked(request, HostProcessToolsTransitionBlocker.MarkerReadbackMismatch);
-
         }
 
         return await WriteMarkerAndCommitAsync(
@@ -203,7 +193,6 @@ internal sealed class HostProcessToolsTransitionService(
             row,
             compensationPermitted: false,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -220,14 +209,16 @@ internal sealed class HostProcessToolsTransitionService(
         HostProcessToolsAuthorityRow row,
         CancellationToken cancellationToken)
     {
-
         HostProcessToolsMarkerReadResult existing = markers.Read();
+
+        if (IsUnreadable(existing))
+        {
+            return Blocked(request, HostProcessToolsTransitionBlocker.MarkerUnreadable);
+        }
 
         if (existing.Status is not HostProcessToolsMarkerReadStatus.Absent)
         {
-
             return Blocked(request, HostProcessToolsTransitionBlocker.MarkerPairMismatch);
-
         }
 
         Result<HostProcessToolsProtectedInventory> inventory = await authority
@@ -236,16 +227,12 @@ internal sealed class HostProcessToolsTransitionService(
 
         if (inventory.IsFailure)
         {
-
             return Refused(request, HostProcessToolsTransitionBlocker.AuthorityUnreadable);
-
         }
 
         if (!inventory.Value.IsEmpty)
         {
-
             return Refused(request, HostProcessToolsTransitionBlocker.ProtectedStatePresent);
-
         }
 
         Result pending = await authority
@@ -254,9 +241,7 @@ internal sealed class HostProcessToolsTransitionService(
 
         if (pending.IsFailure)
         {
-
             return Refused(request, HostProcessToolsTransitionBlocker.AuthorityCommitFailed);
-
         }
 
         Result<HostProcessToolsAuthorityRow> reread = await authority.ReadAsync(cancellationToken)
@@ -264,9 +249,7 @@ internal sealed class HostProcessToolsTransitionService(
 
         if (reread.IsFailure)
         {
-
             return Blocked(request, HostProcessToolsTransitionBlocker.AuthorityUnreadable);
-
         }
 
         return await WriteMarkerAndCommitAsync(
@@ -274,7 +257,6 @@ internal sealed class HostProcessToolsTransitionService(
             reread.Value,
             compensationPermitted: true,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -290,12 +272,9 @@ internal sealed class HostProcessToolsTransitionService(
         bool compensationPermitted,
         CancellationToken cancellationToken)
     {
-
         if (row.TaintMasterKeyVersion is not { } taintVersion || row.TaintFingerprint is not { } taintFingerprint)
         {
-
             return Blocked(request, HostProcessToolsTransitionBlocker.AuthorityUnreadable);
-
         }
 
         HostProcessToolsMarkerWriteStatus written = markers.Write(
@@ -306,40 +285,41 @@ internal sealed class HostProcessToolsTransitionService(
 
         if (written is HostProcessToolsMarkerWriteStatus.Uncertain)
         {
-
             Log.Error(
                 "The host-process-tools marker write did not prove its outcome; the installation stays pending and blocked.");
 
             return Blocked(request, HostProcessToolsTransitionBlocker.MarkerWriteUncertain);
-
         }
 
         if (written is HostProcessToolsMarkerWriteStatus.Refused)
         {
-
             return await CompensateRefusedWriteAsync(
                 request,
                 row,
                 compensationPermitted,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         HostProcessToolsMarkerReadResult readback = markers.Read();
 
+        if (IsUnreadable(readback))
+        {
+            return Blocked(request, HostProcessToolsTransitionBlocker.MarkerUnreadable);
+        }
+
         if (readback.Status is not HostProcessToolsMarkerReadStatus.Present)
         {
-
             return Blocked(request, HostProcessToolsTransitionBlocker.MarkerReadbackMismatch);
-
         }
 
         HostProcessToolsMarkerPairJoinResult join = joiner.Join(row.ToEvidence(), readback.Marker);
 
+        // The marker write has landed, so from here the transition runs to completion on its own: a
+        // caller who cancels between the write and the compare-and-swap would otherwise leave the
+        // installation pending for no reason the evidence supports.
         return join.Disposition is HostProcessToolsMarkerPairDisposition.PendingBlocked
-            ? await CommitTaintedAsync(request, row, cancellationToken).ConfigureAwait(false)
+            ? await CommitTaintedAsync(request, row, CancellationToken.None).ConfigureAwait(false)
             : Blocked(request, HostProcessToolsTransitionBlocker.MarkerReadbackMismatch);
-
     }
 
     /// <summary>
@@ -351,22 +331,20 @@ internal sealed class HostProcessToolsTransitionService(
         bool compensationPermitted,
         CancellationToken cancellationToken)
     {
-
         if (!compensationPermitted || markers.Read().Status is not HostProcessToolsMarkerReadStatus.Absent)
         {
-
             return Blocked(request, HostProcessToolsTransitionBlocker.MarkerWriteRefused);
-
         }
 
+        // The write was attempted, so returning the row to clean is bookkeeping for that attempt and
+        // must not be abandoned halfway by the caller's token.
         Result compensated = await authority
-            .CompensateToCleanAsync(row, request.TransitionId, cancellationToken)
+            .CompensateToCleanAsync(row, request.TransitionId, CancellationToken.None)
             .ConfigureAwait(false);
 
         return compensated.IsSuccess
             ? Refused(request, HostProcessToolsTransitionBlocker.MarkerWriteRefused)
             : Blocked(request, HostProcessToolsTransitionBlocker.MarkerWriteRefused);
-
     }
 
     private async Task<Result<HostProcessToolsTransitionResult>> CommitTaintedAsync(
@@ -374,19 +352,16 @@ internal sealed class HostProcessToolsTransitionService(
         HostProcessToolsAuthorityRow row,
         CancellationToken cancellationToken)
     {
-
         Result committed = await authority
             .CommitTaintedAsync(row, request.TransitionId, cancellationToken)
             .ConfigureAwait(false);
 
         if (committed.IsFailure)
         {
-
             Log.Error(
                 "The host-process-tools taint could not be committed after its marker was written; the installation stays pending and blocked.");
 
             return Blocked(request, HostProcessToolsTransitionBlocker.AuthorityCommitFailed);
-
         }
 
         Log.Warning(
@@ -396,13 +371,14 @@ internal sealed class HostProcessToolsTransitionService(
             request.TransitionId,
             HostProcessToolsTransitionOutcome.Completed,
             RestartRequired: true));
-
     }
 
-    private HostProcessToolsOsMarkerEvidence? ReadMarker() =>
-        markers.Read() is { Status: HostProcessToolsMarkerReadStatus.Present, Marker: { } marker }
-            ? marker
-            : null;
+    /// <summary>
+    /// True when the marker could not be seen at all (credential store unavailable, or a payload that
+    /// does not parse), which is a different fact from two markers that disagree.
+    /// </summary>
+    private static bool IsUnreadable(HostProcessToolsMarkerReadResult marker) =>
+        marker.Status is HostProcessToolsMarkerReadStatus.Unavailable or HostProcessToolsMarkerReadStatus.Malformed;
 
     private static Result<HostProcessToolsTransitionResult> Refused(
         HostProcessToolsTransitionRequest request,
@@ -421,5 +397,4 @@ internal sealed class HostProcessToolsTransitionService(
             HostProcessToolsTransitionOutcome.PendingManualRemediation,
             RestartRequired: false,
             blocker));
-
 }

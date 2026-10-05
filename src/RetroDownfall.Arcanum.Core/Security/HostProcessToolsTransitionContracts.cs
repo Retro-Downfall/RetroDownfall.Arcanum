@@ -19,7 +19,6 @@ public sealed record HostProcessToolsTransitionRequest(Guid TransitionId);
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<HostProcessToolsTransitionOutcome>))]
 public enum HostProcessToolsTransitionOutcome : byte
 {
-
     Completed = 1,
 
     AlreadyCompleted = 2,
@@ -27,7 +26,6 @@ public enum HostProcessToolsTransitionOutcome : byte
     PendingManualRemediation = 3,
 
     Refused = 4,
-
 }
 
 /// <summary>
@@ -41,7 +39,6 @@ public enum HostProcessToolsTransitionOutcome : byte
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<HostProcessToolsTransitionBlocker>))]
 public enum HostProcessToolsTransitionBlocker : byte
 {
-
     None = 0,
 
     /// <summary>Not the Development edition, or the environment opt-in is absent.</summary>
@@ -77,6 +74,11 @@ public enum HostProcessToolsTransitionBlocker : byte
     /// <summary>The durable authority transition lost its compare-and-swap.</summary>
     AuthorityCommitFailed = 11,
 
+    /// <summary>
+    /// The operating-system marker could not be read (credential store unavailable) or is malformed.
+    /// Distinct from a mismatch: nothing is known to disagree, the evidence simply cannot be seen.
+    /// </summary>
+    MarkerUnreadable = 12,
 }
 
 /// <summary>
@@ -103,9 +105,7 @@ public sealed record HostProcessToolsTransitionResult(
 /// </remarks>
 public interface IHostProcessToolsTransitionService
 {
-
     Task<Result<HostProcessToolsTransitionResult>> EnableAsync(
         HostProcessToolsTransitionRequest request,
         CancellationToken cancellationToken = default);
-
 }
