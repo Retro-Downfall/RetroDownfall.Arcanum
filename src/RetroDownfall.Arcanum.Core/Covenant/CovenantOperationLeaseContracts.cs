@@ -373,7 +373,9 @@ public interface ICovenantExclusiveOperationLease : ICovenantOperationLease
 /// One-shot and nonserializable. It runs only after the exact lease returns success from its
 /// disposition and before the lease is disposed, so a journal can never advance past a disposition
 /// that did not happen. A failure here leaves the journal nonterminal on purpose: the operation is
-/// then resumable, which is strictly safer than recording a terminal phase nobody proved.
+/// then resumable, which is strictly safer than recording a terminal phase nobody proved. The lease
+/// turns a fault thrown from here into that same failure, because by then the gate has acted and
+/// "it threw" must not be readable as "the disposition did not happen".
 /// </remarks>
 public interface ICovenantExclusivePostDispositionFinalizer
 {
@@ -499,6 +501,12 @@ public abstract class CovenantExclusiveOperationLease
     /// finalizer running, so neither is given the caller's token again. A cancel that lands after the claim
     /// would otherwise strand the scope closed behind work that already happened, or leave the journal
     /// behind a disposition the gate had already acted on.
+    ///
+    /// <para>A fault the finalizer throws must not look like a disposition that did not happen. It (a full
+    /// disk failing the journal's commit, say) comes back as a
+    /// <see cref="ErrorCodes.Covenant.ManualRecoveryRequired"/> failure after the gate has already acted,
+    /// the same shape as a finalizer that answers with a failure, so a caller has one rule for "the
+    /// disposition was spent and the journal did not advance".</para>
     /// </remarks>
     public async ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,
@@ -535,9 +543,29 @@ public abstract class CovenantExclusiveOperationLease
             return disposed;
         }
 
-        return await finalizer
-            .FinalizeAfterSuccessfulDispositionAsync(disposition, CancellationToken.None)
-            .ConfigureAwait(false);
+        try
+        {
+            return await finalizer
+                .FinalizeAfterSuccessfulDispositionAsync(disposition, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // The disposition above has already reached the gate, so a fault here is a failed finalizer,
+            // exactly as if it had answered with a failure: the journal stays nonterminal and the
+            // operation stays resumable. Letting it escape would tell a caller that "the completion
+            // threw", which reads as "the disposition did not happen" about a decision the rest of the
+            // system may already be acting on. No exception family is named: Core may not know a storage
+            // provider's types (a full disk is a driver exception), and a caller's own cancellation
+            // handler is just as wrong a reader of this window as its storage handler. Only the exception
+            // type is reported, because a driver's message can carry paths or content.
+            return Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "The exclusive disposition was applied, but its journal finalizer failed with "
+                    + exception.GetType().Name
+                    + "; the journal stays nonterminal so the operation can be resumed."));
+        }
     }
 }
 

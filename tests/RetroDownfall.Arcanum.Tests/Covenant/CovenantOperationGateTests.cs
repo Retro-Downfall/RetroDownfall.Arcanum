@@ -1314,6 +1314,69 @@ public sealed class CovenantOperationGateTests
         Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, retry.Error.Code);
     }
 
+    /// <summary>
+    /// Once the gate has applied the disposition the operation is decided, whatever the finalizer then does.
+    /// A finalizer that throws (a full disk failing the journal's commit, say) used to escape the lease after
+    /// admission had already reopened, so a caller that read "the completion threw" as "the disposition did
+    /// not happen" could undo work the rest of the system had begun to use. The lease now answers a failure
+    /// the caller handles like any other finalizer failure: the journal stays nonterminal and the
+    /// disposition stays spent. A cancellation is one of the faults, because the cancellation handler of a
+    /// caller is the same wrong reader of this window.
+    /// </summary>
+    [Theory]
+    [InlineData("sqlite")]
+    [InlineData("io")]
+    [InlineData("invalid-operation")]
+    [InlineData("canceled")]
+    public async Task A_finalizer_that_throws_is_a_failed_finalizer_after_a_spent_disposition(
+        string fault)
+    {
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveLease exclusive = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            Token)).Value;
+
+        const string driverText = "driver text that must not reach the caller";
+
+        Exception thrown = fault switch
+        {
+            "sqlite" => new Microsoft.Data.Sqlite.SqliteException(driverText, 13),
+            "io" => new IOException(driverText),
+            "canceled" => new OperationCanceledException(driverText),
+            _ => new InvalidOperationException(driverText),
+        };
+
+        FaultingPostDispositionFinalizer finalizer = new(thrown);
+
+        Result outcome = await exclusive.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            finalizer,
+            Token);
+
+        Assert.True(outcome.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, outcome.Error.Code);
+
+        Assert.Contains(thrown.GetType().Name, outcome.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(driverText, outcome.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(1, finalizer.Invocations);
+
+        // The disposition was applied, so no other one can follow it, and admission is open.
+        Result retry = await exclusive.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, Token);
+
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, retry.Error.Code);
+
+        await exclusive.DisposeAsync();
+
+        await using CovenantReadLease reopened =
+            (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Assert.Equal(CovenantScope.Global, reopened.Snapshot.Scope!.Value.Kind);
+    }
+
     [Fact]
     public void The_no_op_finalizer_is_a_sealed_singleton()
     {

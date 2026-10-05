@@ -1224,16 +1224,19 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 if (reopened.IsFailure)
                 {
-                    // The replacement is in place and healthy enough to have been reconciled, but
-                    // admission stays shut and the journal stays active, so the next start resumes
-                    // this same operation rather than restarting it.
+                    // The replacement is in place and healthy enough to have been reconciled, but the
+                    // journal stays active, so the next start resumes this same operation rather than
+                    // restarting it. Admission is shut when a child could not be proved or the gate
+                    // refused the disposition; it is already open when only the finalizer failed after
+                    // the gate acted. Either way nothing here puts the prior installation back, and the
+                    // record says only what both cases share.
                     retainStagingForReconciliation = true;
 
                     Record(
                         phases,
                         BackupRestorePhase.Reconcile,
-                        "The restored generation is committed, but Covenant admission stays closed "
-                        + "until an operator resolves this restore.");
+                        "The restored generation is committed, but its Covenant completion did not finish. "
+                        + "The restore is not reversed and stays active for the next start to resume.");
 
                     return new BackupRestoreResult(
                         BackupRestoreStatus.ReconciliationRequired,

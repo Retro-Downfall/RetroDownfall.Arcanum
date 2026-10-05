@@ -170,6 +170,77 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Empty(harness.StagingRoots());
     }
 
+    /// <summary>
+    /// The window the previous test cannot reach: the gate has applied <c>CommitAndReopen</c> and admission
+    /// is open, but the marker finalizer's own commit has not landed, so the session has not yet recorded
+    /// the disposition. A full disk there is a <c>SqliteException</c> that used to surface in the service's
+    /// general catch with the disposition unrecorded, and the catch then put the prior installation back
+    /// under a system already running on the replacement.
+    /// </summary>
+    [Fact]
+    public async Task A_finalizer_fault_after_the_gate_has_reopened_does_not_reverse_the_restore()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        harness.Markers.Finalizer = new RetroDownfall.Arcanum.Tests.Covenant.FaultingPostDispositionFinalizer(
+            new SqliteException("database or disk is full", 13));
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        // The replacement is committed and something after the disposition failed: an operator is told,
+        // and nothing is described as rolled back.
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            Assert.Single(result.Issues).Code);
+
+        // The record claims nothing about admission, which this failure leaves open, and never calls the
+        // restore rolled back.
+        Assert.DoesNotContain(
+            result.Phases,
+            phase => phase.Detail.Contains("stays closed", StringComparison.Ordinal));
+
+        // One disposition, the commit, and no rollback or abort after it.
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // The restored generation is still the live one. A reversal would have put the archived one back.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+
+        // The children are not complete, so the journal and staging stay for the next start to resume.
+        Assert.NotEmpty(harness.StagingRoots());
+    }
+
+    /// <summary>
+    /// The same window read by the service's cancellation arm instead of its general one: a finalizer that
+    /// surfaces a cancellation while the operator's token is cancelled used to reach a handler that puts the
+    /// prior installation back whenever the disposition is unrecorded, and then rethrew the cancellation.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_from_the_finalizer_after_the_gate_has_reopened_does_not_reverse_the_restore()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.Markers.Finalizer = new RetroDownfall.Arcanum.Tests.Covenant.FaultingPostDispositionFinalizer(
+            new OperationCanceledException(cancellation.Token));
+
+        harness.Markers.AfterReconcile = cancellation.Cancel;
+
+        BackupRestoreResult result = await harness.RestoreAsync(cancellation.Token);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+    }
+
     [Fact]
     public async Task A_zero_marker_inventory_publishes_the_frozen_empty_child_vector_before_displacement()
     {

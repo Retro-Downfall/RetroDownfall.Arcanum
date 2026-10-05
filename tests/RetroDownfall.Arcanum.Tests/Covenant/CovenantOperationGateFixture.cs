@@ -384,6 +384,27 @@ internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
 }
 
 /// <summary>
+/// A one-shot finalizer that throws the given fault instead of answering, which is what the journal's own
+/// database does when the disk fills between the disposition and the finalizer's commit.
+/// </summary>
+internal sealed class FaultingPostDispositionFinalizer(Exception fault)
+    : ICovenantExclusivePostDispositionFinalizer
+{
+    private int _invocations;
+
+    internal int Invocations => Volatile.Read(ref _invocations);
+
+    public ValueTask<Result> FinalizeAfterSuccessfulDispositionAsync(
+        CovenantExclusiveLeaseDisposition disposition,
+        CancellationToken cancellationToken)
+    {
+        _ = Interlocked.Increment(ref _invocations);
+
+        throw fault;
+    }
+}
+
+/// <summary>
 /// The real <see cref="CovenantCampaignScopeProbe"/>, over a real bootstrapped Grimoire, against rows
 /// the Campaign deletion trigger actually wrote — never the <see cref="FakeCovenantCampaignScopeProbe"/>
 /// every gate suite substitutes.
