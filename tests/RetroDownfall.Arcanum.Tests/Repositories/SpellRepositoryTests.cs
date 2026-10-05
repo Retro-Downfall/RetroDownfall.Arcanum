@@ -1532,6 +1532,71 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
     }
 
+    /// <summary>
+    /// The sidecar write that completes an update or activation runs on CancellationToken.None while the workspace
+    /// lock is held, so it must never wait on a writer. A FIFO planted at SPELL.json is refused by the atomic
+    /// replace before any open (it is not a regular file), which fails the write, rolls SPELL.md back and
+    /// releases the lock instead of parking the call (and every later spell mutation) on a blocking open.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("update")]
+    [InlineData("activate")]
+    public async Task A_fifo_planted_as_the_sidecar_fails_the_write_instead_of_blocking(string operation)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string spellDir = await WriteExportableSpellAsync("fifo-sidecar");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.v2.0.md"),
+            "---\nname: fifo-sidecar\ndescription: export fixture\n---\nversion body");
+
+        string original = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+
+        string fifo = Path.Combine(spellDir, "SPELL.json");
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        SpellRepository repository = CreateRepository();
+
+        Task<Result> running = operation == "update"
+            ? Task.Run(
+                () => repository.UpdateAsync(
+                    "fifo-sidecar",
+                    _workspaceRoot,
+                    new UpdateSpellRequest("changed", null, null, null, null, null, null, null, Version: "3.0.0"),
+                    CancellationToken.None))
+            : Task.Run(
+                async () =>
+                {
+                    Result<SpellVersionDto> activated = await repository.ActivateVersionAsync("fifo-sidecar", "2.0", _workspaceRoot, CancellationToken.None);
+
+                    return activated.IsSuccess ? Result.Success() : Result.Failure(activated.Error);
+                });
+
+        Task finished = await Task.WhenAny(running, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        if (!ReferenceEquals(finished, running))
+        {
+            // Pair the blocked open(2) with a writer so the stuck thread is released before the test fails.
+            await Task.WhenAny(Task.Run(() => File.WriteAllBytes(fifo, [])), Task.Delay(TimeSpan.FromSeconds(5)));
+
+            Assert.Fail($"The {operation} blocked on a FIFO planted as the sidecar instead of failing the write.");
+        }
+
+        Result result = await running;
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Spell.WriteFailed, result.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md")));
+
+        Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
+    }
+
     [SkippableFact]
     public async Task ImportAsync_invalid_script_path_returns_InvalidScriptPath_error()
     {
