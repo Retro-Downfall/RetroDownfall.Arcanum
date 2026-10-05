@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
@@ -696,26 +697,48 @@ internal sealed class TapestryStore(
     /// </summary>
     /// <remarks>
     /// A Session tree is a model-written summary of that Session's entries, so it is derived from every
-    /// entry an erasure removes. The erasure kernel calls this inside the transaction that deletes the
-    /// entry: a summary of the erased words must not stay retrievable behind a purge that reported
-    /// success. The next sweep rebuilds the tree from what remains. The attachment tree of the same
-    /// Session is not derived from its entries and is left alone, and the scope id is the spelling the
-    /// sweep keyed the tree by, so an exact comparison finds it.
+    /// entry an erasure removes. Both erasure paths call this inside the transaction that deletes the
+    /// entry (the live erasure kernel, and the staged restore purge): a summary of the erased words must
+    /// not stay retrievable behind a purge that reported success. The next sweep rebuilds the tree from
+    /// what remains. The attachment tree of the same Session is not derived from its entries and is left
+    /// alone.
     /// </remarks>
     /// <returns>The generations removed.</returns>
     internal static Task<int> DeleteSessionTreesAsync(
         DbConnection connection,
         DbTransaction transaction,
         Guid sessionId,
+        CancellationToken cancellationToken) =>
+        DeleteSessionTreesByKeyAsync(
+            connection,
+            transaction,
+            CovenantIdentitySql.Key(sessionId),
+            cancellationToken);
+
+    /// <summary>
+    /// The same deletion for a Session named by its normalised identity (<see cref="CovenantIdentitySql.Key(string)"/>),
+    /// compared against each tree's scope id normalised the same way.
+    /// </summary>
+    /// <remarks>
+    /// The normalised comparison is what a staged archive needs: it is another installation's database, and
+    /// the tree is keyed by whatever spelling that installation's <c>Entries.SessionId</c> held, which the
+    /// label ledger naming the Session does not have to share. It is also safe on a live database, where it
+    /// finds the one spelling the sweep writes. An empty key is refused outright, because a predicate keyed
+    /// by an empty string matches every blank-keyed row rather than none.
+    /// </remarks>
+    internal static Task<int> DeleteSessionTreesByKeyAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string sessionKey,
         CancellationToken cancellationToken)
     {
-        string scopeId = TapestryScope.ForSession(sessionId).Id;
+        ArgumentException.ThrowIfNullOrEmpty(sessionKey);
 
         return DeleteGenerationsAsync(
             connection,
             transaction,
-            "\"ScopeKind\" = 'Session' AND \"ScopeId\" = @scopeId",
-            command => AddParameter(command, "@scopeId", scopeId),
+            $"\"ScopeKind\" = 'Session' AND {CovenantIdentitySql.Keyed("\"ScopeId\"", "@sessionKey")}",
+            command => AddParameter(command, "@sessionKey", sessionKey),
             cancellationToken);
     }
 

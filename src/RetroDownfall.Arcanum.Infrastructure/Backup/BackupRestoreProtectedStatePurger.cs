@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -218,6 +219,15 @@ internal static class BackupRestoreProtectedStatePurger
     /// staged archive's mirrors are classified exactly as a live installation's are. The pointer and
     /// redaction go first, which reorders nothing real: no plan has both projections and either of
     /// them.</para>
+    ///
+    /// <para>An assistant Entry has one derivative the plan cannot name: the Session's hierarchical
+    /// summary of its entries (the Tapestry), which is keyed by the Session and not by the artifact. The
+    /// live kernel drops it in the entry's own transaction, and this does the same, because a restored
+    /// archive that kept it would hold a model-written summary of Covenant words the purge just removed,
+    /// retrievable behind a purge that reported success. The Session is read off the Entry row before the
+    /// plan deletes it as well as off the label, since a label's Session column is nullable and the row is
+    /// what the summary was actually written from. A staged archive from before the Tapestry existed has no
+    /// table to drop from and is left alone.</para>
     /// </remarks>
     private static async Task<bool> ApplyPlanAsync(
         SqliteConnection staged,
@@ -227,6 +237,10 @@ internal static class BackupRestoreProtectedStatePurger
         CancellationToken cancellationToken)
     {
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(rule.Kind);
+
+        IReadOnlyCollection<string> owningSessions = rule.Kind == SensitiveArtifactKind.AssistantEntry
+            ? await ReadOwningSessionKeysAsync(staged, transaction, label, cancellationToken).ConfigureAwait(false)
+            : [];
 
         if (plan.CurrentPointerTable is { } pointer)
         {
@@ -252,7 +266,73 @@ internal static class BackupRestoreProtectedStatePurger
             CovenantArtifactPlanMode.Delete,
             cancellationToken).ConfigureAwait(false);
 
+        if (owningSessions.Count > 0
+            && await BackupRestoreDatabaseWorker
+                .TableExistsAsync(staged, "tapestry_generations", cancellationToken, transaction)
+                .ConfigureAwait(false))
+        {
+            foreach (string sessionKey in owningSessions)
+            {
+                _ = await TapestryStore.DeleteSessionTreesByKeyAsync(
+                    staged,
+                    transaction,
+                    sessionKey,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         return tally.ArtifactRows > 0;
+    }
+
+    /// <summary>
+    /// The normalised identities of the Sessions whose Tapestry summarises one assistant Entry: the Session
+    /// the label names and the Session the Entry row belongs to.
+    /// </summary>
+    /// <remarks>
+    /// Read before the plan deletes the row. An identity that normalises to nothing is dropped rather than
+    /// passed on, because a predicate keyed by an empty string matches every blank-keyed tree; the other
+    /// source still names the Session, or neither does and there is no tree this purge can attribute to the
+    /// Entry.
+    /// </remarks>
+    private static async Task<IReadOnlyCollection<string>> ReadOwningSessionKeysAsync(
+        SqliteConnection staged,
+        SqliteTransaction transaction,
+        StagedLabel label,
+        CancellationToken cancellationToken)
+    {
+        HashSet<string> keys = new(StringComparer.Ordinal);
+
+        if (label.SessionId is { } labelled && CovenantIdentitySql.Key(labelled) is { Length: > 0 } labelKey)
+        {
+            _ = keys.Add(labelKey);
+        }
+
+        if (await BackupRestoreDatabaseWorker
+                .TableExistsAsync(staged, "Entries", cancellationToken, transaction)
+                .ConfigureAwait(false))
+        {
+            await using SqliteCommand command = staged.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText =
+                $"SELECT \"SessionId\" FROM \"Entries\" WHERE {CovenantIdentitySql.Keyed("\"Id\"", "$artifactKey")};";
+
+            _ = command.Parameters.AddWithValue("$artifactKey", CovenantIdentitySql.Key(label.ArtifactId));
+
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!reader.IsDBNull(0) && CovenantIdentitySql.Key(reader.GetString(0)) is { Length: > 0 } rowKey)
+                {
+                    _ = keys.Add(rowKey);
+                }
+            }
+        }
+
+        return keys;
     }
 
     /// <summary>
