@@ -88,6 +88,14 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
             .RecoverAsync(heldInstallationLock, guardedDirectory, cancellationToken)
             .ConfigureAwait(false);
 
+        // A credential store or catalog that cannot be reached right now is an outage, not
+        // evidence that disagrees with itself: the start is retryable, so it is not collapsed into
+        // the manual-recovery refusal below.
+        if (recovered.IsFailure && IsOutage(recovered.Error))
+        {
+            return Result<GrimoireOfflineTransitionTerminalSuffixOutcome>.Failure(recovered.Error);
+        }
+
         if (recovered.IsFailure
             || recovered.Value is not
             {
@@ -105,7 +113,7 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
 
         if (row.IsFailure)
         {
-            return Refusal();
+            return RefusalUnlessOutage<GrimoireOfflineTransitionTerminalSuffixOutcome>(row.Error);
         }
 
         Result<GrimoireOfflineTransitionLaunchBinding> launch =
@@ -146,6 +154,10 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (Exception exception) when (IsOutage(exception))
+        {
+            return Outage<GrimoireOfflineTransitionTerminalSuffixOutcome>();
         }
         catch
         {
@@ -630,6 +642,20 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
     private static Result<GrimoireOfflineTransitionTerminalSuffixOutcome> Refusal() =>
         Refusal<GrimoireOfflineTransitionTerminalSuffixOutcome>();
 
+    /// <summary>An unreachable credential store, or a busy, locked, or unreadable catalog.</summary>
+    internal static bool IsOutage(Error error) => error.Code == ErrorCodes.Covenant.Unavailable;
+
+    private static bool IsOutage(Exception exception) =>
+        exception is IOException || SqliteBusyRetry.IsBusyOrLocked(exception);
+
+    private static Result<T> RefusalUnlessOutage<T>(Error error) =>
+        IsOutage(error) ? Result<T>.Failure(error) : Refusal<T>();
+
+    private static Result<T> Outage<T>() =>
+        Result<T>.Failure(new Error(
+            ErrorCodes.Covenant.Unavailable,
+            "The terminal offline transition's catalog is temporarily unavailable."));
+
     private static Result<T> Refusal<T>() =>
         Result<T>.Failure(new Error(
             ErrorCodes.Covenant.ManualRecoveryRequired,
@@ -723,6 +749,10 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (Exception exception) when (IsOutage(exception))
+            {
+                return Outage<TerminalOperationSnapshot>();
             }
             catch
             {

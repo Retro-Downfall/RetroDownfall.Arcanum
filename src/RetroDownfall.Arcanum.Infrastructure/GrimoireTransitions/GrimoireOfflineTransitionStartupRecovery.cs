@@ -377,7 +377,8 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         {
             await unlocked.Value.DisposeAsync().ConfigureAwait(false);
 
-            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
+            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
+                RefusalUnlessOutage(terminal.Error));
         }
 
         if (terminal.Value is GrimoireOfflineTransitionTerminalSuffixOutcome.Completed)
@@ -417,7 +418,8 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         {
             await unlocked.Value.DisposeAsync().ConfigureAwait(false);
 
-            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
+            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
+                RefusalUnlessOutage(provisionalHostTools.Error));
         }
 
         Result<LongRunningRecoveryOwnerEvidence> prepared = await PrepareAsync(
@@ -521,4 +523,10 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "The authenticated offline Grimoire transition could not be recovered before bootstrap.");
 
+    /// <summary>
+    /// The refusal, except for an outage: an unreachable credential store or a busy catalog keeps its
+    /// own <c>Covenant.Unavailable</c> code, because the remedy is to retry the start, not to repair it.
+    /// </summary>
+    private static Error RefusalUnlessOutage(Error error) =>
+        GrimoireOfflineTransitionTerminalSuffixFinisher.IsOutage(error) ? error : Refusal().Error;
 }
