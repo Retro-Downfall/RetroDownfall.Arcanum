@@ -932,6 +932,40 @@ public static class GrimoireDatabaseBootstrapper
         }
     }
 
+    /// <summary>
+    /// Whether a recovery read failed because the catalog could not be read right now, rather than
+    /// because what it read disagrees: an <see cref="IOException"/>, or SQLite I/O error, busy, or
+    /// locked, anywhere in the exception chain. That includes the SQLite failure
+    /// <see cref="VerifyExpectedInstallationIdentityAsync"/> wraps in its unavailable exception,
+    /// which is the only way an I/O failure reaches a caller of the identity check.
+    /// </summary>
+    /// <remarks>
+    /// Pre-bootstrap transition recovery reads the installation identity on one recovery connection
+    /// from more than one arm. One predicate gives the same failure on that connection the same
+    /// answer in every arm that classifies it. Corruption, a file that is not a database, and a file
+    /// that cannot be opened are not outages; neither is a cancellation.
+    /// </remarks>
+    internal static bool IsCatalogOutage(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            switch (current)
+            {
+                case OperationCanceledException:
+                    return false;
+
+                case IOException:
+                    return true;
+
+                case SqliteException sqlite:
+                    // SQLITE_BUSY, SQLITE_LOCKED, SQLITE_IOERR.
+                    return sqlite.SqliteErrorCode is 5 or 6 or 10;
+            }
+        }
+
+        return false;
+    }
+
     private static GrimoireDatabaseUnavailableException InstallationIdentityUnavailable(
         Exception? innerException = null)
     {

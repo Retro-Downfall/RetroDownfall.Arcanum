@@ -120,7 +120,7 @@ public sealed class ProvingGroundsRunnerTests
             new FakePromptRepository(),
             intelligence,
             new ProvingGroundsArbiter(intelligence),
-            new PromptRenderer(new FakeTokenCounter(), new TestOptionsMonitor<ArcanumSettings>(settings)),
+            new PromptRenderer(new FakeTokenCounter()),
             workspaceResolver,
             new TestOptionsSnapshot<ArcanumSettings>(settings));
     }

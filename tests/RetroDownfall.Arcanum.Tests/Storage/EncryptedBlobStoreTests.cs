@@ -316,6 +316,115 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         await Assert.ThrowsAnyAsync<CryptographicException>(() => reader.CopyToAsync(output));
     }
 
+    // Version 1 binds no final-chunk marker, so a boundary truncation that rewrites the declared
+    // length still authenticates (the characterization below). Migration upgrades every v1 envelope
+    // it verifies to the current version, after which the same truncation is refused.
+    [Fact]
+    public async Task V1_blob_truncated_at_chunk_boundary_is_rejected()
+    {
+        const int chunkSize = 32;
+        byte[] key = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        byte[] plaintext = RandomNumberGenerator.GetBytes(96);
+        string path = Path.Combine(_root, "legacy-v1-upgrade");
+        await File.WriteAllBytesAsync(
+            path,
+            EncryptedBlobCompatibilityTests.BuildVersion1Envelope(
+                key,
+                plaintext,
+                chunkSize,
+                EncryptedBlobPurpose.UploadedFile));
+        EncryptedBlobStore store = CreateStore(chunkSize, key);
+        EncryptedBlobDescriptor legacy = await store.InspectAsync(
+            path,
+            EncryptedBlobPurpose.UploadedFile,
+            verifyAllChunks: true);
+        Assert.Equal(EncryptedBlobFormat.LegacyVersion1, legacy.Version);
+
+        string legacyCopy = Path.Combine(_root, "legacy-v1-truncated");
+        await File.WriteAllBytesAsync(
+            legacyCopy,
+            TruncateAtFirstChunkBoundary(await File.ReadAllBytesAsync(path), legacy.HeaderLength, chunkSize));
+        await using (Stream legacyReader = await store.OpenReadAsync(legacyCopy, EncryptedBlobPurpose.UploadedFile))
+        {
+            using MemoryStream legacyOutput = new();
+            await legacyReader.CopyToAsync(legacyOutput);
+            Assert.Equal(plaintext.AsSpan(0, chunkSize).ToArray(), legacyOutput.ToArray());
+        }
+
+        BlobEncryptionCandidate candidate = new(
+            BlobEncryptionRecordKind.UploadedFile,
+            "legacy-v1",
+            path,
+            EncryptedBlobPurpose.UploadedFile,
+            plaintext.Length,
+            Convert.ToHexString(SHA256.HashData(plaintext)),
+            EncryptedBlobFormat.LegacyVersion1,
+            legacy.KeyId);
+        RecordingMetadataStore metadata = new();
+        BlobEncryptionFileResult migrated = await new BlobEncryptionFileProcessor(metadata, store)
+            .MigrateAsync(candidate);
+
+        Assert.Equal(EncryptedBlobFormat.CurrentVersion, migrated.Descriptor.Version);
+        Assert.Equal(EncryptedBlobFormat.CurrentVersion, Assert.Single(metadata.Updated).Version);
+
+        await File.WriteAllBytesAsync(
+            path,
+            TruncateAtFirstChunkBoundary(
+                await File.ReadAllBytesAsync(path),
+                migrated.Descriptor.HeaderLength,
+                chunkSize));
+        await using Stream reader = await store.OpenReadAsync(path, EncryptedBlobPurpose.UploadedFile);
+        using MemoryStream output = new();
+
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => reader.CopyToAsync(output));
+    }
+
+    // The chunk counter is the low four bytes of every chunk nonce; a blob that needed a counter value
+    // past its range would repeat a nonce under the same key. The writer refuses it before reading a
+    // byte of plaintext or creating anything on disk.
+    [Fact]
+    public async Task Write_refuses_a_declared_length_beyond_the_chunk_counter()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 16);
+        string path = Path.Combine(_root, "too-many-chunks");
+        long declared = checked(16L * uint.MaxValue + 1);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.WriteAsync(
+            path,
+            new MemoryStream(),
+            EncryptedBlobPurpose.BatchArtifact,
+            plaintextLength: declared));
+
+        Assert.False(File.Exists(path));
+        Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
+    }
+
+    private static byte[] TruncateAtFirstChunkBoundary(byte[] envelope, int headerLength, int chunkSize)
+    {
+        byte[] truncated = envelope.AsSpan(0, headerLength + chunkSize + 16).ToArray();
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(truncated.AsSpan(16, 8), chunkSize);
+        return truncated;
+    }
+
+    private sealed class RecordingMetadataStore : IBlobEncryptionMetadataStore
+    {
+        public List<EncryptedBlobDescriptor> Updated { get; } = [];
+
+        public Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<BlobEncryptionCandidate>>([]);
+
+        public Task UpdateEncryptionMetadataAsync(
+            BlobEncryptionCandidate candidate,
+            EncryptedBlobDescriptor descriptor,
+            string plaintextSha256,
+            CancellationToken cancellationToken = default)
+        {
+            Updated.Add(descriptor);
+            return Task.CompletedTask;
+        }
+    }
+
     // The streaming writer discovers the length as it goes, so the chunk that turns out to be last
     // must still carry the final marker — including when the total is an exact multiple of the
     // chunk size, where the last full buffer would otherwise be sealed as a non-final chunk.
@@ -429,10 +538,91 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         Assert.Equal(original, output.ToArray());
     }
 
+    // The streaming writer publishes the same way WriteAsync does. On Windows a plain
+    // File.Move(overwrite: true) fails against a reader holding the destination with
+    // FileShare.Delete; on macOS this is a characterization of the rename that always permitted it.
+    [Fact]
+    public async Task Streaming_writer_replaces_destination_held_open_by_reader()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "streaming-replace-while-open");
+        byte[] original = RandomNumberGenerator.GetBytes(200);
+        byte[] replacement = RandomNumberGenerator.GetBytes(150);
+        await store.WriteAsync(
+            path,
+            new MemoryStream(original),
+            EncryptedBlobPurpose.BatchArtifact);
+
+        await using Stream reader = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+
+        await using (EncryptedBlobWriter writer = await store.CreateWriterAsync(
+                         path,
+                         EncryptedBlobPurpose.BatchArtifact))
+        {
+            await writer.WriteAsync(replacement);
+            await writer.CompleteAsync();
+        }
+
+        using MemoryStream held = new();
+        await reader.CopyToAsync(held);
+        Assert.Equal(original, held.ToArray());
+
+        await using Stream reopened = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+        using MemoryStream current = new();
+        await reopened.CopyToAsync(current);
+        Assert.Equal(replacement, current.ToArray());
+        Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
+    }
+
+    // Pins on any host that the streaming writer publishes through the same replace-or-move step as
+    // WriteAsync, which is the Windows-safe path the test above can only fail on a Windows runner.
+    [Fact]
+    public async Task Streaming_writer_publishes_through_the_replace_or_move_step()
+    {
+        List<(string Temporary, string Destination)> published = [];
+        EncryptedBlobStore store = new(
+            new FixedFileEncryptionKeyProvider(
+                Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray()),
+            new EncryptedBlobStoreOptions { ChunkSize = 32 })
+        {
+            PublishTemporary = (temporary, destination) =>
+            {
+                published.Add((temporary, destination));
+                EncryptedBlobStore.ReplaceOrMove(temporary, destination);
+            },
+        };
+        string path = Path.Combine(_root, "streaming-publish-step");
+
+        await using (EncryptedBlobWriter writer = await store.CreateWriterAsync(
+                         path,
+                         EncryptedBlobPurpose.BatchArtifact))
+        {
+            await writer.WriteAsync(RandomNumberGenerator.GetBytes(40));
+            await writer.CompleteAsync();
+        }
+
+        (string temporary, string destination) = Assert.Single(published);
+        Assert.Equal(Path.GetFullPath(path), destination);
+        Assert.StartsWith("." + Path.GetFileName(path) + ".tmp.", Path.GetFileName(temporary));
+        Assert.True(File.Exists(path));
+        Assert.False(File.Exists(temporary));
+    }
+
+    [SkippableFact]
+    public async Task Windows_streaming_writer_replaces_destination_held_open_by_reader()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: File.Replace against a FileShare.Delete reader.");
+
+        await Streaming_writer_replaces_destination_held_open_by_reader();
+    }
+
     [Fact]
     public async Task Inspection_loads_a_cold_key_without_persistent_credential_mutation()
     {
-
         string encodedKey = Convert.ToBase64String(
             Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray());
 
@@ -441,7 +631,6 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         using (FileEncryptionKeyProvider writerKeys = new(
                    new MigrationSensitiveSecretStore(encodedKey)))
         {
-
             EncryptedBlobStore writer = new(
                 writerKeys,
                 new EncryptedBlobStoreOptions { ChunkSize = 32 });
@@ -450,7 +639,6 @@ public sealed class EncryptedBlobStoreTests : IDisposable
                 path,
                 new MemoryStream(Encoding.UTF8.GetBytes("diagnostic payload")),
                 EncryptedBlobPurpose.UploadedFile);
-
         }
 
         MigrationSensitiveSecretStore diagnosticSecrets = new(encodedKey);
@@ -471,7 +659,6 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         Assert.Equal(0, diagnosticSecrets.PersistentMutationCount);
 
         Assert.Equal(1, diagnosticSecrets.PeekCount);
-
     }
 
     private static EncryptedBlobStore CreateStore(int chunkSize, byte[]? key = null)
@@ -508,7 +695,6 @@ public sealed class EncryptedBlobStoreTests : IDisposable
 
     private sealed class MigrationSensitiveSecretStore(string encodedKey) : ISecretStore
     {
-
         public int PersistentMutationCount { get; private set; }
 
         public int PeekCount { get; private set; }
@@ -528,24 +714,19 @@ public sealed class EncryptedBlobStoreTests : IDisposable
 
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync()
         {
-
             PersistentMutationCount++;
 
             return Task.FromResult(SecretStoreReadResult.Ok(encodedKey));
-
         }
 
         public Task<SecretStoreReadResult> PeekFileEncryptionSecretReadResultAsync()
         {
-
             PeekCount++;
 
             return Task.FromResult(SecretStoreReadResult.Ok(encodedKey));
-
         }
 
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 }

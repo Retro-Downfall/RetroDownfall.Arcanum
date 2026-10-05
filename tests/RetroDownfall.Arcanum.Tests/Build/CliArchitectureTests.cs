@@ -80,6 +80,48 @@ public sealed class CliArchitectureTests
                 + string.Join("\n", unconsumed));
     }
 
+    /// <summary>
+    /// The CLI reaches stored blobs only through the lifecycle contract in Core. The encryption verbs
+    /// are the documented offline exception to API-first (Command Reference): they run the lifecycle
+    /// in-process under the exclusive bootstrap, and nothing in the CLI may reach past that contract
+    /// into the Infrastructure storage implementation.
+    /// </summary>
+    [Fact]
+    public void Cli_never_references_infrastructure_storage()
+    {
+        string[] offenders = LoadCliSources()
+            .Where(static source => source.Root.DescendantNodes()
+                .OfType<NameSyntax>()
+                .Any(static name => name is QualifiedNameSyntax
+                    && name.ToString().Contains("Infrastructure.Storage", StringComparison.Ordinal)))
+            .Select(static source => source.RelativePath)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.True(
+            offenders.Length == 0,
+            "CLI sources that reference RetroDownfall.Arcanum.Infrastructure.Storage:\n"
+                + string.Join("\n", offenders));
+    }
+
+    /// <summary>
+    /// The blob lifecycle is resolved in-process by the encryption verbs alone, which is the exact
+    /// extent of the documented offline exception.
+    /// </summary>
+    [Fact]
+    public void Only_the_encryption_verbs_resolve_the_blob_lifecycle_in_process()
+    {
+        string[] resolvers = LoadCliSources()
+            .Where(static source => source.Root.DescendantNodes()
+                .OfType<IdentifierNameSyntax>()
+                .Any(static name => name.Identifier.Text == "IBlobEncryptionLifecycleService"))
+            .Select(static source => source.RelativePath)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(["src/RetroDownfall.Arcanum.Cli/Commands/DataEncryptionCommands.cs"], resolvers);
+    }
+
     private static bool HasProductionConsumer(CliSource[] sources, string service)
     {
         foreach (CliSource source in sources)

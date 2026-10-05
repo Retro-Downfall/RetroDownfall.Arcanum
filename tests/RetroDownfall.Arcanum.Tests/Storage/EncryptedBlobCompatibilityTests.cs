@@ -104,7 +104,7 @@ public sealed class EncryptedBlobCompatibilityTests : IDisposable
 
     // Hand-builds the pre-length-binding envelope: header with bytes 16..24 zeroed in the AAD, and a
     // per-chunk suffix of (chunkIndex, chunkLength) with no final-chunk marker.
-    private static byte[] BuildVersion1Envelope(
+    internal static byte[] BuildVersion1Envelope(
         byte[] masterKey,
         byte[] plaintext,
         int chunkSize,
@@ -157,6 +157,7 @@ public sealed class EncryptedBlobCompatibilityTests : IDisposable
             offset += count;
             chunkIndex++;
         }
+
         while (offset < plaintext.Length);
 
         return envelope.ToArray();

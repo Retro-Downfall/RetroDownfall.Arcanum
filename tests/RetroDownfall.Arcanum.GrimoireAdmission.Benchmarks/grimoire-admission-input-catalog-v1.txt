@@ -1764,6 +1764,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Storage/AtomicFile.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Storage/AtomicReplaceStatus.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Storage/BlobEncryptionFileProcessor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Storage/BlobEncryptionLifecycleService.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Storage/DurableDirectoryFlush.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Storage/EncryptedBlobDiagnostics.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Storage/EncryptedBlobStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Telemetry/PrometheusMetricsExporter.cs

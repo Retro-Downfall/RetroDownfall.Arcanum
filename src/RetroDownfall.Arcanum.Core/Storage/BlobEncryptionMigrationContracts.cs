@@ -27,6 +27,9 @@ public enum BlobEncryptionVerificationIssue
     CorruptEnvelope,
     PlaintextLengthMismatch,
     PlaintextHashMismatch,
+
+    /// <summary>The blob could not be read: an I/O or access-denied failure on this one file.</summary>
+    IoError,
 }
 
 public sealed record BlobEncryptionVerificationResult(

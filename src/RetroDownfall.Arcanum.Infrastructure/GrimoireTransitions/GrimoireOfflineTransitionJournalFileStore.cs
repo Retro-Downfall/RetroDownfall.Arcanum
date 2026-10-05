@@ -29,17 +29,13 @@ internal sealed record GrimoireOfflineTransitionJournalEvidence(
     GrimoireOfflineTransitionJournalFileRead? Previous,
     GrimoireOfflineTransitionJournalFileRead? Retiring) : IDisposable
 {
-
     private int _disposed;
 
     public void Dispose()
     {
-
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-
             return;
-
         }
 
         Canonical?.Dispose();
@@ -49,34 +45,27 @@ internal sealed record GrimoireOfflineTransitionJournalEvidence(
         Previous?.Dispose();
 
         Retiring?.Dispose();
-
     }
-
 }
 
 internal enum GrimoireOfflineTransitionJournalRetirementSource : byte
 {
-
     Canonical = 1,
 
     Previous = 2,
 
     Retiring = 3,
-
 }
 
 internal sealed class GrimoireOfflineTransitionJournalFileRead : IDisposable
 {
-
     private SecureFileReadResult? _read;
 
     internal GrimoireOfflineTransitionJournalFileRead(SecureFileReadResult read)
     {
-
         _read = read;
 
         Metadata = read.Metadata;
-
     }
 
     internal ReadOnlyMemory<byte> Bytes =>
@@ -86,13 +75,10 @@ internal sealed class GrimoireOfflineTransitionJournalFileRead : IDisposable
 
     public void Dispose()
     {
-
         SecureFileReadResult? read = Interlocked.Exchange(ref _read, null);
 
         read?.Dispose();
-
     }
-
 }
 
 /// <summary>
@@ -100,7 +86,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileRead : IDisposable
 /// </summary>
 internal sealed class GrimoireOfflineTransitionJournalFileStore
 {
-
     private static readonly StringComparer Ordinal = StringComparer.Ordinal;
 
     private readonly Action<string>? _afterStep;
@@ -123,7 +108,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             beforeAtomicReplace,
             OpenProductionPrimitives)
     {
-
     }
 
     internal GrimoireOfflineTransitionJournalFileStore(
@@ -134,7 +118,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             GrimoireOfflineTransitionJournalLocation,
             Result<IGrimoireOfflineTransitionJournalFilePrimitives>> openPrimitives)
     {
-
         _afterStep = afterStep;
 
         _failBeforeStep = failBeforeStep;
@@ -142,23 +125,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         _beforeAtomicReplace = beforeAtomicReplace;
 
         _openPrimitives = openPrimitives;
-
     }
 
     internal Result<GrimoireOfflineTransitionJournalLocation> ResolveLocation(
         string guardedDirectory)
     {
-
         if (string.IsNullOrWhiteSpace(guardedDirectory))
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalLocation>();
-
         }
 
         try
         {
-
             string guarded = Path.TrimEndingDirectorySeparator(
                 Path.GetFullPath(guardedDirectory));
 
@@ -182,9 +160,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     parent,
                     PathComparison()))
             {
-
                 return Unavailable<GrimoireOfflineTransitionJournalLocation>();
-
             }
 
             Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
@@ -192,9 +168,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (opened.IsFailure)
             {
-
                 return Result<GrimoireOfflineTransitionJournalLocation>.Failure(opened.Error);
-
             }
 
             using GrimoireOfflineTransitionJournalFilePrimitives parentCapability = opened.Value;
@@ -210,9 +184,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (profile.IsFailure || profile.Value.ParentPhysicalIdentityDigest != parentDigest)
             {
-
                 return Unavailable<GrimoireOfflineTransitionJournalLocation>();
-
             }
 
             Result<CovenantDigest> locationDigest =
@@ -223,9 +195,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (locationDigest.IsFailure)
             {
-
                 return Result<GrimoireOfflineTransitionJournalLocation>.Failure(locationDigest.Error);
-
             }
 
             return new GrimoireOfflineTransitionJournalLocation(
@@ -242,7 +212,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 Path.GetFileName(retiringPath),
                 parentDigest,
                 locationDigest.Value);
-
         }
         catch (Exception exception) when (
             exception is ArgumentException
@@ -251,25 +220,19 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalLocation>();
-
         }
-
     }
 
     internal Result RequireNoEvidence(
         GrimoireOfflineTransitionJournalLocation location)
     {
-
         Result<GrimoireOfflineTransitionJournalLocation> committed =
             ValidateLocationCommitment(location);
 
         if (committed.IsFailure)
         {
-
             return Result.Failure(committed.Error);
-
         }
 
         Result<GrimoireOfflineTransitionJournalEvidence> inspected = InspectEvidenceAsync(
@@ -280,9 +243,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (inspected.IsFailure)
         {
-
             return Result.Failure(inspected.Error);
-
         }
 
         using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
@@ -290,22 +251,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         return AllAbsent(evidence)
             ? Result.Success()
             : RecoveryRequired();
-
     }
 
     internal async Task<Result<GrimoireOfflineTransitionJournalEvidence>> InspectEvidenceAsync(
         GrimoireOfflineTransitionJournalLocation location,
         CancellationToken cancellationToken)
     {
-
         Result<GrimoireOfflineTransitionJournalLocation> committed =
             ValidateLocationCommitment(location);
 
         if (committed.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalEvidence>.Failure(committed.Error);
-
         }
 
         location = committed.Value;
@@ -314,9 +271,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (opened.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalEvidence>.Failure(opened.Error);
-
         }
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
@@ -326,22 +281,18 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 location,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     internal async Task<Result<GrimoireOfflineTransitionJournalFileRead?>> ReadIfPresentAsync(
         GrimoireOfflineTransitionJournalLocation location,
         CancellationToken cancellationToken)
     {
-
         Result<GrimoireOfflineTransitionJournalLocation> committed =
             ValidateLocationCommitment(location);
 
         if (committed.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalFileRead?>.Failure(committed.Error);
-
         }
 
         location = committed.Value;
@@ -350,9 +301,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (opened.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalFileRead?>.Failure(opened.Error);
-
         }
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
@@ -362,9 +311,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (enumerated.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalFileRead?>.Failure(enumerated.Error);
-
         }
 
         using GrimoireOfflineTransitionJournalChildEnumeration children = enumerated.Value;
@@ -373,18 +320,14 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (residue.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalFileRead?>.Failure(residue.Error);
-
         }
 
         if (!children.ExactChildren.TryGetValue(
                 location.JournalLeaf,
                 out GrimoireOfflineTransitionJournalOpenedFile? child))
         {
-
             return Result<GrimoireOfflineTransitionJournalFileRead?>.Success(null);
-
         }
 
         Result<GrimoireOfflineTransitionJournalFileRead> read = await ReadAsync(
@@ -396,30 +339,23 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (read.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalFileRead?>.Failure(read.Error);
-
         }
 
         try
         {
-
             Before("file:secure-reread");
-
         }
         catch (InjectedStepFailureException)
         {
-
             read.Value.Dispose();
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead?>();
-
         }
 
         Emit("file:secure-reread");
 
         return Result<GrimoireOfflineTransitionJournalFileRead?>.Success(read.Value);
-
     }
 
     internal async Task<Result> ReplaceDurablyAsync(
@@ -429,7 +365,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         FileHandleIdentity? expectedCurrentIdentity,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -439,9 +374,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (committed.IsFailure)
         {
-
             return Result.Failure(committed.Error);
-
         }
 
         location = committed.Value;
@@ -451,18 +384,14 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         if (bytes.IsEmpty
             || bytes.Length > GrimoireOfflineTransitionJournalAuthenticator.MaxJournalFileBytes)
         {
-
             return Unavailable();
-
         }
 
         Result<IGrimoireOfflineTransitionJournalFilePrimitives> opened = Open(location);
 
         if (opened.IsFailure)
         {
-
             return Result.Failure(opened.Error);
-
         }
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
@@ -473,7 +402,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         try
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             Result<GrimoireOfflineTransitionJournalEvidence> initialResult =
@@ -485,9 +413,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (initialResult.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalEvidence initial = initialResult.Value;
@@ -500,9 +426,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                             expected,
                             initial.Canonical.Metadata.Identity)))
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:temporary-created");
@@ -512,9 +436,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (createdResult.IsFailure)
             {
-
                 return Result.Failure(createdResult.Error);
-
             }
 
             created = createdResult.Value;
@@ -537,9 +459,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (primitives.FlushWorking(created).IsFailure)
             {
-
                 return CleanupBeforePublication(primitives, location, created, RecoveryRequired().Error);
-
             }
 
             Emit("file:temporary-flushed");
@@ -553,15 +473,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (finalValidationResult.IsFailure)
             {
-
                 return CleanupBeforePublication(primitives, location, created, finalValidationResult.Error);
-
             }
 
             using (GrimoireOfflineTransitionJournalEvidence finalValidation =
                    finalValidationResult.Value)
             {
-
                 bool currentMatches = expectedCurrentIdentity is null
                     ? finalValidation.Canonical is null
                     : finalValidation.Canonical is { } canonical
@@ -577,15 +494,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     || finalValidation.Previous is not null
                     || finalValidation.Retiring is not null)
                 {
-
                     return CleanupBeforePublication(
                         primitives,
                         location,
                         created,
                         RecoveryRequired().Error);
-
                 }
-
             }
 
             _beforeAtomicReplace?.Invoke();
@@ -594,26 +508,21 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (expectedCurrentIdentity is null)
             {
-
                 Result first = primitives.PublishFirstNoReplace(
                     location.JournalLeaf,
                     location.WorkingLeaf);
 
                 if (first.IsFailure)
                 {
-
                     return CleanupBeforePublication(
                         primitives,
                         location,
                         created,
                         RecoveryRequired().Error);
-
                 }
-
             }
             else
             {
-
                 Result<GrimoireOfflineTransitionExchangeResult> exchanged =
                     primitives.ExchangeRetainingPrevious(
                         location.JournalLeaf,
@@ -622,13 +531,15 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
                 if (exchanged.IsFailure)
                 {
-
-                    return CleanupBeforePublication(
-                        primitives,
-                        location,
-                        created,
-                        RecoveryRequired().Error);
-
+                    // A failed exchange whose canonical file is back in place is still pre-publication.
+                    // One that could not restore it leaves the working file for recovery to adopt.
+                    return exchanged.Error.Code == ErrorCodes.Data.RecoveryRequired
+                        ? RecoveryRequired()
+                        : CleanupBeforePublication(
+                            primitives,
+                            location,
+                            created,
+                            RecoveryRequired().Error);
                 }
 
                 published = true;
@@ -638,33 +549,26 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 if (exchanged.Value.Retention
                     is GrimoireOfflineTransitionPreviousRetention.Working)
                 {
-
                     Result moved = primitives.MoveNoReplace(
                         location.WorkingLeaf,
                         location.PreviousLeaf);
 
                     if (moved.IsFailure)
                     {
-
                         return RecoveryRequired();
-
                     }
-
                 }
 
                 Before("file:previous-retained");
 
                 Emit("file:previous-retained");
-
             }
 
             if (!published)
             {
-
                 published = true;
 
                 Emit("file:atomic-replace");
-
             }
 
             Result<GrimoireOfflineTransitionJournalEvidence> landedResult =
@@ -676,9 +580,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (landedResult.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalEvidence landed = landedResult.Value;
@@ -696,9 +598,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                             priorIdentity,
                             landed.Previous.Metadata.Identity)))
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:permissions-verified");
@@ -709,9 +609,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (permissions.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:permissions-verified");
@@ -720,9 +618,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (primitives.FlushParent().IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:parent-flushed");
@@ -736,29 +632,22 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (rereadResult.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using (GrimoireOfflineTransitionJournalFileRead reread = rereadResult.Value)
             {
-
                 if (!FileHandleIdentity.IdentitiesMatch(
                         created.Metadata.Identity,
                         reread.Metadata.Identity)
                     || !reread.Bytes.Span.SequenceEqual(bytes.Span))
                 {
-
                     return RecoveryRequired();
-
                 }
-
             }
 
             if (initial.Canonical is not null)
             {
-
                 Result retired = await RetireAsync(
                         primitives,
                         location,
@@ -770,11 +659,8 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
                 if (retired.IsFailure)
                 {
-
                     return RecoveryRequired();
-
                 }
-
             }
 
             if (!await ProveResidueAbsentAsync(
@@ -783,9 +669,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     requireCanonical: true,
                     CancellationToken.None).ConfigureAwait(false))
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:residue-absence-proved");
@@ -793,7 +677,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             Emit("file:residue-absence-proved");
 
             return Result.Success();
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -801,12 +684,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 or OperationCanceledException
                 or InjectedStepFailureException)
         {
-
             if (published)
             {
-
                 return RecoveryRequired();
-
             }
 
             return created is null
@@ -816,15 +696,11 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     location,
                     created,
                     Unavailable().Error);
-
         }
         finally
         {
-
             created?.Dispose();
-
         }
-
     }
 
     internal Result DeleteDurably(
@@ -833,7 +709,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         FileHandleMetadata expected,
         ReadOnlyMemory<byte> expectedBytes)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -843,9 +718,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (committed.IsFailure)
         {
-
             return Result.Failure(committed.Error);
-
         }
 
         location = committed.Value;
@@ -856,16 +729,13 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (opened.IsFailure)
         {
-
             return Result.Failure(opened.Error);
-
         }
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
 
         try
         {
-
             Result<GrimoireOfflineTransitionJournalEvidence> inspected = InspectEvidenceAsync(
                     primitives,
                     location,
@@ -875,9 +745,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (inspected.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
@@ -891,9 +759,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     evidence.Canonical.Metadata.Identity)
                 || !evidence.Canonical.Bytes.Span.SequenceEqual(expectedBytes.Span))
             {
-
                 return RecoveryRequired();
-
             }
 
             Result retired = RetireAsync(
@@ -908,9 +774,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (retired.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             if (!ProveAllAbsentAsync(
@@ -920,9 +784,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 .GetAwaiter()
                 .GetResult())
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:residue-absence-proved");
@@ -930,25 +792,20 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             Emit("file:residue-absence-proved");
 
             return Result.Success();
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or InjectedStepFailureException)
         {
-
             return RecoveryRequired();
-
         }
-
     }
 
     internal Result ProveAbsentDurably(
         ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionJournalLocation location)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -958,9 +815,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (committed.IsFailure)
         {
-
             return Result.Failure(committed.Error);
-
         }
 
         location = committed.Value;
@@ -971,16 +826,13 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (opened.IsFailure)
         {
-
             return Result.Failure(opened.Error);
-
         }
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
 
         try
         {
-
             if (!ProveAllAbsentAsync(
                     primitives,
                     location,
@@ -988,18 +840,14 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 .GetAwaiter()
                 .GetResult())
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:absence-parent-flushed");
 
             if (primitives.FlushParent().IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:absence-parent-flushed");
@@ -1011,9 +859,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 .GetAwaiter()
                 .GetResult())
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:absence-proved");
@@ -1021,15 +867,11 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             Emit("file:absence-proved");
 
             return Result.Success();
-
         }
         catch (InjectedStepFailureException)
         {
-
             return RecoveryRequired();
-
         }
-
     }
 
     internal async Task<Result> NormalizeWorkingPredecessorAsync(
@@ -1041,7 +883,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         ReadOnlyMemory<byte> expectedWorkingBytes,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -1051,9 +892,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (committed.IsFailure)
         {
-
             return Result.Failure(committed.Error);
-
         }
 
         location = committed.Value;
@@ -1064,16 +903,13 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (opened.IsFailure)
         {
-
             return Result.Failure(opened.Error);
-
         }
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
 
         try
         {
-
             Result<GrimoireOfflineTransitionJournalEvidence> inspected = await InspectEvidenceAsync(
                     primitives,
                     location,
@@ -1082,9 +918,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (inspected.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
@@ -1102,16 +936,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     evidence.Working.Metadata.Identity)
                 || !evidence.Working.Bytes.Span.SequenceEqual(expectedWorkingBytes.Span))
             {
-
                 return RecoveryRequired();
-
             }
 
             if (primitives.MoveNoReplace(location.WorkingLeaf, location.PreviousLeaf).IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Result<GrimoireOfflineTransitionJournalChildEnumeration> enumerated =
@@ -1119,9 +949,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (enumerated.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalChildEnumeration children = enumerated.Value;
@@ -1135,23 +963,20 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 || children.ExactChildren.ContainsKey(location.WorkingLeaf)
                 || children.ExactChildren.ContainsKey(location.RetiringLeaf))
             {
-
                 return RecoveryRequired();
-
             }
 
+            // The working file already moved: the rereads proving where it landed run to completion.
             Result<GrimoireOfflineTransitionJournalFileRead> rereadCanonical = await ReadAsync(
                     primitives,
                     canonical,
                     location.JournalLeaf,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (rereadCanonical.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalFileRead verifiedCanonical = rereadCanonical.Value;
@@ -1160,14 +985,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     primitives,
                     previous,
                     location.PreviousLeaf,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (rereadPrevious.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalFileRead verifiedPrevious = rereadPrevious.Value;
@@ -1182,15 +1005,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 || !verifiedPrevious.Bytes.Span.SequenceEqual(expectedWorkingBytes.Span)
                 || primitives.FlushParent().IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:working-normalized");
 
             return Result.Success();
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -1198,11 +1018,144 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 or OperationCanceledException
                 or InjectedStepFailureException)
         {
-
             return RecoveryRequired();
+        }
+    }
 
+    /// <summary>
+    /// Moves the retained predecessor back to the canonical name when the canonical name is empty.
+    /// </summary>
+    /// <remarks>
+    /// The Windows exchange is two no-replace renames, canonical to previous and then working to
+    /// canonical, so a crash between them leaves the anchor-current file at the previous name, the
+    /// unpublished next revision at the working name, and nothing at the canonical name. The caller
+    /// authenticates both first; this only renames the exact predecessor it named back into place and
+    /// leaves the working file for the ordinary resume flow.
+    /// </remarks>
+    internal async Task<Result> RestorePreviousAsCanonicalAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        GrimoireOfflineTransitionJournalLocation location,
+        FileHandleMetadata expectedPrevious,
+        ReadOnlyMemory<byte> expectedPreviousBytes,
+        FileHandleIdentity? expectedWorkingIdentity,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        ArgumentNullException.ThrowIfNull(location);
+
+        Result<GrimoireOfflineTransitionJournalLocation> committed =
+            ValidateLocationCommitment(location);
+
+        if (committed.IsFailure)
+        {
+            return Result.Failure(committed.Error);
         }
 
+        location = committed.Value;
+
+        heldInstallationLock.AssertHeldFor(location.GuardedDirectory);
+
+        Result<IGrimoireOfflineTransitionJournalFilePrimitives> opened = Open(location);
+
+        if (opened.IsFailure)
+        {
+            return Result.Failure(opened.Error);
+        }
+
+        using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
+
+        try
+        {
+            Result<GrimoireOfflineTransitionJournalEvidence> inspected = await InspectEvidenceAsync(
+                    primitives,
+                    location,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (inspected.IsFailure)
+            {
+                return RecoveryRequired();
+            }
+
+            using (GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value)
+            {
+                bool workingMatches = expectedWorkingIdentity is FileHandleIdentity working
+                    ? evidence.Working is not null
+                        && FileHandleIdentity.IdentitiesMatch(working, evidence.Working.Metadata.Identity)
+                    : evidence.Working is null;
+
+                if (evidence.Canonical is not null
+                    || evidence.Previous is null
+                    || evidence.Retiring is not null
+                    || !workingMatches
+                    || !FileHandleIdentity.IdentitiesMatch(
+                        expectedPrevious.Identity,
+                        evidence.Previous.Metadata.Identity)
+                    || !evidence.Previous.Bytes.Span.SequenceEqual(expectedPreviousBytes.Span))
+                {
+                    return RecoveryRequired();
+                }
+            }
+
+            if (primitives.MoveNoReplace(location.PreviousLeaf, location.JournalLeaf).IsFailure)
+            {
+                return RecoveryRequired();
+            }
+
+            // The rename is the point of no return: the proof that it landed runs to completion.
+            Result<GrimoireOfflineTransitionJournalChildEnumeration> enumerated =
+                primitives.EnumerateExactChildren(Leaves(location));
+
+            if (enumerated.IsFailure)
+            {
+                return RecoveryRequired();
+            }
+
+            using GrimoireOfflineTransitionJournalChildEnumeration children = enumerated.Value;
+
+            if (!children.ExactChildren.TryGetValue(
+                    location.JournalLeaf,
+                    out GrimoireOfflineTransitionJournalOpenedFile? canonical)
+                || children.ExactChildren.ContainsKey(location.PreviousLeaf)
+                || children.ExactChildren.ContainsKey(location.RetiringLeaf))
+            {
+                return RecoveryRequired();
+            }
+
+            Result<GrimoireOfflineTransitionJournalFileRead> reread = await ReadAsync(
+                    primitives,
+                    canonical,
+                    location.JournalLeaf,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (reread.IsFailure)
+            {
+                return RecoveryRequired();
+            }
+
+            using GrimoireOfflineTransitionJournalFileRead restored = reread.Value;
+
+            if (!FileHandleIdentity.IdentitiesMatch(expectedPrevious.Identity, restored.Metadata.Identity)
+                || !restored.Bytes.Span.SequenceEqual(expectedPreviousBytes.Span)
+                || primitives.FlushParent().IsFailure)
+            {
+                return RecoveryRequired();
+            }
+
+            Emit("file:previous-restored");
+
+            return Result.Success();
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or OperationCanceledException
+                or InjectedStepFailureException)
+        {
+            return RecoveryRequired();
+        }
     }
 
     internal async Task<Result> CompleteRetirementAsync(
@@ -1214,7 +1167,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         bool requireCanonicalAfter,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -1224,9 +1176,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (committed.IsFailure)
         {
-
             return Result.Failure(committed.Error);
-
         }
 
         location = committed.Value;
@@ -1237,16 +1187,13 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (opened.IsFailure)
         {
-
             return Result.Failure(opened.Error);
-
         }
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
 
         try
         {
-
             Result<GrimoireOfflineTransitionJournalEvidence> inspected = await InspectEvidenceAsync(
                     primitives,
                     location,
@@ -1255,9 +1202,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (inspected.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
@@ -1285,22 +1230,17 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (!shape || selected is null)
             {
-
                 return RecoveryRequired();
-
             }
 
             if (!FileHandleIdentity.IdentitiesMatch(expected.Identity, selected.Metadata.Identity)
                 || !selected.Bytes.Span.SequenceEqual(expectedBytes.Span))
             {
-
                 return RecoveryRequired();
-
             }
 
             if (source is not GrimoireOfflineTransitionJournalRetirementSource.Retiring)
             {
-
                 string sourceLeaf = source is GrimoireOfflineTransitionJournalRetirementSource.Canonical
                     ? location.JournalLeaf
                     : location.PreviousLeaf;
@@ -1309,13 +1249,10 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
                 if (primitives.MoveNoReplace(sourceLeaf, location.RetiringLeaf).IsFailure)
                 {
-
                     return RecoveryRequired();
-
                 }
 
                 Emit("file:retiring-moved");
-
             }
 
             Result<GrimoireOfflineTransitionJournalChildEnumeration> enumerated =
@@ -1323,9 +1260,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (enumerated.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalChildEnumeration children = enumerated.Value;
@@ -1337,23 +1272,20 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 || children.ExactChildren.ContainsKey(location.WorkingLeaf)
                 || children.ExactChildren.ContainsKey(location.PreviousLeaf))
             {
-
                 return RecoveryRequired();
-
             }
 
+            // Past the move to the retiring name, the reread and unlink run to completion.
             Result<GrimoireOfflineTransitionJournalFileRead> reread = await ReadAsync(
                     primitives,
                     retiring,
                     location.RetiringLeaf,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (reread.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalFileRead verified = reread.Value;
@@ -1361,9 +1293,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             if (!FileHandleIdentity.IdentitiesMatch(expected.Identity, verified.Metadata.Identity)
                 || !verified.Bytes.Span.SequenceEqual(expectedBytes.Span))
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:retiring-verified");
@@ -1374,9 +1304,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (primitives.FlushParent().IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:retiring-parent-flushed");
@@ -1385,9 +1313,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (primitives.CompareUnlink(retiring, location.RetiringLeaf).IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:retiring-unlinked");
@@ -1400,9 +1326,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (primitives.FlushParent().IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:delete-parent-flushed");
@@ -1413,18 +1337,14 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     requireCanonicalAfter,
                     CancellationToken.None).ConfigureAwait(false))
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:absence-parent-flushed");
 
             if (primitives.FlushParent().IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:absence-parent-flushed");
@@ -1435,9 +1355,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     requireCanonicalAfter,
                     CancellationToken.None).ConfigureAwait(false))
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:absence-proved");
@@ -1445,7 +1363,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             Emit("file:absence-proved");
 
             return Result.Success();
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -1453,11 +1370,8 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 or OperationCanceledException
                 or InjectedStepFailureException)
         {
-
             return RecoveryRequired();
-
         }
-
     }
 
     internal async Task<Result> ResumeWorkingPublicationAsync(
@@ -1469,7 +1383,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         ReadOnlyMemory<byte> expectedNextBytes,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -1479,9 +1392,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (committed.IsFailure)
         {
-
             return Result.Failure(committed.Error);
-
         }
 
         location = committed.Value;
@@ -1492,16 +1403,13 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (opened.IsFailure)
         {
-
             return Result.Failure(opened.Error);
-
         }
 
         using IGrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
 
         try
         {
-
             Result<GrimoireOfflineTransitionJournalEvidence> inspected = await InspectEvidenceAsync(
                     primitives,
                     location,
@@ -1510,9 +1418,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (inspected.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
@@ -1530,9 +1436,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     evidence.Working.Metadata.Identity)
                 || !evidence.Working.Bytes.Span.SequenceEqual(expectedNextBytes.Span))
             {
-
                 return RecoveryRequired();
-
             }
 
             Result<GrimoireOfflineTransitionExchangeResult> exchanged =
@@ -1543,9 +1447,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (exchanged.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:atomic-replace");
@@ -1553,9 +1455,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             if (exchanged.Value.Retention is GrimoireOfflineTransitionPreviousRetention.Working
                 && primitives.MoveNoReplace(location.WorkingLeaf, location.PreviousLeaf).IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:previous-retained");
@@ -1565,9 +1465,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (enumerated.IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             using GrimoireOfflineTransitionJournalChildEnumeration children = enumerated.Value;
@@ -1582,18 +1480,14 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 || !FileHandleIdentity.IdentitiesMatch(expectedNext.Identity, canonical.Metadata.Identity)
                 || !FileHandleIdentity.IdentitiesMatch(expectedCurrent.Identity, previous.Metadata.Identity))
             {
-
                 return RecoveryRequired();
-
             }
 
             Before("file:permissions-verified");
 
             if (primitives.ApplyOwnerOnlyAndVerify(canonical, location.JournalLeaf).IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:permissions-verified");
@@ -1602,15 +1496,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (primitives.FlushParent().IsFailure)
             {
-
                 return RecoveryRequired();
-
             }
 
             Emit("file:parent-flushed");
 
             return Result.Success();
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -1618,11 +1509,8 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 or OperationCanceledException
                 or InjectedStepFailureException)
         {
-
             return RecoveryRequired();
-
         }
-
     }
 
     private async Task<Result<GrimoireOfflineTransitionJournalEvidence>> InspectEvidenceAsync(
@@ -1630,7 +1518,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         GrimoireOfflineTransitionJournalLocation location,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         Result<GrimoireOfflineTransitionJournalChildEnumeration> enumerated =
@@ -1638,9 +1525,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (enumerated.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalEvidence>.Failure(enumerated.Error);
-
         }
 
         using GrimoireOfflineTransitionJournalChildEnumeration children = enumerated.Value;
@@ -1649,9 +1534,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (names.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalEvidence>.Failure(names.Error);
-
         }
 
         GrimoireOfflineTransitionJournalFileRead? canonical = null;
@@ -1664,11 +1547,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         try
         {
-
             foreach ((string leaf, GrimoireOfflineTransitionJournalOpenedFile child) in
                      children.ExactChildren)
             {
-
                 Result<GrimoireOfflineTransitionJournalFileRead> read = await ReadAsync(
                         primitives,
                         child,
@@ -1678,36 +1559,25 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
                 if (read.IsFailure)
                 {
-
                     return Result<GrimoireOfflineTransitionJournalEvidence>.Failure(read.Error);
-
                 }
 
                 if (Ordinal.Equals(leaf, location.JournalLeaf))
                 {
-
                     canonical = read.Value;
-
                 }
                 else if (Ordinal.Equals(leaf, location.WorkingLeaf))
                 {
-
                     working = read.Value;
-
                 }
                 else if (Ordinal.Equals(leaf, location.PreviousLeaf))
                 {
-
                     previous = read.Value;
-
                 }
                 else if (Ordinal.Equals(leaf, location.RetiringLeaf))
                 {
-
                     retiring = read.Value;
-
                 }
-
             }
 
             GrimoireOfflineTransitionJournalEvidence evidence = new(
@@ -1725,11 +1595,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             retiring = null;
 
             return evidence;
-
         }
         finally
         {
-
             canonical?.Dispose();
 
             working?.Dispose();
@@ -1737,9 +1605,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             previous?.Dispose();
 
             retiring?.Dispose();
-
         }
-
     }
 
     private async Task<Result> RetireAsync(
@@ -1750,16 +1616,13 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         ReadOnlyMemory<byte> expectedBytes,
         CancellationToken cancellationToken)
     {
-
         Before("file:previous-retiring");
 
         Result moved = primitives.MoveNoReplace(sourceLeaf, location.RetiringLeaf);
 
         if (moved.IsFailure)
         {
-
             return RecoveryRequired();
-
         }
 
         Emit("file:previous-retiring");
@@ -1769,9 +1632,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (enumerated.IsFailure)
         {
-
             return RecoveryRequired();
-
         }
 
         using GrimoireOfflineTransitionJournalChildEnumeration children = enumerated.Value;
@@ -1781,9 +1642,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 out GrimoireOfflineTransitionJournalOpenedFile? retiring)
             || children.ExactChildren.ContainsKey(sourceLeaf))
         {
-
             return RecoveryRequired();
-
         }
 
         Result<GrimoireOfflineTransitionJournalFileRead> readResult = await ReadAsync(
@@ -1795,9 +1654,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (readResult.IsFailure)
         {
-
             return RecoveryRequired();
-
         }
 
         using GrimoireOfflineTransitionJournalFileRead read = readResult.Value;
@@ -1805,9 +1662,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         if (!FileHandleIdentity.IdentitiesMatch(expected.Identity, read.Metadata.Identity)
             || !read.Bytes.Span.SequenceEqual(expectedBytes.Span))
         {
-
             return RecoveryRequired();
-
         }
 
         Before("file:previous-retiring-verified");
@@ -1816,9 +1671,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (primitives.FlushParent().IsFailure)
         {
-
             return RecoveryRequired();
-
         }
 
         Before("file:previous-unlinked");
@@ -1827,9 +1680,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (unlinked.IsFailure)
         {
-
             return RecoveryRequired();
-
         }
 
         Emit("file:previous-unlinked");
@@ -1842,15 +1693,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (primitives.FlushParent().IsFailure)
         {
-
             return RecoveryRequired();
-
         }
 
         Emit("file:previous-delete-parent-flushed");
 
         return Result.Success();
-
     }
 
     private static async Task<Result<GrimoireOfflineTransitionJournalFileRead>>
@@ -1859,15 +1707,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             GrimoireOfflineTransitionJournalLocation location,
             CancellationToken cancellationToken)
     {
-
         Result<GrimoireOfflineTransitionJournalChildEnumeration> enumerated =
             primitives.EnumerateExactChildren(Leaves(location));
 
         if (enumerated.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalFileRead>.Failure(enumerated.Error);
-
         }
 
         using GrimoireOfflineTransitionJournalChildEnumeration children = enumerated.Value;
@@ -1876,9 +1721,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 location.JournalLeaf,
                 out GrimoireOfflineTransitionJournalOpenedFile? child))
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead>();
-
         }
 
         return await ReadAsync(
@@ -1887,7 +1730,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 location.JournalLeaf,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private static async Task<Result<GrimoireOfflineTransitionJournalFileRead>> ReadAsync(
@@ -1896,15 +1738,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         string relativeLeaf,
         CancellationToken cancellationToken)
     {
-
         if (child.Metadata.Kind is not FileSystemObjectKind.RegularFile
             || child.Metadata.HardLinkCount != 1
             || !GrimoireOfflineTransitionJournalFilePrimitives
                 .VerifyOwnerControlledOpenedFileHandle(child))
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead>();
-
         }
 
         SecureFileReadResult read = await SecureFileReader.ReadBytesAsync(
@@ -1921,11 +1760,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             || !GrimoireOfflineTransitionJournalFilePrimitives
                 .VerifyOwnerControlledOpenedFileHandle(child))
         {
-
             read.Dispose();
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead>();
-
         }
 
         Result<GrimoireOfflineTransitionJournalChildEnumeration> namedResult =
@@ -1933,11 +1770,9 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (namedResult.IsFailure)
         {
-
             read.Dispose();
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead>();
-
         }
 
         using GrimoireOfflineTransitionJournalChildEnumeration named = namedResult.Value;
@@ -1954,15 +1789,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             || !GrimoireOfflineTransitionJournalFilePrimitives
                 .VerifyOwnerControlledOpenedFileHandle(reopened))
         {
-
             read.Dispose();
 
             return RecoveryRequired<GrimoireOfflineTransitionJournalFileRead>();
-
         }
 
         return new GrimoireOfflineTransitionJournalFileRead(read);
-
     }
 
     private async Task<bool> ProveResidueAbsentAsync(
@@ -1971,7 +1803,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         bool requireCanonical,
         CancellationToken cancellationToken)
     {
-
         Result<GrimoireOfflineTransitionJournalEvidence> inspected = await InspectEvidenceAsync(
                 primitives,
                 location,
@@ -1980,9 +1811,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (inspected.IsFailure)
         {
-
             return false;
-
         }
 
         using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
@@ -1991,7 +1820,6 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             && evidence.Working is null
             && evidence.Previous is null
             && evidence.Retiring is null;
-
     }
 
     private async Task<bool> ProveAllAbsentAsync(
@@ -2011,29 +1839,22 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         GrimoireOfflineTransitionJournalOpenedFile working,
         Error original)
     {
-
         Result removed = primitives.CompareUnlink(working, location.WorkingLeaf);
 
         if (removed.IsFailure || primitives.FlushParent().IsFailure)
         {
-
             return RecoveryRequired();
-
         }
 
         return Result.Failure(original);
-
     }
 
     private Result<GrimoireOfflineTransitionJournalLocation> ValidateLocationCommitment(
         GrimoireOfflineTransitionJournalLocation location)
     {
-
         if (location is null || string.IsNullOrWhiteSpace(location.GuardedDirectory))
         {
-
             return Unavailable<GrimoireOfflineTransitionJournalLocation>();
-
         }
 
         Result<GrimoireOfflineTransitionJournalLocation> reconstructed =
@@ -2041,10 +1862,8 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (reconstructed.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionJournalLocation>.Failure(
                 reconstructed.Error);
-
         }
 
         GrimoireOfflineTransitionJournalLocation expected = reconstructed.Value;
@@ -2105,20 +1924,16 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         return matches
             ? expected
             : RecoveryRequired<GrimoireOfflineTransitionJournalLocation>();
-
     }
 
     private Result<IGrimoireOfflineTransitionJournalFilePrimitives> Open(
         GrimoireOfflineTransitionJournalLocation location)
     {
-
         if (location is null
             || !location.GuardedParentPhysicalIdentityDigest.IsValid
             || !location.JournalLocationDigest.IsValid)
         {
-
             return Unavailable<IGrimoireOfflineTransitionJournalFilePrimitives>();
-
         }
 
         Result<IGrimoireOfflineTransitionJournalFilePrimitives> opened =
@@ -2126,9 +1941,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (opened.IsFailure)
         {
-
             return opened;
-
         }
 
         CovenantDigest current = BackupRestoreJournalAuthenticator.PhysicalIdentity(
@@ -2137,28 +1950,22 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
         if (current != location.GuardedParentPhysicalIdentityDigest)
         {
-
             opened.Value.Dispose();
 
             return RecoveryRequired<IGrimoireOfflineTransitionJournalFilePrimitives>();
-
         }
 
         return opened;
-
     }
 
     private static Result<IGrimoireOfflineTransitionJournalFilePrimitives> OpenProductionPrimitives(
         GrimoireOfflineTransitionJournalLocation location)
     {
-
         string? parent = Path.GetDirectoryName(location.JournalPath);
 
         if (string.IsNullOrEmpty(parent))
         {
-
             return Unavailable<IGrimoireOfflineTransitionJournalFilePrimitives>();
-
         }
 
         Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
@@ -2169,24 +1976,19 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         return opened.IsSuccess
             ? Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(opened.Value)
             : Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(opened.Error);
-
     }
 
     private static Result ValidateNames(
         GrimoireOfflineTransitionJournalLocation location,
         IReadOnlyList<string> names)
     {
-
         string[] exact = Leaves(location);
 
         foreach (string name in names)
         {
-
             if (exact.Contains(name, StringComparer.Ordinal))
             {
-
                 continue;
-
             }
 
             bool aliasesCandidate = exact.Contains(name, StringComparer.OrdinalIgnoreCase);
@@ -2201,15 +2003,11 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
             if (aliasesCandidate || legacy || journalPrefixed)
             {
-
                 return RecoveryRequired();
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     private static string[] Leaves(GrimoireOfflineTransitionJournalLocation location) =>
@@ -2228,14 +2026,10 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
 
     private void Before(string step)
     {
-
         if (_failBeforeStep?.Invoke(step) is true)
         {
-
             throw new InjectedStepFailureException();
-
         }
-
     }
 
     private void Emit(string step) => _afterStep?.Invoke(step);
@@ -2265,5 +2059,4 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
         "Transition journal filesystem evidence requires recovery."));
 
     private sealed class InjectedStepFailureException : Exception;
-
 }

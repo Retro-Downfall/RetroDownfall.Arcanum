@@ -32,7 +32,9 @@ internal interface IHostProcessToolsRecoveryStartupClassifier
 /// The marker is captured before the database opens. After recovery-only unlock, the authenticated
 /// journal installation identity is matched to the durable authority singleton before the captured
 /// marker and row are joined. The decision is published only into a fresh provisional policy; normal
-/// bootstrap remains the sole publisher of the process-wide and static host-tools decisions.
+/// bootstrap remains the sole publisher of the process-wide and static host-tools decisions. An
+/// identity read that meets an I/O failure or a busy or locked catalog fails with
+/// <c>Covenant.Unavailable</c>; every other failure is the manual-recovery refusal.
 /// </remarks>
 internal sealed class HostProcessToolsRecoveryStartupClassifier(
     IHostProcessToolsMarkerStore markers,
@@ -97,6 +99,13 @@ internal sealed class HostProcessToolsRecoveryStartupClassifier(
         {
             throw;
         }
+        catch (Exception exception) when (GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
+        {
+            // A catalog that cannot be read right now is an outage, not an identity that disagrees:
+            // the start is retryable. The terminal finisher answers the same read on the same
+            // recovery connection the same way.
+            return Result<IHostProcessToolsRuntimePolicy>.Failure(Outage());
+        }
         catch (Exception)
         {
             return Result<IHostProcessToolsRuntimePolicy>.Failure(Refusal().Error);
@@ -125,4 +134,9 @@ internal sealed class HostProcessToolsRecoveryStartupClassifier(
     }
 
     private static Result Refusal() => CovenantRecoveryAuthorityBootstrapper.Refusal();
+
+    private static Error Outage() =>
+        new(
+            ErrorCodes.Covenant.Unavailable,
+            "The catalog's installation identity could not be read right now.");
 }

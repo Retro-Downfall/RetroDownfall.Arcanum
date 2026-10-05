@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Serialization;
@@ -9,21 +8,9 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Tower;
 
-public sealed partial class PromptRenderer
+public sealed partial class PromptRenderer(IManaMeter manaMeter)
 {
-
-    private readonly IManaMeter _manaMeter;
-
-    private readonly IOptionsMonitor<ArcanumSettings> _settings;
-
-    public PromptRenderer(IManaMeter manaMeter, IOptionsMonitor<ArcanumSettings> settings)
-    {
-
-        _manaMeter = manaMeter;
-
-        _settings = settings;
-
-    }
+    private readonly IManaMeter _manaMeter = manaMeter;
 
     public Result<PromptRenderResultDto> Render(
         Prompt prompt,
@@ -195,5 +182,4 @@ public sealed partial class PromptRenderer
 
     [GeneratedRegex(@"\{\{(\w+)\}\}")]
     private static partial Regex PlaceholderRegex();
-
 }

@@ -1,18 +1,34 @@
+using System.Data;
+
+using Microsoft.Data.Sqlite;
+
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Tests.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Security;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -335,6 +351,114 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             LongRunningOperationRecoveryAdmission.Classify(launch, evidence).Kind);
     }
 
+    /// <summary>
+    /// A locked keychain while the production finisher authenticates the journal is an outage, and
+    /// the start is retryable once it clears. Reporting it as manual recovery would send an operator
+    /// to repair an installation that has nothing wrong with it.
+    /// </summary>
+    [Fact]
+    public async Task Credential_outage_during_terminal_suffix_is_reported_unavailable_not_manual_recovery()
+    {
+        using Harness harness = Create("terminal-outage");
+
+        await using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+
+        GrimoireOfflineTransitionTerminalSuffixFinisher finisher = new(
+            new GrimoireOfflineTransitionLifecycleStore(
+                new UnavailableJournalStore(),
+                GrimoireOfflineTransitionHandlerRegistry.Production),
+            services.GetRequiredService<IServiceScopeFactory>(),
+            CovenantOperationGateFixture.CreateGate(),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        GrimoireOfflineTransitionStartupRecovery recovery = new(
+            harness.Unlock,
+            harness.Unlock,
+            finisher,
+            harness.Unlock,
+            harness.Unlock);
+
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await recovery
+            .RecoverBeforeBootstrapAsync(
+                harness.Lock,
+                harness.Root,
+                harness.DatabasePath,
+                InstallationResetNestedTransitionEvidenceOutcome.NestedBound,
+                harness.Journal,
+                Token);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+        Assert.Equal(["marker", "unlock", "close"], harness.Steps);
+    }
+
+    [Fact]
+    public async Task An_unavailable_terminal_finisher_answer_is_not_collapsed_into_manual_recovery()
+    {
+        using Harness harness = Create("terminal-unavailable", failAt: "terminal-unavailable");
+
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
+            .RecoverBeforeBootstrapAsync(
+                harness.Lock,
+                harness.Root,
+                harness.DatabasePath,
+                InstallationResetNestedTransitionEvidenceOutcome.NestedBound,
+                harness.Journal,
+                Token);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+        Assert.Equal(["marker", "unlock", "terminal", "close"], harness.Steps);
+    }
+
+    /// <summary>
+    /// The host-tools arm, driven through the production classifier. A recovery connection whose
+    /// installation-identity read meets SQLITE_BUSY is an outage, as the terminal finisher already
+    /// reports the same read on the same connection; it is not durable evidence that disagrees.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_catalog_during_host_tools_classification_is_reported_unavailable_not_manual_recovery()
+    {
+        using Harness harness = Create("host-tools-outage");
+
+        await using ExclusivelyLockedCatalog locked = await ExclusivelyLockedCatalog.CreateAsync(
+            harness.Journal.InstallationId,
+            Token);
+
+        GrimoireOfflineTransitionStartupRecovery recovery = new(
+            new LockedCatalogUnlock(locked.RecoveryConnection),
+            new HostProcessToolsRecoveryStartupClassifier(
+                new FakeHostProcessToolsMarkerStore(),
+                new FakeHostProcessToolsEnvironmentProbe { EscapeHatchOptIn = false },
+                new HostProcessToolsMarkerPairJoiner()),
+            harness.Unlock,
+            harness.Unlock,
+            harness.Unlock);
+
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await recovery
+            .RecoverBeforeBootstrapAsync(
+                harness.Lock,
+                harness.Root,
+                harness.DatabasePath,
+                InstallationResetNestedTransitionEvidenceOutcome.NestedBound,
+                harness.Journal,
+                Token);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+        // The nonterminal answer came back, then the production classifier refused; nothing loaded
+        // authority or dispatched, and the probe was closed on the way out.
+        Assert.Equal(["terminal"], harness.Steps);
+
+        Assert.NotEqual(ConnectionState.Open, locked.RecoveryConnection.State);
+    }
+
     private static void AssertRefused(Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered)
     {
         Assert.True(recovered.IsFailure);
@@ -397,6 +521,65 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             SlotEpoch: 1,
             Revision: 3,
             digest);
+    }
+
+    /// <summary>A recovery-only unlock that hands out one already-open connection.</summary>
+    private sealed class LockedCatalogUnlock(SqliteConnection connection) : IGrimoireRecoveryOnlyUnlock
+    {
+        public Task<Result<GrimoireRecoveryUnlockedCatalog>> OpenExistingAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            string guardedDirectory,
+            string databasePath,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<GrimoireRecoveryUnlockedCatalog>.Success(
+                new GrimoireRecoveryUnlockedCatalog(connection)));
+    }
+
+    /// <summary>A journal store whose credential store is locked: every recovery read is an outage.</summary>
+    private sealed class UnavailableJournalStore : IGrimoireOfflineTransitionJournalStore
+    {
+        public Task<Result<GrimoireOfflineTransitionJournalPublication>> BeginAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            string guardedDirectory,
+            Guid installationId,
+            Guid operationId,
+            GrimoireOfflineTransitionKind kind,
+            byte payloadVersion,
+            ReadOnlyMemory<byte> payloadBytes,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Startup recovery never begins a transition.");
+
+        public Task<Result<GrimoireOfflineTransitionJournalPublication>> BeginBoundAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            string guardedDirectory,
+            Guid installationId,
+            Guid operationId,
+            GrimoireOfflineTransitionKind kind,
+            byte payloadVersion,
+            GrimoireOfflineTransitionJournalPayloadFactory payloadFactory,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Startup recovery never begins a transition.");
+
+        public Task<Result<GrimoireOfflineTransitionJournalPublication>> AdvanceAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            GrimoireOfflineTransitionJournalPublication current,
+            ReadOnlyMemory<byte> payloadBytes,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("An unauthenticated journal is never advanced.");
+
+        public Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            string guardedDirectory,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(new Error(
+                ErrorCodes.Covenant.Unavailable,
+                "The transition journal anchor credential is unavailable.")));
+
+        public Task<Result> RetireAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            GrimoireOfflineTransitionJournalPublication terminal,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("An unauthenticated journal is never retired.");
     }
 
     private sealed record Harness(

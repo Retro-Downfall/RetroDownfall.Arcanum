@@ -513,21 +513,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 return Unavailable<GrimoireOfflineTransitionExchangeResult>();
             }
 
-            // Every other Windows mutation (OpenWindowsChild, RenameWindowsHandle, CompareUnlink's
-            // FileDispositionInfoEx) is anchored to the retained no-follow parent handle and cannot be
-            // redirected by an ancestor-directory reparse-point swap. ReplaceFileW is not: it re-resolves
-            // every operand from the path string captured at Open(), following reparse points along the
-            // way. Two handle-relative renames land the same publish -> journal, journal -> previous
-            // exchange ReplaceFileW's backup semantics produced, without ever leaving the retained handle.
-            bool movedJournalToPrevious = RenameWindowsHandle(journalLeaf, previousLeaf);
-
-            bool movedWorkingToJournal = movedJournalToPrevious
-                && RenameWindowsHandle(workingLeaf, journalLeaf);
-
-            return movedWorkingToJournal && ValidateParent()
-                ? new GrimoireOfflineTransitionExchangeResult(
-                    GrimoireOfflineTransitionPreviousRetention.Previous)
-                : Unavailable<GrimoireOfflineTransitionExchangeResult>();
+            return ExchangeByNoReplaceRenames(this, journalLeaf, workingLeaf, previousLeaf);
         }
         catch (Exception exception) when (
             exception is EntryPointNotFoundException
@@ -537,6 +523,48 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         {
             return Unavailable<GrimoireOfflineTransitionExchangeResult>();
         }
+    }
+
+    /// <summary>
+    /// The Windows exchange: two no-replace renames through the retained parent capability.
+    /// </summary>
+    /// <remarks>
+    /// Every other Windows mutation (OpenWindowsChild, RenameWindowsHandle, CompareUnlink's
+    /// FileDispositionInfoEx) is anchored to the retained no-follow parent handle and cannot be
+    /// redirected by an ancestor-directory reparse-point swap. ReplaceFileW is not: it re-resolves
+    /// every operand from the path string captured at Open(), following reparse points along the
+    /// way, so neither it nor <c>File.Replace</c> is used. Two handle-relative renames land the same
+    /// publish -> journal, journal -> previous exchange ReplaceFileW's backup semantics produced,
+    /// without ever leaving the retained handle. They are not one atomic step: when the second fails,
+    /// the first is undone with a third no-replace rename before returning, so a live process never
+    /// leaves the canonical name empty. <see cref="ErrorCodes.Covenant.Unavailable"/> then means the
+    /// canonical file is back and the working file is still unpublished. When the undo fails too the
+    /// result is <see cref="ErrorCodes.Data.RecoveryRequired"/> and the caller must keep the working
+    /// file, because recovery restores the retained predecessor and may still adopt it; a crash between
+    /// the renames leaves the same shape.
+    /// </remarks>
+    internal static Result<GrimoireOfflineTransitionExchangeResult> ExchangeByNoReplaceRenames(
+        IGrimoireOfflineTransitionJournalFilePrimitives primitives,
+        string journalLeaf,
+        string workingLeaf,
+        string previousLeaf)
+    {
+        ArgumentNullException.ThrowIfNull(primitives);
+
+        if (primitives.MoveNoReplace(journalLeaf, previousLeaf).IsFailure)
+        {
+            return Unavailable<GrimoireOfflineTransitionExchangeResult>();
+        }
+
+        if (primitives.MoveNoReplace(workingLeaf, journalLeaf).IsSuccess)
+        {
+            return new GrimoireOfflineTransitionExchangeResult(
+                GrimoireOfflineTransitionPreviousRetention.Previous);
+        }
+
+        return primitives.MoveNoReplace(previousLeaf, journalLeaf).IsSuccess
+            ? Unavailable<GrimoireOfflineTransitionExchangeResult>()
+            : RecoveryRequired<GrimoireOfflineTransitionExchangeResult>();
     }
 
     public Result MoveNoReplace(string sourceLeaf, string destinationLeaf)

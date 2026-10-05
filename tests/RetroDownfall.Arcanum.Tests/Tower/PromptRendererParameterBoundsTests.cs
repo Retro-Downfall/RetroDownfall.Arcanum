@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Tests.Tower;
 
 public sealed class PromptRendererParameterBoundsTests
 {
-
     private static readonly string NameSchema = """
         {
           "type": "object",
@@ -30,9 +29,7 @@ public sealed class PromptRendererParameterBoundsTests
         int maxParameterValueChars = ArcanumSettingClamps.MaxParameterValueChars(
             ArcanumRuntimeDefaults.Prompts.MaxParameterValueChars);
 
-        PromptRenderer renderer = PromptRendererTestSupport.CreateRenderer(
-            new ZeroTokenCounter(),
-            new ArcanumSettings());
+        PromptRenderer renderer = PromptRendererTestSupport.CreateRenderer(new ZeroTokenCounter());
 
         Result<PromptRenderResultDto> result = renderer.Render(
             prompt,
@@ -44,15 +41,11 @@ public sealed class PromptRendererParameterBoundsTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Prompt.ParameterValueTooLong", result.Error.Code);
-
     }
 
     private sealed class ZeroTokenCounter : IManaMeter
     {
-
         public int CountTokens(string text) => 0;
-
     }
-
 }
 

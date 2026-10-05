@@ -135,6 +135,12 @@ internal sealed class RecordingRecoveryDispatchSeam(
 
         Assert.Equal(ConnectionState.Open, recoveryConnection.State);
 
+        if (failAt == "terminal-unavailable")
+        {
+            return Task.FromResult(Result<GrimoireOfflineTransitionTerminalSuffixOutcome>.Failure(
+                new Error(ErrorCodes.Covenant.Unavailable, "Recording seam credential outage.")));
+        }
+
         return Task.FromResult(
             failAt == "terminal"
                 ? Result<GrimoireOfflineTransitionTerminalSuffixOutcome>.Failure(Refusal)
