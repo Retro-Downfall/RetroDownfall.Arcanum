@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </remarks>
 public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
 {
-
     private const string AuthenticatorPath =
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournalAuthenticator.cs";
 
@@ -71,6 +70,12 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         // Only provider-perplexity-api-key.
         "src/RetroDownfall.Arcanum.Infrastructure/Security/WebResearchCredentialStore.cs",
 
+        // The single read/save/delete policy the three stores above delegate to. It deletes only the
+        // one account it was constructed with, and the only constructors are those three stores
+        // (pinned by The_mirrored_credential_helper_is_only_constructed_by_the_stores_with_fixed_accounts),
+        // so it is never handed a restore-journal account name.
+        MirroredCredentialHelper,
+
         // The one path that may remove the three restore-journal accounts, and the only entry in this
         // inventory allowed to name them. It removes nothing else, it removes them only in the anchor,
         // journal-key, installation-identity order, and it removes each one only when the account's
@@ -87,6 +92,9 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         // removal, and without a proof it deletes nothing at all.
         FullResetTransitionCredentialRemover,
     ];
+
+    private const string MirroredCredentialHelper =
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/MirroredOsCredential.cs";
 
     /// <summary>
     /// The single declared exception to the rule below, named once so both rules refer to the same file.
@@ -105,7 +113,6 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
     [Fact]
     public void The_authenticator_is_the_only_production_caller_that_takes_a_journal_key()
     {
-
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
@@ -124,13 +131,11 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
             + "which spends it on one bounded AES-GCM operation and zeroes the buffer in a finally. "
             + "Route these through it: "
             + string.Join(", ", offenders));
-
     }
 
     [Fact]
     public void The_key_provider_is_the_only_production_minter_of_a_journal_key_lease()
     {
-
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
@@ -145,13 +150,11 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
             "A restore journal key lease is minted only from the namespaced credential account, after "
             + "the stored material has been proven canonical: "
             + string.Join(", ", offenders));
-
     }
 
     [Fact]
     public void Journal_credential_accounts_are_spelled_only_by_the_credential_identity()
     {
-
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
@@ -167,7 +170,6 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
             + "refuses any suffix that is not a canonical profile-namespace digest. A hand-spelled "
             + "name would be one that skipped that check: "
             + string.Join(", ", offenders));
-
     }
 
     /// <summary>
@@ -184,7 +186,6 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
     [Fact]
     public void Credential_deletion_stays_inside_its_known_inventory()
     {
-
         List<string> offenders = CredentialDeletionOffenders(
             ProductionSourceInventory.Sources());
 
@@ -237,13 +238,45 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         Assert.True(transitionRemover.Names("before.Value != projectedValueDigest"));
 
         Assert.False(transitionRemover.Names("ArcanumCredentialIdentity.BackupRestoreJournal"));
+    }
 
+    /// <summary>
+    /// What makes the mirrored-credential helper's deletion site safe to list as a decider: it deletes
+    /// whichever account it was constructed with, so the set of things that construct it is the set of
+    /// accounts it can ever remove.
+    /// </summary>
+    [Fact]
+    public void The_mirrored_credential_helper_is_only_constructed_by_the_stores_with_fixed_accounts()
+    {
+        string[] constructors =
+        [
+            .. ProductionSourceInventory.Sources()
+                .Where(static source => source.Names("new MirroredOsCredential("))
+                .Select(static source => source.RelativePath)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        string[] expected =
+        [
+            "src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs",
+
+            "src/RetroDownfall.Arcanum.Infrastructure/Security/ProviderCredentialStore.cs",
+
+            "src/RetroDownfall.Arcanum.Infrastructure/Security/WebResearchCredentialStore.cs",
+        ];
+
+        Assert.Equal(expected, constructors);
+
+        // None of the three can name a restore-journal account, which is what the inventory above
+        // already requires of every decider; this is the same fact stated for the helper's callers.
+        Assert.All(
+            ProductionSourceInventory.Sources().Where(source => expected.Any(source.IsExactOwner)),
+            static source => Assert.False(source.Names("ArcanumCredentialIdentity.BackupRestoreJournal")));
     }
 
     [Fact]
     public void Credential_deletion_inventory_rejects_duplicate_basenames_outside_owner_directories()
     {
-
         const string wrongBackend =
             "src/Adversarial/Security/IOsCredentialStore.cs";
 
@@ -266,7 +299,6 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         Assert.Equal(
             [wrongBackend, wrongDecider],
             CredentialDeletionOffenders(sources));
-
     }
 
     private static List<string> CredentialDeletionOffenders(
@@ -283,5 +315,4 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
                     || source.Names("_osStore.Delete(")))
             .Select(static source => source.RelativePath),
     ];
-
 }
