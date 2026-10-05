@@ -56,11 +56,16 @@ public enum CovenantSearchMatchClass : byte
 /// built entirely from quoted literals joined by explicit <c>AND</c>: no <c>OR</c>, <c>NEAR</c>,
 /// column filter, unary operator, or caller-supplied wildcard can survive compilation, because the
 /// compiler emits the operators rather than passing the caller's through.
+///
+/// <para><see cref="LikePatterns"/> is the fallback's per-term prefilter and may admit every candidate,
+/// so it says nothing about whether a term begins a key. <see cref="KeyPrefixPattern"/> is the separate,
+/// exact starts-with pattern the key-prefix match class compares a key against.</para>
 /// </remarks>
 public sealed record CovenantCompiledSearchTerms(
     string MatchExpression,
     ImmutableArray<string> NormalizedTerms,
-    ImmutableArray<string> LikePatterns)
+    ImmutableArray<string> LikePatterns,
+    string KeyPrefixPattern)
 {
     /// <summary>
     /// The escape character the fallback's <c>LIKE ... ESCAPE</c> clause declares.

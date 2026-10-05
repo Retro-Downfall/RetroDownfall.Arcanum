@@ -38,15 +38,20 @@ internal static class CovenantSearchHealthRule
     /// </summary>
     /// <remarks>
     /// <para>Order matters. An unavailable accelerator cannot be waited out. A synchronized one asks for
-    /// nothing, even while a full rebuild is recorded as owed: a fresh installation and a Covenant reset
-    /// both record that debt, and the outbox then adopts their empty projection and keeps it current.</para>
+    /// nothing, whatever debt is still recorded: a fresh installation and a Covenant reset both record a
+    /// full rebuild as owed, and the outbox then adopts their empty projection, keeps it current, and
+    /// clears the debt in the pass that publishes a tuple equal to the canonical sequence. A synchronized
+    /// accelerator is answering every query, so a rebuild would repair nothing, and that holds as well for
+    /// the debt an installation adopted by an earlier build still carries beside a current tuple until its
+    /// next pass clears it.</para>
     ///
     /// <para>Where search is not synchronized, a published applied tuple for this dataset means the outbox
-    /// continues from it, so the answer is to wait whatever debt the installation still carries. That debt
-    /// describes the empty projection the first pass adopted, not the delta waiting behind it. Without a
-    /// published tuple for this dataset the recorded debt decides: a restore that kept its heads, and a
-    /// rebuild abandoned part way, are states the outbox will not adopt, so only a rebuild can complete
-    /// them.</para>
+    /// continues from it, so the answer is to wait whatever debt is still recorded: during an adoption
+    /// spread over several bounded passes that debt is the one recorded when the dataset was created or
+    /// reset, and it clears only when the last pass reaches the canonical sequence. It does not describe the
+    /// delta waiting behind the tuple. Without a published tuple for this dataset the recorded debt
+    /// decides: a restore that kept its heads, and a rebuild abandoned part way, are states the outbox will
+    /// not adopt, so only a rebuild can complete them.</para>
     /// </remarks>
     /// <param name="acceleratorUnavailable">Whether the accelerator tier is absent or failed.</param>
     /// <param name="synchronized">Whether the accelerator is answering queries by the rule search applies.</param>

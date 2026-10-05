@@ -394,7 +394,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
             "$exactKey",
             query.Terms.NormalizedTerms.Length == 1 ? query.Terms.NormalizedTerms[0] : NoExactKey);
 
-        Bind(command, "$prefixKey", TrimTrailingWildcard(query.Terms.LikePatterns[0]));
+        Bind(command, "$prefixKey", query.Terms.KeyPrefixPattern);
 
         if (query.After is { } after)
         {
@@ -407,14 +407,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
             Bind(command, "$afterVersion", after.VersionId.ToString("D"));
         }
     }
-
-    /// <summary>
-    /// Turns the term's contains-pattern into a starts-with pattern for the prefix match class.
-    /// </summary>
-    private static string TrimTrailingWildcard(string containsPattern) =>
-        containsPattern.Length >= 2
-            ? containsPattern[1..]
-            : containsPattern;
 
     /// <summary>
     /// Reads the generation facts and the persisted rebuild debt in one statement, so both belong to the

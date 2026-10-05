@@ -279,31 +279,7 @@ public sealed class CovenantIndexRebuildTests
 
         using CancellationTokenSource caller = new();
 
-        LongRunningOperation operation = new(
-            Guid.Parse("55555555-5555-4555-8555-555555555555"),
-            LongRunningOperationKinds.CovenantIndexRebuild,
-            LongRunningOperationState.Running,
-            LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
-            RootOperationId: null,
-            ParentOperationId: null,
-            SessionId: null,
-            RunId: null,
-            InferenceRunId: null,
-            BudgetReservationId: null,
-            IdempotencyClaimId: null,
-            DateTimeOffset.UnixEpoch,
-            StartedAt: null,
-            HeartbeatAt: null,
-            CompletedAt: null,
-            LeaseOwner: null,
-            LeaseExpiresAt: null,
-            AttemptCount: 1,
-            CheckpointVersion: 0,
-            CheckpointPayload: null,
-            CheckpointReference: null,
-            "rebuild",
-            TerminalErrorCode: null,
-            Revision: 1);
+        LongRunningOperation operation = RebuildOperation();
 
         Result<CovenantIndexRebuildProgress> advanced = await coordinator.AdvanceAsync(
             operation,
@@ -317,6 +293,120 @@ public sealed class CovenantIndexRebuildTests
         Assert.Equal(1, operations.Checkpoints);
 
         Assert.False(operations.LastToken.CanBeCanceled);
+    }
+
+    [Fact]
+    public async Task The_coordinator_completes_a_finished_rebuild_without_the_callers_token()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "global.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Body.",
+            Token);
+
+        CovenantIndexRebuildProgress verifying = await AdvanceAsync(fixture, null);
+
+        int guard = 0;
+
+        while (verifying.Phase != CovenantIndexRebuildPhase.Verifying && guard++ < 32)
+        {
+            verifying = await AdvanceAsync(fixture, verifying);
+        }
+
+        Assert.Equal(CovenantIndexRebuildPhase.Verifying, verifying.Phase);
+
+        LongRunningOperation operation = RebuildOperation(verifying);
+
+        TokenRecordingStore store = new(operation);
+
+        CheckpointRecordingCoordinator operations = new() { AllowsTerminalBookkeeping = true };
+
+        using CancellationTokenSource caller = new();
+
+        Result<CovenantIndexRebuildProgress> advanced = await new CovenantIndexRebuildCoordinator(
+                operations,
+                store,
+                CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token)),
+                new CovenantIndexRebuilder(new FixedCovenantConnectionSource(fixture.Connection)),
+                TimeProvider.System)
+            .AdvanceAsync(operation, "owner", caller.Token);
+
+        Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
+
+        Assert.Equal(CovenantIndexRebuildPhase.Completed, advanced.Value.Phase);
+
+        // The projection is published by the time the operation is closed, so closing it is bookkeeping
+        // for work that already happened: neither the read of the current revision nor the completion
+        // may carry a token the caller can cancel, or a shutdown here would leave a finished rebuild
+        // running forever.
+        Assert.Equal(1, operations.Completions);
+
+        Assert.False(operations.LastCompleteToken.CanBeCanceled);
+
+        Assert.Equal(1, store.Reads);
+
+        Assert.False(store.LastReadToken.CanBeCanceled);
+    }
+
+    [Fact]
+    public async Task The_coordinator_abandons_a_stale_rebuild_and_starts_its_replacement_without_the_callers_token()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "global.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Body.",
+            Token);
+
+        CovenantIndexRebuildProgress scanned = await AdvanceAsync(fixture, null);
+
+        // The dataset the rebuild captured is no longer the one in the database.
+        LongRunningOperation operation = RebuildOperation(scanned with { DatasetGeneration = Guid.NewGuid() });
+
+        TokenRecordingStore store = new(operation);
+
+        CheckpointRecordingCoordinator operations = new()
+        {
+            AllowsTerminalBookkeeping = true,
+            Replacement = operation with { Id = Guid.Parse("66666666-6666-4666-8666-666666666666") },
+        };
+
+        using CancellationTokenSource caller = new();
+
+        Result<CovenantIndexRebuildProgress> advanced = await new CovenantIndexRebuildCoordinator(
+                operations,
+                store,
+                CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token)),
+                new CovenantIndexRebuilder(new FixedCovenantConnectionSource(fixture.Connection)),
+                TimeProvider.System)
+            .AdvanceAsync(operation, "owner", caller.Token);
+
+        Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
+
+        Assert.Equal(CovenantIndexRebuildPhase.RestartRequired, advanced.Value.Phase);
+
+        // The stale operation is closed and its replacement started on tokens the caller cannot cancel:
+        // cancelling between the two would leave a rebuild owed with nothing running it.
+        Assert.Equal(1, store.Transitions);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, store.LastTransitionState);
+
+        Assert.False(store.LastReadToken.CanBeCanceled);
+
+        Assert.False(store.LastTransitionToken.CanBeCanceled);
+
+        Assert.Equal(1, operations.Starts);
+
+        Assert.False(operations.LastStartToken.CanBeCanceled);
     }
 
     [Fact]
@@ -384,7 +474,7 @@ public sealed class CovenantIndexRebuildTests
 
         CovenantIndexRebuildProgress stale = progress with { DatasetGeneration = Guid.NewGuid() };
 
-        CovenantIndexRebuildProgress restarted = await AdvanceAsync(fixture, stale, useStaleLease: true);
+        CovenantIndexRebuildProgress restarted = await AdvanceAsync(fixture, stale);
 
         Assert.Equal(CovenantIndexRebuildPhase.RestartRequired, restarted.Phase);
 
@@ -393,7 +483,7 @@ public sealed class CovenantIndexRebuildTests
 
         Assert.True(restarted.IsTerminal);
 
-        Assert.Equal(restarted, await AdvanceAsync(fixture, restarted, useStaleLease: true));
+        Assert.Equal(restarted, await AdvanceAsync(fixture, restarted));
     }
 
     [Fact]
@@ -455,10 +545,38 @@ public sealed class CovenantIndexRebuildTests
         CovenantIndexRebuildPhase phase) =>
         new(generation, epoch, target, 0, phase, null, target, 0, null, 0);
 
+    private static LongRunningOperation RebuildOperation(CovenantIndexRebuildProgress? checkpoint = null) =>
+        new(
+            Guid.Parse("55555555-5555-4555-8555-555555555555"),
+            LongRunningOperationKinds.CovenantIndexRebuild,
+            LongRunningOperationState.Running,
+            LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
+            RootOperationId: null,
+            ParentOperationId: null,
+            SessionId: null,
+            RunId: null,
+            InferenceRunId: null,
+            BudgetReservationId: null,
+            IdempotencyClaimId: null,
+            DateTimeOffset.UnixEpoch,
+            StartedAt: null,
+            HeartbeatAt: null,
+            CompletedAt: null,
+            LeaseOwner: null,
+            LeaseExpiresAt: null,
+            AttemptCount: 1,
+            CheckpointVersion: checkpoint is null ? 0 : CovenantIndexRebuildCheckpointV1.CurrentVersion,
+            CheckpointPayload: checkpoint is null
+                ? null
+                : CovenantRecoveryCheckpointCodec.Encode(CovenantIndexRebuildCoordinator.ToCheckpoint(checkpoint)),
+            CheckpointReference: null,
+            "rebuild",
+            TerminalErrorCode: null,
+            Revision: 1);
+
     private static async Task<CovenantIndexRebuildProgress> AdvanceAsync(
         CovenantCanonicalFixture fixture,
-        CovenantIndexRebuildProgress? progress,
-        bool useStaleLease = false)
+        CovenantIndexRebuildProgress? progress)
     {
         FakeCovenantAvailability availability = await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token);
 
@@ -471,8 +589,6 @@ public sealed class CovenantIndexRebuildTests
             .AdvanceBatchAsync(progress, lease, Token);
 
         Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
-
-        _ = useStaleLease;
 
         return advanced.Value;
     }
@@ -505,16 +621,43 @@ public sealed class CovenantIndexRebuildTests
 
     private sealed class CheckpointRecordingCoordinator : ILongRunningOperationCoordinator
     {
+        /// <summary>
+        /// Whether the rebuild is expected to reach its terminal bookkeeping. A mid-scan batch starts and
+        /// completes nothing, so by default either call fails the test.
+        /// </summary>
+        internal bool AllowsTerminalBookkeeping { get; init; }
+
+        internal LongRunningOperation? Replacement { get; init; }
+
         internal int Checkpoints { get; private set; }
 
+        internal int Completions { get; private set; }
+
+        internal int Starts { get; private set; }
+
         internal CancellationToken LastToken { get; private set; }
+
+        internal CancellationToken LastCompleteToken { get; private set; }
+
+        internal CancellationToken LastStartToken { get; private set; }
 
         public Task<LongRunningOperationLeaseResult> StartAsync(
             LongRunningOperationCreateRequest request,
             string ownerId,
             TimeSpan leaseDuration,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException("A mid-scan batch starts nothing.");
+            CancellationToken cancellationToken)
+        {
+            if (!AllowsTerminalBookkeeping || Replacement is null)
+            {
+                throw new NotSupportedException("A mid-scan batch starts nothing.");
+            }
+
+            Starts++;
+
+            LastStartToken = cancellationToken;
+
+            return Task.FromResult(new LongRunningOperationLeaseResult(true, Replacement));
+        }
 
         public Task<Result<LongRunningOperationRequestIdentityResult>> StartWithRequestIdentityAsync(
             LongRunningOperationCreateRequest request,
@@ -551,8 +694,19 @@ public sealed class CovenantIndexRebuildTests
             Guid operationId,
             string ownerId,
             long expectedRevision,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException("A mid-scan batch completes nothing.");
+            CancellationToken cancellationToken)
+        {
+            if (!AllowsTerminalBookkeeping)
+            {
+                throw new NotSupportedException("A mid-scan batch completes nothing.");
+            }
+
+            Completions++;
+
+            LastCompleteToken = cancellationToken;
+
+            return Task.FromResult(true);
+        }
 
         public Task<bool> FailAsync(
             Guid operationId,
@@ -561,5 +715,125 @@ public sealed class CovenantIndexRebuildTests
             string errorCode,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("A mid-scan batch fails nothing.");
+    }
+
+    /// <summary>
+    /// A store that answers the one operation it was given and records the token of every call the
+    /// coordinator's terminal bookkeeping makes; anything else it is never asked for.
+    /// </summary>
+    private sealed class TokenRecordingStore(LongRunningOperation operation) : ILongRunningOperationStore
+    {
+        internal int Reads { get; private set; }
+
+        internal int Transitions { get; private set; }
+
+        internal CancellationToken LastReadToken { get; private set; }
+
+        internal CancellationToken LastTransitionToken { get; private set; }
+
+        internal LongRunningOperationState LastTransitionState { get; private set; }
+
+        public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default)
+        {
+            Reads++;
+
+            LastReadToken = cancellationToken;
+
+            return Task.FromResult<LongRunningOperation?>(operation);
+        }
+
+        public Task<bool> TryTransitionAsync(
+            Guid operationId,
+            long expectedRevision,
+            string? ownerId,
+            LongRunningOperationState state,
+            DateTimeOffset utcNow,
+            string? terminalErrorCode = null,
+            CancellationToken cancellationToken = default)
+        {
+            Transitions++;
+
+            LastTransitionToken = cancellationToken;
+
+            LastTransitionState = state;
+
+            return Task.FromResult(true);
+        }
+
+        public Task<LongRunningOperation> CreateAsync(
+            LongRunningOperationCreateRequest request,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
+            LongRunningOperationCreateRequest request,
+            LongRunningOperationRequestIdentity identity,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+            LongRunningOperationCreateRequest request,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
+            Guid operationId,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<LongRunningOperationRequestIdentityMatch?> FindByRequestedOperationIdAsync(
+            Guid requestedOperationId,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
+            LongRunningOperationQuery query,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
+            DateTimeOffset utcNow,
+            int limit,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+            Guid operationId,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<bool> HeartbeatAsync(
+            Guid operationId,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<bool> SaveCheckpointAsync(
+            Guid operationId,
+            string ownerId,
+            int expectedCheckpointVersion,
+            int checkpointVersion,
+            byte[]? checkpointPayload,
+            string? checkpointReference,
+            string publicSummary,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<bool> RequestCancellationAsync(
+            Guid operationId,
+            long expectedRevision,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<bool> ResetForRetryAsync(
+            Guid operationId,
+            long expectedRevision,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
+            CancellationToken cancellationToken = default) => throw Unexpected();
+
+        private static NotSupportedException Unexpected() =>
+            new("The coordinator's terminal bookkeeping reads and transitions one operation and nothing else.");
     }
 }

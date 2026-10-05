@@ -90,7 +90,10 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryE
             replayed[index] = resolved.Value;
         }
 
-        if (replayed.All(static receipt => receipt is not null))
+        // A batch with no intents has nothing to replay, which is not the same as every intent being a
+        // replay: `All` is vacuously true over an empty array, and answering from it would skip the
+        // comparisons below for a batch that is stale and has simply been handed nothing to write.
+        if (replayed.Length > 0 && replayed.All(static receipt => receipt is not null))
         {
             return replayed.Select(static receipt => receipt!).ToList();
         }

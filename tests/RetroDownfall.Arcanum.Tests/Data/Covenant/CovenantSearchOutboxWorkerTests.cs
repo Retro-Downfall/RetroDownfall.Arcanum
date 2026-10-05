@@ -76,6 +76,60 @@ public sealed class CovenantSearchOutboxWorkerTests
     }
 
     [Fact]
+    public async Task A_projection_an_earlier_build_adopted_loses_its_stale_rebuild_debt_on_the_next_pass()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "global.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Body.",
+            Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.Equal((long)CovenantFtsRebuildState.Idle, await RebuildStateAsync(fixture));
+
+        // What a build from before the debt cleared on adoption left behind: a published tuple that is
+        // current at the canonical sequence, beside the full rebuild the installation recorded when it
+        // was created. Every operation that records that debt also forgets the applied tuple, so this
+        // pairing can only be a projection that was adopted and kept current.
+        await ExecuteAsync(fixture, "UPDATE covenant_state SET RebuildStateCode = 2 WHERE StateKey = 1;");
+
+        // Nothing is pending, so no delta will ever arrive to carry the correction. The pass itself must.
+        CovenantOutboxSyncOutcome outcome = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.False(outcome.RebuildRequired);
+
+        Assert.Equal(
+            await Scalar(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"),
+            outcome.AppliedSearchSequence);
+
+        Assert.Equal((long)CovenantFtsRebuildState.Idle, await RebuildStateAsync(fixture));
+    }
+
+    [Fact]
+    public async Task A_current_tuple_does_not_clear_a_rebuild_debt_while_a_rebuild_is_in_progress()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        await ExecuteAsync(
+            fixture,
+            "UPDATE covenant_state SET RebuildStateCode = 3, RebuildTargetSequence = 0, RebuildCursor = 0 WHERE StateKey = 1;");
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        // A rebuild clears itself by its own verification; the worker only ever clears the debt a fresh
+        // or reset installation recorded.
+        Assert.Equal((long)CovenantFtsRebuildState.Rebuilding, await RebuildStateAsync(fixture));
+    }
+
+    [Fact]
     public async Task A_rebuild_in_progress_keeps_its_state_when_the_worker_publishes_a_tuple()
     {
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
