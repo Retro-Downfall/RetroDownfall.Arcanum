@@ -595,6 +595,8 @@ public static class ServiceCollectionExtensions
                     IFullInstallationResetRemediationAttestationVerifier>(),
                 provider.GetRequiredService<ICampaignPathMarkerLifecycle>(),
                 provider.GetRequiredService<IHostToolsMarkerPairResetOsPort>(),
+                provider.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger<HostToolsMarkerPairResetCoordinator>(),
                 provider.GetRequiredService<IFullInstallationResetManagedFileReconciler>(),
                 canonicalDatabasePath: ArcanumPaths.GrimoireDatabaseFile));
 
