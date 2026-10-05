@@ -50,6 +50,10 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
 
     private const string InferenceRunSessionPredicate = "lower(replace(run.SessionId, '-', '')) = @id";
 
+    /// <summary>The three small session-keyed tables a Session delete clears by its normalized identity.</summary>
+    private static readonly string[] SessionKeyedTables =
+        ["attachment_memory_consultations", "saga_extraction_watermarks", "SessionContextPins"];
+
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -141,7 +145,7 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
 
         Assert.Equal(
             $"SEARCH {table} USING INDEX {index} (<expr>=?)",
-            await ExplainAsync($"DELETE FROM {table} WHERE {SessionKeyPredicate}"));
+            await ExplainAsync(SessionKeyedDelete(table)));
     }
 
     /// <summary>
@@ -172,12 +176,17 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     /// changed shape and stopped matching the index - the failure this whole suite exists to catch. The
     /// retention partials are not this change's to edit, so the tie between the two is a source scan
     /// rather than a shared constant.
+    ///
+    /// <para>The session-keyed deletes are tied by their whole statement, table and all. Their predicate
+    /// alone, <c>lower(replace(SessionId, '-', ''))</c>, is also carried by the Entry and attachment
+    /// statements, so a needle that short stayed green after one of the three deletes stopped using the
+    /// indexed shape.</para>
     /// </remarks>
     [Fact]
     public void The_explained_predicates_are_the_ones_the_sweep_executes()
     {
         foreach (string predicate in
-            (string[])[EntryEmbeddingsPredicate, EntriesPredicate, AttachmentSessionPredicate, AttachmentIdentityPredicate, SessionKeyPredicate, InferenceRunSessionPredicate])
+            (string[])[EntryEmbeddingsPredicate, EntriesPredicate, AttachmentSessionPredicate, AttachmentIdentityPredicate, InferenceRunSessionPredicate])
         {
             string needle = predicate.Replace(" = @id", string.Empty, StringComparison.Ordinal);
 
@@ -186,7 +195,20 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
                 $"No production source carries '{needle}', so the plan pinned here explains a predicate "
                 + "the retention sweep no longer executes.");
         }
+
+        foreach (string table in SessionKeyedTables)
+        {
+            string statement = SessionKeyedDelete(table);
+
+            Assert.True(
+                ProductionSourceInventory.Sources().Any(source => source.Names(statement)),
+                $"No production source carries '{statement}', so the plan pinned here explains a delete "
+                + "the Session delete no longer executes.");
+        }
     }
+
+    /// <summary>The Session delete's statement for one session-keyed table, exactly as it is executed.</summary>
+    private static string SessionKeyedDelete(string table) => $"DELETE FROM {table} WHERE {SessionKeyPredicate}";
 
     private async Task<string> ExplainAsync(string sql)
     {
