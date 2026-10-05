@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
-using System.Text;
 
 namespace RetroDownfall.Arcanum.Secrets.Security;
 

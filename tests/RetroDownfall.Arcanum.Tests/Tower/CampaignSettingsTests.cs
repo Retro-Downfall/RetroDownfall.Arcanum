@@ -1,6 +1,5 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Serialization;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Tower;

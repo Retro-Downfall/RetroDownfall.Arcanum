@@ -1,4 +1,3 @@
-using System.Text;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 

@@ -20,8 +20,6 @@ using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
-using RetroDownfall.Arcanum.Core.Telemetry;
-
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
