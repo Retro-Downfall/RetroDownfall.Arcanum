@@ -353,16 +353,15 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
         string idle = ApprenticeStatus.Idle.ToString();
 
-        string emptyPlan = SerializePlan([]);
-
+        // Planning is resumable whatever its plan: an empty plan re-runs plan generation, and a plan that
+        // already exists is a queued (re)start that StartAsync parked as Planning before it could run its
+        // first step, because plan generation writes the plan together with Running.
         List<Apprentice> candidates = await ReadManyAsync(
             $"""
             SELECT {GrimoireEntitySql.ApprenticeColumns}
             FROM "Apprentices"
             WHERE "Status" = $running
-               OR (
-                    "Status" = $planning
-                    AND (TRIM("Plan") = '' OR "Plan" = $emptyPlan))
+               OR "Status" = $planning
                OR (
                     "Status" = $idle
                     AND COALESCE(
@@ -379,33 +378,10 @@ public sealed class ApprenticeRepository : IApprenticeRepository
                 GrimoireEntitySql.AddParameter(command, "$running", running);
                 GrimoireEntitySql.AddParameter(command, "$planning", planning);
                 GrimoireEntitySql.AddParameter(command, "$idle", idle);
-                GrimoireEntitySql.AddParameter(command, "$emptyPlan", emptyPlan);
             },
             cancellationToken).ConfigureAwait(false);
 
         return candidates;
-    }
-
-    public async Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
-    {
-        string planning = ApprenticeStatus.Planning.ToString();
-
-        string emptyPlan = SerializePlan([]);
-
-        return await ReadManyAsync(
-            $"""
-            SELECT {GrimoireEntitySql.ApprenticeColumns}
-            FROM "Apprentices"
-            WHERE "Status" = $planning
-              AND "Plan" <> $emptyPlan
-              AND "Plan" <> '';
-            """,
-            command =>
-            {
-                GrimoireEntitySql.AddParameter(command, "$planning", planning);
-                GrimoireEntitySql.AddParameter(command, "$emptyPlan", emptyPlan);
-            },
-            cancellationToken).ConfigureAwait(false);
     }
 
     private static void BindProgress(SqliteCommand command, Apprentice apprentice)

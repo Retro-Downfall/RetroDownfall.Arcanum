@@ -235,8 +235,5 @@ public sealed class ConclaveSimulacrumTests
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult((IReadOnlyList<Apprentice>)[]);
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult((IReadOnlyList<Apprentice>)[]);
     }
 }

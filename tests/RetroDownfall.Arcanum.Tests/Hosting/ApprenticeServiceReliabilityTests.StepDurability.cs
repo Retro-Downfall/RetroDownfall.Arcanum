@@ -247,6 +247,45 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.Equal("completed", ApprenticeRepository.DeserializePlan(persisted.Plan)[0].Status);
     }
 
+    /// <summary>
+    /// StartAsync persists <c>Planning</c> before queueing, and plan generation writes the plan together
+    /// with <c>Running</c>, so a <c>Planning</c> row that already has a plan is a queued (re)start that
+    /// never reached its first step — not a plan generation cut short.
+    /// </summary>
+    [Fact]
+    public async Task CrashRecovery_QueuedRestartWithExistingPlan_ResumesInsteadOfEscalating()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Planning.ToString();
+
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        SuccessfulStepIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        await InvokeResumeCrashRecoveryAsync(service, CancellationToken.None);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice recovered = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), recovered.Status);
+
+        Assert.Null(recovered.ErrorMessage);
+
+        Assert.Equal(1, recovered.CurrentStep);
+
+        Assert.Equal(1, intelligence.StreamCalls);
+    }
+
     private static void AssertStepCommittedThenPaused(Apprentice persisted)
     {
         Assert.Equal(ApprenticeStatus.Paused.ToString(), persisted.Status);

@@ -147,33 +147,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
         Assert.Equal(InboundChain, ChainOf(repo.Get(apprenticeId)));
     }
 
-    [Fact]
-    public async Task ResumeCrashRecoveryAsync_PreservesDelegationChainWhileEscalatingInterruptedPlanning()
-    {
-        Guid apprenticeId = Guid.NewGuid();
-
-        Apprentice apprentice = DelegatedApprentice(apprenticeId, ApprenticeStatus.Planning);
-
-        RecordingApprenticeRepository repo = new(apprentice);
-
-        ApprenticeService service = CreateService(repo);
-
-        MethodInfo? method = typeof(ApprenticeService)
-            .GetMethod("ResumeCrashRecoveryAsync", BindingFlags.NonPublic | BindingFlags.Instance);
-
-        Assert.NotNull(method);
-
-        Task task = (Task)method!.Invoke(service, new object?[] { CancellationToken.None })!;
-
-        await task.WaitAsync(TimeSpan.FromSeconds(15));
-
-        Apprentice persisted = repo.Get(apprenticeId);
-
-        Assert.Equal(ApprenticeStatus.Escalated.ToString(), persisted.Status);
-
-        Assert.Equal(InboundChain, ChainOf(persisted));
-    }
-
     /// <summary>
     /// A locally cast child of a delegated Apprentice receives the caller's lineage atomically with
     /// creation, before any later launch or settlement can observe it.
@@ -387,17 +360,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
-        {
-            string planning = ApprenticeStatus.Planning.ToString();
-
-            IReadOnlyList<Apprentice> interrupted = _store.Values
-                .Where(a => string.Equals(a.Status, planning, StringComparison.Ordinal))
-                .ToList();
-
-            return Task.FromResult(interrupted);
-        }
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(_store.Remove(id));

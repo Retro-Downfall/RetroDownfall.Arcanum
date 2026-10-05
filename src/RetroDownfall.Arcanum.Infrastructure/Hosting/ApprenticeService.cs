@@ -741,46 +741,10 @@ internal sealed class ApprenticeService(
 
             IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
 
-            IReadOnlyList<Apprentice> interruptedPlanning = await repo
-                .GetInterruptedPlanningAsync(stoppingToken)
-                .ConfigureAwait(false);
-
-            foreach (Apprentice apprentice in interruptedPlanning)
-            {
-                if (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                const string reason = "Interrupted during planning after host restart.";
-
-                apprentice.Status = ApprenticeStatus.Escalated.ToString();
-
-                apprentice.ErrorMessage = reason;
-
-                ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
-
-                apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(RebaseCheckpoint(existing) with
-                {
-                    CurrentStep = apprentice.CurrentStep,
-                    Timestamp = DateTimeOffset.UtcNow,
-                    EscalationReason = reason,
-                });
-
-                await repo.UpdateAsync(apprentice, stoppingToken).ConfigureAwait(false);
-
-                logger.LogWarning(
-                    "Apprentice {ApprenticeId} was interrupted during planning; escalated for Divine Intervention.",
-                    apprentice.Id);
-
-                Publish(apprentice.Id, new ApprenticeEvent
-                {
-                    Type = ApprenticeEventType.ApprenticeEscalated,
-                    ApprenticeId = apprentice.Id,
-                    Timestamp = DateTimeOffset.UtcNow,
-                    Error = reason,
-                });
-            }
-
+            // Every Planning row is resumable. Plan generation writes the plan together with Running, so a
+            // Planning row with an empty plan re-runs generation (no tool effects yet), and one that already
+            // has a plan is a queued (re)start StartAsync parked before its first step, which continues
+            // through InitializeKnownPlanAsync rather than being escalated as interrupted planning.
             IReadOnlyList<Apprentice> resumable = await repo.GetResumableAsync(stoppingToken).ConfigureAwait(false);
 
             foreach (Apprentice apprentice in resumable)

@@ -285,8 +285,5 @@ internal sealed class FakeApprenticeRepository : IApprenticeRepository
 
     public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<Apprentice>>([.. _apprentices.Values]);
-
-    public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<Apprentice>>([]);
 }
 

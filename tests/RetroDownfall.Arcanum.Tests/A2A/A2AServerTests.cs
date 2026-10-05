@@ -711,9 +711,6 @@ public sealed class A2AServerTests
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
     }
 
     private sealed class FakeSessionRepository : ISessionRepository

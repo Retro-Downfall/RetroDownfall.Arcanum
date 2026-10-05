@@ -767,9 +767,6 @@ public sealed class A2AServerCapabilityTests
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<Apprentice>>([]);
     }
 
     private sealed class StubSessions : ISessionRepository

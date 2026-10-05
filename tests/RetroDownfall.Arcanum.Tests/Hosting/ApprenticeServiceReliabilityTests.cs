@@ -4769,24 +4769,8 @@ public sealed partial class ApprenticeServiceReliabilityTests
                     .Where(a =>
                         string.Equals(a.Status, running, StringComparison.Ordinal)
                         || string.Equals(a.Status, planning, StringComparison.Ordinal)
-                        && ApprenticeRepository.DeserializePlan(a.Plan).Count == 0
                         || string.Equals(a.Status, idle, StringComparison.Ordinal)
                         && ApprenticeRepository.DeserializeCheckpoint(a.CheckpointData)?.LaunchRequested is true)
-                    .Select(CloneApprentice)
-                    .ToList();
-
-                return Task.FromResult(values);
-            }
-        }
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
-        {
-            string planning = ApprenticeStatus.Planning.ToString();
-
-            lock (_sync)
-            {
-                IReadOnlyList<Apprentice> values = _store.Values
-                    .Where(a => string.Equals(a.Status, planning, StringComparison.Ordinal))
                     .Select(CloneApprentice)
                     .ToList();
 

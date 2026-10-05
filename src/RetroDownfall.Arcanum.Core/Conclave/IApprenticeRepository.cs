@@ -50,6 +50,4 @@ public interface IApprenticeRepository
     Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default);
 }

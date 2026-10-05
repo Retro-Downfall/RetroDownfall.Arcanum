@@ -189,9 +189,23 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
 
         Assert.Contains(resumable, a => a.Id == planning.Id);
 
-        IReadOnlyList<Apprentice> interrupted = await repository.GetInterruptedPlanningAsync(CancellationToken.None);
+        Apprentice queuedRestart = await repository.AddAsync(
+            new Apprentice
+            {
+                Id = Guid.NewGuid(),
+                Name = "Queued restart",
+                Goal = "Run the plan it already has",
+                Status = ApprenticeStatus.Planning.ToString(),
+                Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0, Description = "Known step" }]),
+                WorkspacePath = "/tmp/queued-restart",
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            CancellationToken.None);
 
-        Assert.Empty(interrupted);
+        resumable = await repository.GetResumableAsync(CancellationToken.None);
+
+        Assert.Contains(resumable, a => a.Id == queuedRestart.Id);
 
         running.Status = ApprenticeStatus.Completed.ToString();
 
