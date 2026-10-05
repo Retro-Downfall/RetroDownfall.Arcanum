@@ -326,6 +326,19 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             }
             else
             {
+                // Refuse before deleting anything: an escaping link inside the tree is never followed or
+                // removed, so deleting around it used to empty the directory, then fail on the final
+                // directory removal with a generic I/O error that named nothing.
+                string? escapingEntry = FindEscapingEntry(workspaceRoot, resolvedPath, ct);
+
+                if (escapingEntry is not null)
+                {
+                    return Task.FromResult<Result<FileDeleteResult>>(
+                        new Error(
+                            ErrorCodes.Workspace.SymbolicLinkEscape,
+                            $"The directory contains a symbolic link that resolves outside the workspace ('{Path.GetRelativePath(workspaceRoot, escapingEntry)}'), so nothing was deleted. Remove or retarget that link first."));
+                }
+
                 DeleteRecursive(workspaceRoot, resolvedPath, ct);
             }
         }
@@ -536,11 +549,38 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             AtomicReplaceStatus.ReplacedButUnverified => new Error(
                 ErrorCodes.Workspace.WriteFailed,
                 "The file was replaced but post-move verification failed; the destination was left in an unverified state."),
+            AtomicReplaceStatus.Aborted when IsLinkedDestination(absolutePath) => new Error(
+                ErrorCodes.Workspace.SymbolicLinkEscape,
+                LinkedDestinationMessage),
             AtomicReplaceStatus.Aborted when expectedExistingContent is not null => new Error(
                 ErrorCodes.Workspace.WriteFailed,
                 FileChangedDuringEditMessage),
             _ => new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage),
         };
+    }
+
+    /// <summary>
+    /// Whether the destination is a symbolic link or a file with more than one hard link, the two states under
+    /// which <see cref="AtomicFile.ReplaceAsync"/> refuses to touch it. Used only to give that refusal an
+    /// accurate error instead of a generic I/O failure.
+    /// </summary>
+    private static bool IsLinkedDestination(string path)
+    {
+        try
+        {
+            if (new FileInfo(path).LinkTarget is not null)
+            {
+                return true;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            return false;
+        }
+
+        return FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out FileHandleMetadata metadata)
+            && metadata.Kind == FileSystemObjectKind.RegularFile
+            && metadata.HardLinkCount > 1;
     }
 
     /// <summary>
@@ -701,6 +741,40 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         && WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle);
 
     /// <summary>
+    /// Walks the tree <see cref="DeleteRecursive"/> would delete (never following links) and returns the first
+    /// entry whose canonical location leaves the workspace, or <see langword="null"/> when the whole tree is safe
+    /// to delete.
+    /// </summary>
+    private static string? FindEscapingEntry(string workspaceRoot, string path, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, path, out _))
+        {
+            return path;
+        }
+
+        if (!Directory.Exists(path) || new DirectoryInfo(path).LinkTarget is not null)
+        {
+            // A file, or an in-workspace directory link that DeleteRecursive removes as a link without
+            // traversing it.
+            return null;
+        }
+
+        foreach (string child in Directory.EnumerateFileSystemEntries(path))
+        {
+            string? escaping = FindEscapingEntry(workspaceRoot, child, ct);
+
+            if (escaping is not null)
+            {
+                return escaping;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Recursively deletes <paramref name="path"/> and its contents. Each enumerated entry is revalidated with
     /// <see cref="WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck"/>; entries that escape the workspace
     /// via a symbolic link are skipped (left untouched) rather than followed, mirroring the recursive listing
@@ -797,6 +871,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     private const string ReplaceTextBlockTooLargeMessage = "The combined size of oldString and newString exceeds the maximum replace text block size limit.";
 
     private const string SymlinkEscapeMessage = "The path resolves outside the workspace via a symbolic link.";
+
+    private const string LinkedDestinationMessage = "The destination is a symbolic link or has more than one hard link, so it cannot be written through this endpoint. Write to the real file instead.";
 
     private const string FileChangedDuringEditMessage = "The file changed after it was read, or its state could not be verified, so nothing was written. Re-read the file and retry.";
 

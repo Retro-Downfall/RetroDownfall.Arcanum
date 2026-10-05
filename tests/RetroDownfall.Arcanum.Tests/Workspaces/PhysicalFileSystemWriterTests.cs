@@ -678,7 +678,7 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task DeleteAsync_recursive_skips_symlinks_that_escape_workspace()
+    public async Task DeleteAsync_recursive_with_escaping_link_deletes_nothing_and_names_the_link()
     {
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
@@ -696,9 +696,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
             string parentDir = _workspace.CreateSubdir("recurseDelete");
 
-            _workspace.WriteFile("recurseDelete/keep.txt", "keep me gone");
+            _workspace.WriteFile("recurseDelete/keep.txt", "keep me");
 
-            string linkPath = Path.Combine(parentDir, "escape-link");
+            _workspace.WriteFile("recurseDelete/nested/deep.txt", "keep me too");
+
+            string linkPath = Path.Combine(parentDir, "nested", "escape-link");
 
             File.CreateSymbolicLink(linkPath, outsideFile);
 
@@ -710,17 +712,109 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
             Assert.True(result.IsFailure);
 
-            Assert.Equal("Workspace.DeleteFailed", result.Error.Code);
+            Assert.Equal("Workspace.SymbolicLinkEscape", result.Error.Code);
+
+            Assert.Contains(
+                Path.Combine("recurseDelete", "nested", "escape-link"),
+                result.Error.Message.Replace('/', Path.DirectorySeparatorChar),
+                StringComparison.Ordinal);
+
+            Assert.Contains("nothing was deleted", result.Error.Message, StringComparison.OrdinalIgnoreCase);
 
             Assert.True(File.Exists(outsideFile));
 
-            Assert.True(File.Exists(linkPath) || Directory.Exists(linkPath));
+            Assert.True(File.Exists(Path.Combine(parentDir, "keep.txt")));
 
-            Assert.False(File.Exists(Path.Combine(parentDir, "keep.txt")));
+            Assert.True(File.Exists(Path.Combine(parentDir, "nested", "deep.txt")));
+
+            Assert.NotNull(new FileInfo(linkPath).LinkTarget);
         }
         finally
         {
             Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task DeleteAsync_recursive_removes_a_link_that_stays_inside_the_workspace_without_following_it()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink handling is exercised on Unix hosts.");
+
+        string keep = _workspace.WriteFile("kept/target.txt", "stay");
+
+        _workspace.WriteFile("doomed/file.txt", "go");
+
+        File.CreateSymbolicLink(Path.Combine(_workspace.Root, "doomed", "inside-link"), keep);
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        Result<FileDeleteResult> result = await writer.DeleteAsync(MakeWorkspace(), "doomed", recursive: true, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "doomed")));
+
+        Assert.True(File.Exists(keep));
+    }
+
+    [SkippableFact]
+    public async Task WriteFileAsync_to_symlink_returns_SymbolicLinkEscape()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink handling is exercised on Unix hosts.");
+
+        string real = _workspace.WriteFile("real.txt", "real content");
+
+        string link = Path.Combine(_workspace.Root, "alias.txt");
+
+        File.CreateSymbolicLink(link, real);
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        Result<FileWriteResult> result = await writer.WriteFileAsync(
+            MakeWorkspace(), "alias.txt", "overwritten", CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.SymbolicLinkEscape", result.Error.Code);
+
+        Assert.Equal("real content", await File.ReadAllTextAsync(real));
+
+        Assert.NotNull(new FileInfo(link).LinkTarget);
+    }
+
+    [SkippableFact]
+    public async Task WriteFileAsync_to_a_hard_linked_destination_returns_SymbolicLinkEscape()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Hard-link creation is exercised on Unix hosts.");
+
+        string real = _workspace.WriteFile("original.txt", "original");
+
+        string outsideAlias = Path.Combine(Path.GetTempPath(), $"arcanum-hardlink-{Guid.NewGuid():N}.txt");
+
+        try
+        {
+            Assert.True(HardLinkTestSupport.TryCreate(outsideAlias, real));
+
+            PhysicalFileSystemWriter writer = CreateWriter();
+
+            Result<FileWriteResult> result = await writer.WriteFileAsync(
+                MakeWorkspace(), "original.txt", "overwritten", CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Workspace.SymbolicLinkEscape", result.Error.Code);
+
+            Assert.Equal("original", await File.ReadAllTextAsync(real));
+        }
+        finally
+        {
+            File.Delete(outsideAlias);
         }
     }
 
