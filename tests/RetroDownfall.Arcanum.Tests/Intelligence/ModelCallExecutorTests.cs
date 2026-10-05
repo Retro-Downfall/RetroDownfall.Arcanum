@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -15,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ModelCallExecutorTests
 {
-
     [Fact]
     public void ModelCallExecutor_contract_keeps_provider_io_without_counter_gate()
     {
@@ -813,9 +813,115 @@ public sealed class ModelCallExecutorTests
         Assert.Single(updates.OfType<ModelCallTextDelta>());
     }
 
+    /// <summary>
+    /// The delegated ceiling is provider-usage-based: a call whose provider reports no usage is
+    /// counted as a model call but charges nothing, so it can never trip the token or cost ceiling.
+    /// </summary>
+    [Fact]
+    public async Task RecordDelegatedUsage_WhenProviderReportsNoUsage_LeavesTheTrackerUncharged()
+    {
+        DelegatedManaTracker tracker = new(maxTokens: 5, maxCostUsd: 0.000001m);
+        ScriptingChatClient chat = new("a long answer from a provider that omits usage");
+        ProviderSettings provider = CacheProvider();
+
+        using IDisposable scope = SubagentExecutionAmbient.EnterChild(tracker);
+
+        ModelCallOutcome outcome = await CreateAccountedExecutor(provider).ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "go")],
+            new ChatOptions(),
+            UnrestrictedTurnBudget.Instance,
+            ModelCallPurpose.MainInference,
+            CancellationToken.None,
+            new ModelCallContext(provider, "gpt-5", 0, 0));
+
+        Assert.True(outcome.IsSuccess);
+
+        DelegatedManaUsage usage = tracker.GetUsage();
+
+        Assert.Equal(0, usage.Tokens);
+        Assert.Equal(0m, usage.CostUsd);
+        Assert.Equal(1, usage.ModelCalls);
+        Assert.False(usage.Exhausted);
+    }
+
+    /// <summary>
+    /// An unpriced model is deliberately free: reported tokens still count against the token
+    /// ceiling, but the cost ceiling is never charged for it.
+    /// </summary>
+    [Fact]
+    public async Task RecordDelegatedUsage_WhenModelHasNoPricing_ChargesTokensButNoCost()
+    {
+        DelegatedManaTracker tracker = new(maxTokens: 1_000, maxCostUsd: 0.000001m);
+        ChatResponse response = new(new ChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails { InputTokenCount = 60, OutputTokenCount = 40, TotalTokenCount = 100 },
+        };
+        ScriptingChatClient chat = new(string.Empty) { BufferedResponse = response };
+        ProviderSettings provider = CacheProvider();
+
+        using IDisposable scope = SubagentExecutionAmbient.EnterChild(tracker);
+
+        ModelCallOutcome outcome = await CreateAccountedExecutor(provider).ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "go")],
+            new ChatOptions(),
+            UnrestrictedTurnBudget.Instance,
+            ModelCallPurpose.MainInference,
+            CancellationToken.None,
+            new ModelCallContext(provider, "gpt-5", 0, 0));
+
+        Assert.True(outcome.IsSuccess);
+
+        DelegatedManaUsage usage = tracker.GetUsage();
+
+        Assert.Equal(100, usage.Tokens);
+        Assert.Equal(0m, usage.CostUsd);
+        Assert.False(usage.Exhausted);
+    }
+
+    /// <summary>
+    /// The ceiling is post-hoc: the call that crosses it is still delivered, and the tracker only
+    /// refuses the next call.
+    /// </summary>
+    [Fact]
+    public async Task RecordDelegatedUsage_WhenUsageCrossesTheCeiling_DeliversThatCallAndRefusesTheNext()
+    {
+        DelegatedManaTracker tracker = new(maxTokens: 10, maxCostUsd: null);
+        ChatResponse response = new(new ChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails { TotalTokenCount = 50 },
+        };
+        ScriptingChatClient chat = new(string.Empty) { BufferedResponse = response };
+        ModelCallExecutor executor = new();
+
+        using IDisposable scope = SubagentExecutionAmbient.EnterChild(tracker);
+
+        ModelCallOutcome first = await executor.ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "go")],
+            new ChatOptions(),
+            UnrestrictedTurnBudget.Instance,
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+        Assert.True(tracker.GetUsage().Exhausted);
+
+        ModelCallOutcome second = await executor.ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "again")],
+            new ChatOptions(),
+            UnrestrictedTurnBudget.Instance,
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(second.IsFailure);
+        Assert.Equal(1, chat.CallCount);
+    }
+
     private sealed class ScriptingChatClient(string text) : IChatClient
     {
-
         public int CallCount { get; private set; }
 
         public ChatResponse? BufferedResponse { get; init; }
@@ -880,7 +986,6 @@ public sealed class ModelCallExecutorTests
         public void Dispose()
         {
         }
-
     }
 
     private static ProviderSettings CacheProvider()
@@ -943,5 +1048,4 @@ public sealed class ModelCallExecutorTests
 
         return false;
     }
-
 }
