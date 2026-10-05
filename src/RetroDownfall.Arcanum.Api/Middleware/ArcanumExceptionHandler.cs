@@ -56,7 +56,10 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
             return true;
         }
 
-        if (exception is JsonException)
+        // Only a JsonException from a body the caller sent and the route read is the caller's. One raised on
+        // a request with no body, or on a route that never read one, is the server's own: corrupt data it
+        // loaded or a payload it built, which is a fault to log, not a malformed request to explain.
+        if (exception is JsonException && ApiRequestJson.RouteReadARequestBody(httpContext))
         {
             if (httpContext.Response.HasStarted)
             {

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -43,6 +44,10 @@ public sealed class ArcanumExceptionHandlerTests
 
         httpContext.Request.Path = "/v1/chat/completions";
 
+        httpContext.Request.ContentLength = 8;
+
+        ApiRequestJson.MarkBodyRead(httpContext);
+
         bool handled = await handler.TryHandleAsync(
             httpContext,
             new JsonException("bad json"),
@@ -79,6 +84,10 @@ public sealed class ArcanumExceptionHandlerTests
 
         httpContext.Request.Path = "/api/spells/execute";
 
+        httpContext.Request.ContentLength = 8;
+
+        ApiRequestJson.MarkBodyRead(httpContext);
+
         bool handled = await handler.TryHandleAsync(
             httpContext,
             new JsonException("bad json"),
@@ -87,6 +96,88 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.True(handled);
 
         Assert.Equal(400, httpContext.Response.StatusCode);
+    }
+
+    /// <summary>
+    /// A <see cref="JsonException"/> raised on a request with no body is the server's own: corrupt data it
+    /// read or a payload it built, never the caller's body.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_JsonException_on_a_bodyless_GET_logs_error_and_returns_500()
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Method = HttpMethods.Get;
+
+        httpContext.Request.Path = "/api/apprentices/00000000-0000-0000-0000-000000000000/chronicle";
+
+        JsonException corruptRow = new("The persisted plan is not valid JSON.");
+
+        bool handled = await handler.TryHandleAsync(httpContext, corruptRow, CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
+
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Error && ReferenceEquals(entry.Exception, corruptRow));
+
+        ApiResponse<string>? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.ApiResponseString);
+
+        Assert.Equal(ErrorCodes.Hub.Unhandled, body?.Error?.Code);
+    }
+
+    /// <summary>
+    /// A request that carried a body, and a route that read it, is the one case where a
+    /// <see cref="JsonException"/> is the caller's.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_JsonException_after_the_route_read_a_request_body_is_a_400()
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/spells/execute";
+
+        httpContext.Request.ContentLength = 12;
+
+        ApiRequestJson.MarkBodyRead(httpContext);
+
+        bool handled = await handler.TryHandleAsync(httpContext, new JsonException("bad json"), CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, httpContext.Response.StatusCode);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_JsonException_with_a_body_the_route_never_read_is_not_blamed_on_the_caller()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/spells/execute";
+
+        httpContext.Request.ContentLength = 12;
+
+        bool handled = await handler.TryHandleAsync(httpContext, new JsonException("server side"), CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
     }
 
     [Fact]

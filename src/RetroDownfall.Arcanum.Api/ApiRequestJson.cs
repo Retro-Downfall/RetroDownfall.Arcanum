@@ -31,6 +31,27 @@ internal static class ApiRequestJson
 
     public const string ParameterBindingFailedMessage = "Request parameters could not be bound to this route.";
 
+    private const string BodyReadItemKey = "Arcanum.ApiRequestJson.BodyRead";
+
+    /// <summary>
+    /// Records that this request's route is reading the request body itself.
+    /// </summary>
+    /// <remarks>
+    /// <c>ArcanumExceptionHandler</c> answers a <see cref="JsonException"/> as the caller's malformed body
+    /// only when the route had a body to read; this is how it knows. Without it, a
+    /// <see cref="JsonException"/> from data the server read or a payload it built, on a GET with no body at
+    /// all, was reported as "Request body could not be parsed" and never logged.
+    /// </remarks>
+    public static void MarkBodyRead(HttpContext httpContext) => httpContext.Items[BodyReadItemKey] = true;
+
+    /// <summary>
+    /// Whether a route read a request body that was actually sent.
+    /// </summary>
+    public static bool RouteReadARequestBody(HttpContext httpContext) =>
+        httpContext.Items.ContainsKey(BodyReadItemKey)
+        && (httpContext.Request.ContentLength is > 0
+            || !string.IsNullOrEmpty(httpContext.Request.Headers.TransferEncoding));
+
     public static async ValueTask<(T? Body, IResult? Error)> ReadAsync<T>(
         HttpContext httpContext,
         JsonTypeInfo<T> typeInfo,
@@ -38,12 +59,15 @@ internal static class ApiRequestJson
         CancellationToken cancellationToken)
     {
         // ReadFromJsonAsync throws InvalidOperationException — not JsonException — for a missing or
-        // non-JSON Content-Type. Left uncaught it escapes to ArcanumExceptionHandler and a routine client
-        // mistake becomes a 500 Hub.Unhandled with an Error-level stack trace.
+        // non-JSON Content-Type, so that case is answered here, before the read. Nothing after this check
+        // catches InvalidOperationException: with the media type proven, one that still escapes the read is a
+        // fault of the server's own, and mapping it to 415 told the caller a lie and hid the fault.
         if (!httpContext.Request.HasJsonContentType())
         {
             return (default, UnsupportedMediaTypeResult(httpContext));
         }
+
+        MarkBodyRead(httpContext);
 
         try
         {
@@ -56,10 +80,6 @@ internal static class ApiRequestJson
         catch (JsonException)
         {
             return (default, invalidJsonResult(httpContext));
-        }
-        catch (InvalidOperationException)
-        {
-            return (default, UnsupportedMediaTypeResult(httpContext));
         }
         catch (BadHttpRequestException failure)
         {

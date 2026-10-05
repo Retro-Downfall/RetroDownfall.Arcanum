@@ -87,10 +87,6 @@ internal static partial class OpenAiV1Endpoints
                     param: null,
                     statusCode: StatusCodes.Status400BadRequest);
             }
-            catch (InvalidOperationException)
-            {
-                return CreateUnsupportedMediaTypeErrorResult();
-            }
             catch (BadHttpRequestException exception)
             {
                 return CreateRequestBodyReadErrorResult(exception.StatusCode);

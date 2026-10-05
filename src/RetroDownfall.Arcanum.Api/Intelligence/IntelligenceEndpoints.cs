@@ -201,9 +201,10 @@ internal static class IntelligenceEndpoints
             PingRequest? body;
 
             // ReadFromJsonAsync raises InvalidOperationException — not JsonException — for a missing
-            // or non-JSON Content-Type. Left uncaught it escapes to ArcanumExceptionHandler and a
-            // routine client mistake becomes a 500 Hub.Unhandled with an Error-level stack trace,
-            // where every ApiRequestJson-based endpoint answers the same mistake with 415.
+            // or non-JSON Content-Type, so that case is answered by the check below, before the read, with
+            // the 415 every ApiRequestJson-based endpoint gives it. Nothing after the check catches
+            // InvalidOperationException: with the media type proven, one that still escapes is the
+            // server's own fault.
             if (!httpContext.Request.HasJsonContentType())
             {
                 await WriteUnsupportedMediaTypeAsync(httpContext, ct).ConfigureAwait(false);
@@ -216,12 +217,6 @@ internal static class IntelligenceEndpoints
                 body = await httpContext.Request
                     .ReadFromJsonAsync(ArcanumJsonContext.Default.PingRequest, ct)
                     .ConfigureAwait(false);
-            }
-            catch (InvalidOperationException)
-            {
-                await WriteUnsupportedMediaTypeAsync(httpContext, ct).ConfigureAwait(false);
-
-                return;
             }
             catch (JsonException)
             {
