@@ -19,13 +19,11 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </remarks>
 public sealed class HostProcessToolsStartupGateTests
 {
-
     private static readonly Guid Transition = Guid.Parse("3E5A7C90-1B2D-4F6A-8C0E-9D1F3A5B7C90");
 
     [Fact]
     public async Task A_clean_installation_with_no_marker_starts_normally()
     {
-
         Harness harness = Harness.Create();
 
         Result<HostProcessToolsStartupDecision> result = await harness.Gate
@@ -38,13 +36,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.True(harness.Policy.CovenantPermitted);
 
         Assert.False(harness.Policy.HostProcessToolsPermitted);
-
     }
 
     [Fact]
     public async Task The_escape_hatch_environment_without_a_completed_transition_blocks_startup()
     {
-
         Harness harness = Harness.Create();
 
         harness.Environment.EscapeHatchOptIn = true;
@@ -68,13 +64,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.Equal(
             HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition,
             harness.Policy.Blocker);
-
     }
 
     [Fact]
     public async Task Every_block_that_evidence_could_not_produce_on_its_own_is_distinguishable()
     {
-
         Harness pending = Harness.Create();
 
         _ = await pending.Authority.CommitPendingAsync(
@@ -100,14 +94,40 @@ public sealed class HostProcessToolsStartupGateTests
 
         _ = await unreadable.Gate.ClassifyAndPublishAsync(CancellationToken.None);
 
-        Assert.Equal(HostProcessToolsStartupBlocker.MarkerMismatch, unreadable.Policy.Blocker);
+        // A marker out of reach is not two markers disagreeing, and the operator's remedy differs: make the
+        // credential store reachable, not hunt for damaged evidence.
+        Assert.Equal(HostProcessToolsStartupBlocker.MarkerUnreadable, unreadable.Policy.Blocker);
 
+        Harness malformed = Harness.Create();
+
+        malformed.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Malformed;
+
+        _ = await malformed.Gate.ClassifyAndPublishAsync(CancellationToken.None);
+
+        Assert.Equal(HostProcessToolsStartupBlocker.MarkerUnreadable, malformed.Policy.Blocker);
+    }
+
+    [Fact]
+    public void The_startup_blocker_codes_are_literal_and_exhaustive()
+    {
+        Assert.Equal(0, (byte)HostProcessToolsStartupBlocker.None);
+
+        Assert.Equal(1, (byte)HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition);
+
+        Assert.Equal(2, (byte)HostProcessToolsStartupBlocker.PendingTransition);
+
+        Assert.Equal(3, (byte)HostProcessToolsStartupBlocker.MarkerMismatch);
+
+        Assert.Equal(4, (byte)HostProcessToolsStartupBlocker.AuthorityUnreadable);
+
+        Assert.Equal(5, (byte)HostProcessToolsStartupBlocker.MarkerUnreadable);
+
+        Assert.Equal(6, Enum.GetValues<HostProcessToolsStartupBlocker>().Length);
     }
 
     [Fact]
     public async Task A_matching_tainted_pair_starts_in_permanent_no_covenant_mode()
     {
-
         Harness harness = Harness.Create();
 
         harness.Taint();
@@ -124,13 +144,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.False(harness.Policy.CovenantPermitted);
 
         Assert.True(harness.Policy.HostProcessToolsPermitted);
-
     }
 
     [Fact]
     public async Task Removing_the_opt_in_suppresses_the_tool_and_never_restores_covenant()
     {
-
         Harness harness = Harness.Create();
 
         harness.Taint();
@@ -154,13 +172,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.True(again.IsSuccess);
 
         Assert.False(harness.Policy.CovenantPermitted);
-
     }
 
     [Fact]
     public async Task A_pending_transition_always_blocks()
     {
-
         Harness harness = Harness.Create();
 
         _ = await harness.Authority.CommitPendingAsync(
@@ -176,13 +192,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.Equal(ErrorCodes.Covenant.HostToolsTransitionRequired, result.Error.Code);
 
         Assert.Equal(HostProcessToolsMarkerPairDisposition.PendingBlocked, harness.Policy.Disposition);
-
     }
 
     [Fact]
     public async Task A_tainted_row_without_a_marker_and_a_clean_row_with_one_both_block()
     {
-
         Harness taintedWithoutMarker = Harness.Create();
 
         taintedWithoutMarker.Taint();
@@ -198,13 +212,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.True((await cleanWithMarker.Gate.ClassifyAndPublishAsync(CancellationToken.None)).IsFailure);
 
         Assert.False(cleanWithMarker.Policy.CovenantPermitted);
-
     }
 
     [Fact]
     public async Task A_malformed_marker_blocks_before_the_database_is_opened()
     {
-
         Harness harness = Harness.Create();
 
         harness.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Malformed;
@@ -217,13 +229,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.Equal(ErrorCodes.Covenant.HostToolsTransitionRequired, result.Error.Code);
 
         Assert.Equal(0, harness.Authority.ReadCount);
-
     }
 
     [Fact]
     public async Task An_unreachable_credential_backend_is_never_read_as_an_absent_marker()
     {
-
         Harness harness = Harness.Create();
 
         harness.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Unavailable;
@@ -231,13 +241,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.True((await harness.Gate.ClassifyAndPublishAsync(CancellationToken.None)).IsFailure);
 
         Assert.False(harness.Policy.CovenantPermitted);
-
     }
 
     [Fact]
     public void An_unpublished_policy_permits_nothing()
     {
-
         HostProcessToolsRuntimePolicy policy = new();
 
         Assert.False(policy.IsPublished);
@@ -247,13 +255,11 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.False(policy.HostProcessToolsPermitted);
 
         Assert.Null(policy.Disposition);
-
     }
 
     [Fact]
     public void A_tainted_policy_refuses_to_be_republished_as_covenant_permitting()
     {
-
         HostProcessToolsRuntimePolicy policy = new();
 
         Assert.True(policy.Publish(new HostProcessToolsStartupDecision(
@@ -271,7 +277,6 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.Equal(ErrorCodes.Covenant.OperatorAuthorityUnavailable, restored.Error.Code);
 
         Assert.False(policy.CovenantPermitted);
-
     }
 
     /// <summary>
@@ -288,7 +293,6 @@ public sealed class HostProcessToolsStartupGateTests
     [Fact]
     public async Task A_read_failure_is_not_reported_as_evidence_that_disagrees_with_itself()
     {
-
         Harness unreadableMarker = Harness.Create();
 
         unreadableMarker.Markers.ReadStatusOverride = HostProcessToolsMarkerReadStatus.Unavailable;
@@ -327,7 +331,6 @@ public sealed class HostProcessToolsStartupGateTests
         Assert.DoesNotContain("disagrees", invalid.Error.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("Grimoire", invalid.Error.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -346,7 +349,6 @@ public sealed class HostProcessToolsStartupGateTests
     [Fact]
     public async Task The_tool_denial_gives_the_same_remedy_the_startup_gate_gives()
     {
-
         const string Remedy =
             "Clear the ARCANUM_ALLOW_HOST_PROCESS_TOOLS environment variable and start the host again.";
 
@@ -386,7 +388,6 @@ public sealed class HostProcessToolsStartupGateTests
             "Degraded",
             HostProcessToolPolicy.DeniedMessage,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     /// <summary>
@@ -401,7 +402,6 @@ public sealed class HostProcessToolsStartupGateTests
     [Fact]
     public async Task No_refusal_message_names_a_command_the_cli_does_not_have()
     {
-
         // The control on the extractor: it has to find both a real chain and a fictional one, or a
         // message it silently stopped matching would satisfy the assertion below by finding nothing.
         Assert.Equal(
@@ -438,7 +438,6 @@ public sealed class HostProcessToolsStartupGateTests
             offenders.Count == 0,
             "A blocked startup may only name a command the CLI actually registers: "
             + string.Join("; ", offenders));
-
     }
 
     /// <summary>One refusal message per blocked disposition the gate can produce.</summary>
@@ -450,7 +449,6 @@ public sealed class HostProcessToolsStartupGateTests
     /// </remarks>
     private static async Task<IReadOnlyList<string>> RefusalMessagesAsync()
     {
-
         List<string> messages = [];
 
         Harness escapeHatch = Harness.Create();
@@ -505,7 +503,6 @@ public sealed class HostProcessToolsStartupGateTests
             HostProcessToolsStartupGate.AuthorityUnreadableRemediation));
 
         return messages;
-
     }
 
     /// <summary>
@@ -520,24 +517,20 @@ public sealed class HostProcessToolsStartupGateTests
         Result<HostProcessToolsStartupDecision> result,
         string expectedRemediation)
     {
-
         Assert.True(result.IsFailure);
 
         Assert.Contains(expectedRemediation, result.Error.Message, StringComparison.Ordinal);
 
         return result.Error.Message;
-
     }
 
     /// <summary>The verb chain of every backtick-quoted <c>arcanum</c> invocation in a message.</summary>
     private static IReadOnlyList<string> CommandChains(string message)
     {
-
         List<string> chains = [];
 
         foreach (Match quoted in Regex.Matches(message, "`arcanum ([^`]+)`"))
         {
-
             string[] verbs =
             [
                 .. quoted.Groups[1].Value
@@ -547,15 +540,11 @@ public sealed class HostProcessToolsStartupGateTests
 
             if (verbs.Length > 0)
             {
-
                 chains.Add(string.Join(' ', verbs));
-
             }
-
         }
 
         return chains;
-
     }
 
     private static HostProcessToolsOsMarkerEvidence TakeMarker(Harness harness) =>
@@ -563,7 +552,6 @@ public sealed class HostProcessToolsStartupGateTests
 
     private sealed class Harness
     {
-
         private Harness(
             HostProcessToolsStartupGate gate,
             CountingHostProcessToolsAuthorityStore authority,
@@ -571,7 +559,6 @@ public sealed class HostProcessToolsStartupGateTests
             FakeHostProcessToolsEnvironmentProbe environment,
             HostProcessToolsRuntimePolicy policy)
         {
-
             Gate = gate;
 
             Authority = authority;
@@ -581,7 +568,6 @@ public sealed class HostProcessToolsStartupGateTests
             Environment = environment;
 
             Policy = policy;
-
         }
 
         internal HostProcessToolsStartupGate Gate { get; }
@@ -596,7 +582,6 @@ public sealed class HostProcessToolsStartupGateTests
 
         internal static Harness Create()
         {
-
             CountingHostProcessToolsAuthorityStore authority = new();
 
             FakeHostProcessToolsMarkerStore markers = new();
@@ -618,13 +603,11 @@ public sealed class HostProcessToolsStartupGateTests
                 policy);
 
             return new Harness(gate, authority, markers, environment, policy);
-
         }
 
         /// <summary>Drives the real transition so the two markers agree the way production makes them.</summary>
         internal void Taint()
         {
-
             HostProcessToolsTransitionService service = new(
                 Authority,
                 Markers,
@@ -641,15 +624,12 @@ public sealed class HostProcessToolsStartupGateTests
             Assert.Equal(HostProcessToolsTransitionOutcome.Completed, result.Value.Outcome);
 
             Authority.ReadCount = 0;
-
         }
-
     }
 
     /// <summary>The authority fake plus a read counter, for the ordering assertions.</summary>
     private sealed class CountingHostProcessToolsAuthorityStore : IHostProcessToolsAuthorityStore
     {
-
         private readonly FakeHostProcessToolsAuthorityStore _inner = new();
 
         internal int ReadCount { get; set; }
@@ -664,39 +644,31 @@ public sealed class HostProcessToolsStartupGateTests
 
         public Task<Result<HostProcessToolsAuthorityRow>> ReadAsync(CancellationToken cancellationToken)
         {
-
             ReadCount++;
 
             return _inner.ReadAsync(cancellationToken);
-
         }
 
         public Task<Result<HostProcessToolsAuthorityRow?>> TryReadAsync(CancellationToken cancellationToken)
         {
-
             ReadCount++;
 
             if (TryReadFailure)
             {
-
                 return Task.FromResult<Result<HostProcessToolsAuthorityRow?>>(new Error(
                     ErrorCodes.Covenant.OperatorAuthorityUnavailable,
                     "The authority row could not be read."));
-
             }
 
             if (InvalidRow)
             {
-
                 // Tainted with no transition identity: the exact shape the evidence constructor
                 // refuses, which is how a row reaches the gate's validation failure.
                 return Task.FromResult<Result<HostProcessToolsAuthorityRow?>>(
                     _inner.Row with { State = CovenantHostToolsState.HostToolsTainted });
-
             }
 
             return _inner.TryReadAsync(cancellationToken);
-
         }
 
         public Task<Result<HostProcessToolsProtectedInventory>> InventoryProtectedStateAsync(
@@ -720,7 +692,5 @@ public sealed class HostProcessToolsStartupGateTests
             Guid transitionId,
             CancellationToken cancellationToken) =>
             _inner.CompensateToCleanAsync(expected, transitionId, cancellationToken);
-
     }
-
 }

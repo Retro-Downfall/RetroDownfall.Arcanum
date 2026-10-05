@@ -25,6 +25,12 @@ public enum HostProcessToolsStartupBlocker : byte
 
     /// <summary>The durable authority row could not be read or validated.</summary>
     AuthorityUnreadable = 4,
+
+    /// <summary>
+    /// The operating-system marker could not be read at all (credential store unavailable, or a payload
+    /// that does not parse). Not a mismatch: no evidence disagrees, the evidence is simply out of reach.
+    /// </summary>
+    MarkerUnreadable = 5,
 }
 
 /// <summary>What the startup marker join decided this process may do.</summary>
