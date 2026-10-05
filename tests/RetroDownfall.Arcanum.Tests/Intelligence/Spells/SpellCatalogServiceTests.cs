@@ -1,6 +1,4 @@
-using System.Text;
 
-using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 

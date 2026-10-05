@@ -1,3 +1,10 @@
+using System.Text.RegularExpressions;
+
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
@@ -19,17 +26,30 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// can see this class of leak. What can be seen is the discipline, and the add path was the one call
 /// site in the file that did not follow it while the lookup paths beside it did.
 /// </para>
+/// <para>
+/// The scanner reads the file's syntax tree rather than its text, so a release that is only written
+/// in a comment or a string, a release that sits before the call it is meant to pair with, and a
+/// release that lives on an error branch alone are all things it can tell apart from a release. The
+/// earlier forms asked whether <c>CFRelease(itemRef)</c> appeared anywhere in the file, and then
+/// anywhere in the method, and either answer let a leak on one path hide behind a release on another.
+/// </para>
 /// </remarks>
 public sealed class MacOsCredentialStoreHandleOwnershipTests
 {
     private const string SourceFileName = "MacOsCredentialStore.cs";
 
-    /// <summary>
-    /// The earlier form of this guard asked only whether <c>CFRelease(itemRef)</c> appeared somewhere
-    /// in the file, so a release in <c>TryGet</c> satisfied a leak in <c>Set</c>. The ownership is
-    /// per method: the method that receives the reference releases it, or hands it on through an
-    /// <c>out nint</c> parameter whose caller is itself scanned.
-    /// </summary>
+    private const string ReleaseFunction = "CFRelease";
+
+    private const string SuccessResult = "OsCredentialStoreResult.Ok(";
+
+    private static readonly string[] ItemRefFunctions =
+    [
+        "SecKeychainFindGenericPassword",
+        "SecKeychainFindGenericPasswordMetadata",
+        "SecKeychainAddGenericPassword",
+        "TryGetItemRef",
+    ];
+
     [Fact]
     public void Every_keychain_item_ref_is_released_in_the_method_that_receives_it()
     {
@@ -38,28 +58,70 @@ public sealed class MacOsCredentialStoreHandleOwnershipTests
         Assert.Empty(violations);
     }
 
+    /// <summary>
+    /// A scanner that quietly stopped finding calls would report nothing and pass for the wrong reason.
+    /// </summary>
+    [Fact]
+    public void The_scanner_inspects_every_call_that_receives_a_retained_reference()
+    {
+        string[] receiving =
+        [
+            .. ReceivingCalls(Parse(MacOsCredentialStoreSource()))
+                .Select(static call => $"{call.MethodName} -> {call.Function}")
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(
+            [
+                "Delete -> TryGetItemRef",
+                "ProbePresence -> SecKeychainFindGenericPasswordMetadata",
+                "Set -> SecKeychainAddGenericPassword",
+                "TryGet -> SecKeychainFindGenericPassword",
+                "TryGetItemRef -> SecKeychainFindGenericPasswordMetadata",
+                "UpdateExisting -> TryGetItemRef",
+            ],
+            receiving);
+    }
+
+    /// <summary>
+    /// A native function that returns an item reference but is missing from the scanner's list would
+    /// be a call site nobody inspects.
+    /// </summary>
+    [Fact]
+    public void Every_native_function_that_returns_an_item_reference_is_one_the_scanner_knows()
+    {
+        string[] declared =
+        [
+            .. Parse(MacOsCredentialStoreSource())
+                .DescendantNodes()
+                .OfType<MethodDeclarationSyntax>()
+                .Where(static method => method.Body is null)
+                .Where(static method => method.ParameterList.Parameters.Any(static parameter =>
+                    parameter.Modifiers.Any(SyntaxKind.OutKeyword)
+                    && parameter.Identifier.ValueText.Contains("itemRef", StringComparison.OrdinalIgnoreCase)))
+                .Select(static method => method.Identifier.ValueText)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.NotEmpty(declared);
+
+        Assert.All(declared, function => Assert.Contains(function, ItemRefFunctions));
+    }
+
     [Fact]
     public void The_ownership_scanner_goes_red_when_a_release_is_removed_from_its_method()
     {
         string source = MacOsCredentialStoreSource();
 
-        int tryGet = source.IndexOf("internal static OsCredentialStoreResult TryGet(", StringComparison.Ordinal);
+        MethodDeclarationSyntax tryGet = MethodNamed(source, "TryGet");
 
-        Assert.True(tryGet >= 0, "TryGet was not found.");
+        string mutated = Apply(source, (ReleaseOf(tryGet, "itemRef").Span, string.Empty));
 
-        int release = source.IndexOf("CFRelease(itemRef);", tryGet, StringComparison.Ordinal);
+        // The same file still releases itemRef in other methods, which is exactly what the old
+        // file-wide Contains check accepted.
+        Assert.Contains("CFRelease(itemRef)", mutated, StringComparison.Ordinal);
 
-        Assert.True(release >= 0, "TryGet no longer releases itemRef.");
-
-        string withoutRelease = source.Remove(release, "CFRelease(itemRef);".Length);
-
-        // The same file still contains CFRelease(itemRef) in other methods, which is exactly what the
-        // old file-wide Contains check accepted.
-        Assert.Contains("CFRelease(itemRef)", withoutRelease, StringComparison.Ordinal);
-
-        string violation = Assert.Single(UnreleasedItemRefs(withoutRelease));
-
-        Assert.Contains("TryGet", violation, StringComparison.Ordinal);
+        AssertSingleViolation(mutated, "TryGet");
     }
 
     [Fact]
@@ -67,15 +129,160 @@ public sealed class MacOsCredentialStoreHandleOwnershipTests
     {
         string source = MacOsCredentialStoreSource();
 
-        int probe = source.IndexOf("internal static OsCredentialStoreStatus ProbePresence", StringComparison.Ordinal);
+        InvocationExpressionSyntax probe = ReceivingCalls(Parse(source))
+            .Single(static call => call.MethodName == "ProbePresence")
+            .Call;
 
-        int captured = source.IndexOf("out nint itemRef);", probe, StringComparison.Ordinal);
+        string mutated = Apply(source, (probe.ArgumentList.Arguments[^1].Span, "out _"));
 
-        string discarded = source.Remove(captured, "out nint itemRef);".Length).Insert(captured, "out _);");
+        AssertSingleViolation(mutated, "ProbePresence");
+    }
 
-        Assert.Contains(
-            UnreleasedItemRefs(discarded),
-            static violation => violation.Contains("ProbePresence", StringComparison.Ordinal));
+    [Fact]
+    public void The_ownership_scanner_does_not_count_a_release_that_is_only_a_comment()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        ExpressionStatementSyntax release = ReleaseOf(MethodNamed(source, "TryGet"), "itemRef");
+
+        AssertSingleViolation(Apply(source, (release.Span, "// CFRelease(itemRef);")), "TryGet");
+    }
+
+    [Fact]
+    public void The_ownership_scanner_does_not_count_a_release_placed_before_the_call()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        ReceivingCall receiving = ReceivingCalls(Parse(source)).Single(static call => call.MethodName == "TryGet");
+
+        ExpressionStatementSyntax release = ReleaseOf(receiving.Method, "itemRef");
+
+        StatementSyntax received = receiving.Call.FirstAncestorOrSelf<StatementSyntax>()!;
+
+        string mutated = Apply(
+            source,
+            (release.Span, string.Empty),
+            (new TextSpan(received.SpanStart, 0), "CFRelease(itemRef);\n        "));
+
+        AssertSingleViolation(mutated, "TryGet");
+    }
+
+    [Fact]
+    public void The_ownership_scanner_does_not_count_a_release_that_runs_on_an_error_branch_only()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        IfStatementSyntax guard = ReleaseOf(MethodNamed(source, "TryGet"), "itemRef")
+            .FirstAncestorOrSelf<IfStatementSyntax>()!;
+
+        string mutated = Apply(
+            source,
+            (guard.Span, "if (status != ErrSecSuccess)\n        {\n            CFRelease(itemRef);\n        }"));
+
+        AssertSingleViolation(mutated, "TryGet");
+    }
+
+    [Fact]
+    public void The_ownership_scanner_goes_red_when_a_return_can_leave_before_the_release()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        IfStatementSyntax guard = ReleaseOf(MethodNamed(source, "TryGet"), "itemRef")
+            .FirstAncestorOrSelf<IfStatementSyntax>()!;
+
+        string mutated = Apply(
+            source,
+            (
+                new TextSpan(guard.SpanStart, 0),
+                "if (status != ErrSecSuccess)\n        {\n            return OsCredentialStoreResult.NotFound();\n        }\n\n        "));
+
+        AssertSingleViolation(mutated, "TryGet");
+    }
+
+    /// <summary>
+    /// <c>Set</c> releases the reference on its duplicate-item path and again in a <c>finally</c>; the
+    /// first alone must not satisfy the scanner for the paths that reach the second.
+    /// </summary>
+    [Fact]
+    public void The_ownership_scanner_goes_red_when_a_finally_release_is_removed()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        MethodDeclarationSyntax set = MethodNamed(source, "Set");
+
+        ExpressionStatementSyntax inFinally = set.Body!
+            .DescendantNodes()
+            .OfType<FinallyClauseSyntax>()
+            .Single()
+            .DescendantNodes()
+            .OfType<ExpressionStatementSyntax>()
+            .Single(static statement => IsRelease(statement, "addedRef"));
+
+        string mutated = Apply(source, (inFinally.Span, string.Empty));
+
+        // The duplicate-item path still releases it.
+        Assert.Contains("CFRelease(addedRef)", mutated, StringComparison.Ordinal);
+
+        AssertSingleViolation(mutated, "Set");
+    }
+
+    [Fact]
+    public void The_ownership_scanner_goes_red_when_a_reference_obtained_through_the_helper_is_never_released()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        ExpressionStatementSyntax release = ReleaseOf(MethodNamed(source, "UpdateExisting"), "itemRef");
+
+        AssertSingleViolation(Apply(source, (release.Span, string.Empty)), "UpdateExisting");
+    }
+
+    /// <summary>
+    /// A caller may return before its protected region only because the helper hands back a zero
+    /// reference on every failure, so the helper's returns are part of what this guard pins.
+    /// </summary>
+    [Fact]
+    public void The_ownership_scanner_goes_red_when_a_failed_lookup_leaves_a_nonzero_reference()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        MethodDeclarationSyntax helper = MethodNamed(source, "TryGetItemRef");
+
+        ReturnStatementSyntax notFound = helper.Body!
+            .DescendantNodes()
+            .OfType<ReturnStatementSyntax>()
+            .Single(static statement => statement.Expression!.ToString().StartsWith(
+                "OsCredentialStoreResult.NotFound(",
+                StringComparison.Ordinal));
+
+        BlockSyntax block = (BlockSyntax)notFound.Parent!;
+
+        StatementSyntax zeroing = block.Statements[block.Statements.IndexOf(notFound) - 1];
+
+        Assert.Equal("itemRef = nint.Zero;", zeroing.ToString());
+
+        AssertSingleViolation(Apply(source, (zeroing.Span, string.Empty)), "TryGetItemRef");
+    }
+
+    /// <summary>
+    /// The exit before the protected region is allowed only for a condition that proves the lookup
+    /// failed. A guard that returns while the lookup succeeded is holding a reference.
+    /// </summary>
+    [Fact]
+    public void The_ownership_scanner_goes_red_when_an_early_return_can_happen_after_a_successful_lookup()
+    {
+        string source = MacOsCredentialStoreSource();
+
+        IfStatementSyntax notFoundGuard = MethodNamed(source, "Delete")
+            .Body!
+            .DescendantNodes()
+            .OfType<IfStatementSyntax>()
+            .First(static statement => statement.Condition.ToString().Contains("NotFound", StringComparison.Ordinal));
+
+        string mutated = Apply(
+            source,
+            (notFoundGuard.Condition.Span, "existing.Status == OsCredentialStoreStatus.Ok"));
+
+        AssertSingleViolation(mutated, "Delete");
     }
 
     /// <summary>
@@ -86,41 +293,45 @@ public sealed class MacOsCredentialStoreHandleOwnershipTests
     [Fact]
     public void TryGetItemRef_obtains_the_reference_without_reading_the_password()
     {
-        (string signature, string body) = MethodNamed(MacOsCredentialStoreSource(), "TryGetItemRef");
+        MethodDeclarationSyntax method = MethodNamed(MacOsCredentialStoreSource(), "TryGetItemRef");
 
-        Assert.Contains("out nint itemRef", signature, StringComparison.Ordinal);
+        Assert.Contains(
+            method.ParameterList.Parameters,
+            static parameter => parameter.Modifiers.Any(SyntaxKind.OutKeyword)
+                && parameter.Identifier.ValueText == "itemRef");
 
-        Assert.Contains("SecKeychainFindGenericPasswordMetadata(", body, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("SecKeychainFindGenericPassword(", body, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("SecKeychainItemFreeContent", body, StringComparison.Ordinal);
+        AssertMetadataLookupWithoutPassword(method);
     }
 
     [Fact]
     public void Presence_probe_requests_an_item_reference_without_password_bytes()
     {
-        string source = MacOsCredentialStoreSource();
+        MethodDeclarationSyntax method = MethodNamed(MacOsCredentialStoreSource(), "ProbePresence");
 
-        Assert.Contains(
-            "internal static OsCredentialStoreStatus ProbePresence",
-            source,
-            StringComparison.Ordinal);
+        AssertMetadataLookupWithoutPassword(method);
 
-        Assert.Contains(
-            "SecKeychainFindGenericPasswordMetadata(\n            nint.Zero,",
-            source,
-            StringComparison.Ordinal);
+        // The probe must not be the password-reading lookup under another name.
+        Assert.DoesNotContain("TryGet", CalledNames(method));
+    }
 
-        Assert.Contains(
-            "accountBytes,\n            nint.Zero,\n            nint.Zero,\n            out nint itemRef)",
-            source,
-            StringComparison.Ordinal);
+    private static void AssertMetadataLookupWithoutPassword(MethodDeclarationSyntax method)
+    {
+        string[] called = CalledNames(method);
 
-        Assert.DoesNotContain(
-            "ProbePresence(string service, string account) => TryGet",
-            source,
-            StringComparison.Ordinal);
+        Assert.DoesNotContain("SecKeychainFindGenericPassword", called);
+
+        Assert.DoesNotContain("SecKeychainItemFreeContent", called);
+
+        InvocationExpressionSyntax lookup = Assert.Single(
+            method.Body!.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            static call => CalledName(call) == "SecKeychainFindGenericPasswordMetadata");
+
+        // (keychain, serviceLength, service, accountLength, account, passwordLength, passwordData, itemRef)
+        Assert.Equal(8, lookup.ArgumentList.Arguments.Count);
+
+        Assert.Equal("nint.Zero", lookup.ArgumentList.Arguments[5].ToString());
+
+        Assert.Equal("nint.Zero", lookup.ArgumentList.Arguments[6].ToString());
     }
 
     private static string MacOsCredentialStoreSource() =>
@@ -128,212 +339,346 @@ public sealed class MacOsCredentialStoreHandleOwnershipTests
             .Single(static source => source.Is(SourceFileName))
             .Text;
 
-    private static readonly string[] ItemRefFunctions =
-    [
-        "SecKeychainFindGenericPassword",
-        "SecKeychainFindGenericPasswordMetadata",
-        "SecKeychainAddGenericPassword",
-        "TryGetItemRef",
-    ];
+    private static void AssertSingleViolation(string source, string method)
+    {
+        string violation = Assert.Single(UnreleasedItemRefs(source));
+
+        Assert.StartsWith($"{method}:", violation, StringComparison.Ordinal);
+    }
+
+    private sealed record ReceivingCall(
+        MethodDeclarationSyntax Method,
+        InvocationExpressionSyntax Call,
+        string Function,
+        string? Reference)
+    {
+        internal string MethodName => Method.Identifier.ValueText;
+    }
+
+    private static CompilationUnitSyntax Parse(string source) =>
+        CSharpSyntaxTree.ParseText(source).GetCompilationUnitRoot();
+
+    private static MethodDeclarationSyntax MethodNamed(string source, string name) =>
+        Parse(source)
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(method => method.Body is not null && method.Identifier.ValueText == name);
 
     /// <summary>
-    /// Every call whose last argument receives a retained item reference and whose enclosing method
-    /// neither releases it nor hands it to its own caller through an <c>out nint</c> parameter.
+    /// The release statement for <paramref name="reference"/> in <paramref name="method"/>; the last
+    /// one when the method releases it on more than one path.
+    /// </summary>
+    private static ExpressionStatementSyntax ReleaseOf(MethodDeclarationSyntax method, string reference) =>
+        method.Body!
+            .DescendantNodes()
+            .OfType<ExpressionStatementSyntax>()
+            .Last(statement => IsRelease(statement, reference));
+
+    /// <summary>Applies text edits against one parse's spans, last position first so none shifts another.</summary>
+    private static string Apply(string source, params (TextSpan Span, string Text)[] edits)
+    {
+        string edited = source;
+
+        foreach ((TextSpan span, string text) in edits.OrderByDescending(static edit => edit.Span.Start))
+        {
+            edited = string.Concat(edited.AsSpan(0, span.Start), text, edited.AsSpan(span.End));
+        }
+
+        return edited;
+    }
+
+    private static string[] CalledNames(MethodDeclarationSyntax method) =>
+        [.. method.Body!.DescendantNodes().OfType<InvocationExpressionSyntax>().Select(CalledName)];
+
+    private static string CalledName(InvocationExpressionSyntax call) =>
+        call.Expression switch
+        {
+            IdentifierNameSyntax name => name.Identifier.ValueText,
+            MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
+            _ => string.Empty,
+        };
+
+    /// <summary>
+    /// Every call whose last argument receives a retained item reference, with the local or
+    /// out-parameter that receives it, or null when the call discards it.
+    /// </summary>
+    private static IReadOnlyList<ReceivingCall> ReceivingCalls(CompilationUnitSyntax root)
+    {
+        List<ReceivingCall> calls = [];
+
+        foreach (MethodDeclarationSyntax method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
+        {
+            // [LibraryImport] declarations have no body and receive nothing themselves.
+            if (method.Body is not { } body)
+            {
+                continue;
+            }
+
+            foreach (InvocationExpressionSyntax call in body.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                string function = CalledName(call);
+
+                if (!ItemRefFunctions.Contains(function) || call.ArgumentList.Arguments.Count == 0)
+                {
+                    continue;
+                }
+
+                calls.Add(new ReceivingCall(method, call, function, ReceivedReference(call.ArgumentList.Arguments[^1])));
+            }
+        }
+
+        return calls;
+    }
+
+    private static string? ReceivedReference(ArgumentSyntax argument) =>
+        argument.Expression switch
+        {
+            DeclarationExpressionSyntax { Designation: SingleVariableDesignationSyntax single } =>
+                single.Identifier.ValueText,
+
+            IdentifierNameSyntax { Identifier.ValueText: not "_" } name => name.Identifier.ValueText,
+
+            _ => null,
+        };
+
+    /// <summary>
+    /// Every receiving call whose reference can outlive its method on some path: not released after
+    /// the call in its own block or in an enclosing <c>finally</c>, or with a way out of the method
+    /// before a release that dominates it. A method that hands the reference to its caller through an
+    /// <c>out nint</c> parameter is instead held to the contract its callers rely on.
     /// </summary>
     private static IReadOnlyList<string> UnreleasedItemRefs(string source)
     {
+        IReadOnlyList<ReceivingCall> receiving = ReceivingCalls(Parse(source));
+
+        // The helpers whose out parameter carries the reference to their caller, and so promise a
+        // zero reference on every failure: their callers may return early on a failed lookup.
+        HashSet<string> handsToCaller =
+        [
+            .. receiving
+                .Where(static call => call.Reference is { } reference && HandsToCaller(call.Method, reference))
+                .Select(static call => call.MethodName),
+        ];
+
         List<string> violations = [];
 
-        foreach ((string name, string signature, string body) in MethodsOf(source))
+        foreach (ReceivingCall call in receiving)
         {
-            foreach (string function in ItemRefFunctions)
+            string? problem = Problem(call, handsToCaller.Contains(call.Function));
+
+            if (problem is not null)
             {
-                foreach (string argument in ItemRefArgumentsOfCallsTo(body, function))
-                {
-                    if (argument is "out _" or "_")
-                    {
-                        violations.Add($"{name}: {function} discards the retained item reference.");
-
-                        continue;
-                    }
-
-                    string reference = argument.Replace("out ", string.Empty, StringComparison.Ordinal)
-                        .Replace("nint ", string.Empty, StringComparison.Ordinal);
-
-                    bool released = body.Contains($"CFRelease({reference})", StringComparison.Ordinal);
-
-                    bool handedToCaller = signature.Contains($"out nint {reference}", StringComparison.Ordinal);
-
-                    if (!released && !handedToCaller)
-                    {
-                        violations.Add($"{name}: {function} receives {reference} but the method never releases it.");
-                    }
-                }
+                violations.Add($"{call.MethodName}: {call.Function} {problem}");
             }
         }
 
         return violations;
     }
 
-    private static (string Signature, string Body) MethodNamed(string source, string name)
+    private static string? Problem(ReceivingCall receiving, bool lookupGuaranteesZeroOnFailure)
     {
-        (string Name, string Signature, string Body) method = MethodsOf(source).Single(
-            candidate => candidate.Name == name);
-
-        return (method.Signature, method.Body);
-    }
-
-    /// <summary>
-    /// The members of the store class that have a body, split on the file's own layout: a member
-    /// starts at a four-space-indented line and its body is the block between the matching
-    /// four-space-indented braces. <c>[LibraryImport]</c> declarations end in a semicolon and have no body.
-    /// </summary>
-    private static List<(string Name, string Signature, string Body)> MethodsOf(string source)
-    {
-        List<(string Name, string Signature, string Body)> methods = [];
-
-        string[] lines = source.Split('\n');
-
-        for (int index = 0; index < lines.Length; index++)
+        if (receiving.Reference is not { } reference)
         {
-            string line = lines[index];
-
-            if (!IsMemberStart(line))
-            {
-                continue;
-            }
-
-            int open = index;
-
-            while (open < lines.Length && lines[open] != "    {" && !lines[open].TrimEnd().EndsWith(';'))
-            {
-                open++;
-            }
-
-            if (open >= lines.Length || lines[open] != "    {")
-            {
-                index = Math.Max(index, open);
-
-                continue;
-            }
-
-            int close = open + 1;
-
-            while (close < lines.Length && lines[close] != "    }")
-            {
-                close++;
-            }
-
-            string signature = string.Join('\n', lines[index..open]);
-
-            string body = string.Join('\n', lines[(open + 1)..close]);
-
-            int paren = signature.IndexOf('(', StringComparison.Ordinal);
-
-            string name = signature[..paren].Split(' ', StringSplitOptions.RemoveEmptyEntries)[^1];
-
-            methods.Add((name, signature, body));
-
-            index = close;
+            return "discards the retained item reference.";
         }
 
-        return methods;
-    }
-
-    private static bool IsMemberStart(string line) =>
-        line.StartsWith("    ", StringComparison.Ordinal)
-        && line.Length > 4
-        && line[4] != ' '
-        && line[4] != '{'
-        && line[4] != '}'
-        && line[4] != '['
-        && !line.StartsWith("    //", StringComparison.Ordinal)
-        && !line.StartsWith("    ///", StringComparison.Ordinal)
-        && line.Contains('(', StringComparison.Ordinal);
-
-    /// <summary>
-    /// The last argument of every call to <paramref name="function"/> within <paramref name="source"/>.
-    /// </summary>
-    private static IReadOnlyList<string> ItemRefArgumentsOfCallsTo(string source, string function)
-    {
-        List<string> arguments = [];
-
-        for (int index = source.IndexOf(function, StringComparison.Ordinal);
-             index >= 0;
-             index = source.IndexOf(function, index + function.Length, StringComparison.Ordinal))
+        if (HandsToCaller(receiving.Method, reference))
         {
-            // A longer name sharing this prefix (…Metadata) is a different function.
-            int open = index + function.Length;
-
-            while (open < source.Length && char.IsWhiteSpace(source[open]))
-            {
-                open++;
-            }
-
-            // The name also appears inside failure messages, where it is prose rather than a call.
-            if (open >= source.Length || source[open] != '(')
-            {
-                continue;
-            }
-
-            int lineStart = source.LastIndexOf('\n', index) + 1;
-
-            if (source[lineStart..index].Contains('"', StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            arguments.Add(Collapse(TopLevelArguments(source, open)[^1]));
+            return FailureKeepsReference(receiving.Method, reference) is { } failure
+                ? $"hands {reference} to its caller, but {failure}."
+                : null;
         }
 
-        return arguments;
+        StatementSyntax? received = receiving.Call.FirstAncestorOrSelf<StatementSyntax>();
+
+        if (received?.Parent is not BlockSyntax)
+        {
+            return $"receives {reference} in a statement the scanner cannot place.";
+        }
+
+        if (!ReleaseFollows(received, reference))
+        {
+            return $"receives {reference}, but no release follows it in its block or in an enclosing finally.";
+        }
+
+        string? lookupResult = lookupGuaranteesZeroOnFailure
+            && receiving.Call.Parent is EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax declarator }
+                ? declarator.Identifier.ValueText
+                : null;
+
+        foreach (SyntaxNode exit in receiving.Method.Body!
+                     .DescendantNodes()
+                     .Where(node => node is ReturnStatementSyntax or ThrowStatementSyntax
+                         && node.SpanStart > received.Span.End))
+        {
+            if (!ReleasedBefore(exit, receiving.Method, received, reference, lookupResult))
+            {
+                int line = exit.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+                return $"receives {reference}, but the exit at line {line} can leave the method without releasing it.";
+            }
+        }
+
+        return null;
     }
 
-    /// <summary>Splits the parenthesized argument list opening at <paramref name="open"/>.</summary>
-    private static List<string> TopLevelArguments(string source, int open)
+    private static bool HandsToCaller(MethodDeclarationSyntax method, string reference) =>
+        method.ParameterList.Parameters.Any(parameter =>
+            parameter.Identifier.ValueText == reference && parameter.Modifiers.Any(SyntaxKind.OutKeyword));
+
+    /// <summary>
+    /// A failing return of a method that hands a reference to its caller must have set that reference
+    /// to zero immediately before, because its caller will not release a reference on a failure.
+    /// </summary>
+    private static string? FailureKeepsReference(MethodDeclarationSyntax method, string reference)
     {
-        List<string> arguments = [];
-
-        int depth = 0;
-
-        int start = open + 1;
-
-        for (int index = open; index < source.Length; index++)
+        foreach (ReturnStatementSyntax exit in method.Body!.DescendantNodes().OfType<ReturnStatementSyntax>())
         {
-            char value = source[index];
-
-            if (value == '(')
+            if (exit.Expression?.ToString().StartsWith(SuccessResult, StringComparison.Ordinal) == true)
             {
-                depth++;
-
                 continue;
             }
 
-            if (value == ')')
-            {
-                depth--;
-
-                if (depth == 0)
+            if (exit.Parent is BlockSyntax block
+                && block.Statements.IndexOf(exit) is > 0 and var index
+                && block.Statements[index - 1] is ExpressionStatementSyntax
                 {
-                    arguments.Add(source[start..index]);
-
-                    return arguments;
+                    Expression: AssignmentExpressionSyntax { Left: IdentifierNameSyntax target } assignment,
                 }
-
+                && target.Identifier.ValueText == reference
+                && assignment.Right.ToString() == "nint.Zero")
+            {
                 continue;
             }
 
-            if (value == ',' && depth == 1)
-            {
-                arguments.Add(source[start..index]);
+            int line = exit.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
-                start = index + 1;
+            return $"the failing return at line {line} does not first set {reference} to nint.Zero";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether a release of <paramref name="reference"/> follows <paramref name="received"/> in its
+    /// own block or an enclosing one, or in the <c>finally</c> of a <c>try</c> that encloses or follows
+    /// it. A release anywhere else in the method — before the call, on a branch — does not follow it.
+    /// </summary>
+    private static bool ReleaseFollows(StatementSyntax received, string reference)
+    {
+        for (SyntaxNode? node = received; node is not null and not MethodDeclarationSyntax; node = node.Parent)
+        {
+            if (node.Parent is BlockSyntax block)
+            {
+                foreach (StatementSyntax later in block.Statements.Where(statement => statement.SpanStart > received.Span.End))
+                {
+                    if (ReleasesWhenHeld(later, reference)
+                        || later is TryStatementSyntax tried && FinallyReleases(tried, reference))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if (node is TryStatementSyntax enclosing
+                && FinallyReleases(enclosing, reference)
+                && !enclosing.Finally!.Span.Contains(received.Span))
+            {
+                return true;
             }
         }
 
-        throw new InvalidOperationException($"Unbalanced argument list in {SourceFileName}.");
+        return false;
     }
 
-    private static string Collapse(string argument) =>
-        string.Join(' ', argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    /// <summary>
+    /// Whether a release has already happened, on every path to <paramref name="exit"/>, by the time
+    /// it runs: an earlier sibling statement in a block that contains it, or the <c>finally</c> of a
+    /// <c>try</c> that contains it, or — for a reference from a helper that guarantees zero on
+    /// failure — a branch whose condition proves the lookup failed.
+    /// </summary>
+    private static bool ReleasedBefore(
+        SyntaxNode exit,
+        MethodDeclarationSyntax method,
+        StatementSyntax received,
+        string reference,
+        string? lookupResult)
+    {
+        for (SyntaxNode node = exit; node != method.Body && node.Parent is not null; node = node.Parent)
+        {
+            if (node.Parent is BlockSyntax block
+                && block.Statements.Any(earlier =>
+                    earlier.SpanStart > received.Span.End
+                    && earlier.SpanStart < node.SpanStart
+                    && ReleasesWhenHeld(earlier, reference)))
+            {
+                return true;
+            }
+
+            if (node is TryStatementSyntax tried
+                && FinallyReleases(tried, reference)
+                && !tried.Finally!.Span.Contains(exit.Span))
+            {
+                return true;
+            }
+
+            if (node is IfStatementSyntax guard
+                && lookupResult is not null
+                && guard.Statement.Span.Contains(exit.Span)
+                && ConditionProvesLookupFailed(guard.Condition, lookupResult))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A condition on the helper's result that is not an equality with success. It is deliberately
+    /// narrow: <c>result.Status == OsCredentialStoreStatus.Ok</c> would admit exactly the exit this
+    /// rule exists to refuse.
+    /// </summary>
+    private static bool ConditionProvesLookupFailed(ExpressionSyntax condition, string lookupResult)
+    {
+        string text = condition.ToString();
+
+        return text.Contains($"{lookupResult}.Status", StringComparison.Ordinal)
+            && !Regex.IsMatch(text, @"\.Status\s*(==|is)\s*OsCredentialStoreStatus\.Ok\b");
+    }
+
+    private static bool FinallyReleases(TryStatementSyntax tried, string reference) =>
+        tried.Finally?.Block.Statements.Any(statement => ReleasesWhenHeld(statement, reference)) == true;
+
+    /// <summary>
+    /// An unconditional <c>CFRelease(reference)</c>, or the same call under the one guard that cannot
+    /// leak: a reference that is not zero is the only one there is anything to release for.
+    /// </summary>
+    private static bool ReleasesWhenHeld(StatementSyntax statement, string reference)
+    {
+        if (IsRelease(statement, reference))
+        {
+            return true;
+        }
+
+        return statement is IfStatementSyntax { Else: null, Condition: BinaryExpressionSyntax guard } conditional
+            && guard.IsKind(SyntaxKind.NotEqualsExpression)
+            && guard.Left is IdentifierNameSyntax left
+            && left.Identifier.ValueText == reference
+            && guard.Right.ToString() == "nint.Zero"
+            && (conditional.Statement is BlockSyntax block ? block.Statements : [conditional.Statement])
+                .Any(inner => IsRelease(inner, reference));
+    }
+
+    private static bool IsRelease(StatementSyntax statement, string reference) =>
+        statement is ExpressionStatementSyntax
+        {
+            Expression: InvocationExpressionSyntax
+            {
+                Expression: IdentifierNameSyntax { Identifier.ValueText: ReleaseFunction },
+            } invocation,
+        }
+        && invocation.ArgumentList.Arguments.Count == 1
+        && invocation.ArgumentList.Arguments[0].Expression is IdentifierNameSyntax argument
+        && argument.Identifier.ValueText == reference;
 }
