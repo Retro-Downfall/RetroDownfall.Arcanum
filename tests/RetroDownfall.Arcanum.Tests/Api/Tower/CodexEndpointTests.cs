@@ -1,8 +1,11 @@
+using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
@@ -114,6 +117,220 @@ public sealed class CodexEndpointTests : IDisposable
         Assert.True(codex.Value.Exists);
 
         Assert.Equal("# Codex\n\nSpells go here.", codex.Value.Content);
+    }
+
+    /// <summary>
+    /// A body whose <c>content</c> is missing or null is the caller's mistake, not a server fault.
+    /// </summary>
+    [Fact]
+    public async Task WriteCodexAsync_with_null_content_answers_400_and_writes_nothing()
+    {
+        string codexPath = Path.Combine(_root, "CODEX.md");
+
+        await File.WriteAllTextAsync(codexPath, "previous");
+
+        IResult? failure = await CodexEndpoints.WriteCodexAsync(
+            _root,
+            codexPath,
+            null!,
+            "trace",
+            CancellationToken.None);
+
+        Assert.NotNull(failure);
+
+        (int status, string body) = await ExecuteAsync(failure);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, status);
+
+        Assert.Contains(ErrorCodes.Validation.InvalidBody, body, StringComparison.Ordinal);
+
+        Assert.Equal("previous", await File.ReadAllTextAsync(codexPath));
+    }
+
+    /// <summary>
+    /// The write goes through a same-directory temporary file and an atomic replace, so a write that stops
+    /// part-way can never leave the codex truncated: the destination is a new file or the old one.
+    /// </summary>
+    [Fact]
+    public async Task WriteCodexAsync_replaces_the_file_rather_than_rewriting_it_in_place()
+    {
+        string codexPath = Path.Combine(_root, "CODEX.md");
+
+        await File.WriteAllTextAsync(codexPath, "previous");
+
+        Assert.True(FileHandleIdentityInterop.TryGetPathIdentity(codexPath, out FileHandleIdentity before));
+
+        IResult? failure = await CodexEndpoints.WriteCodexAsync(
+            _root,
+            codexPath,
+            "replacement",
+            "trace",
+            CancellationToken.None);
+
+        Assert.Null(failure);
+
+        Assert.True(FileHandleIdentityInterop.TryGetPathIdentity(codexPath, out FileHandleIdentity after));
+
+        Assert.False(FileHandleIdentity.IdentitiesMatch(before, after), "The write rewrote the file in place.");
+
+        Assert.Equal("replacement", await File.ReadAllTextAsync(codexPath));
+
+        Assert.Equal([codexPath], Directory.GetFileSystemEntries(_root));
+    }
+
+    [Fact]
+    public async Task WriteCodexAsync_cancelled_mid_write_leaves_the_previous_file_intact()
+    {
+        string codexPath = Path.Combine(_root, "CODEX.md");
+
+        await File.WriteAllTextAsync(codexPath, "previous");
+
+        using CancellationTokenSource cancelled = new();
+
+        await cancelled.CancelAsync();
+
+        try
+        {
+            _ = await CodexEndpoints.WriteCodexAsync(
+                _root,
+                codexPath,
+                "replacement",
+                "trace",
+                cancelled.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // A request that was already gone is allowed to stop before it starts.
+        }
+
+        string content = await File.ReadAllTextAsync(codexPath);
+
+        Assert.True(
+            content is "previous" or "replacement",
+            $"The codex was left holding neither its old nor its new content: '{content}'.");
+
+        Assert.Equal([codexPath], Directory.GetFileSystemEntries(_root));
+    }
+
+    /// <summary>
+    /// The containment check runs before anything is created, so a write refused for escaping the root
+    /// has not already made a directory outside it.
+    /// </summary>
+    [Fact]
+    public async Task WriteCodexAsync_through_a_symlinked_parent_creates_nothing_outside_the_root()
+    {
+        Directory.CreateSymbolicLink(Path.Combine(_root, "linked"), _outside);
+
+        string codexPath = Path.Combine(_root, "linked", "nested", "CODEX.md");
+
+        IResult? failure = await CodexEndpoints.WriteCodexAsync(
+            _root,
+            codexPath,
+            "attacker-content",
+            "trace",
+            CancellationToken.None);
+
+        Assert.NotNull(failure);
+
+        (int status, string body) = await ExecuteAsync(failure);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, status);
+
+        Assert.Contains(ErrorCodes.Codex.PathNotContained, body, StringComparison.Ordinal);
+
+        Assert.Empty(Directory.GetFileSystemEntries(_outside));
+    }
+
+    [Fact]
+    public async Task DeleteCodex_symlinked_parent_is_refused()
+    {
+        string target = Path.Combine(_outside, "CODEX.md");
+
+        await File.WriteAllTextAsync(target, "outside-codex");
+
+        Directory.CreateSymbolicLink(Path.Combine(_root, "linked"), _outside);
+
+        IResult result = CodexEndpoints.DeleteCodex(
+            _root,
+            Path.Combine(_root, "linked", "CODEX.md"),
+            "trace");
+
+        (int status, string body) = await ExecuteAsync(result);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, status);
+
+        Assert.Contains(ErrorCodes.Codex.PathNotContained, body, StringComparison.Ordinal);
+
+        Assert.True(File.Exists(target));
+    }
+
+    /// <summary>
+    /// A <c>CODEX.md</c> that is itself a link is unlinked, never followed: the documented behaviour of the
+    /// delete routes, and the one way an operator removes a hostile link through the API.
+    /// </summary>
+    [Fact]
+    public async Task DeleteCodex_symlinked_codex_removes_the_link_and_leaves_its_target()
+    {
+        string target = Path.Combine(_outside, "authorized_keys");
+
+        await File.WriteAllTextAsync(target, "original-secret");
+
+        string codexPath = Path.Combine(_root, "CODEX.md");
+
+        File.CreateSymbolicLink(codexPath, target);
+
+        IResult result = CodexEndpoints.DeleteCodex(_root, codexPath, "trace");
+
+        (int status, _) = await ExecuteAsync(result);
+
+        Assert.Equal(StatusCodes.Status204NoContent, status);
+
+        Assert.False(File.Exists(codexPath) || new FileInfo(codexPath).LinkTarget is not null);
+
+        Assert.Equal("original-secret", await File.ReadAllTextAsync(target));
+    }
+
+    [Fact]
+    public async Task DeleteCodex_of_a_missing_file_is_still_a_204()
+    {
+        IResult result = CodexEndpoints.DeleteCodex(_root, Path.Combine(_root, "CODEX.md"), "trace");
+
+        (int status, _) = await ExecuteAsync(result);
+
+        Assert.Equal(StatusCodes.Status204NoContent, status);
+    }
+
+    [Fact]
+    public async Task DeleteCodex_that_cannot_unlink_answers_a_mapped_error_instead_of_throwing()
+    {
+        // A directory where the file should be: File.Delete refuses it with an UnauthorizedAccessException.
+        string codexPath = Path.Combine(_root, "CODEX.md");
+
+        Directory.CreateDirectory(codexPath);
+
+        IResult result = CodexEndpoints.DeleteCodex(_root, codexPath, "trace");
+
+        (int status, string body) = await ExecuteAsync(result);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, status);
+
+        Assert.Contains(ErrorCodes.Workspace.DeleteFailed, body, StringComparison.Ordinal);
+    }
+
+    private static async Task<(int Status, string Body)> ExecuteAsync(IResult result)
+    {
+        DefaultHttpContext context = new()
+        {
+            RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
+        };
+
+        MemoryStream body = new();
+
+        context.Response.Body = body;
+
+        await result.ExecuteAsync(context);
+
+        return (context.Response.StatusCode, Encoding.UTF8.GetString(body.ToArray()));
     }
 
     [Fact]
