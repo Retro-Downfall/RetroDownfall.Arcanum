@@ -127,7 +127,16 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
                 && applied.Value == state.CanonicalSearchSequence
                 && state.AppliedCampaignDeletionSequence < state.CoreCampaignDeletionSequence;
 
-            if (adopting || watermarkBehind)
+            // A projection adopted by a build from before the owed rebuild cleared on adoption carries
+            // that debt beside a tuple that is already current, and with nothing pending no delta will
+            // ever arrive to republish it. Every operation that records the debt also forgets the applied
+            // tuple, so this pairing can only be such a projection, and the pass republishes the tuple
+            // it already holds to clear the debt exactly as the pass that adopted it now does.
+            bool debtOutstanding = !adopting
+                && applied.Value == state.CanonicalSearchSequence
+                && state.RebuildState == CovenantFtsRebuildState.FullRebuildRequired;
+
+            if (adopting || watermarkBehind || debtOutstanding)
             {
                 await PublishAppliedAsync(transaction, state.DatasetGeneration, applied.Value, cancellationToken)
                     .ConfigureAwait(false);
@@ -291,7 +300,8 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         command.CommandText = """
             SELECT st.DatasetGeneration, st.CanonicalSearchSequence, st.AppliedDatasetGeneration,
                    st.AppliedSearchSequence, st.AcceleratorEpoch, st.AppliedCampaignDeletionSequence,
-                   COALESCE((SELECT MAX(Sequence) FROM owner_deletion_events WHERE OwnerKindCode = 1), 0)
+                   COALESCE((SELECT MAX(Sequence) FROM owner_deletion_events WHERE OwnerKindCode = 1), 0),
+                   st.RebuildStateCode
             FROM covenant_state st
             WHERE st.StateKey = 1;
             """;
@@ -308,7 +318,8 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
             reader.IsDBNull(3) ? null : reader.GetInt64(3),
             checked((ulong)reader.GetInt64(4)),
             reader.GetInt64(5),
-            reader.GetInt64(6));
+            reader.GetInt64(6),
+            (CovenantFtsRebuildState)reader.GetInt32(7));
     }
 
     private static async ValueTask<ImmutableArray<OutboxRow>> ReadPendingAsync(
@@ -491,7 +502,8 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         long? AppliedSearchSequence,
         ulong AcceleratorEpoch,
         long AppliedCampaignDeletionSequence,
-        long CoreCampaignDeletionSequence);
+        long CoreCampaignDeletionSequence,
+        CovenantFtsRebuildState RebuildState);
 
     private readonly record struct OutboxRow(
         long SearchSequence,
