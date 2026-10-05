@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
@@ -1100,7 +1101,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     /// caller's token, and nothing logs an error for a spell that exists.
     /// </summary>
     [SkippableFact]
-    public async Task CloneAsync_CancelledAfterMove_ReturnsSuccessOrRethrowsCancellation()
+    public async Task CloneAsync_cancelled_after_move_reports_the_clone_as_created()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -1118,28 +1119,19 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         repository.AfterSpellDirectoryPublishedForTests = callerAborted.Cancel;
 
-        Result<SpellSummary> result;
-
-        try
-        {
-            result = await repository.CloneAsync(
-                "clone-source",
-                _workspaceRoot,
-                new CloneSpellRequest("clone-copy"),
-                callerAborted.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            Assert.True(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "clone-copy")));
-
-            return;
-        }
+        Result<SpellSummary> result = await repository.CloneAsync(
+            "clone-source",
+            _workspaceRoot,
+            new CloneSpellRequest("clone-copy"),
+            callerAborted.Token);
 
         Assert.True(callerAborted.IsCancellationRequested);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : null);
 
         Assert.Equal("clone-copy", result.Value!.Name);
+
+        Assert.True(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "clone-copy")));
 
         Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
     }
@@ -1157,37 +1149,316 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         repository.AfterSpellDirectoryPublishedForTests = callerAborted.Cancel;
 
-        SpellExportDto payload = new(
-            null,
-            """
-            ---
-            name: import-cancelled
-            description: imported
-            ---
-            body
-            """,
-            []);
+        Result<SpellSummary> result = await repository.ImportAsync(
+            new SpellImportRequest(ImportPayloadNamed("import-cancelled"), _workspaceRoot, null),
+            callerAborted.Token);
 
-        Result<SpellSummary> result;
-
-        try
-        {
-            result = await repository.ImportAsync(
-                new SpellImportRequest(payload, _workspaceRoot, null),
-                callerAborted.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            Assert.True(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "import-cancelled")));
-
-            return;
-        }
+        Assert.True(callerAborted.IsCancellationRequested);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : null);
 
         Assert.Equal("import-cancelled", result.Value!.Name);
 
+        Assert.True(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "import-cancelled")));
+
         Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    /// <summary>
+    /// Before the spell directory is published a cancelled caller really has stopped the write: the
+    /// cancellation propagates, nothing is published, the staging directory is cleaned up, and no error is
+    /// logged for it (the blanket catch would have turned it into a write failure and an Error log).
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("create")]
+    [InlineData("clone")]
+    [InlineData("import")]
+    public async Task Staged_write_cancelled_before_the_move_propagates_and_publishes_nothing(string operation)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
+
+        Assert.True(
+            (await repository.CreateAsync(
+                _workspaceRoot,
+                new CreateSpellRequest("staged-source", "source", [], null, null, null, null, [], [], Body: "body"),
+                CancellationToken.None)).IsSuccess);
+
+        using CancellationTokenSource callerAborted = new();
+
+        repository.AfterSpellStagingDirectoryCreatedForTests = callerAborted.Cancel;
+
+        Task running = operation switch
+        {
+            "create" => repository.CreateAsync(
+                _workspaceRoot,
+                new CreateSpellRequest("staged-target", "target", [], null, null, null, null, [], [], Body: "body"),
+                callerAborted.Token),
+            "clone" => repository.CloneAsync(
+                "staged-source",
+                _workspaceRoot,
+                new CloneSpellRequest("staged-target"),
+                callerAborted.Token),
+            _ => repository.ImportAsync(
+                new SpellImportRequest(ImportPayloadNamed("staged-target"), _workspaceRoot, null),
+                callerAborted.Token),
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
+
+        string spellsRoot = Path.Combine(_workspaceRoot, "spells");
+
+        Assert.False(Directory.Exists(Path.Combine(spellsRoot, "staged-target")));
+
+        Assert.Empty(Directory.GetDirectories(spellsRoot, ".staging-*"));
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    /// <summary>
+    /// The spell is on disk when the summary read-back runs, so a read-back that cannot see it answers with the
+    /// summary the written content describes rather than failing a write that succeeded.
+    /// </summary>
+    [SkippableFact]
+    public async Task ImportAsync_answers_from_the_written_content_when_the_read_back_cannot_see_the_spell()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
+
+        string spellFile = Path.Combine(_workspaceRoot, "spells", "unlisted-import", "SPELL.md");
+
+        long oversize = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes() + 1;
+
+        // Once the directory is published, make the catalog skip the file: the read-back then lists nothing.
+        repository.AfterSpellDirectoryPublishedForTests = () => File.WriteAllBytes(spellFile, new byte[checked((int)oversize)]);
+
+        SkillMetadata metadata = new(
+            "unlisted-import",
+            "1.0.0",
+            "written but not listed",
+            ["alpha", "beta"],
+            null,
+            null,
+            [],
+            [],
+            null,
+            null,
+            null,
+            null);
+
+        SpellExportDto payload = new(metadata, "body", []);
+
+        Result<SpellSummary> result = await repository.ImportAsync(
+            new SpellImportRequest(payload, _workspaceRoot, null),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? $"{result.Error.Code}: {result.Error.Message}" : null);
+
+        Assert.Equal("unlisted-import", result.Value!.Name);
+
+        Assert.Equal("written but not listed", result.Value.Description);
+
+        Assert.Equal(SpellSource.Workspace, result.Value.Source);
+
+        Assert.Equal(["alpha", "beta"], result.Value.Tags);
+
+        // The read-back could not do its job, which is worth a Warning, but the write did not fail.
+        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    [SkippableFact]
+    public async Task CloneAsync_answers_from_the_written_content_when_the_read_back_cannot_see_the_spell()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
+
+        Assert.True(
+            (await repository.CreateAsync(
+                _workspaceRoot,
+                new CreateSpellRequest("unlisted-source", "source description", ["gamma"], null, null, null, null, [], [], Body: "body"),
+                CancellationToken.None)).IsSuccess);
+
+        string spellFile = Path.Combine(_workspaceRoot, "spells", "unlisted-clone", "SPELL.md");
+
+        long oversize = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes() + 1;
+
+        repository.AfterSpellDirectoryPublishedForTests = () => File.WriteAllBytes(spellFile, new byte[checked((int)oversize)]);
+
+        Result<SpellSummary> result = await repository.CloneAsync(
+            "unlisted-source",
+            _workspaceRoot,
+            new CloneSpellRequest("unlisted-clone"),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? $"{result.Error.Code}: {result.Error.Message}" : null);
+
+        Assert.Equal("unlisted-clone", result.Value!.Name);
+
+        Assert.Equal("source description", result.Value.Description);
+
+        Assert.Equal(SpellSource.Workspace, result.Value.Source);
+
+        Assert.Equal(["gamma"], result.Value.Tags);
+
+        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    /// <summary>
+    /// A version activation that is cancelled while it is still reading the version file stops there: the
+    /// cancellation propagates, SPELL.md is untouched and no backup is written.
+    /// </summary>
+    [SkippableFact]
+    public async Task ActivateVersionAsync_cancelled_while_reading_the_version_file_propagates()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("cancel-activate");
+
+        string versionFile = Path.Combine(spellDir, "SPELL.v2.0.md");
+
+        await File.WriteAllTextAsync(
+            versionFile,
+            """
+            ---
+            name: cancel-activate
+            description: export fixture
+            ---
+            version body
+            """);
+
+        string original = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
+
+        using CancellationTokenSource callerAborted = new();
+
+        Action<string>? priorSeam = SecureFileReader.AfterOpenForTests;
+
+        // The seam is process-wide, so it reacts only to this test's version file.
+        SecureFileReader.AfterOpenForTests = path =>
+        {
+            if (string.Equals(Path.GetFileName(path), "SPELL.v2.0.md", StringComparison.Ordinal)
+                && path.Contains(_workspaceRoot, StringComparison.Ordinal))
+            {
+                callerAborted.Cancel();
+            }
+        };
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => repository.ActivateVersionAsync("cancel-activate", "2.0", _workspaceRoot, callerAborted.Token));
+        }
+        finally
+        {
+            SecureFileReader.AfterOpenForTests = priorSeam;
+        }
+
+        Assert.Equal(original, await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md")));
+
+        Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    /// <summary>
+    /// An update writes SPELL.md and then the sidecar that describes it. When the sidecar write fails the caller
+    /// is told the update failed, so SPELL.md is put back rather than left describing a spell the sidecar does
+    /// not match.
+    /// </summary>
+    [SkippableFact]
+    public async Task UpdateAsync_restores_SPELL_md_when_the_sidecar_write_fails()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("rollback-update");
+
+        string original = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+
+        // A directory where the sidecar belongs: the scan sees no sidecar, and writing one cannot succeed.
+        Directory.CreateDirectory(Path.Combine(spellDir, "SPELL.json"));
+
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
+
+        Result result = await repository.UpdateAsync(
+            "rollback-update",
+            _workspaceRoot,
+            new UpdateSpellRequest(
+                Description: "changed description",
+                Tags: null,
+                SystemPrompt: null,
+                Template: null,
+                Model: null,
+                Provider: null,
+                Tools: null,
+                RequiredMcpServers: null,
+                Version: "3.0.0"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Spell.WriteFailed, result.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md")));
+
+        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    [SkippableFact]
+    public async Task ActivateVersionAsync_restores_SPELL_md_and_drops_its_backup_when_the_sidecar_write_fails()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("rollback-activate");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.v2.0.md"),
+            """
+            ---
+            name: rollback-activate
+            description: export fixture
+            ---
+            version body
+            """);
+
+        string original = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+
+        Directory.CreateDirectory(Path.Combine(spellDir, "SPELL.json"));
+
+        SpellRepository repository = CreateRepository();
+
+        Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
+            "rollback-activate",
+            "2.0",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(activated.IsFailure);
+
+        Assert.Equal(ErrorCodes.Spell.WriteFailed, activated.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md")));
+
+        // The backup this activation wrote of the working copy is removed with the rollback, so a failed
+        // activation does not leave a stray version file that blocks a later one.
+        Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
     }
 
     [SkippableFact]
@@ -2032,6 +2303,18 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             Skip.If(true, $"Creating a symbolic link is not permitted on this host: {ex.GetType().Name}.");
         }
     }
+
+    private static SpellExportDto ImportPayloadNamed(string name) =>
+        new(
+            null,
+            $"""
+            ---
+            name: {name}
+            description: imported
+            ---
+            body
+            """,
+            []);
 
     private async Task<string> WriteExportableSpellAsync(string name)
     {
