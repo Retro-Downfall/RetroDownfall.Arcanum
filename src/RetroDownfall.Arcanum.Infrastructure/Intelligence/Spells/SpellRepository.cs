@@ -56,10 +56,12 @@ internal sealed partial class SpellRepository : ISpellRepository
     internal Action? AfterSpellDirectoryPublishedForTests { get; set; }
 
     /// <summary>
-    /// Deterministic test seam invoked right after a spell's staging directory has been created and before
-    /// anything is written into it, so a test can cancel the caller while the write is still unpublished.
+    /// Deterministic test seam invoked once per mutating call, immediately before its first write: after the
+    /// staging directory exists for create, clone and import, and before the in-place replace for update and
+    /// for version create and update. A test cancels the caller here, while nothing has been published or
+    /// replaced yet.
     /// </summary>
-    internal Action? AfterSpellStagingDirectoryCreatedForTests { get; set; }
+    internal Action? BeforeFirstSpellWriteForTests { get; set; }
 
     public SpellRepository(
         ILogger<SpellRepository> logger,
@@ -226,7 +228,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             Directory.CreateDirectory(stagingDir);
 
-            AfterSpellStagingDirectoryCreatedForTests?.Invoke();
+            BeforeFirstSpellWriteForTests?.Invoke();
 
             await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
 
@@ -322,6 +324,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         try
         {
+            BeforeFirstSpellWriteForTests?.Invoke();
+
             await SpellAtomicFile.WriteAllTextAsync(workspaceSpell.FilePath, content, ct).ConfigureAwait(false);
 
             specReplaced = true;
@@ -917,7 +921,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             Directory.CreateDirectory(stagingDir);
 
-            AfterSpellStagingDirectoryCreatedForTests?.Invoke();
+            BeforeFirstSpellWriteForTests?.Invoke();
 
             await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
 
@@ -1006,6 +1010,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             string content = SpellFileParser.FormatWithBody(workspaceSpell, request.Body);
 
+            BeforeFirstSpellWriteForTests?.Invoke();
+
             await SpellAtomicFile.WriteAllTextAsync(versionPath, content, ct).ConfigureAwait(false);
 
             DateTimeOffset createdAt = File.GetLastWriteTimeUtc(versionPath);
@@ -1070,6 +1076,8 @@ internal sealed partial class SpellRepository : ISpellRepository
             }
 
             string content = SpellFileParser.FormatWithBody(workspaceSpell, request.Body);
+
+            BeforeFirstSpellWriteForTests?.Invoke();
 
             await SpellAtomicFile.WriteAllTextAsync(versionPath, content, ct).ConfigureAwait(false);
 
@@ -1534,7 +1542,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             Directory.CreateDirectory(stagingDir);
 
-            AfterSpellStagingDirectoryCreatedForTests?.Invoke();
+            BeforeFirstSpellWriteForTests?.Invoke();
 
             await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
 

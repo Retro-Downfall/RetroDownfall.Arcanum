@@ -1189,7 +1189,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         using CancellationTokenSource callerAborted = new();
 
-        repository.AfterSpellStagingDirectoryCreatedForTests = callerAborted.Cancel;
+        repository.BeforeFirstSpellWriteForTests = callerAborted.Cancel;
 
         Task running = operation switch
         {
@@ -1214,6 +1214,77 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.False(Directory.Exists(Path.Combine(spellsRoot, "staged-target")));
 
         Assert.Empty(Directory.GetDirectories(spellsRoot, ".staging-*"));
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    /// <summary>
+    /// The in-place writers are the same: cancelled before the first replace, the cancellation propagates, the
+    /// file the call was about to replace is untouched, nothing is left beside it, and no error is logged.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("update")]
+    [InlineData("create-version")]
+    [InlineData("update-version")]
+    public async Task In_place_write_cancelled_before_the_replace_propagates_and_changes_nothing(string operation)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("in-place-cancel");
+
+        string versionFile = Path.Combine(spellDir, "SPELL.v2.0.md");
+
+        string versionOriginal = "---\nname: in-place-cancel\ndescription: export fixture\n---\nversion body";
+
+        if (operation == "update-version")
+        {
+            await File.WriteAllTextAsync(versionFile, versionOriginal);
+        }
+
+        string specOriginal = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
+
+        using CancellationTokenSource callerAborted = new();
+
+        repository.BeforeFirstSpellWriteForTests = callerAborted.Cancel;
+
+        Task running = operation switch
+        {
+            "update" => repository.UpdateAsync(
+                "in-place-cancel",
+                _workspaceRoot,
+                new UpdateSpellRequest("changed", null, null, null, null, null, null, null),
+                callerAborted.Token),
+            "create-version" => repository.CreateVersionAsync(
+                "in-place-cancel",
+                _workspaceRoot,
+                new CreateSpellVersionRequest("2.0", "new version body"),
+                callerAborted.Token),
+            _ => repository.UpdateVersionAsync(
+                "in-place-cancel",
+                "2.0",
+                _workspaceRoot,
+                new UpdateSpellVersionRequest("changed version body"),
+                callerAborted.Token),
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
+
+        Assert.Equal(specOriginal, await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md")));
+
+        if (operation == "update-version")
+        {
+            Assert.Equal(versionOriginal, await File.ReadAllTextAsync(versionFile));
+        }
+        else
+        {
+            Assert.False(File.Exists(versionFile));
+        }
+
+        Assert.Empty(Directory.GetFiles(spellDir, ".*.tmp"));
 
         Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
     }
