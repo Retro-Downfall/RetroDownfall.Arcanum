@@ -334,6 +334,51 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         Assert.Equal(0, await renewer.RenewHeldAsync(CancellationToken.None));
     }
 
+    // ── the anonymous callback route's lookup cost ─────────────────────────────────────────────────
+
+    [SkippableFact]
+    public async Task FindOutboundCallbackAsync_unknown_config_id_does_not_deserialise_open_rows()
+    {
+        RequireSqlCipher();
+
+        CountingOperationStore store = new(new LongRunningOperationStore(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!)));
+
+        IA2ASendingLedger ledger = new A2ASendingLedger(
+            store,
+            TimeProvider.System,
+            NullLogger<A2ASendingLedger>.Instance);
+
+        string known = A2ACallbackConfigId.Mint();
+
+        for (int index = 0; index < 5; index++)
+        {
+            A2ASendingLedgerEntry entry = await ledger.RegisterOutboundAsync($"remote-open-{index}", "https://peer.example.test/");
+
+            await ledger.RecordOutboundCallbackAsync(
+                entry,
+                index == 3 ? known : A2ACallbackConfigId.Mint(),
+                A2ACallbackToken.Hash(A2ACallbackToken.Mint()));
+        }
+
+        // POST {ServerPath}/callbacks/{configId} is anonymous, so a well-formed id nothing ever minted is
+        // the cheapest request a stranger can make. It must be answered by a keyed lookup, not by reading
+        // (and decrypting, and deserialising) every open outbound Sending to compare their config ids.
+        Assert.Null(await ledger.FindOutboundCallbackAsync(A2ACallbackConfigId.Mint()));
+
+        Assert.Equal(0, store.RowsRead);
+
+        // A real one still resolves, and reads only the one row that is its own.
+        A2AOutboundCallback? found = await ledger.FindOutboundCallbackAsync(known);
+
+        Assert.NotNull(found);
+
+        Assert.Equal("remote-open-3", found!.Value.TaskId);
+
+        Assert.Equal(1, store.RowsRead);
+    }
+
     private IA2ASendingLedger CreateLedger() =>
         new A2ASendingLedger(
             new LongRunningOperationStore(

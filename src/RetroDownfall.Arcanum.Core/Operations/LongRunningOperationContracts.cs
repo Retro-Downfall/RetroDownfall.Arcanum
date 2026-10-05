@@ -239,11 +239,17 @@ public sealed record LongRunningOperationRequestIdentityMatch(
     LongRunningOperation Operation,
     LongRunningOperationRequestIdentity Identity);
 
+/// <param name="CheckpointReference">
+/// When set, only rows whose stored checkpoint reference equals this value exactly. Lets a kind that
+/// keeps a lookup key in the reference answer "which row is this?" in SQLite instead of reading every
+/// row of the kind and comparing in memory.
+/// </param>
 public sealed record LongRunningOperationQuery(
     string? Kind = null,
     LongRunningOperationState? State = null,
     int Limit = 100,
-    int Offset = 0);
+    int Offset = 0,
+    string? CheckpointReference = null);
 
 public sealed record LongRunningOperationLeaseResult(
     bool Acquired,
