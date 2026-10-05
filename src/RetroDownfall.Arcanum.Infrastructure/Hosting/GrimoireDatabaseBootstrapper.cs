@@ -273,7 +273,12 @@ public static class GrimoireDatabaseBootstrapper
 
                 _ = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // A host stopping mid-probe says nothing about the key.
+                throw;
+            }
+            catch (Exception ex) when (IndicatesKeyMismatchOrCorruption(ex))
             {
                 Log.Fatal(
                     ex,
@@ -282,6 +287,19 @@ public static class GrimoireDatabaseBootstrapper
 
                 throw new GrimoireDatabaseUnavailableException(
                     "Arcanum Grimoire database key verification failed. See logs for recovery steps.");
+            }
+            catch (Exception ex)
+            {
+                // Busy, locked, an I/O failure or a failing disk: the probe never reached a verdict on the key,
+                // so reporting tampering would send the operator after the wrong cause.
+                Log.Fatal(
+                    ex,
+                    "Grimoire database exists at {DbPath} but could not be read to verify the derived key (the database may be busy or the disk failing); this is not evidence of a key mismatch. Arcanum will exit.",
+                    dbPath);
+
+                throw new GrimoireDatabaseUnavailableException(
+                    "Arcanum could not read the Grimoire database to verify its key; the database may be busy or the disk failing. See logs.",
+                    ex);
             }
         }
 
@@ -1469,7 +1487,19 @@ public static class GrimoireDatabaseBootstrapper
         }
     }
 
-    private static async Task<bool> CanOpenDatabaseAsync(
+    private const int SqliteCorrupt = 11;
+
+    private const int SqliteNotADatabase = 26;
+
+    /// <summary>
+    /// SQLCipher answers a wrong key as "file is not a database" (26), and a damaged file as corrupt (11).
+    /// Those are the only failures that are a verdict on the key or the file; busy, locked, I/O and
+    /// cannot-open mean the probe never got that far.
+    /// </summary>
+    internal static bool IndicatesKeyMismatchOrCorruption(Exception exception) =>
+        exception is SqliteException { SqliteErrorCode: SqliteNotADatabase or SqliteCorrupt };
+
+    internal static async Task<bool> CanOpenDatabaseAsync(
         string dbPath,
         string passphrase,
         CancellationToken cancellationToken)
@@ -1499,9 +1529,21 @@ public static class GrimoireDatabaseBootstrapper
 
             return true;
         }
-        catch (Exception)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IndicatesKeyMismatchOrCorruption(ex))
         {
             return false;
+        }
+        catch (Exception ex)
+        {
+            // Not a verdict on this candidate key: the next candidate would fail the same way, and "none of
+            // the keys opened it" would be false.
+            throw new GrimoireDatabaseUnavailableException(
+                "Arcanum could not read the Grimoire database to verify its key; the database may be busy or the disk failing. See logs.",
+                ex);
         }
     }
 }
