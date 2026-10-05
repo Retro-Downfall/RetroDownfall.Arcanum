@@ -319,6 +319,37 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     }
 
     /// <summary>
+    /// An unreadable dedicated secret is neither corrupt nor missing: it fails closed without the
+    /// API-key fallback and without the "missing" or "cannot be decrypted" diagnosis.
+    /// </summary>
+    [Fact]
+    public async Task EnsureInitializedAsync_UnreadableDedicatedSecret_FailsClosedAsUnreadable()
+    {
+        _secretStore.SetApiKey("test-api-key");
+
+        _secretStore.SetGrimoireReadResult(
+            SecretStoreReadResult.Unreadable("grimoire-key.dat exists but could not be read (access denied)."));
+
+        GrimoireKdfSidecarFile.Write(
+            _dbPath,
+            GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2));
+
+        GrimoireDatabaseUnavailableException error =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                    _secretStore,
+                    _passphraseSource,
+                    _scopeFactory,
+                    _dbPath,
+                    _tempDir,
+                    CancellationToken.None));
+
+        Assert.Contains("could not be read", error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("missing", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// A damaged KDF sidecar fails closed as a Grimoire-unavailable error naming the file to restore.
     /// </summary>
     /// <remarks>

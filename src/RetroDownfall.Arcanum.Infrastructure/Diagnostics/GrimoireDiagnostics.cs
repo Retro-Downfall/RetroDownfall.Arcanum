@@ -19,10 +19,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 /// </summary>
 internal static class GrimoireProbe
 {
-
     internal enum OpenState
     {
-
         NoDatabase,
 
         Opened,
@@ -30,39 +28,29 @@ internal static class GrimoireProbe
         MissingKey,
 
         Unopenable,
-
     }
 
     internal sealed record OpenResult(OpenState State, SqliteConnection? Connection, string? FailureType)
         : IAsyncDisposable
     {
-
         public async ValueTask DisposeAsync()
         {
-
             if (Connection is not null)
             {
-
                 await Connection.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     internal static async Task<OpenResult> OpenReadOnlyAsync(
         ISecretStore secretStore,
         CancellationToken cancellationToken)
     {
-
         string path = ArcanumPaths.GrimoireDatabaseFile;
 
         if (!File.Exists(path))
         {
-
             return new OpenResult(OpenState.NoDatabase, null, null);
-
         }
 
         // The hermetic SQLCipher provider is installed explicitly, not by a bundle's module
@@ -77,29 +65,22 @@ internal static class GrimoireProbe
 
         try
         {
-
             secret = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             return new OpenResult(OpenState.MissingKey, null, exception.GetType().Name);
-
         }
 
         if (string.IsNullOrEmpty(secret))
         {
-
             return new OpenResult(OpenState.MissingKey, null, null);
-
         }
 
         string? apiKey = null;
 
         try
         {
-
             SecretStoreReadResult apiKeyRead = await secretStore
                 .PeekApiKeyReadResultAsync()
                 .ConfigureAwait(false);
@@ -107,11 +88,9 @@ internal static class GrimoireProbe
             apiKey = apiKeyRead.Status is SecretStoreReadStatus.Ok
                 ? apiKeyRead.Value
                 : null;
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             // The legacy api-key derivation is one candidate among several; losing it is not fatal.
         }
 
@@ -119,20 +98,16 @@ internal static class GrimoireProbe
 
         if (candidates.Count == 0)
         {
-
             return new OpenResult(OpenState.Unopenable, null, "NoDerivableKey");
-
         }
 
         string? lastFailure = null;
 
         foreach (string passphrase in candidates)
         {
-
             SqliteConnection connection = new(
                 new SqliteConnectionStringBuilder
                 {
-
                     DataSource = path,
 
                     Mode = SqliteOpenMode.ReadOnly,
@@ -140,12 +115,10 @@ internal static class GrimoireProbe
                     Pooling = false,
 
                     Password = passphrase,
-
                 }.ToString());
 
             try
             {
-
                 await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
                 // SQLCipher defers key verification to the first page read, so an open alone proves
@@ -157,29 +130,22 @@ internal static class GrimoireProbe
                 _ = await probe.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
                 return new OpenResult(OpenState.Opened, connection, null);
-
             }
             catch (OperationCanceledException)
             {
-
                 await connection.DisposeAsync().ConfigureAwait(false);
 
                 throw;
-
             }
             catch (Exception exception)
             {
-
                 await connection.DisposeAsync().ConfigureAwait(false);
 
                 lastFailure = exception.GetType().Name;
-
             }
-
         }
 
         return new OpenResult(OpenState.Unopenable, null, lastFailure);
-
     }
 
     /// <summary>
@@ -201,7 +167,6 @@ internal static class GrimoireProbe
         string secret,
         string? apiKey)
     {
-
         List<string> candidates = [];
 
         AddSidecarCandidate(candidates, secret, () => GrimoireKdfSidecarFile.Exists(databasePath)
@@ -216,13 +181,10 @@ internal static class GrimoireProbe
 
         if (!string.IsNullOrEmpty(apiKey))
         {
-
             TryAdd(candidates, () => GrimoireKeyDerivation.DerivePassphraseFromApiKeyLegacy(apiKey));
-
         }
 
         return candidates;
-
     }
 
     private static void AddSidecarCandidate(
@@ -230,58 +192,42 @@ internal static class GrimoireProbe
         string secret,
         Func<GrimoireKdfSidecar?> read)
     {
-
         byte[]? salt = null;
 
         try
         {
-
             salt = read()?.GetSaltBytes();
 
             if (salt is null)
             {
-
                 return;
-
             }
 
             candidates.Add(GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(secret, salt));
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             // An unreadable or unsupported sidecar drops one candidate; the others still apply.
         }
         finally
         {
-
             if (salt is not null)
             {
-
                 CryptographicOperations.ZeroMemory(salt);
-
             }
-
         }
-
     }
 
     private static void TryAdd(List<string> candidates, Func<string> derive)
     {
-
         try
         {
-
             candidates.Add(derive());
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             // Not derivable from this key material; the remaining candidates still apply.
         }
-
     }
 
     /// <summary>
@@ -330,7 +276,6 @@ internal static class GrimoireProbe
                     "Restore the Grimoire from a verified backup. Take a copy of the current file first if it may hold unbacked-up data."),
             ]),
     };
-
 }
 
 /// <summary>
@@ -340,7 +285,6 @@ internal static class GrimoireProbe
 /// </summary>
 public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctorCheck
 {
-
     public const string CheckId = "grimoire.key_material";
 
     public string Id => CheckId;
@@ -353,38 +297,30 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
 
     public async Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         string path = ArcanumPaths.GrimoireDatabaseFile;
 
         if (!File.Exists(path))
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Skipped,
                 "No Grimoire database exists yet, so there is no key material to check.");
-
         }
 
         SecretStoreReadResult secret;
 
         try
         {
-
             secret = await secretStore.GetGrimoireEncryptionSecretReadResultAsync().ConfigureAwait(false);
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unavailable,
                 $"The Grimoire encryption secret could not be consulted ({exception.GetType().Name}).");
-
         }
 
         if (secret.Status == SecretStoreReadStatus.Corrupted)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unhealthy,
                 "The stored Grimoire encryption secret exists but cannot be decrypted. The database "
@@ -396,12 +332,21 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
                         DoctorRemedyCommands.BackupRestore,
                         "Restore the secret store and Data Protection key ring together with the database."),
                 ]);
+        }
 
+        if (secret.Status == SecretStoreReadStatus.Unreadable)
+        {
+            // Content unknown, not known bad: point at the file's permissions, never at a restore
+            // that would replace it.
+            return new DoctorFinding(
+                DoctorOutcome.Unhealthy,
+                "The stored Grimoire encryption secret exists but could not be read (permissions, file "
+                + "type, size, or an I/O error), so the database cannot be opened. It was left "
+                + "unchanged: make it an owner-only regular file and retry.");
         }
 
         if (secret.Status != SecretStoreReadStatus.Ok)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unhealthy,
                 "A Grimoire database exists but no encryption secret is stored, so it cannot be opened.",
@@ -412,12 +357,10 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
                         DoctorRemedyCommands.BackupRestore,
                         "Restore the secret store that holds this database's key. A new key cannot read the existing pages."),
                 ]);
-
         }
 
         if (GrimoireKdfSidecarFile.PendingExists(path))
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Degraded,
                 "A pending key-derivation upgrade is stranded next to the database. The host promotes "
@@ -429,7 +372,6 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
                         DoctorRemedyCommands.Serve,
                         "Start the host once so it can verify and promote the pending key-derivation upgrade."),
                 ]);
-
         }
 
         return new DoctorFinding(
@@ -437,9 +379,7 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
             GrimoireKdfSidecarFile.Exists(path)
                 ? "The encryption secret is readable and the key-derivation sidecar is current. No key value is read by this check."
                 : "The encryption secret is readable. No key value is read by this check.");
-
     }
-
 }
 
 /// <summary>
@@ -449,7 +389,6 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
 /// </summary>
 public sealed class GrimoireIntegrityCheck(ISecretStore secretStore) : IDoctorCheck
 {
-
     public const string CheckId = "grimoire.integrity";
 
     public string Id => CheckId;
@@ -462,15 +401,12 @@ public sealed class GrimoireIntegrityCheck(ISecretStore secretStore) : IDoctorCh
 
     public async Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         await using GrimoireProbe.OpenResult opened =
             await GrimoireProbe.OpenReadOnlyAsync(secretStore, cancellationToken).ConfigureAwait(false);
 
         if (opened.State != GrimoireProbe.OpenState.Opened)
         {
-
             return GrimoireProbe.DescribeUnopenable(opened);
-
         }
 
         await using SqliteCommand command = opened.Connection!.CreateCommand();
@@ -481,9 +417,7 @@ public sealed class GrimoireIntegrityCheck(ISecretStore secretStore) : IDoctorCh
 
         if (string.Equals(result as string, "ok", StringComparison.OrdinalIgnoreCase))
         {
-
             return new DoctorFinding(DoctorOutcome.Healthy, "PRAGMA quick_check reported ok.");
-
         }
 
         return new DoctorFinding(
@@ -496,9 +430,7 @@ public sealed class GrimoireIntegrityCheck(ISecretStore secretStore) : IDoctorCh
                     DoctorRemedyCommands.BackupCreateGrimoire,
                     "Snapshot the damaged database first, then restore a known-good archive with 'arcanum backup restore'."),
             ]);
-
     }
-
 }
 
 /// <summary>
@@ -508,7 +440,6 @@ public sealed class GrimoireIntegrityCheck(ISecretStore secretStore) : IDoctorCh
 /// </summary>
 public sealed class GrimoireForeignKeyCheck(ISecretStore secretStore) : IDoctorCheck
 {
-
     public const string CheckId = "grimoire.foreign_keys";
 
     public string Id => CheckId;
@@ -521,15 +452,12 @@ public sealed class GrimoireForeignKeyCheck(ISecretStore secretStore) : IDoctorC
 
     public async Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         await using GrimoireProbe.OpenResult opened =
             await GrimoireProbe.OpenReadOnlyAsync(secretStore, cancellationToken).ConfigureAwait(false);
 
         if (opened.State != GrimoireProbe.OpenState.Opened)
         {
-
             return GrimoireProbe.DescribeUnopenable(opened);
-
         }
 
         await using SqliteCommand command = opened.Connection!.CreateCommand();
@@ -543,21 +471,15 @@ public sealed class GrimoireForeignKeyCheck(ISecretStore secretStore) : IDoctorC
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (!reader.IsDBNull(0))
             {
-
                 tables.Add(reader.GetString(0));
-
             }
-
         }
 
         if (tables.Count == 0)
         {
-
             return new DoctorFinding(DoctorOutcome.Healthy, "PRAGMA foreign_key_check reported no orphan rows.");
-
         }
 
         return new DoctorFinding(
@@ -571,9 +493,7 @@ public sealed class GrimoireForeignKeyCheck(ISecretStore secretStore) : IDoctorC
                     DoctorRemedyCommands.BackupCreateGrimoire,
                     "Snapshot the database, then report the named tables so the owning subsystem can be corrected."),
             ]);
-
     }
-
 }
 
 /// <summary>
@@ -583,7 +503,6 @@ public sealed class GrimoireForeignKeyCheck(ISecretStore secretStore) : IDoctorC
 /// </summary>
 public sealed class GrimoireWalCheck : IDoctorCheck
 {
-
     public const string CheckId = "grimoire.wal_size";
 
     /// <summary>A WAL is normally a few MiB; beyond this, no clean shutdown has happened in a long while.</summary>
@@ -599,53 +518,42 @@ public sealed class GrimoireWalCheck : IDoctorCheck
 
     public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile))
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Skipped,
                 "No Grimoire database exists yet, so it has no write-ahead log."));
-
         }
 
         string wal = ArcanumPaths.GrimoireDatabaseFile + "-wal";
 
         if (!File.Exists(wal))
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Skipped,
                 "No write-ahead log is present; the last shutdown checkpointed cleanly."));
-
         }
 
         long bytes;
 
         try
         {
-
             bytes = new FileInfo(wal).Length;
-
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Unavailable,
                 "The write-ahead log could not be measured."));
-
         }
 
         string readable = $"{bytes / (1024.0 * 1024):F1} MiB";
 
         if (bytes < DegradedBytes)
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Healthy,
                 $"The write-ahead log is {readable}."));
-
         }
 
         return Task.FromResult(new DoctorFinding(
@@ -659,7 +567,5 @@ public sealed class GrimoireWalCheck : IDoctorCheck
                     DoctorRemedyCommands.DaemonStatus,
                     "Stop the host cleanly; shutdown truncates the log. Doctor will not checkpoint a log a live host may own."),
             ]));
-
     }
-
 }

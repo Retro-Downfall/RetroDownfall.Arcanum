@@ -355,11 +355,9 @@ public static class GrimoireDatabaseBootstrapper
 
         if (restoreDisclosureWriterAfterAuthenticatedTransition)
         {
-
             await RestoreAuthenticatedTransitionDisclosureWriterAsync(
                 scopeFactory,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (File.Exists(dbPath))
@@ -391,7 +389,6 @@ public static class GrimoireDatabaseBootstrapper
         IServiceScopeFactory scopeFactory,
         CancellationToken cancellationToken)
     {
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         CovenantDisclosureWriter writer = scope.ServiceProvider
@@ -402,22 +399,17 @@ public static class GrimoireDatabaseBootstrapper
 
         if (!ReferenceEquals(writer, lifecycle))
         {
-
             throw new GrimoireDatabaseUnavailableException(
                 "Authenticated transition recovery did not resolve the process disclosure writer safely.");
-
         }
 
         Result reopened = await lifecycle.ReopenAsync(cancellationToken).ConfigureAwait(false);
 
         if (reopened.IsFailure)
         {
-
             throw new GrimoireDatabaseUnavailableException(
                 "Authenticated transition recovery could not restore the Covenant disclosure writer.");
-
         }
-
     }
 
     /// <summary>
@@ -1410,6 +1402,19 @@ public static class GrimoireDatabaseBootstrapper
 
             throw new GrimoireDatabaseUnavailableException(
                 "Arcanum Grimoire encryption secret cannot be decrypted (missing Data Protection key). See logs for recovery steps.");
+        }
+
+        if (dedicated.Status == SecretStoreReadStatus.Unreadable)
+        {
+            // Present but not readable at all: its content is unknown, so neither the API-key fallback
+            // nor the destructive reset guidance applies. The fix is the file's permissions.
+            Log.Fatal(
+                "Grimoire encryption secret store is present but could not be read ({Message}). "
+                + "It was left unchanged; make grimoire-key.dat an owner-only regular file and restart.",
+                dedicated.Message ?? "unknown");
+
+            throw new GrimoireDatabaseUnavailableException(
+                "Arcanum Grimoire encryption secret could not be read. See logs for recovery steps.");
         }
 
         // Same reasoning for an absent secret: every sidecar-backed database was keyed from the

@@ -92,7 +92,7 @@ In practice OATH shows up in a few places:
 OATH is bitemporal-*ready*: immutable history, revisions, timestamps, generations, and source versions already exist. Full valid-time reasoning (exactly-when-something-was-true semantics) is planned work, not a claim about today's implementation.
 
 ### Encrypted by default
-Everything is stored **encrypted at rest on your own disk**. API keys and other secrets use your operating system's secure storage (Keychain, Windows Credential Manager, Secret Service) rather than a plain-text config file. Tools that touch the filesystem run inside a sandbox. Anything you read or write stays local — nothing goes to disk or the network beyond what you ask.
+Your sessions, attachments, and uploads are stored **encrypted on your own disk**, never in plain text. API keys and provider credentials live in your operating system's secure storage (Keychain, Windows Credential Manager, Secret Service), each with an owner-only encrypted backup file so a headless machine can still start; the key that unlocks the session database is kept only in such an owner-only file. Those files keep your secrets from other users of the machine, but they are not a defence against someone who can read your whole disk or an unprotected copy of it — pair Arcanum with full-disk encryption and protected backups for that. Tools that touch the filesystem run inside a sandbox. Anything you read or write stays local — nothing goes to disk or the network beyond what you ask.
 
 ### Full control over your data
 - **Backups** — a single, mobile, full-encrypted copy; no need to disrupt your work to take it.

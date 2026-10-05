@@ -44,7 +44,7 @@ internal static class ArcanumApiCredentialFailureMapper
             SecretStoreReadStatus.Missing => new Error(
                 ErrorCodes.Security.MissingApiKey,
                 SanitizeGuidance(result.Guidance, MissingCredentialMessage)),
-            SecretStoreReadStatus.Corrupted => new Error(
+            SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable => new Error(
                 ErrorCodes.Security.CredentialUnreadable,
                 SanitizeGuidance(result.Guidance, UnreadableCredentialMessage)),
             SecretStoreReadStatus.Ok => new Error(

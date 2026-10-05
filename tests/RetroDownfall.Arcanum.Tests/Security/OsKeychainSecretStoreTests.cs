@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -227,6 +228,184 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(SecretStoreReadStatus.Ok, result.Status);
 
         Assert.Equal("mirrored-key", result.Value);
+    }
+
+    /// <summary>
+    /// The permissive startup read (DESIGN §11.2 item 4) serves the mirror when the OS read fails —
+    /// but only a mirror that is known current. A rotation whose OS write succeeded and whose mirror
+    /// write failed leaves the superseded key in the mirror; serving it at a locked-keychain boot
+    /// would make the revoked key the active master key.
+    /// </summary>
+    [Fact]
+    public async Task Get_does_not_serve_a_mirror_that_a_failed_mirror_write_left_stale()
+    {
+        SwitchableReadStore os = new();
+
+        WriteFailingProtectionProvider protection = new(
+            DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
+
+        using (OsKeychainSecretStore store = CreateStore(os, CreateDataProtectionStore(protection)))
+        {
+            await store.SaveApiKeyAsync("superseded-key");
+
+            protection.FailProtect = true;
+
+            await store.SaveApiKeyAsync("current-key");
+
+            protection.FailProtect = false;
+        }
+
+        // The next boot finds the keychain locked.
+        os.FailReads = true;
+
+        using OsKeychainSecretStore rebooted = CreateStore(os, CreateDataProtectionStore(protection));
+
+        SecretStoreReadResult result = await rebooted.GetApiKeyReadResultAsync();
+
+        Assert.NotEqual(SecretStoreReadStatus.Ok, result.Status);
+
+        Assert.Null(result.Value);
+
+        Assert.Equal(
+            SecretStoreReadStatus.Corrupted,
+            (await rebooted.PeekApiKeyReadResultAsync()).Status);
+    }
+
+    /// <summary>
+    /// The backup snapshot reads the mirrors without healing them, but it answers from a mirror over a
+    /// failed OS read just as the permissive read does, so the stale marker binds it too. Exporting a
+    /// marked mirror would put the superseded (possibly revoked) master key, or a key ring without its
+    /// active key, into the archive, and restoring that archive would reinstate it.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Backup_snapshot_does_not_export_a_mirror_that_a_failed_mirror_write_left_stale(
+        bool masterApiKey)
+    {
+        SwitchableReadStore os = new();
+
+        WriteFailingProtectionProvider protection = new(
+            DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
+
+        Func<OsKeychainSecretStore, string, Task> save = masterApiKey
+            ? static (store, value) => store.SaveApiKeyAsync(value)
+            : static (store, value) => store.SaveFileEncryptionSecretAsync(value);
+
+        using (OsKeychainSecretStore store = CreateStore(os, CreateDataProtectionStore(protection)))
+        {
+            await save(store, "superseded-secret");
+
+            protection.FailProtect = true;
+
+            await save(store, "current-secret");
+
+            protection.FailProtect = false;
+        }
+
+        // The keychain is locked when the backup runs.
+        os.FailReads = true;
+
+        using DataProtectionSecretStore mirrors = CreateDataProtectionStore(protection);
+
+        SecretStoreReadResult mirror = masterApiKey
+            ? await mirrors.GetApiKeyReadResultAsync()
+            : await mirrors.GetFileEncryptionSecretReadResultAsync();
+
+        // The superseded value still decrypts; only the marker says it must not be used.
+        Assert.Equal("superseded-secret", mirror.Value);
+
+        BackupSecretSnapshotReader reader = new(os, mirrors);
+
+        SecretStoreReadResult result = masterApiKey
+            ? await reader.ReadMasterApiKeyAsync()
+            : await reader.ReadFileEncryptionKeysAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task A_resynchronized_mirror_is_served_again_after_a_stale_marker()
+    {
+        SwitchableReadStore os = new();
+
+        WriteFailingProtectionProvider protection = new(
+            DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
+
+        using OsKeychainSecretStore store = CreateStore(os, CreateDataProtectionStore(protection));
+
+        await store.SaveApiKeyAsync("superseded-key");
+
+        protection.FailProtect = true;
+
+        await store.SaveApiKeyAsync("current-key");
+
+        protection.FailProtect = false;
+
+        // An ordinary OS-served read re-synchronizes the mirror, which makes it current again.
+        Assert.Equal("current-key", (await store.GetApiKeyReadResultAsync()).Value);
+
+        os.FailReads = true;
+
+        using OsKeychainSecretStore rebooted = CreateStore(os, CreateDataProtectionStore(protection));
+
+        SecretStoreReadResult result = await rebooted.GetApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, result.Status);
+
+        Assert.Equal("current-key", result.Value);
+    }
+
+    /// <summary>
+    /// A Keychain dialog nobody dismisses parks the OS call. The read must be bounded, a second
+    /// caller must fail closed within the timeout instead of queueing behind the stuck call, and no
+    /// second OS read may be stacked on the first (each would raise another prompt).
+    /// </summary>
+    [Fact]
+    public async Task Peek_does_not_hold_the_gate_past_a_read_timeout()
+    {
+        using BlockingReadStore os = new();
+
+        TimeSpan readTimeout = TimeSpan.FromMilliseconds(250);
+
+        using OsKeychainSecretStore store = new(
+            os,
+            CreateDataProtectionStore(),
+            new ApiKeyDigestCache(new FakeTimeProvider()),
+            NullLogger<OsKeychainSecretStore>.Instance,
+            readTimeout);
+
+        Task<SecretStoreReadResult> first = Task.Run(() => store.PeekApiKeyReadResultAsync());
+
+        try
+        {
+            Assert.True(os.Entered.Wait(TimeSpan.FromSeconds(10)));
+
+            System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+
+            SecretStoreReadResult second = await store
+                .PeekApiKeyReadResultAsync()
+                .WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Bounded by one read timeout (plus scheduling slack), not by the parked call.
+            Assert.True(elapsed.Elapsed < readTimeout + TimeSpan.FromSeconds(5), elapsed.Elapsed.ToString());
+
+            Assert.Equal(SecretStoreReadStatus.Corrupted, second.Status);
+
+            Assert.Null(second.Value);
+
+            Assert.Equal(
+                SecretStoreReadStatus.Corrupted,
+                (await first.WaitAsync(TimeSpan.FromSeconds(30))).Status);
+
+            Assert.Equal(1, os.TryGetCallCount);
+        }
+        finally
+        {
+            os.Release();
+        }
     }
 
     [Fact]
@@ -547,6 +726,61 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
             apiKeyDigestCache ?? new ApiKeyDigestCache(new FakeTimeProvider()));
     }
 
+    private static DataProtectionSecretStore CreateDataProtectionStore(
+        IDataProtectionProvider dataProtectionProvider) =>
+        new(dataProtectionProvider, new ApiKeyDigestCache(new FakeTimeProvider()));
+
+    /// <summary>
+    /// The OS store an installation keeps across restarts, whose reads can be made to fail the way a
+    /// locked keychain's do while writes keep working.
+    /// </summary>
+    private sealed class SwitchableReadStore : IOsCredentialStore
+    {
+        private readonly InMemoryOsCredentialStore _inner = new();
+
+        public bool FailReads { get; set; }
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            FailReads
+                ? OsCredentialStoreResult.Failed("test: the keychain is locked")
+                : _inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            _inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            _inner.Delete(service, account);
+    }
+
+    /// <summary>
+    /// A real Data Protection provider whose protectors can be made to refuse new ciphertext — the
+    /// mirror write fails — while existing ciphertext keeps decrypting.
+    /// </summary>
+    private sealed class WriteFailingProtectionProvider(IDataProtectionProvider inner) : IDataProtectionProvider
+    {
+        public bool FailProtect { get; set; }
+
+        public IDataProtector CreateProtector(string purpose) =>
+            new Protector(this, inner.CreateProtector(purpose));
+
+        private sealed class Protector(
+            WriteFailingProtectionProvider owner,
+            IDataProtector inner) : IDataProtector
+        {
+            public IDataProtector CreateProtector(string purpose) =>
+                new Protector(owner, inner.CreateProtector(purpose));
+
+            public byte[] Protect(byte[] plaintext) =>
+                owner.FailProtect
+                    ? throw new System.Security.Cryptography.CryptographicException("test: protect refused")
+                    : inner.Protect(plaintext);
+
+            public byte[] Unprotect(byte[] protectedData) => inner.Unprotect(protectedData);
+        }
+    }
+
     private static void DeleteSecurityDat()
     {
         string path = ArcanumPaths.ApiKeyStoreFile;
@@ -646,6 +880,72 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Ok(string.Empty);
+    }
+
+    /// <summary>
+    /// A reachable backend whose read blocks — the Keychain confidential-information dialog that
+    /// nobody answers — until the test releases it.
+    /// </summary>
+    private sealed class BlockingReadStore : IOsCredentialStore, IDisposable
+    {
+        private readonly ManualResetEventSlim _release = new(false);
+
+        private readonly CountdownEvent _readsInside = new(1);
+
+        private int _tryGetCallCount;
+
+        public ManualResetEventSlim Entered { get; } = new(false);
+
+        public int TryGetCallCount => Volatile.Read(ref _tryGetCallCount);
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            _readsInside.AddCount();
+
+            try
+            {
+                _ = Interlocked.Increment(ref _tryGetCallCount);
+
+                Entered.Set();
+
+                _ = _release.Wait(TimeSpan.FromSeconds(60));
+
+                return OsCredentialStoreResult.Ok("released-key");
+            }
+            finally
+            {
+                _ = _readsInside.Signal();
+            }
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Ok(secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.Ok(string.Empty);
+
+        public void Release() => _release.Set();
+
+        /// <summary>
+        /// Releases any parked read and waits for it to leave before disposing the events it uses: a
+        /// timed-out read is abandoned by the store, not cancelled, so it is still inside here.
+        /// </summary>
+        public void Dispose()
+        {
+            _release.Set();
+
+            _ = _readsInside.Signal();
+
+            _ = _readsInside.Wait(TimeSpan.FromSeconds(10));
+
+            _readsInside.Dispose();
+
+            _release.Dispose();
+
+            Entered.Dispose();
+        }
     }
 
     private sealed class UnavailableStore : IOsCredentialStore

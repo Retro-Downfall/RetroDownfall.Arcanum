@@ -49,38 +49,6 @@ public sealed class ApiKeyAuthenticatorConcurrencyTests
     }
 
     [Fact]
-    public async Task Concurrent_identical_cache_misses_reuse_the_winning_digest_without_an_extra_secret_read()
-    {
-        BarrierSecretStore secretStore = new(OriginalKey, expectedReaders: 2);
-
-        ApiKeyAuthenticator authenticator = new(
-            secretStore,
-            new ApiKeyDigestCache(new FakeTimeProvider()));
-
-        DefaultHttpContext firstContext = CreateContext(OriginalKey);
-
-        DefaultHttpContext secondContext = CreateContext(OriginalKey);
-
-        Task<bool> first = authenticator.IsAuthorizedAsync(firstContext).AsTask();
-
-        Task<bool> second = authenticator.IsAuthorizedAsync(secondContext).AsTask();
-
-        try
-        {
-            await secretStore.WaitUntilAllReadsArePendingAsync(TimeSpan.FromSeconds(10));
-        }
-        finally
-        {
-            secretStore.ReleasePendingReads();
-        }
-
-        bool[] results = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
-
-        Assert.All(results, Assert.True);
-        Assert.Equal(2, secretStore.PeekCallCount);
-    }
-
-    [Fact]
     public async Task Failed_cache_miss_reuses_a_concurrently_published_winner()
     {
         FailingFirstSecretStore secretStore = new(OriginalKey);
@@ -92,6 +60,10 @@ public sealed class ApiKeyAuthenticatorConcurrencyTests
             .AsTask();
 
         await secretStore.WaitUntilFirstReadIsPendingAsync(TimeSpan.FromSeconds(10));
+
+        // A miss joins the read in flight for the generation it observed, so the concurrent winner
+        // comes from a newer generation (an invalidation), whose own read succeeds.
+        cache.Invalidate();
 
         bool winner = await authenticator
             .IsAuthorizedAsync(CreateContext(OriginalKey))
@@ -227,55 +199,6 @@ public sealed class ApiKeyAuthenticatorConcurrencyTests
             _readPending.Task.WaitAsync(timeout);
 
         public void ReleasePendingRead() =>
-            _readRelease.TrySetResult();
-    }
-
-    private sealed class BarrierSecretStore(
-        string apiKey,
-        int expectedReaders) : ISecretStore
-    {
-        private readonly TaskCompletionSource _allReadsPending = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource _readRelease = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private int _peekCallCount;
-
-        public int PeekCallCount => Volatile.Read(ref _peekCallCount);
-
-        public Task<string?> GetApiKeyAsync() =>
-            throw new InvalidOperationException("Authentication must use the non-mutating Peek read.");
-
-        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
-            throw new InvalidOperationException("Authentication must use the non-mutating Peek read.");
-
-        public async Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
-        {
-            int readers = Interlocked.Increment(ref _peekCallCount);
-
-            if (readers == expectedReaders)
-            {
-                _allReadsPending.TrySetResult();
-            }
-
-            await _readRelease.Task.ConfigureAwait(false);
-
-            return SecretStoreReadResult.Ok(apiKey);
-        }
-
-        public Task SaveApiKeyAsync(string key) => Task.CompletedTask;
-
-        public Task<string?> GetGrimoireEncryptionSecretAsync() =>
-            Task.FromResult<string?>(null);
-
-        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
-            Task.CompletedTask;
-
-        public Task WaitUntilAllReadsArePendingAsync(TimeSpan timeout) =>
-            _allReadsPending.Task.WaitAsync(timeout);
-
-        public void ReleasePendingReads() =>
             _readRelease.TrySetResult();
     }
 

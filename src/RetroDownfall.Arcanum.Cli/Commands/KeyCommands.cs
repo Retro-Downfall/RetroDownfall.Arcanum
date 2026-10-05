@@ -70,10 +70,10 @@ public sealed class KeyCommands(
             return (int)CliExitCode.ConfigurationError;
         }
 
-        if (result.Status == SecretStoreReadStatus.Corrupted)
+        if (result.Status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable)
         {
             console.WriteDiagnostic(
-                result.Message ?? "security.dat is present but could not be decrypted.");
+                result.Message ?? "security.dat is present but could not be read or decrypted.");
 
             return (int)CliExitCode.ConfigurationError;
         }
@@ -630,6 +630,7 @@ public sealed class KeyCommands(
         {
             SecretStoreReadStatus.Ok when !string.IsNullOrWhiteSpace(result.Value) => "configured",
             SecretStoreReadStatus.Corrupted => "corrupt",
+            SecretStoreReadStatus.Unreadable => "unreadable",
             _ => "missing",
         };
 }

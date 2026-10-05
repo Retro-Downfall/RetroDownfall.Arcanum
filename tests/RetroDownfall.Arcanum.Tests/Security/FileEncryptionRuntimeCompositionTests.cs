@@ -5,11 +5,61 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection("ProcessEnvironment")]
 public sealed class FileEncryptionRuntimeCompositionTests
 {
+    /// <summary>
+    /// The Data Protection key ring wraps every encrypted mirror. A stack that lets the framework
+    /// create its directory on first use gets the umask's permissions (0755), so the ring is listable
+    /// and readable by other local users; the host's bootstrap path already makes it owner-only.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("cli")]
+    [InlineData("configuration-presets")]
+    public void CliClientStack_CreatesOwnerOnlyKeyRingDirectory(string stack)
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+
+        // Dead once Skip.If has run; kept so the platform analyzer sees the guard.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using ArcanumTestHomeScope home = new("arcanum-keyring-composition");
+
+        ServiceCollection services = [];
+        services.AddLogging();
+
+        if (stack == "cli")
+        {
+            services.AddArcanumCliClientStack();
+        }
+        else
+        {
+            services.AddArcanumConfigurationPresets();
+        }
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        _ = provider
+            .GetRequiredService<IDataProtectionProvider>()
+            .CreateProtector("Arcanum.Tests.KeyRingComposition")
+            .Protect([1, 2, 3]);
+
+        string keyRing = DataProtectionKeyPaths.Directory;
+
+        Assert.StartsWith(home.Root, keyRing, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(keyRing));
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+            File.GetUnixFileMode(keyRing));
+    }
+
     [Fact]
     public async Task File_encryption_interfaces_share_one_disposed_singleton_and_one_runtime_status()
     {

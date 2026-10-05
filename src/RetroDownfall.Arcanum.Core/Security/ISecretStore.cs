@@ -2,7 +2,6 @@ namespace RetroDownfall.Arcanum.Core.Security;
 
 public interface ISecretStore
 {
-
     Task<string?> GetApiKeyAsync();
 
     Task<SecretStoreReadResult> GetApiKeyReadResultAsync();
@@ -15,19 +14,33 @@ public interface ISecretStore
     Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
         GetApiKeyReadResultAsync();
 
+    /// <summary>
+    /// <see cref="PeekApiKeyReadResultAsync()"/> for a caller that can stop waiting. Stores whose
+    /// read can block on platform secure storage override it and honour the token; the default
+    /// ignores it.
+    /// </summary>
+    Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(CancellationToken cancellationToken) =>
+        PeekApiKeyReadResultAsync();
+
+    /// <summary>
+    /// True while this process's own <see cref="GetApiKeyReadResultAsync"/> was answered from the
+    /// encrypted mirror because OS key storage failed (a locked keychain at startup), and no OS read
+    /// has answered since. Peeks still fail closed in that state; only the request path may keep
+    /// authenticating the key this process adopted at startup (DESIGN §11.2 item 4).
+    /// </summary>
+    bool ServesMasterApiKeyFromMirrorDuringOsFailure => false;
+
     Task SaveApiKeyAsync(string apiKey);
 
     Task<string?> GetGrimoireEncryptionSecretAsync();
 
     async Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync()
     {
-
         string? value = await GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
 
         return value is null
             ? SecretStoreReadResult.Missing()
             : SecretStoreReadResult.Ok(value);
-
     }
 
     Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret);
@@ -46,5 +59,4 @@ public interface ISecretStore
     Task SaveFileEncryptionSecretAsync(string encryptionSecret) =>
         throw new NotSupportedException(
             "This secret store does not support the dedicated file-encryption secret.");
-
 }

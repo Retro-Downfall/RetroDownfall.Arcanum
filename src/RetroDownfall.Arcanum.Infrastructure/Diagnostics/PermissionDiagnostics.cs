@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 /// </summary>
 public sealed class PermissionPostureCheck(IOptions<ArcanumSettings> options) : IDoctorCheck
 {
-
     public const string CheckId = "permissions.posture";
 
     public string Id => CheckId;
@@ -26,7 +25,6 @@ public sealed class PermissionPostureCheck(IOptions<ArcanumSettings> options) : 
 
     public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         IReadOnlyList<SensitivePathPosture> posture =
             SecureFilePermissions.InspectOwnerOnlyPosture(
                 PermissionInventory.ConfiguredProviderNames(options.Value));
@@ -38,11 +36,9 @@ public sealed class PermissionPostureCheck(IOptions<ArcanumSettings> options) : 
 
         if (exposed.Count == 0)
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Healthy,
                 $"{inspected} sensitive path(s) present and restricted to the current user."));
-
         }
 
         return Task.FromResult(new DoctorFinding(
@@ -56,7 +52,6 @@ public sealed class PermissionPostureCheck(IOptions<ArcanumSettings> options) : 
                     DoctorRemedyCommands.RepairPermissions,
                     "Restrict configuration, the Grimoire database, and every secret mirror to the current user."),
             ]));
-
     }
 
     /// <summary>
@@ -66,7 +61,6 @@ public sealed class PermissionPostureCheck(IOptions<ArcanumSettings> options) : 
     private static string Describe(SensitivePathPosture posture) =>
         Path.GetFileName(posture.Path.TrimEnd(Path.DirectorySeparatorChar))
         + (posture.IsDirectory ? Path.DirectorySeparatorChar.ToString() : string.Empty);
-
 }
 
 /// <summary>
@@ -77,7 +71,6 @@ public sealed class PermissionPostureCheck(IOptions<ArcanumSettings> options) : 
 /// </summary>
 public sealed class PermissionApplyOwnerOnlyRepair(IOptions<ArcanumSettings> options) : IDoctorRepair
 {
-
     public const string RepairId = "permissions.apply_owner_only";
 
     public string Id => RepairId;
@@ -94,39 +87,31 @@ public sealed class PermissionApplyOwnerOnlyRepair(IOptions<ArcanumSettings> opt
 
     public Task<DoctorRepairResult> ApplyAsync(CancellationToken cancellationToken)
     {
-
         IReadOnlyList<SensitivePathPosture> before = Exposed();
 
         if (before.Count == 0)
         {
-
             return Task.FromResult(new DoctorRepairResult(
                 RepairId,
                 DoctorRepairState.AlreadyConverged,
                 "Every sensitive path was already restricted to the current user.",
                 [],
                 null));
-
         }
 
-        // Deliberately not SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths(): that method
-        // creates the Grimoire directory as a side effect, which would make this repair silently
-        // change the answer of paths.managed_directories and report a change it never listed. This
-        // repair only ever narrows paths its own plan named.
+        // Only paths this repair's own plan named are narrowed: it never creates a directory (that
+        // would silently change the answer of paths.managed_directories and report a change it
+        // never listed), and the posture is re-inspected below rather than assumed.
         foreach (SensitivePathPosture posture in before)
         {
-
             if (posture.IsDirectory)
             {
-
                 SecureFilePermissions.ApplyOwnerOnlyDirectory(posture.Path);
 
                 continue;
-
             }
 
             SecureFilePermissions.ApplyOwnerOnlyFile(posture.Path);
-
         }
 
         IReadOnlyList<SensitivePathPosture> after = Exposed();
@@ -154,7 +139,6 @@ public sealed class PermissionApplyOwnerOnlyRepair(IOptions<ArcanumSettings> opt
                 $"{after.Count} path(s) could not be restricted.",
                 steps,
                 "The filesystem refused the permission change. Check ownership of the Arcanum directory."));
-
     }
 
     private DoctorRepairResult Plan(IReadOnlyList<SensitivePathPosture> exposed) =>
@@ -183,12 +167,10 @@ public sealed class PermissionApplyOwnerOnlyRepair(IOptions<ArcanumSettings> opt
                 .InspectOwnerOnlyPosture(PermissionInventory.ConfiguredProviderNames(options.Value))
                 .Where(static candidate => candidate.Exists && !candidate.IsOwnerOnly),
         ];
-
 }
 
 internal static class PermissionInventory
 {
-
     /// <summary>
     /// The configured inference-provider names, which decide which per-provider credential mirrors
     /// exist on this installation. Nothing here reads a credential value.
@@ -200,5 +182,4 @@ internal static class PermissionInventory
                 .Where(static name => !string.IsNullOrWhiteSpace(name))
                 .Select(static name => name!),
         ];
-
 }

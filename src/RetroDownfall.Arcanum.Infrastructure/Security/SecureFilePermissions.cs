@@ -26,81 +26,87 @@ public readonly record struct SensitivePathPosture(
 /// </summary>
 public static partial class SecureFilePermissions
 {
-
     private static readonly UnixFileMode OwnerOnlyFileMode =
         UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
     private static readonly UnixFileMode OwnerOnlyDirectoryMode =
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
-    internal static Func<string, bool, bool?>? StrictOwnerOnlyVerificationForTests { get; set; }
+    private static readonly AsyncLocal<Func<string, bool, bool?>?> StrictOwnerOnlyVerificationOverride = new();
+
+    /// <summary>
+    /// Test seam that replaces the strict owner-only verification for the current async flow only.
+    /// Every secret-bearing save consults it, so a process-global override would fail unrelated saves
+    /// in tests running in parallel.
+    /// </summary>
+    internal static Func<string, bool, bool?>? StrictOwnerOnlyVerificationForTests
+    {
+        get => StrictOwnerOnlyVerificationOverride.Value;
+
+        set => StrictOwnerOnlyVerificationOverride.Value = value;
+    }
 
     internal static Action<string, bool, bool, bool, bool>?
         WindowsOwnerOnlyDirectoryCreateForTests
     { get; set; }
+
+    private static readonly AsyncLocal<Action<string>?> AfterOwnerOnlyTempFileCreatedOverride = new();
+
+    /// <summary>
+    /// Test seam observing a temp file between its create and the post-hoc permission repair, for the
+    /// current async flow only.
+    /// </summary>
+    internal static Action<string>? AfterOwnerOnlyTempFileCreatedForTests
+    {
+        get => AfterOwnerOnlyTempFileCreatedOverride.Value;
+
+        set => AfterOwnerOnlyTempFileCreatedOverride.Value = value;
+    }
 
     /// <summary>
     /// Creates <paramref name="directoryPath"/> when missing and restricts it to the current user.
     /// </summary>
     public static void EnsureOwnerOnlyDirectoryExists(string directoryPath)
     {
-
         Directory.CreateDirectory(directoryPath);
 
         ApplyOwnerOnlyDirectory(directoryPath);
-
     }
 
     public static void ApplyOwnerOnlyFile(string path)
     {
-
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
-
             return;
-
         }
 
         if (!OperatingSystem.IsWindows())
         {
-
             TryApplyUnixFileMode(path, OwnerOnlyFileMode);
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             TryApplyWindowsOwnerOnlyFileAcl(path);
-
         }
-
     }
 
     public static void ApplyOwnerOnlyDirectory(string path)
     {
-
         if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
         {
-
             return;
-
         }
 
         if (!OperatingSystem.IsWindows())
         {
-
             TryApplyUnixFileMode(path, OwnerOnlyDirectoryMode);
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             TryApplyWindowsOwnerOnlyDirectoryAcl(path);
-
         }
-
     }
 
     internal static void CreateOwnerOnlyDirectoryAtPath(
@@ -166,18 +172,48 @@ public static partial class SecureFilePermissions
         new DirectoryInfo(path).Create(security);
     }
 
+    /// <summary>
+    /// Creates <paramref name="directoryPath"/> when missing and requires a verified owner-only
+    /// posture. Secret-bearing directories use this rather than the warn-only
+    /// <see cref="EnsureOwnerOnlyDirectoryExists"/>: nothing secret is written into a directory whose
+    /// posture could not be established.
+    /// </summary>
+    /// <exception cref="UnauthorizedAccessException">The posture could not be established.</exception>
+    internal static void RequireOwnerOnlyDirectory(string directoryPath)
+    {
+        if (!TryEnsureOwnerOnlyDirectoryExistsStrict(directoryPath))
+        {
+            throw new UnauthorizedAccessException(
+                $"The directory '{Path.GetFileName(Path.TrimEndingDirectorySeparator(directoryPath))}' could not be "
+                + "restricted to the current user, so no secret was written into it. Check its ownership "
+                + "and permissions.");
+        }
+    }
+
+    /// <summary>
+    /// Requires a verified owner-only posture on an existing secret-bearing file.
+    /// </summary>
+    /// <exception cref="UnauthorizedAccessException">The posture could not be established.</exception>
+    internal static void RequireOwnerOnlyFile(string path)
+    {
+        if (!TryApplyOwnerOnlyFileStrict(path))
+        {
+            throw new UnauthorizedAccessException(
+                $"'{Path.GetFileName(path)}' could not be restricted to the current user. Check its "
+                + "ownership and permissions before relying on it.");
+        }
+    }
+
     internal static bool TryEnsureOwnerOnlyDirectoryExistsStrict(
         string directoryPath,
         bool logFailure = true)
     {
-
         try
         {
             Directory.CreateDirectory(directoryPath);
 
             try
             {
-
                 if (OperatingSystem.IsWindows())
                 {
                     TryApplyWindowsOwnerOnlyDirectoryAcl(directoryPath, logFailure);
@@ -186,7 +222,6 @@ public static partial class SecureFilePermissions
                 {
                     File.SetUnixFileMode(directoryPath, OwnerOnlyDirectoryMode);
                 }
-
             }
             catch (Exception ex)
             {
@@ -197,7 +232,6 @@ public static partial class SecureFilePermissions
                         "Failed to apply owner-only permissions to {Path}; verifying its existing posture.",
                         directoryPath);
                 }
-
             }
 
             return VerifyOwnerOnly(directoryPath, isDirectory: true);
@@ -214,14 +248,12 @@ public static partial class SecureFilePermissions
 
             return false;
         }
-
     }
 
     internal static bool TryApplyOwnerOnlyFileStrict(
         string path,
         bool logFailure = true)
     {
-
         try
         {
             if (!File.Exists(path))
@@ -231,7 +263,6 @@ public static partial class SecureFilePermissions
 
             try
             {
-
                 if (OperatingSystem.IsWindows())
                 {
                     TryApplyWindowsOwnerOnlyFileAcl(path, logFailure);
@@ -240,7 +271,6 @@ public static partial class SecureFilePermissions
                 {
                     File.SetUnixFileMode(path, OwnerOnlyFileMode);
                 }
-
             }
             catch (Exception ex)
             {
@@ -251,7 +281,6 @@ public static partial class SecureFilePermissions
                         "Failed to apply owner-only permissions to {Path}; verifying its existing posture.",
                         path);
                 }
-
             }
 
             return VerifyOwnerOnly(path, isDirectory: false);
@@ -268,12 +297,10 @@ public static partial class SecureFilePermissions
 
             return false;
         }
-
     }
 
     private static bool VerifyOwnerOnly(string path, bool isDirectory)
     {
-
         bool? testResult = StrictOwnerOnlyVerificationForTests?.Invoke(path, isDirectory);
 
         if (testResult.HasValue)
@@ -283,7 +310,6 @@ public static partial class SecureFilePermissions
 
         if (!OperatingSystem.IsWindows())
         {
-
             return FileHandleIdentityInterop.TryGetUnixOwnerUserId(
                     path,
                     out uint ownerUserId)
@@ -295,28 +321,21 @@ public static partial class SecureFilePermissions
         }
 
         return VerifyWindowsOwnerOnly(path, isDirectory);
-
     }
 
     internal static bool HasOwnerOnlyPosture(string path, bool isDirectory)
     {
-
         try
         {
-
             return VerifyOwnerOnly(path, isDirectory);
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or PlatformNotSupportedException)
         {
-
             return false;
-
         }
-
     }
 
     internal static bool HasOwnerControlledFileHandlePosture(
@@ -324,13 +343,10 @@ public static partial class SecureFilePermissions
         string path,
         FileHandleIdentity openedIdentity)
     {
-
         try
         {
-
             if (!OperatingSystem.IsWindows())
             {
-
                 return FileHandleIdentityInterop.TryGetUnixHandleAccessMetadata(
                         handle,
                         out UnixFileMode mode,
@@ -339,7 +355,6 @@ public static partial class SecureFilePermissions
                         mode,
                         ownerUserId,
                         GetEffectiveUserId());
-
             }
 
             return VerifyWindowsOwnerOnly(path, isDirectory: false)
@@ -349,7 +364,6 @@ public static partial class SecureFilePermissions
                 && FileHandleIdentity.IdentitiesMatch(
                     openedIdentity,
                     current.Identity);
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -361,11 +375,8 @@ public static partial class SecureFilePermissions
                 or ArgumentException
                 or NotSupportedException)
         {
-
             return false;
-
         }
-
     }
 
     internal static bool UnixOwnerOnlyPostureMatches(
@@ -374,14 +385,12 @@ public static partial class SecureFilePermissions
         uint effectiveUserId,
         bool isDirectory)
     {
-
         UnixFileMode expected = isDirectory
             ? OwnerOnlyDirectoryMode
             : OwnerOnlyFileMode;
 
         return mode == expected
             && ownerUserId == effectiveUserId;
-
     }
 
     internal static bool UnixOwnerControlledReadableFilePostureMatches(
@@ -389,14 +398,12 @@ public static partial class SecureFilePermissions
         uint ownerUserId,
         uint effectiveUserId)
     {
-
         const UnixFileMode allowed =
             UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
         return ownerUserId == effectiveUserId
             && (mode & UnixFileMode.UserRead) != 0
             && (mode & ~allowed) == 0;
-
     }
 
     [UnsupportedOSPlatform("windows")]
@@ -409,7 +416,6 @@ public static partial class SecureFilePermissions
     [SupportedOSPlatform("windows")]
     private static bool VerifyWindowsOwnerOnly(string path, bool isDirectory)
     {
-
         SecurityIdentifier? currentUser = WindowsIdentity.GetCurrent().User;
 
         if (currentUser is null)
@@ -450,7 +456,6 @@ public static partial class SecureFilePermissions
         }
 
         return currentUserAllowed;
-
     }
 
     /// <summary>
@@ -461,85 +466,62 @@ public static partial class SecureFilePermissions
     /// </summary>
     public static FileStream CreateOwnerOnlyTempFile(string tempPath)
     {
+        FileStream stream = new(tempPath, OwnerOnlyCreateOptions(FileMode.Create, FileAccess.Write, FileShare.None));
 
-        FileStream stream = new(
-            tempPath,
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 4096,
-            useAsync: true);
+        AfterOwnerOnlyTempFileCreatedForTests?.Invoke(tempPath);
 
+        // Belt and braces: the create mode already made a new file owner-only (a umask can only remove
+        // bits), but FileMode.Create also reuses an existing file whose mode it does not touch.
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(tempPath, OwnerOnlyFileMode);
-
         }
 
         return stream;
-
     }
 
     /// <summary>
-    /// Applies owner-only permissions to all sensitive Arcanum paths.
+    /// Appends UTF-8 text to <paramref name="path"/>, creating it owner-only on Unix from the open
+    /// itself rather than with the umask's permissions followed by a repair. Callers still apply the
+    /// owner-only posture afterwards for a file that predates them.
     /// </summary>
-    public static void ApplyOwnerOnlyToSensitivePaths()
+    internal static async Task AppendOwnerOnlyTextAsync(
+        string path,
+        string text,
+        CancellationToken cancellationToken)
     {
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text);
 
-        EnsureOwnerOnlyDirectoryExists(ArcanumPaths.GrimoireDirectory);
+        FileStream stream = new(path, OwnerOnlyCreateOptions(FileMode.Append, FileAccess.Write, FileShare.Read));
 
-        foreach (string sensitiveFile in DefaultSensitiveFilePaths())
+        await using (stream.ConfigureAwait(false))
         {
+            await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
-            if (File.Exists(sensitiveFile))
-            {
+    /// <summary>
+    /// Asynchronous file options whose create mode is owner-only on Unix, so a new file never exists
+    /// with group or other permissions. Windows has no create mode; its callers apply the owner-only
+    /// ACL after the open.
+    /// </summary>
+    private static FileStreamOptions OwnerOnlyCreateOptions(FileMode mode, FileAccess access, FileShare share)
+    {
+        FileStreamOptions options = new()
+        {
+            Mode = mode,
+            Access = access,
+            Share = share,
+            BufferSize = 4096,
+            Options = FileOptions.Asynchronous,
+        };
 
-                ApplyOwnerOnlyFile(sensitiveFile);
-
-            }
-
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = OwnerOnlyFileMode;
         }
 
-        foreach (string secretFile in DefaultSecretFilePaths())
-        {
-
-            if (File.Exists(secretFile))
-            {
-
-                ApplyOwnerOnlyFile(secretFile);
-
-            }
-
-        }
-
-        string logDirectory = ArcanumPaths.LogDirectory;
-
-        if (Directory.Exists(logDirectory))
-        {
-
-            EnsureOwnerOnlyDirectoryExists(logDirectory);
-
-            try
-            {
-
-                foreach (string logFile in Directory.EnumerateFiles(logDirectory))
-                {
-
-                    ApplyOwnerOnlyFile(logFile);
-
-                }
-
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-
-                // Best effort — individual files may be locked by the running host.
-
-            }
-
-        }
-
+        return options;
     }
 
     /// <summary>
@@ -555,7 +537,6 @@ public static partial class SecureFilePermissions
     /// </summary>
     internal static void RunStartupPermissionSelfCheck(ILogger logger, IReadOnlyList<string> secretFilePaths)
     {
-
         string grimoireDir = ArcanumPaths.GrimoireDirectory;
 
         string logDirectory = ArcanumPaths.LogDirectory;
@@ -564,47 +545,34 @@ public static partial class SecureFilePermissions
 
         foreach (string sensitiveFile in DefaultSensitiveFilePaths())
         {
-
             CheckPath(logger, sensitiveFile, isDirectory: false);
-
         }
 
         foreach (string secretFile in secretFilePaths)
         {
-
             CheckPath(logger, secretFile, isDirectory: false);
-
         }
 
         CheckPath(logger, logDirectory, isDirectory: true);
 
         if (Directory.Exists(logDirectory))
         {
-
             try
             {
-
                 foreach (string logFile in Directory.EnumerateFiles(logDirectory))
                 {
-
                     CheckPath(logger, logFile, isDirectory: false);
-
                 }
-
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-
                 logger.LogWarning(ex, "Could not enumerate log files under {LogDirectory} for permission self-check.", logDirectory);
-
             }
-
         }
-
     }
 
     /// <summary>
-    /// Every file <see cref="ApplyOwnerOnlyToSensitivePaths()"/> would harden, optionally widened to
+    /// Every sensitive and secret file Arcanum keeps owner-only, optionally widened to
     /// the per-provider credential mirrors for <paramref name="providerNames"/>. Those mirrors are
     /// installation-specific, so the caller supplies the configured provider names rather than this
     /// class guessing them.
@@ -612,32 +580,24 @@ public static partial class SecureFilePermissions
     public static IReadOnlyList<string> EnumerateOwnerOnlyPaths(
         IReadOnlyList<string>? providerNames = null)
     {
-
         List<string> paths = [.. DefaultSensitiveFilePaths(), .. DefaultSecretFilePaths()];
 
         foreach (string providerName in providerNames ?? [])
         {
-
             if (string.IsNullOrWhiteSpace(providerName))
             {
-
                 continue;
-
             }
 
             string mirror = ArcanumPaths.InferenceProviderApiKeyStoreFile(providerName);
 
             if (!paths.Contains(mirror, StringComparer.Ordinal))
             {
-
                 paths.Add(mirror);
-
             }
-
         }
 
         return paths;
-
     }
 
     /// <summary>
@@ -650,21 +610,16 @@ public static partial class SecureFilePermissions
     public static IReadOnlyList<SensitivePathPosture> InspectOwnerOnlyPosture(
         IReadOnlyList<string>? providerNames = null)
     {
-
         List<SensitivePathPosture> posture = [];
 
         HashSet<string> seen = new(StringComparer.Ordinal);
 
         foreach (string path in EnumerateOwnerOnlyPaths(providerNames))
         {
-
             if (seen.Add(path))
             {
-
                 posture.Add(InspectPath(path, isDirectory: false));
-
             }
-
         }
 
         // On a default layout the secret store lives inside the Grimoire directory, so the same path
@@ -677,52 +632,39 @@ public static partial class SecureFilePermissions
             DataProtectionKeyPaths.Directory,
         })
         {
-
             if (seen.Add(directory))
             {
-
                 posture.Add(InspectPath(directory, isDirectory: true));
-
             }
-
         }
 
         return posture;
-
     }
 
     private static SensitivePathPosture InspectPath(string path, bool isDirectory)
     {
-
         bool exists = isDirectory ? Directory.Exists(path) : File.Exists(path);
 
         if (!exists)
         {
-
             return new SensitivePathPosture(path, isDirectory, Exists: false, IsOwnerOnly: true);
-
         }
 
         try
         {
-
             return new SensitivePathPosture(
                 path,
                 isDirectory,
                 Exists: true,
                 VerifyOwnerOnly(path, isDirectory));
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
         {
-
             // An unreadable ACL is itself a posture problem, but not one this class can describe
             // safely; report it as not-owner-only so the detector degrades rather than throwing.
             return new SensitivePathPosture(path, isDirectory, Exists: true, IsOwnerOnly: false);
-
         }
-
     }
 
     private static IReadOnlyList<string> DefaultSensitiveFilePaths() =>
@@ -746,52 +688,38 @@ public static partial class SecureFilePermissions
 
     private static void CheckPath(ILogger logger, string path, bool isDirectory)
     {
-
         if (string.IsNullOrWhiteSpace(path))
         {
-
             return;
-
         }
 
         if (isDirectory)
         {
-
             if (!Directory.Exists(path))
             {
-
                 return;
-
             }
-
         }
         else if (!File.Exists(path))
         {
-
             return;
-
         }
 
         if (!OperatingSystem.IsWindows())
         {
-
             CheckUnixPermissions(logger, path, isDirectory);
 
             return;
-
         }
 
         CheckWindowsPermissions(logger, path, isDirectory);
-
     }
 
     [UnsupportedOSPlatform("windows")]
     private static void CheckUnixPermissions(ILogger logger, string path, bool isDirectory)
     {
-
         try
         {
-
             UnixFileMode mode = isDirectory
                 ? File.GetUnixFileMode(path)
                 : File.GetUnixFileMode(path);
@@ -802,31 +730,23 @@ public static partial class SecureFilePermissions
 
             if ((mode & groupOrOtherReadWriteExecute) != 0)
             {
-
                 logger.LogWarning(
                     "Permission self-check: {Path} is group/other accessible (mode {Mode}). Restrict to owner-only (600 for files, 700 for directories).",
                     path,
                     mode);
-
             }
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(ex, "Permission self-check could not read Unix mode for {Path}.", path);
-
         }
-
     }
 
     [SupportedOSPlatform("windows")]
     private static void CheckWindowsPermissions(ILogger logger, string path, bool isDirectory)
     {
-
         try
         {
-
             FileSystemSecurity security = isDirectory
                 ? new DirectoryInfo(path).GetAccessControl()
                 : new FileInfo(path).GetAccessControl();
@@ -835,9 +755,7 @@ public static partial class SecureFilePermissions
 
             if (currentUser is null)
             {
-
                 return;
-
             }
 
             AuthorizationRuleCollection rules = security.GetAccessRules(
@@ -847,19 +765,14 @@ public static partial class SecureFilePermissions
 
             foreach (FileSystemAccessRule rule in rules.Cast<FileSystemAccessRule>())
             {
-
                 if ((rule.FileSystemRights & (FileSystemRights.Read | FileSystemRights.ReadData | FileSystemRights.ReadExtendedAttributes)) == 0)
                 {
-
                     continue;
-
                 }
 
                 if (rule.IdentityReference.Equals(currentUser))
                 {
-
                     continue;
-
                 }
 
                 if (rule.IdentityReference is SecurityIdentifier sid
@@ -867,43 +780,30 @@ public static partial class SecureFilePermissions
                         || sid.IsWellKnown(WellKnownSidType.BuiltinUsersSid)
                         || sid.IsWellKnown(WellKnownSidType.AuthenticatedUserSid)))
                 {
-
                     logger.LogWarning(
                         "Permission self-check: {Path} grants read access to {Principal}. Restrict to the current user only.",
                         path,
                         rule.IdentityReference.Value);
-
                 }
-
             }
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(ex, "Permission self-check could not read ACL for {Path}.", path);
-
         }
-
     }
 
     [UnsupportedOSPlatform("windows")]
     internal static void TryApplyUnixFileMode(string path, UnixFileMode mode)
     {
-
         try
         {
-
             File.SetUnixFileMode(path, mode);
-
         }
         catch (Exception ex)
         {
-
             Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
-
         }
-
     }
 
     [SupportedOSPlatform("windows")]
@@ -911,10 +811,8 @@ public static partial class SecureFilePermissions
         string path,
         bool logFailure = true)
     {
-
         try
         {
-
             FileInfo fileInfo = new(path);
 
             FileSecurity security = fileInfo.GetAccessControl();
@@ -925,9 +823,7 @@ public static partial class SecureFilePermissions
 
             if (currentUser is null)
             {
-
                 return;
-
             }
 
             security.SetOwner(currentUser);
@@ -939,18 +835,14 @@ public static partial class SecureFilePermissions
                     AccessControlType.Allow));
 
             fileInfo.SetAccessControl(security);
-
         }
         catch (Exception ex)
         {
-
             if (logFailure)
             {
                 Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
             }
-
         }
-
     }
 
     [SupportedOSPlatform("windows")]
@@ -958,10 +850,8 @@ public static partial class SecureFilePermissions
         string path,
         bool logFailure = true)
     {
-
         try
         {
-
             DirectoryInfo directoryInfo = new(path);
 
             DirectorySecurity security = directoryInfo.GetAccessControl();
@@ -972,9 +862,7 @@ public static partial class SecureFilePermissions
 
             if (currentUser is null)
             {
-
                 return;
-
             }
 
             security.SetOwner(currentUser);
@@ -988,18 +876,13 @@ public static partial class SecureFilePermissions
                     AccessControlType.Allow));
 
             directoryInfo.SetAccessControl(security);
-
         }
         catch (Exception ex)
         {
-
             if (logFailure)
             {
                 Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
             }
-
         }
-
     }
-
 }

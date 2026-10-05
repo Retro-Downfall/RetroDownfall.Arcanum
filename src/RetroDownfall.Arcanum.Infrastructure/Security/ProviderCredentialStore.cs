@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
-using System.Text;
 
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging;
@@ -15,7 +13,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// Inference-provider credential store that prefers the platform credential manager and keeps an
 /// owner-only, Data Protection-encrypted mirror for headless hosts. One credential per provider
 /// name; the account and mirror file name are both derived from the same normalized provider
-/// segment used by <c>ARCANUM_PROVIDER_{NAME}_API_KEY</c>.
+/// segment used by <c>ARCANUM_PROVIDER_{NAME}_API_KEY</c>. The OS/mirror policy itself lives in
+/// <see cref="MirroredOsCredential"/>.
 /// </summary>
 /// <remarks>
 /// The .NET runtime cannot reliably zero an immutable managed <see cref="string"/>: the secret is
@@ -26,8 +25,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </remarks>
 public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposable
 {
-
-    internal const int MaxProtectedSecretBytes = 64 * 1024;
+    internal const int MaxProtectedSecretBytes = ProtectedCredentialFile.MaxProtectedSecretBytes;
 
     private const string ProtectorPurpose = "Arcanum.Providers.InferenceApiKey";
 
@@ -37,7 +35,7 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
     private readonly ILogger<ProviderCredentialStore>? _logger;
 
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates =
+    private readonly ConcurrentDictionary<string, MirroredOsCredential> _credentials =
         new(StringComparer.Ordinal);
 
     private bool _disposed;
@@ -47,7 +45,6 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
         IDataProtectionProvider dataProtectionProvider,
         ILogger<ProviderCredentialStore>? logger = null)
     {
-
         _osStore = osStore ?? throw new ArgumentNullException(nameof(osStore));
 
         ArgumentNullException.ThrowIfNull(dataProtectionProvider);
@@ -55,109 +52,28 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
         _protector = dataProtectionProvider.CreateProtector(ProtectorPurpose);
 
         _logger = logger;
-
     }
 
     /// <summary>
-    /// Marks the store disposed without disposing any per-account gate. None of these
-    /// semaphores ever has its AvailableWaitHandle observed, so none needs disposal — and
-    /// disposing one out from under an in-flight caller turned that caller's own
-    /// <c>finally { gate.Release(); }</c> into an ObjectDisposedException that replaced whatever
-    /// the operation actually returned. Gates therefore live for the process; only callers that
-    /// arrive after Dispose are refused, in <see cref="Gate"/> below.
+    /// Marks the store disposed without disposing any per-account gate (see
+    /// <see cref="MirroredOsCredential"/>): disposing one out from under an in-flight caller turned
+    /// that caller's own release into an ObjectDisposedException that replaced whatever the operation
+    /// actually returned. Only callers that arrive after Dispose are refused.
     /// </summary>
     public void Dispose()
     {
-
         _disposed = true;
-
     }
 
-    public async Task<SecretStoreReadResult> GetApiKeyReadResultAsync(
+    public Task<SecretStoreReadResult> GetApiKeyReadResultAsync(
         string providerName,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        string account = ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName);
-
-        SemaphoreSlim gate = Gate(account);
-
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-
-            OsCredentialStoreResult os = _osStore.TryGet(
-                ArcanumCredentialIdentity.Service,
-                account);
-
-            if (os.Status == OsCredentialStoreStatus.Ok
-                && !string.IsNullOrWhiteSpace(os.Value))
-            {
-
-                return SecretStoreReadResult.Ok(os.Value);
-
-            }
-
-            if (os.Status == OsCredentialStoreStatus.Failed)
-            {
-
-                _logger?.LogWarning(
-                    "OS credential store read failed for inference provider account {Account}.",
-                    account);
-
-            }
-
-            SecretStoreReadResult fallback = await ReadMirrorAsync(
-                    providerName,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (fallback.Status == SecretStoreReadStatus.Ok
-                && !string.IsNullOrWhiteSpace(fallback.Value)
-                && os.Status is OsCredentialStoreStatus.NotFound or OsCredentialStoreStatus.Ok)
-            {
-
-                OsCredentialStoreResult migrate = _osStore.Set(
-                    ArcanumCredentialIdentity.Service,
-                    account,
-                    fallback.Value);
-
-                if (migrate.Status == OsCredentialStoreStatus.Ok)
-                {
-
-                    _logger?.LogInformation(
-                        "Migrated inference provider credential {Account} into the OS credential store.",
-                        account);
-
-                }
-                else
-                {
-
-                    _logger?.LogWarning(
-                        "Could not migrate inference provider credential {Account} into the OS "
-                        + "credential store ({Status}); using the encrypted mirror.",
-                        account,
-                        migrate.Status);
-
-                }
-
-            }
-
-            return fallback;
-
-        }
-        finally
-        {
-
-            _ = gate.Release();
-
-        }
-
+        return Credential(providerName).GetAsync(cancellationToken);
     }
 
     /// <summary>
@@ -165,55 +81,15 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
     /// failed OS read is not interchangeable with absence: its hidden value may supersede the
     /// mirror, so the peek fails closed rather than returning a potentially stale credential.
     /// </summary>
-    public async Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
+    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
         string providerName,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        string account = ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName);
-
-        SemaphoreSlim gate = Gate(account);
-
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-
-            OsCredentialStoreResult os = _osStore.TryGet(
-                ArcanumCredentialIdentity.Service,
-                account);
-
-            if (os.Status == OsCredentialStoreStatus.Ok
-                && !string.IsNullOrWhiteSpace(os.Value))
-            {
-
-                return SecretStoreReadResult.Ok(os.Value);
-
-            }
-
-            if (os.Status == OsCredentialStoreStatus.Failed)
-            {
-
-                return SecretStoreReadResult.Corrupted(
-                    $"OS key storage failed while peeking at provider account {account}. "
-                    + (os.Message ?? "Restore the credential before retrying."));
-
-            }
-
-            return await ReadMirrorAsync(providerName, cancellationToken).ConfigureAwait(false);
-
-        }
-        finally
-        {
-
-            _ = gate.Release();
-
-        }
-
+        return Credential(providerName).PeekAsync(cancellationToken);
     }
 
     /// <summary>
@@ -224,7 +100,6 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
         string providerName,
         CancellationToken cancellationToken = default)
     {
-
         SecretStoreReadResult result = await GetApiKeyReadResultAsync(
                 providerName,
                 cancellationToken)
@@ -232,349 +107,57 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
         return result.Status == SecretStoreReadStatus.Ok
             && !string.IsNullOrWhiteSpace(result.Value);
-
     }
 
-    public async Task SaveApiKeyAsync(
+    public Task SaveApiKeyAsync(
         string providerName,
         string apiKey,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        string account = ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName);
-
-        string normalized = apiKey.Trim();
-
-        SemaphoreSlim gate = Gate(account);
-
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-
-            OsCredentialStoreResult os = _osStore.Set(
-                ArcanumCredentialIdentity.Service,
-                account,
-                normalized);
-
-            if (os.Status != OsCredentialStoreStatus.Ok)
-            {
-
-                _logger?.LogWarning(
-                    "OS credential store save failed for inference provider account {Account} "
-                    + "({Status}); using the encrypted mirror.",
-                    account,
-                    os.Status);
-
-                PurgeSupersededOsCredential(account, os);
-
-            }
-
-            try
-            {
-
-                await WriteMirrorAsync(providerName, normalized, cancellationToken)
-                    .ConfigureAwait(false);
-
-            }
-            catch (Exception exception) when (os.Status == OsCredentialStoreStatus.Ok)
-            {
-
-                // The primary credential is safely stored. Keep serving while making the failed
-                // emergency mirror visible without disclosing the credential.
-                _logger?.LogWarning(
-                    exception,
-                    "OS credential save succeeded, but the encrypted mirror for {Account} failed.",
-                    account);
-
-            }
-
-        }
-        finally
-        {
-
-            _ = gate.Release();
-
-        }
-
+        return Credential(providerName).SaveAsync(apiKey.Trim(), cancellationToken);
     }
 
-    public async Task DeleteApiKeyAsync(
+    public Task DeleteApiKeyAsync(
         string providerName,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        string account = ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName);
-
-        SemaphoreSlim gate = Gate(account);
-
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-
-            OsCredentialStoreResult os = _osStore.Delete(
-                ArcanumCredentialIdentity.Service,
-                account);
-
-            string path = ArcanumPaths.InferenceProviderApiKeyStoreFile(providerName);
-
-            if (File.Exists(path))
-            {
-
-                File.Delete(path);
-
-            }
-
-            if (os.Status == OsCredentialStoreStatus.Failed)
-            {
-
-                throw new InvalidOperationException(
-                    "The encrypted mirror was deleted, but the OS credential store could not "
-                    + $"delete the credential for provider account {account}.");
-
-            }
-
-            if (os.Status == OsCredentialStoreStatus.Unavailable)
-            {
-
-                _logger?.LogWarning(
-                    "The encrypted mirror for {Account} was deleted while the OS credential "
-                    + "store was unavailable.",
-                    account);
-
-            }
-
-        }
-        finally
-        {
-
-            _ = gate.Release();
-
-        }
-
+        return Credential(providerName).DeleteAsync(cancellationToken);
     }
 
-    private SemaphoreSlim Gate(string account)
+    private MirroredOsCredential Credential(string providerName)
     {
-
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        return _gates.GetOrAdd(account, static _ => new SemaphoreSlim(1, 1));
-
-    }
-
-    /// <summary>
-    /// Reads prefer the OS credential over the mirror, so a failed OS write has to take the
-    /// superseded credential with it — otherwise the replaced credential keeps being used and the
-    /// newly stored one never takes effect. When the credential can neither be replaced nor removed
-    /// the save fails closed, before the mirror is rewritten, rather than reporting a replacement it
-    /// did not perform.
-    /// </summary>
-    private void PurgeSupersededOsCredential(string account, OsCredentialStoreResult save)
-    {
-
-        OsCredentialStoreResult purge = _osStore.Delete(
-            ArcanumCredentialIdentity.Service,
-            account);
-
-        if (purge.Status is OsCredentialStoreStatus.Ok or OsCredentialStoreStatus.NotFound)
-        {
-
-            return;
-
-        }
-
-        if (!_osStore.IsAvailable)
-        {
-
-            // No reachable backend at all: the encrypted mirror is the documented operating mode
-            // here, and every read in this state resolves through it.
-            _logger?.LogWarning(
-                "The OS credential store is unavailable; the mirror for {Account} was written "
-                + "without reconciling any earlier OS credential.",
-                account);
-
-            return;
-
-        }
-
-        throw new InvalidOperationException(
-            $"The credential for provider account {account} could not be written to the OS "
-            + $"credential store ({save.Status}), and the superseded OS credential could not be "
-            + $"removed ({purge.Status}). The previous credential would keep being used, so "
-            + "nothing was changed.");
-
-    }
-
-    private async Task<SecretStoreReadResult> ReadMirrorAsync(
-        string providerName,
-        CancellationToken cancellationToken)
-    {
-
-        string path = ArcanumPaths.InferenceProviderApiKeyStoreFile(providerName);
-
-        using SecureFileReadResult read = await SecureFileReader
-            .ReadBytesAsync(path, MaxProtectedSecretBytes, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (read.Status == SecureFileReadStatus.NotFound)
-        {
-
-            return SecretStoreReadResult.Missing();
-
-        }
-
-        if (read.Status != SecureFileReadStatus.Success)
-        {
-
-            return SecretStoreReadResult.Corrupted(CorruptMirrorMessage(providerName));
-
-        }
-
-        byte[] cipher = read.Bytes.ToArray();
-
-        if (cipher.Length == 0)
-        {
-
-            CryptographicOperations.ZeroMemory(cipher);
-
-            return SecretStoreReadResult.Corrupted(CorruptMirrorMessage(providerName));
-
-        }
-
-        try
-        {
-
-            byte[] plain = _protector.Unprotect(cipher);
-
-            try
-            {
-
-                string value = Encoding.UTF8.GetString(plain);
-
-                return string.IsNullOrWhiteSpace(value)
-                    ? SecretStoreReadResult.Corrupted(CorruptMirrorMessage(providerName))
-                    : SecretStoreReadResult.Ok(value);
-
-            }
-            finally
-            {
-
-                CryptographicOperations.ZeroMemory(plain);
-
-            }
-
-        }
-        catch (CryptographicException)
-        {
-
-            return SecretStoreReadResult.Corrupted(CorruptMirrorMessage(providerName));
-
-        }
-        finally
-        {
-
-            CryptographicOperations.ZeroMemory(cipher);
-
-        }
-
-    }
-
-    private async Task WriteMirrorAsync(
-        string providerName,
-        string apiKey,
-        CancellationToken cancellationToken)
-    {
-
-        string path = ArcanumPaths.InferenceProviderApiKeyStoreFile(providerName);
-
-        string directory = Path.GetDirectoryName(path)
-            ?? throw new InvalidOperationException("Invalid provider credential store path.");
-
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
-
-        byte[] plain = Encoding.UTF8.GetBytes(apiKey);
-
-        byte[] cipher;
-
-        try
-        {
-
-            cipher = _protector.Protect(plain);
-
-        }
-        finally
-        {
-
-            CryptographicOperations.ZeroMemory(plain);
-
-        }
-
-        string tempPath = path + ".tmp." + Guid.NewGuid().ToString("N");
-
-        try
-        {
-
-            await using (FileStream stream =
-                SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
-            {
-
-                await stream.WriteAsync(cipher, cancellationToken).ConfigureAwait(false);
-
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-
-                // Durable flush before the atomic replace so an unclean power loss cannot leave a
-                // present-but-empty mirror behind the committed rename.
-                stream.Flush(flushToDisk: true);
-
-            }
-
-            File.Move(tempPath, path, overwrite: true);
-
-            SecureFilePermissions.ApplyOwnerOnlyFile(path);
-
-        }
-        finally
-        {
-
-            CryptographicOperations.ZeroMemory(cipher);
-
-            if (File.Exists(tempPath))
-            {
-
-                try
-                {
-
-                    File.Delete(tempPath);
-
-                }
-                catch (IOException)
-                {
-
-                    // Best-effort cleanup of an owner-only temporary file.
-
-                }
-
-            }
-
-        }
-
+        string account = ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName);
+
+        return _credentials.GetOrAdd(
+            account,
+            static (account, state) => new MirroredOsCredential(
+                state.Store._osStore,
+                account,
+                new ProtectedFileCredentialMirror(
+                    () => ArcanumPaths.InferenceProviderApiKeyStoreFile(state.ProviderName),
+                    state.Store._protector,
+                    CorruptMirrorMessage(state.ProviderName)),
+                new MirroredCredentialPolicy(
+                    $"provider account {account}",
+                    "Restore the credential before retrying."),
+                state.Store._logger),
+            (Store: this, ProviderName: providerName));
     }
 
     private static string CorruptMirrorMessage(string providerName) =>
         $"{Path.GetFileName(ArcanumPaths.InferenceProviderApiKeyStoreFile(providerName))} is "
         + "present but could not be decrypted (corrupt or wrong Data Protection key ring). "
         + "Re-run 'arcanum setup' or 'arcanum key provider set' to store the credential again.";
-
 }

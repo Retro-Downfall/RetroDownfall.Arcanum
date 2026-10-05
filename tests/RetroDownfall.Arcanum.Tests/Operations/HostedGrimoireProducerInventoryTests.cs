@@ -25674,7 +25674,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             Assert.Contains(result.Items, static site =>
                 site.EnclosingType == "KnownPropertyCleanup"
                 && site.Callee == "System.IO.File.Delete");
-
         }
     }
 
@@ -27083,7 +27082,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExistsStrict", 5)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryApplyOwnerOnlyFileStrict", 5)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.CreateOwnerOnlyTempFile", 5)]
-    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths", 5)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryApplyUnixFileMode", 5)]
     public void EveryClosedVocabularyMemberIsDiscovered(string symbol, int kind)
     {

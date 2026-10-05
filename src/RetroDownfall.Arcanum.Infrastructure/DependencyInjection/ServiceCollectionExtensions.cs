@@ -180,7 +180,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
+            .PersistKeysToOwnerOnlyKeyRing();
 
         services.TryAddSingleton<IOsCredentialStore>(TestCredentialStorePolicy.Create);
 
@@ -464,7 +464,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
+            .PersistKeysToOwnerOnlyKeyRing();
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
@@ -952,7 +952,7 @@ public static class ServiceCollectionExtensions
 
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
+            .PersistKeysToOwnerOnlyKeyRing();
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 

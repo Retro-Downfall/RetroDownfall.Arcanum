@@ -24,7 +24,6 @@ public sealed class ProviderReachabilityCheck(
     IProviderApiKeyResolver apiKeyResolver,
     ISetupProviderProbe probe) : IDoctorCheck
 {
-
     public const string CheckId = "providers.reachability";
 
     public string Id => CheckId;
@@ -37,17 +36,14 @@ public sealed class ProviderReachabilityCheck(
 
     public async Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         IReadOnlyList<ProviderSettings> providers =
             [.. (options.Value.Providers ?? []).Where(static provider => !string.IsNullOrWhiteSpace(provider.Name))];
 
         if (providers.Count == 0)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Skipped,
                 "No inference provider is configured.");
-
         }
 
         List<string> summaries = [];
@@ -58,7 +54,6 @@ public sealed class ProviderReachabilityCheck(
 
         foreach (ProviderSettings provider in providers)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string? apiKey = await apiKeyResolver
@@ -75,22 +70,16 @@ public sealed class ProviderReachabilityCheck(
 
             if (remedy is not null)
             {
-
                 remedies.Add(remedy);
-
             }
 
             if (outcome > worst)
             {
-
                 worst = outcome;
-
             }
-
         }
 
         return new DoctorFinding(worst, string.Join("; ", summaries), remedies);
-
     }
 
     internal static (DoctorOutcome Outcome, string Summary, DoctorRemedy? Remedy) Classify(
@@ -158,7 +147,6 @@ public sealed class ProviderReachabilityCheck(
                 $"{providerName}: unreachable",
                 null),
         };
-
 }
 
 /// <summary>
@@ -174,7 +162,6 @@ public sealed class WebResearchCredentialCheck(
     IOptions<ArcanumSettings> options,
     IWebResearchCredentialStore credentialStore) : IDoctorCheck
 {
-
     public const string CheckId = "webresearch.credential";
 
     public string Id => CheckId;
@@ -187,25 +174,20 @@ public sealed class WebResearchCredentialCheck(
 
     public async Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         WebBrowsingSettings webResearch = options.Value.ResolveWebBrowsing();
 
         if (!webResearch.Enabled)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Skipped,
                 "Web research is disabled, so no credential is required.");
-
         }
 
         if (EnvironmentCredentialResolver.ResolveWebResearchApiKey(webResearch) is not null)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Healthy,
                 "The web-research credential resolves from its environment reference. The value is never shown.");
-
         }
 
         SecretStoreReadResult stored = await credentialStore
@@ -224,12 +206,18 @@ public sealed class WebResearchCredentialCheck(
                 "The stored web-research credential cannot be decrypted, so every research call will fail.",
                 [ReplaceCredential]),
 
+            SecretStoreReadStatus.Unreadable => new DoctorFinding(
+                DoctorOutcome.Unhealthy,
+                "The stored web-research credential exists but could not be read (permissions, file type, "
+                + "size, or an I/O error), so every research call will fail. Make it an owner-only regular "
+                + "file and retry.",
+                [ReplaceCredential]),
+
             _ => new DoctorFinding(
                 DoctorOutcome.Degraded,
                 "Web research is enabled but no credential is stored, so every research call will fail.",
                 [ReplaceCredential]),
         };
-
     }
 
     private static DoctorRemedy ReplaceCredential =>
@@ -238,5 +226,4 @@ public sealed class WebResearchCredentialCheck(
             null,
             DoctorRemedyCommands.KeyProviderSetPerplexity,
             "Store a current web-research credential from redirected stdin or a secure prompt. The value is never displayed.");
-
 }

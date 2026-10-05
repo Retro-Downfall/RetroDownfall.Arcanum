@@ -17,7 +17,10 @@ public sealed class EncryptedBlobDiagnostics(
         FileEncryptionSecretStatus secretStatus = secret.Status switch
         {
             SecretStoreReadStatus.Ok => FileEncryptionSecretStatus.Available,
-            SecretStoreReadStatus.Corrupted => FileEncryptionSecretStatus.Corrupted,
+            // Present-but-unusable either way; an unreadable key must never read as Missing, which
+            // would suggest nothing is stored.
+            SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable =>
+                FileEncryptionSecretStatus.Corrupted,
             _ => FileEncryptionSecretStatus.Missing,
         };
 

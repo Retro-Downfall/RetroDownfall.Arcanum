@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// </summary>
 public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
 {
-
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     private readonly IOptionsMonitor<ArcanumSettings> _optionsMonitor;
@@ -46,7 +45,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
             filePathOverride,
             new ManagedLogMutationGate())
     {
-
     }
 
     internal InferenceAuditLogger(
@@ -55,7 +53,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         string? filePathOverride,
         IManagedLogMutationGate managedLogMutationGate)
     {
-
         _optionsMonitor = optionsMonitor;
 
         _logger = logger;
@@ -63,24 +60,19 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         _filePathOverride = filePathOverride;
 
         _managedLogMutationGate = managedLogMutationGate;
-
     }
 
     public async Task LogAsync(InferenceAuditRecord record, CancellationToken cancellationToken)
     {
-
         HostAuditLogSettings config = ResolveConfig();
 
         if (!config.Enabled)
         {
-
             return;
-
         }
 
         try
         {
-
             await using IAsyncDisposable managedLogLease =
                 await _managedLogMutationGate.AcquireExclusiveAsync(
                     cancellationToken).ConfigureAwait(false);
@@ -89,7 +81,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
 
             try
             {
-
                 (string directory, string stem) =
                     ResolvePathParts(_filePathOverride ?? config.FilePath);
 
@@ -97,9 +88,7 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
 
                 if (!string.Equals(_lastPreparedDateStamp, dateStamp, StringComparison.Ordinal))
                 {
-
                     PrepareForNewDate(directory, dateStamp);
-
                 }
 
                 string filePath = Path.Combine(directory, $"{stem}-{dateStamp}.jsonl");
@@ -108,58 +97,43 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
 
                 if (File.Exists(filePath) && new FileInfo(filePath).Length >= maxSizeBytes)
                 {
-
                     if (!_sizeCapWarnedForCurrentDate)
                     {
-
                         _logger.LogWarning(
                             "Inference audit log {FilePath} reached its {MaxSizeMb} MB size cap; further entries for today are dropped.",
                             filePath,
                             config.MaxSizeMb);
 
                         _sizeCapWarnedForCurrentDate = true;
-
                     }
 
                     return;
-
                 }
 
                 bool isNewFile = !File.Exists(filePath);
 
                 string json = JsonSerializer.Serialize(record, AuditJsonContext.Default.InferenceAuditRecord);
 
-                await File.AppendAllTextAsync(filePath, json + "\n", cancellationToken).ConfigureAwait(false);
+                await SecureFilePermissions.AppendOwnerOnlyTextAsync(filePath, json + "\n", cancellationToken).ConfigureAwait(false);
 
                 if (isNewFile)
                 {
-
                     SecureFilePermissions.ApplyOwnerOnlyFile(filePath);
-
                 }
-
             }
             finally
             {
-
                 _writeLock.Release();
-
             }
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             _logger.LogWarning(ex, "Failed to write inference audit log entry.");
-
         }
-
     }
 
     public async Task<IReadOnlyList<InferenceAuditRecord>> QueryAsync(
@@ -170,7 +144,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         int limit,
         CancellationToken cancellationToken)
     {
-
         Result<AuditQueryPage<InferenceAuditRecord>> page = await QueryPageAsync(
             from,
             to,
@@ -183,7 +156,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         return page.IsSuccess
             ? page.Value.Records
             : [];
-
     }
 
     public async Task<Result<AuditQueryPage<InferenceAuditRecord>>> QueryPageAsync(
@@ -195,15 +167,12 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         string? cursor,
         CancellationToken cancellationToken)
     {
-
         HostAuditLogSettings config = ResolveConfig();
 
         if (!config.Enabled)
         {
-
             return Result<AuditQueryPage<InferenceAuditRecord>>.Success(
                 new AuditQueryPage<InferenceAuditRecord>([], null));
-
         }
 
         (string directory, string stem) =
@@ -211,7 +180,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
 
         if (!Directory.Exists(directory))
         {
-
             return string.IsNullOrWhiteSpace(cursor)
                 ? Result<AuditQueryPage<InferenceAuditRecord>>.Success(
                     new AuditQueryPage<InferenceAuditRecord>([], null))
@@ -219,7 +187,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
                     new Error(
                         ErrorCodes.Validation.InvalidQuery,
                         "The audit cursor no longer references retained log data. Restart without 'cursor'."));
-
         }
 
         return await AuditLogPageReader.QueryAsync(
@@ -241,19 +208,15 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
             cancellationToken,
             model,
             sessionId).ConfigureAwait(false);
-
     }
 
     private void PrepareForNewDate(string directory, string dateStamp)
     {
-
         try
         {
-
             Directory.CreateDirectory(directory);
 
             SecureFilePermissions.ApplyOwnerOnlyDirectory(directory);
-
         }
         catch (Exception ex)
         {
@@ -262,13 +225,11 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
             _logger.LogError(ex, "Failed to create or secure inference audit log directory {Directory}; audit entries for {DateStamp} will be dropped.", directory, dateStamp);
 
             return;
-
         }
 
         _lastPreparedDateStamp = dateStamp;
 
         _sizeCapWarnedForCurrentDate = false;
-
     }
 
     private HostAuditLogSettings ResolveConfig() =>
@@ -282,22 +243,17 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
     /// </summary>
     internal static (string Directory, string Stem) ResolvePathParts(string configuredPath)
     {
-
         string? directory = Path.GetDirectoryName(configuredPath);
 
         string stem = Path.GetFileNameWithoutExtension(configuredPath);
 
         if (string.IsNullOrWhiteSpace(stem))
         {
-
             stem = "audit";
-
         }
 
         return (string.IsNullOrWhiteSpace(directory) ? "." : directory, stem);
-
     }
 
     public void Dispose() => _writeLock.Dispose();
-
 }

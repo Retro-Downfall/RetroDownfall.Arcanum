@@ -5,22 +5,18 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 
 public sealed class GrimoireKdfSidecarTests : IDisposable
 {
-
     private readonly string _tempDir;
 
     public GrimoireKdfSidecarTests()
     {
-
         _tempDir = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"sidecar-{Guid.NewGuid():N}");
 
         Directory.CreateDirectory(_tempDir);
-
     }
 
     [Fact]
     public void Create_ProducesVersion2AndSixteenByteSalt()
     {
-
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
 
         Assert.Equal(GrimoireKeyDerivation.KdfVersion2, sidecar.Version);
@@ -28,13 +24,11 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
         byte[] salt = sidecar.GetSaltBytes();
 
         Assert.Equal(GrimoireKeyDerivation.SaltLengthBytes, salt.Length);
-
     }
 
     [Fact]
     public void WriteAndRead_RoundTripsSidecar()
     {
-
         string dbPath = Path.Combine(_tempDir, "grimoire.db");
 
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
@@ -46,13 +40,11 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
         Assert.Equal(sidecar.Version, read.Version);
 
         Assert.Equal(sidecar.SaltBase64, read.SaltBase64);
-
     }
 
     [Fact]
     public void Read_WrongVersion_ThrowsNotSupportedException()
     {
-
         string dbPath = Path.Combine(_tempDir, "grimoire.db");
 
         GrimoireKdfSidecar sidecar = new()
@@ -64,13 +56,11 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
         GrimoireKdfSidecarFile.Write(dbPath, sidecar);
 
         Assert.Throws<NotSupportedException>(() => GrimoireKdfSidecarFile.Read(dbPath));
-
     }
 
     [Fact]
     public void Read_WrongSaltLength_ThrowsInvalidDataException()
     {
-
         string dbPath = Path.Combine(_tempDir, "grimoire.db");
 
         GrimoireKdfSidecar sidecar = new()
@@ -82,26 +72,21 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
         GrimoireKdfSidecarFile.Write(dbPath, sidecar);
 
         Assert.Throws<InvalidDataException>(() => GrimoireKdfSidecarFile.Read(dbPath));
-
     }
 
     [Fact]
     public void Read_OversizedSidecar_FailsBeforeParsing()
     {
-
         string dbPath = Path.Combine(_tempDir, "grimoire.db");
 
         string sidecarPath = GrimoireKdfSidecarFile.GetSidecarPath(dbPath);
 
         using (FileStream stream = new(sidecarPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
-
             stream.SetLength(GrimoireKdfSidecarFile.MaxSidecarBytes + 1L);
-
         }
 
         Assert.Throws<InvalidDataException>(() => GrimoireKdfSidecarFile.Read(dbPath));
-
     }
 
     /// <summary>
@@ -116,7 +101,6 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
     [InlineData("not json at all")]
     public void Read_MalformedJson_ThrowsInvalidDataException(string contents)
     {
-
         string dbPath = Path.Combine(_tempDir, "grimoire.db");
 
         File.WriteAllText(GrimoireKdfSidecarFile.GetSidecarPath(dbPath), contents);
@@ -125,13 +109,11 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
             () => GrimoireKdfSidecarFile.Read(dbPath));
 
         Assert.Contains("grimoire.db.kdf", exception.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Read_NonBase64Salt_ThrowsInvalidDataException()
     {
-
         string dbPath = Path.Combine(_tempDir, "grimoire.db");
 
         File.WriteAllText(
@@ -142,30 +124,72 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
             () => GrimoireKdfSidecarFile.Read(dbPath));
 
         Assert.Contains("grimoire.db.kdf", exception.Message, StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// Windows refuses a delete with <see cref="UnauthorizedAccessException"/>. Thrown out of the
+    /// cleanup in a <c>finally</c>, it would replace the exception that explains why the write failed
+    /// with one about tidying up afterwards. The seam reproduces that refusal on any platform.
+    /// </summary>
+    [Fact]
+    public void Write_preserves_the_original_failure_when_temp_cleanup_is_denied()
+    {
+        string dbPath = Path.Combine(_tempDir, "grimoire.db");
+
+        string sidecarPath = GrimoireKdfSidecarFile.GetSidecarPath(dbPath);
+
+        // A non-empty directory squatting on the sidecar path lets the temp file be staged and
+        // written, then fails the atomic replace, which is the only way the cleanup arm runs.
+        Directory.CreateDirectory(sidecarPath);
+
+        File.WriteAllText(Path.Combine(sidecarPath, "occupant"), "x");
+
+        UnauthorizedAccessException cleanupFailure = new("test: temp cleanup denied");
+
+        List<string> attemptedCleanups = [];
+
+        OwnerOnlyAtomicFile.TempFileDeleteForTests = path =>
+        {
+            attemptedCleanups.Add(path);
+
+            throw cleanupFailure;
+        };
+
+        try
+        {
+            Exception? failure = Record.Exception(
+                () => GrimoireKdfSidecarFile.Write(
+                    dbPath,
+                    GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2)));
+
+            Assert.NotNull(failure);
+
+            Assert.NotSame(cleanupFailure, failure);
+
+            Assert.True(failure is IOException or UnauthorizedAccessException, failure.ToString());
+
+            string attempted = Assert.Single(attemptedCleanups);
+
+            Assert.StartsWith(sidecarPath + ".tmp.", attempted, StringComparison.Ordinal);
+        }
+        finally
+        {
+            OwnerOnlyAtomicFile.TempFileDeleteForTests = null;
+        }
     }
 
     public void Dispose()
     {
-
         try
         {
-
             if (Directory.Exists(_tempDir))
             {
-
                 Directory.Delete(_tempDir, recursive: true);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup.
-
         }
-
     }
-
 }

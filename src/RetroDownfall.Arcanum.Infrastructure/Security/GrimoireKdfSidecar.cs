@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 public sealed record GrimoireKdfSidecar
 {
-
     [JsonPropertyName("v")]
     public required int Version { get; init; }
 
@@ -17,7 +16,6 @@ public sealed record GrimoireKdfSidecar
 
     public static GrimoireKdfSidecar Create(int version)
     {
-
         byte[] salt = new byte[GrimoireKeyDerivation.SaltLengthBytes];
 
         RandomNumberGenerator.Fill(salt);
@@ -27,14 +25,11 @@ public sealed record GrimoireKdfSidecar
             Version = version,
             SaltBase64 = Convert.ToBase64String(salt),
         };
-
     }
-
 }
 
 public static partial class GrimoireKdfSidecarFile
 {
-
     public const int MaxSidecarBytes = 4096;
 
     public static string GetSidecarPath(string databasePath) => databasePath + ".kdf";
@@ -56,7 +51,6 @@ public static partial class GrimoireKdfSidecarFile
 
     private static GrimoireKdfSidecar ReadFile(string sidecarPath)
     {
-
         SecureFileOpenStatus openStatus = SecureFileReader.TryOpenRegularFile(
             sidecarPath,
             expectedIdentity: null,
@@ -65,27 +59,20 @@ public static partial class GrimoireKdfSidecarFile
 
         if (openStatus == SecureFileOpenStatus.NotFound)
         {
-
             throw new FileNotFoundException("Grimoire KDF sidecar was not found.", sidecarPath);
-
         }
 
         if (openStatus != SecureFileOpenStatus.Success || stream is null)
         {
-
             throw new InvalidDataException("Grimoire KDF sidecar is not an unaliased regular file.");
-
         }
 
         using (stream)
         {
-
             if (stream.Length > MaxSidecarBytes)
             {
-
                 throw new InvalidDataException(
                     $"Grimoire KDF sidecar exceeds the {MaxSidecarBytes}-byte limit.");
-
             }
 
             byte[] json = new byte[stream.Length];
@@ -105,33 +92,25 @@ public static partial class GrimoireKdfSidecarFile
 
             if (sidecar is null)
             {
-
                 throw new InvalidDataException($"Grimoire KDF sidecar at {sidecarPath} is empty or malformed.");
-
             }
 
             if (sidecar.Version != GrimoireKeyDerivation.KdfVersion2)
             {
-
                 throw new NotSupportedException(
                     $"Grimoire KDF sidecar version {sidecar.Version} is not supported.");
-
             }
 
             byte[] salt = Guarded(sidecarPath, sidecar.GetSaltBytes);
 
             if (salt.Length != GrimoireKeyDerivation.SaltLengthBytes)
             {
-
                 throw new InvalidDataException(
                     $"Grimoire KDF sidecar salt must be {GrimoireKeyDerivation.SaltLengthBytes} bytes.");
-
             }
 
             return sidecar;
-
         }
-
     }
 
     /// <summary>
@@ -140,22 +119,16 @@ public static partial class GrimoireKdfSidecarFile
     /// </summary>
     private static T Guarded<T>(string sidecarPath, Func<T> parse)
     {
-
         try
         {
-
             return parse();
-
         }
         catch (Exception exception) when (exception is JsonException or FormatException)
         {
-
             throw new InvalidDataException(
                 $"Grimoire KDF sidecar at {sidecarPath} is empty or malformed.",
                 exception);
-
         }
-
     }
 
     public static void Write(string databasePath, GrimoireKdfSidecar sidecar) =>
@@ -170,7 +143,6 @@ public static partial class GrimoireKdfSidecarFile
     /// </summary>
     public static void PromotePending(string databasePath)
     {
-
         string pendingPath = GetPendingSidecarPath(databasePath);
 
         string sidecarPath = GetSidecarPath(databasePath);
@@ -178,69 +150,24 @@ public static partial class GrimoireKdfSidecarFile
         File.Move(pendingPath, sidecarPath, overwrite: true);
 
         SecureFilePermissions.ApplyOwnerOnlyFile(sidecarPath);
-
     }
 
     private static void WriteFile(string sidecarPath, GrimoireKdfSidecar sidecar)
     {
-
         string directory = Path.GetDirectoryName(sidecarPath)
             ?? throw new InvalidOperationException("Invalid Grimoire database path.");
 
         Directory.CreateDirectory(directory);
 
-        string tempPath = sidecarPath + ".tmp." + Guid.NewGuid().ToString("N");
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            sidecar,
+            GrimoireKdfSidecarJsonContext.Default.GrimoireKdfSidecar);
 
-        try
-        {
-
-            byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-                sidecar,
-                GrimoireKdfSidecarJsonContext.Default.GrimoireKdfSidecar);
-
-            using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
-            {
-
-                stream.Write(json);
-
-                stream.Flush(flushToDisk: true);
-
-            }
-
-            File.Move(tempPath, sidecarPath, overwrite: true);
-
-            SecureFilePermissions.ApplyOwnerOnlyFile(sidecarPath);
-
-        }
-        finally
-        {
-
-            if (File.Exists(tempPath))
-            {
-
-                try
-                {
-
-                    File.Delete(tempPath);
-
-                }
-                catch (IOException)
-                {
-
-                    // Best-effort cleanup.
-
-                }
-
-            }
-
-        }
-
+        OwnerOnlyAtomicFile.Write(sidecarPath, json);
     }
 
     [JsonSerializable(typeof(GrimoireKdfSidecar))]
     internal sealed partial class GrimoireKdfSidecarJsonContext : JsonSerializerContext
     {
-
     }
-
 }
