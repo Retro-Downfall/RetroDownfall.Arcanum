@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Primitives;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.Security;
 
@@ -11,7 +12,6 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// </summary>
 internal static class IdempotencyIdentity
 {
-
     public const string ApiVersion = "v1";
 
     public static string ComputeClaimKeyHash(
@@ -31,19 +31,33 @@ internal static class IdempotencyIdentity
     }
 
     /// <summary>
-    /// Hashes everything that decides what the request does: route, canonical query, content type, and body.
+    /// Hashes everything that decides what the request does: route, canonical query, content type, the
+    /// Covenant context policy, and body.
     /// The query string is material — <c>?workspace=</c> and <c>?version=</c> retarget spell and prompt
     /// execution — so two requests that differ only there must collide into
-    /// <c>Security.IdempotencyConflict</c> rather than replay each other's response.
+    /// <c>Security.IdempotencyConflict</c> rather than replay each other's response. So is the context
+    /// policy (<c>X-Arcanum-Context-Policy: none</c>): it decides whether durable memory is injected, so a
+    /// retry that adds or drops it is a different request, and replaying the first answer would hand a
+    /// caller content it asked to exclude, or withhold content it asked for.
     /// </summary>
+    /// <remarks>
+    /// The policy is part of the fingerprint for every request, including the default, so a claim written
+    /// before the policy was folded in no longer matches and reads as a conflict across an upgrade rather
+    /// than as a replay it cannot vouch for.
+    /// </remarks>
     public static string ComputeFingerprintHash(
         byte[] bodyBytes,
         string normalizedRoute,
         string normalizedQuery,
-        string? contentType)
+        string? contentType,
+        CovenantContextPolicy contextPolicy)
     {
         byte[] prefixBytes = Encoding.UTF8.GetBytes(
-            normalizedRoute + "\n" + normalizedQuery + "\n" + (contentType ?? string.Empty) + "\n");
+            normalizedRoute
+            + "\n" + normalizedQuery
+            + "\n" + (contentType ?? string.Empty)
+            + "\ncontext-policy=" + contextPolicy.ToString()
+            + "\n");
 
         byte[] combined = new byte[prefixBytes.Length + bodyBytes.Length];
 
@@ -85,18 +99,14 @@ internal static class IdempotencyIdentity
 
         if (pattern is null || routeValues.Count == 0)
         {
-
             return canonical;
-
         }
 
         List<string> pairs = [];
 
         foreach (KeyValuePair<string, object?> entry in routeValues)
         {
-
             pairs.Add(entry.Key + "=" + (entry.Value?.ToString() ?? string.Empty));
-
         }
 
         pairs.Sort(StringComparer.Ordinal);
@@ -120,23 +130,17 @@ internal static class IdempotencyIdentity
 
         if (query.Count == 0)
         {
-
             return string.Empty;
-
         }
 
         List<string> pairs = [];
 
         foreach (KeyValuePair<string, StringValues> entry in query)
         {
-
             foreach (string? value in entry.Value)
             {
-
                 pairs.Add(entry.Key + "=" + (value ?? string.Empty));
-
             }
-
         }
 
         pairs.Sort(StringComparer.Ordinal);
@@ -150,5 +154,4 @@ internal static class IdempotencyIdentity
 
         return Convert.ToHexString(hash);
     }
-
 }

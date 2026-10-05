@@ -502,16 +502,41 @@ public sealed class ApiSurfaceContractTests : IDisposable
             body,
             "/api/spells/build/execute",
             "workspace=/repo/A",
-            "application/json");
+            "application/json",
+            CovenantContextPolicy.Default);
 
         string workspaceB = IdempotencyIdentity.ComputeFingerprintHash(
             body,
             "/api/spells/build/execute",
             "workspace=/repo/B",
-            "application/json");
+            "application/json",
+            CovenantContextPolicy.Default);
 
         // Equal fingerprints replay the first workspace's cached answer for the second request.
         Assert.NotEqual(workspaceA, workspaceB);
+    }
+
+    [Fact]
+    public void Fingerprint_covers_the_context_policy()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("""{"prompt":"identical"}""");
+
+        string withContext = IdempotencyIdentity.ComputeFingerprintHash(
+            body,
+            "/api/spells/build/execute",
+            string.Empty,
+            "application/json",
+            CovenantContextPolicy.Default);
+
+        string withoutContext = IdempotencyIdentity.ComputeFingerprintHash(
+            body,
+            "/api/spells/build/execute",
+            string.Empty,
+            "application/json",
+            CovenantContextPolicy.None);
+
+        // Equal fingerprints replay an answer that carried durable memory to a request that excluded it.
+        Assert.NotEqual(withContext, withoutContext);
     }
 
     [Fact]
