@@ -50,6 +50,20 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
 
     private const string InferenceRunSessionPredicate = "lower(replace(run.SessionId, '-', '')) = @id";
 
+    private const string BatchInputFilePredicate = "lower(replace(InputFileId, '-', '')) = @id";
+
+    private const string BatchOutputFilePredicate = "lower(replace(OutputFileId, '-', '')) = @id";
+
+    private const string BatchErrorFilePredicate = "lower(replace(ErrorFileId, '-', '')) = @id";
+
+    /// <summary>The three batch file roles and the expression index each is looked up by.</summary>
+    private static readonly (string Column, string Index)[] BatchFileRoles =
+    [
+        ("InputFileId", "IX_Batches_InputFileId_Norm"),
+        ("OutputFileId", "IX_Batches_OutputFileId_Norm"),
+        ("ErrorFileId", "IX_Batches_ErrorFileId_Norm"),
+    ];
+
     /// <summary>The three small session-keyed tables a Session delete clears by its normalized identity.</summary>
     private static readonly string[] SessionKeyedTables =
         ["attachment_memory_consultations", "saga_extraction_watermarks", "SessionContextPins"];
@@ -169,6 +183,54 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     }
 
     /// <summary>
+    /// The retention sweep's reference check over a batch's file roles is answered by expression indexes, not by a
+    /// scan of every batch the installation ever held.
+    /// </summary>
+    /// <remarks>
+    /// The sweep compares <c>Batches.InputFileId</c>, <c>OutputFileId</c> and <c>ErrorFileId</c> normalized, because
+    /// a file identity once had more than one spelling and the sweep stays correct for any spelling it meets. The
+    /// repository's own delete compares the canonical text exactly and is answered by the plain column indexes;
+    /// those cannot answer a function-wrapped column, so each role needs an index on the wrapped expression. Core
+    /// schema version 15 declares them in the predicate's exact shape.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("InputFileId", "IX_Batches_InputFileId_Norm")]
+    [InlineData("OutputFileId", "IX_Batches_OutputFileId_Norm")]
+    [InlineData("ErrorFileId", "IX_Batches_ErrorFileId_Norm")]
+    public async Task The_batch_file_role_lookups_are_answered_by_expression_indexes(string column, string index)
+    {
+        RequireSqlCipher();
+
+        Assert.Equal(
+            $"SEARCH Batches USING INDEX {index} (<expr>=?)",
+            await ExplainAsync($"SELECT Id FROM Batches WHERE lower(replace({column}, '-', '')) = @id"));
+    }
+
+    /// <summary>
+    /// The sweep's whole three-role reference check, as one statement, reads every role through its own index.
+    /// </summary>
+    /// <remarks>
+    /// The three roles are alternatives of one <c>OR</c>, so SQLite answers the statement as a multi-index OR only
+    /// when each alternative has an index in its exact shape. One missing index turns the whole statement into a
+    /// scan, which is why the plan is pinned for the three together and not only for each alone.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_retention_reference_check_over_all_three_file_roles_never_scans_the_batches()
+    {
+        RequireSqlCipher();
+
+        string plan = await ExplainAsync(
+            $"SELECT Id, Status FROM Batches WHERE ({BatchInputFilePredicate} OR {BatchOutputFilePredicate} OR {BatchErrorFilePredicate})");
+
+        Assert.DoesNotContain("SCAN", plan, StringComparison.Ordinal);
+
+        foreach ((string _, string index) in BatchFileRoles)
+        {
+            Assert.Contains(index, plan, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
     /// The predicates pinned above are still the text the sweep executes.
     /// </summary>
     /// <remarks>
@@ -186,7 +248,17 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     public void The_explained_predicates_are_the_ones_the_sweep_executes()
     {
         foreach (string predicate in
-            (string[])[EntryEmbeddingsPredicate, EntriesPredicate, AttachmentSessionPredicate, AttachmentIdentityPredicate, InferenceRunSessionPredicate])
+            (string[])
+            [
+                EntryEmbeddingsPredicate,
+                EntriesPredicate,
+                AttachmentSessionPredicate,
+                AttachmentIdentityPredicate,
+                InferenceRunSessionPredicate,
+                BatchInputFilePredicate,
+                BatchOutputFilePredicate,
+                BatchErrorFilePredicate,
+            ])
         {
             string needle = predicate.Replace(" = @id", string.Empty, StringComparison.Ordinal);
 

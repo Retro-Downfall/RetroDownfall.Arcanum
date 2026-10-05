@@ -36,6 +36,9 @@ public sealed class FileIdentitySchemaEvolutionTests
                 "IX_Batches_InputFileId",
                 "IX_Batches_OutputFileId",
                 "IX_Batches_ErrorFileId",
+                "IX_Batches_InputFileId_Norm",
+                "IX_Batches_OutputFileId_Norm",
+                "IX_Batches_ErrorFileId_Norm",
                 "IX_InferenceRuns_SessionId_Norm",
                 "ux_tapestry_generations_complete_scope",
             ])

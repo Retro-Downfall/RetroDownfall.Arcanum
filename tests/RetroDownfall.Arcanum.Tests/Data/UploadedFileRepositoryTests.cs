@@ -386,6 +386,52 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
             await _repo.TryDeleteUnreferencedAsync(id, CancellationToken.None));
     }
 
+    /// <summary>
+    /// A file still held in a pre-version-15 spelling is not found by the exact-equality repository, and that miss
+    /// never deletes it or the batch that names it.
+    /// </summary>
+    /// <remarks>
+    /// An installation upgrading across an earlier step that declares a sweep keeps serving while that sweep
+    /// drains, and the version-15 rewrite runs only after it. Until then a legacy lowercase row answers not-found,
+    /// which is a refusal: the delete's classification and its conditional delete both compare the canonical text,
+    /// so neither can touch the row, and the batch still naming it is left exactly as it was.
+    /// </remarks>
+    [SkippableFact]
+    public async Task TryDeleteUnreferencedAsync_leaves_a_legacy_spelling_row_and_the_batch_naming_it_untouched()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid id = Guid.NewGuid();
+
+        string legacy = id.ToString("D").ToLowerInvariant();
+
+        string createdAt = UtcInstantText.Format(DateTimeOffset.UtcNow);
+
+        await ExecuteSqlAsync(
+            $"""
+            INSERT INTO "UploadedFiles" ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
+            VALUES ('{legacy}', 'legacy.jsonl', 5, 'batch', 'application/jsonl', '{createdAt}');
+            """);
+
+        await ExecuteSqlAsync(
+            $"""
+            INSERT INTO "Batches" ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt")
+            VALUES ('legacy-batch', '{legacy}', '/v1/chat/completions', 'completed', '{createdAt}');
+            """);
+
+        Assert.Null(await _repo!.GetByIdAsync(id, CancellationToken.None));
+
+        Assert.Equal(
+            UploadedFileDeleteStatus.NotFound,
+            await _repo.TryDeleteUnreferencedAsync(id, CancellationToken.None));
+
+        await _repo.DeleteAsync(id, CancellationToken.None);
+
+        Assert.Equal(1L, await ScalarAsync($"SELECT COUNT(*) FROM \"UploadedFiles\" WHERE \"Id\" = '{legacy}'"));
+
+        Assert.Equal(1L, await ScalarAsync($"SELECT COUNT(*) FROM \"Batches\" WHERE \"InputFileId\" = '{legacy}'"));
+    }
+
     [SkippableFact]
 
     public async Task TryDeleteUnreferencedAsync_WhenMetadataDeleteFails_RestoresOwnedBytesAndMetadata()
@@ -640,6 +686,24 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
         }
 
         return [.. rows];
+    }
+
+    private async Task<long> ScalarAsync(string sql)
+    {
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync(CancellationToken.None);
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private async Task ExecuteSqlAsync(string sql)

@@ -145,12 +145,20 @@ internal static class GrimoireEntitySql
 
     /// <summary>
     /// The one stored spelling of a Guid identity: uppercase, dashed, 36 characters, which is what the
-    /// object-relational writer stores and what the schema's write-time guards require. Raw-SQL writers and the
-    /// parameters they compare against render through this, so a lookup is an exact equality a column index can
-    /// answer instead of <c>lower(replace(col, '-', ''))</c>. An identity deliberately kept in the dash-free
-    /// <c>"N"</c> form (a batch's own <c>Id</c>, the inference-run family) is the named exception, not a second
-    /// spelling of the same identifier.
+    /// object-relational writer stores. Raw-SQL writers and the parameters they compare against render through
+    /// this, so a lookup is an exact equality a column index can answer instead of
+    /// <c>lower(replace(col, '-', ''))</c>. An identity deliberately kept in the dash-free <c>"N"</c> form (a
+    /// batch's own <c>Id</c>, the inference-run family) is the named exception, not a second spelling of the same
+    /// identifier.
     /// </summary>
+    /// <remarks>
+    /// What holds the spelling differs by column. The governed identity columns carry a write-time guard trigger
+    /// that refuses any other spelling. The file identities (<c>UploadedFiles.Id</c> and the three batch file
+    /// roles) carry none: their writers render through this method and Core version 15 rewrote what earlier
+    /// versions left, and the retention sweep, the backup readers and several fixtures deliberately keep reading
+    /// and seeding other spellings. A new writer of those columns therefore has to render through this method
+    /// itself, because the schema will not refuse it.
+    /// </remarks>
     public static string Format(Guid value) =>
         value.ToString("D").ToUpperInvariant();
 
