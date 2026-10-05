@@ -461,6 +461,35 @@ public sealed class SagaErasureEndpointTests
         await AssertNoOrphanClaimsAsync(factory);
     }
 
+    /// <summary>
+    /// Replay needs no <em>valid</em> token but still needs a present one: the handler refuses an empty
+    /// <c>preflightToken</c> as an invalid body before the service can look the receipt up, and the API
+    /// document says exactly that.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task A_repeated_apply_with_an_empty_token_is_refused_even_though_the_receipt_exists(string token)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (_, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
+
+        MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
+
+        await AssertApplyRefusedAsync(
+            driver,
+            erased.Apply with { PreflightToken = token },
+            HttpStatusCode.BadRequest,
+            ErrorCodes.Validation.InvalidBody);
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+    }
+
     [SkippableFact]
     public async Task Concurrent_identical_applies_commit_once_and_replay_once()
     {
