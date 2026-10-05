@@ -32,7 +32,19 @@ public static partial class SecureFilePermissions
     private static readonly UnixFileMode OwnerOnlyDirectoryMode =
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
-    internal static Func<string, bool, bool?>? StrictOwnerOnlyVerificationForTests { get; set; }
+    private static readonly AsyncLocal<Func<string, bool, bool?>?> StrictOwnerOnlyVerificationOverride = new();
+
+    /// <summary>
+    /// Test seam that replaces the strict owner-only verification for the current async flow only.
+    /// Every secret-bearing save consults it, so a process-global override would fail unrelated saves
+    /// in tests running in parallel.
+    /// </summary>
+    internal static Func<string, bool, bool?>? StrictOwnerOnlyVerificationForTests
+    {
+        get => StrictOwnerOnlyVerificationOverride.Value;
+
+        set => StrictOwnerOnlyVerificationOverride.Value = value;
+    }
 
     internal static Action<string, bool, bool, bool, bool>?
         WindowsOwnerOnlyDirectoryCreateForTests

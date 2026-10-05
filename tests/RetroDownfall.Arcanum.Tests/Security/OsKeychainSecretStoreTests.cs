@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -268,6 +269,61 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(
             SecretStoreReadStatus.Corrupted,
             (await rebooted.PeekApiKeyReadResultAsync()).Status);
+    }
+
+    /// <summary>
+    /// The backup snapshot reads the mirrors without healing them, but it answers from a mirror over a
+    /// failed OS read just as the permissive read does, so the stale marker binds it too. Exporting a
+    /// marked mirror would put the superseded (possibly revoked) master key, or a key ring without its
+    /// active key, into the archive, and restoring that archive would reinstate it.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Backup_snapshot_does_not_export_a_mirror_that_a_failed_mirror_write_left_stale(
+        bool masterApiKey)
+    {
+        SwitchableReadStore os = new();
+
+        WriteFailingProtectionProvider protection = new(
+            DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
+
+        Func<OsKeychainSecretStore, string, Task> save = masterApiKey
+            ? static (store, value) => store.SaveApiKeyAsync(value)
+            : static (store, value) => store.SaveFileEncryptionSecretAsync(value);
+
+        using (OsKeychainSecretStore store = CreateStore(os, CreateDataProtectionStore(protection)))
+        {
+            await save(store, "superseded-secret");
+
+            protection.FailProtect = true;
+
+            await save(store, "current-secret");
+
+            protection.FailProtect = false;
+        }
+
+        // The keychain is locked when the backup runs.
+        os.FailReads = true;
+
+        using DataProtectionSecretStore mirrors = CreateDataProtectionStore(protection);
+
+        SecretStoreReadResult mirror = masterApiKey
+            ? await mirrors.GetApiKeyReadResultAsync()
+            : await mirrors.GetFileEncryptionSecretReadResultAsync();
+
+        // The superseded value still decrypts; only the marker says it must not be used.
+        Assert.Equal("superseded-secret", mirror.Value);
+
+        BackupSecretSnapshotReader reader = new(os, mirrors);
+
+        SecretStoreReadResult result = masterApiKey
+            ? await reader.ReadMasterApiKeyAsync()
+            : await reader.ReadFileEncryptionKeysAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
     }
 
     [Fact]

@@ -84,7 +84,16 @@ internal sealed class MirroredOsCredential(
     /// </summary>
     internal bool ServingMirrorDuringOsFailure => _servingMirrorDuringOsFailure;
 
-    private string StaleMarkerPath => mirror.Path + ".stale";
+    private string StaleMarkerPath => StaleMarkerPathFor(mirror.Path);
+
+    /// <summary>
+    /// True while the mirror at <paramref name="mirrorPath"/> is marked as possibly holding a superseded
+    /// value. Every reader that can answer from a mirror honours it: this helper's own reads, and the
+    /// backup snapshot, which reads the mirrors without healing them and so without an instance.
+    /// </summary>
+    internal static bool IsMirrorMarkedStale(string mirrorPath) => File.Exists(StaleMarkerPathFor(mirrorPath));
+
+    private static string StaleMarkerPathFor(string mirrorPath) => mirrorPath + ".stale";
 
     /// <summary>
     /// Reads the credential, preferring the OS copy and promoting a mirror into an empty OS store.
@@ -482,7 +491,7 @@ internal sealed class MirroredOsCredential(
         }
     }
 
-    private bool MirrorIsMarkedStale() => File.Exists(StaleMarkerPath);
+    private bool MirrorIsMarkedStale() => IsMirrorMarkedStale(mirror.Path);
 
     private SecretStoreReadResult StaleMirrorRefusal()
     {

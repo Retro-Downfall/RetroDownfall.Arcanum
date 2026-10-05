@@ -456,6 +456,47 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         File.Delete(tempPath);
     }
 
+    /// <summary>
+    /// Every secret-bearing save consults the strict-verification override — the credential mirrors,
+    /// the <c>.kdf</c> sidecar, the stale marker and the Data Protection key ring — and test
+    /// collections run in parallel. An override one test installs must therefore stay in that test's
+    /// own async flow: a blanket "nothing is owner-only" override must not fail a save that another
+    /// test already has in flight.
+    /// </summary>
+    [Fact]
+    public async Task Strict_verification_override_does_not_reach_a_parallel_flow()
+    {
+        string parallelDirectory = Path.Combine(_temp.Root, "parallel-secret-directory");
+
+        string ownDirectory = Path.Combine(_temp.Root, "own-secret-directory");
+
+        TaskCompletionSource overrideInstalled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Started before the override exists, the way a save in another test collection already is.
+        Task<Exception?> parallelSave = Task.Run<Exception?>(async () =>
+        {
+            await overrideInstalled.Task;
+
+            return Record.Exception(() => SecureFilePermissions.RequireOwnerOnlyDirectory(parallelDirectory));
+        });
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests = (_, _) => false;
+
+        try
+        {
+            overrideInstalled.SetResult();
+
+            Assert.Null(await parallelSave);
+
+            Assert.Throws<UnauthorizedAccessException>(
+                () => SecureFilePermissions.RequireOwnerOnlyDirectory(ownDirectory));
+        }
+        finally
+        {
+            SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
+        }
+    }
+
     private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger
     {
         private readonly List<(LogLevel Level, string Message)> _warnings = new();
