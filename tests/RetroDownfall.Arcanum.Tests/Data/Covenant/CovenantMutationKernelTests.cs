@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -13,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantMutationKernelTests
 {
-
     private static readonly Guid CampaignOne = CovenantOperationGateFixture.CampaignOne;
 
     private static CancellationToken Token => CancellationToken.None;
@@ -21,7 +21,6 @@ public sealed class CovenantMutationKernelTests
     [Fact]
     public void The_kernel_exposes_only_the_batch_entry_point()
     {
-
         System.Reflection.MethodInfo[] declared = [.. typeof(CovenantMutationKernel)
             .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
                 | System.Reflection.BindingFlags.DeclaredOnly)];
@@ -38,7 +37,6 @@ public sealed class CovenantMutationKernelTests
                 typeof(CancellationToken),
             ],
             only.GetParameters().Select(static parameter => parameter.ParameterType));
-
     }
 
     /// <summary>
@@ -61,7 +59,6 @@ public sealed class CovenantMutationKernelTests
     [Fact]
     public void A_Global_batch_cannot_leave_the_Campaign_registry_epoch_unbound()
     {
-
         CovenantMutationIntent global = CovenantMutationFixture.OperatorSet(
             CovenantOperationScope.Global,
             "global.key",
@@ -94,13 +91,11 @@ public sealed class CovenantMutationKernelTests
             [campaign]);
 
         Assert.Null(accepted.ExpectedCampaignRegistryEpoch);
-
     }
 
     [Fact]
     public async Task A_create_appends_a_version_and_advances_its_head()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -136,13 +131,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_search_outbox;"));
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
-
     }
 
     [Fact]
     public async Task An_update_advances_the_lane_and_keeps_the_old_version()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -180,13 +173,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_heads;"));
 
         Assert.Equal(2, await ScalarAsync(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"));
-
     }
 
     [Fact]
     public async Task An_identical_set_returns_no_change_without_appending()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -217,7 +208,6 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(2, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"));
-
     }
 
     /// <summary>
@@ -227,7 +217,6 @@ public sealed class CovenantMutationKernelTests
     [Fact]
     public async Task Both_receipt_outcomes_record_the_entry_they_resolved()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -253,13 +242,11 @@ public sealed class CovenantMutationKernelTests
             await ScalarAsync(
                 fixture,
                 "SELECT COUNT(*) FROM covenant_mutation_receipts WHERE EntryId = (SELECT EntryId FROM covenant_entries);"));
-
     }
 
     [Fact]
     public async Task A_retirement_tombstones_the_lane_and_repeating_it_is_no_change()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -300,13 +287,11 @@ public sealed class CovenantMutationKernelTests
             Token);
 
         Assert.Equal(CovenantMutationOutcome.NoChange, Assert.Single(again.Value).Outcome);
-
     }
 
     [Fact]
     public async Task Reactivation_after_a_confirmed_tombstone_requires_the_explicit_flag()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -355,13 +340,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(3L, Assert.Single(allowed.Value).ResultingLaneRevision);
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT CurrentOperationCode FROM covenant_heads;"));
-
     }
 
     [Fact]
     public async Task An_agent_cannot_reactivate_a_retired_proposed_lane()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -405,13 +388,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(
             "An agent cannot reactivate a retired Proposed Covenant lane.",
             refused.Error.Message);
-
     }
 
     [Fact]
     public async Task A_confirmed_tombstone_leaves_the_proposed_lane_open_to_an_agent()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -457,13 +438,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(
             (long)CovenantOperation.Set,
             await ScalarAsync(fixture, "SELECT CurrentOperationCode FROM covenant_heads WHERE LaneCode = 2;"));
-
     }
 
     [Fact]
     public async Task The_two_lanes_carry_independent_revisions()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -510,13 +489,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(DISTINCT EntryId) FROM covenant_heads;"));
 
         Assert.Equal(2, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_heads;"));
-
     }
 
     [Fact]
     public async Task A_stale_expected_revision_fails_without_mutating()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -538,13 +515,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(ErrorCodes.Covenant.RevisionConflict, stale.Error.Code);
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
-
     }
 
     [Fact]
     public async Task Creating_over_an_existing_head_is_a_revision_conflict()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -564,13 +539,11 @@ public sealed class CovenantMutationKernelTests
             Token);
 
         Assert.Equal(ErrorCodes.Covenant.RevisionConflict, duplicate.Error.Code);
-
     }
 
     [Fact]
     public async Task Retiring_a_key_that_never_existed_is_a_lifecycle_conflict()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -588,13 +561,11 @@ public sealed class CovenantMutationKernelTests
             Token);
 
         Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, refused.Error.Code);
-
     }
 
     [Fact]
     public async Task The_same_mutation_id_and_request_digest_replays_its_committed_receipt()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -651,13 +622,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(CovenantOperationScope.Global, replayed.Scope);
 
         Assert.Equal(2, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
-
     }
 
     [Fact]
     public async Task A_replayed_no_change_receipt_still_names_its_entry()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -708,13 +677,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Null(replayed.ResultingVersionId);
 
         Assert.Equal(Assert.Single(first.Value).EntryId, replayed.EntryId);
-
     }
 
     [Fact]
     public async Task The_same_mutation_id_with_a_different_request_digest_fails_closed()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -749,13 +716,11 @@ public sealed class CovenantMutationKernelTests
             Token);
 
         Assert.Equal("Security.IdempotencyConflict", conflict.Error.Code);
-
     }
 
     [Fact]
     public async Task A_stale_dataset_generation_is_refused()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Result<IReadOnlyList<CovenantMutationReceipt>> refused = await CovenantMutationFixture.ApplyAsync(
@@ -766,13 +731,11 @@ public sealed class CovenantMutationKernelTests
             Token);
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
-
     }
 
     [Fact]
     public async Task A_stale_key_epoch_is_refused_as_an_aba_hazard()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -797,13 +760,11 @@ public sealed class CovenantMutationKernelTests
             Token);
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
-
     }
 
     [Fact]
     public async Task A_changed_campaign_registry_epoch_is_refused()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -818,13 +779,148 @@ public sealed class CovenantMutationKernelTests
             Token);
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
+    }
 
+    [Fact]
+    public async Task An_exact_retry_returns_its_receipt_after_the_registry_epoch_moves()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
+
+        Guid mutationId = Guid.NewGuid();
+
+        CovenantMutationBatch batch = CovenantMutationFixture.Batch(
+            generation,
+            CovenantMutationFixture.OperatorSet(
+                CovenantOperationScope.Global,
+                "global.retry",
+                "One.",
+                0,
+                0,
+                mutationId));
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> first =
+            await CovenantMutationFixture.ApplyAsync(fixture, batch, Token);
+
+        Assert.True(first.IsSuccess);
+
+        // Registering a Campaign moves the registry epoch the Global batch bound, so a retry that lost
+        // its response is now stale by every batch-level comparison. It has nothing left to apply.
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> retried =
+            await CovenantMutationFixture.ApplyAsync(fixture, batch, Token);
+
+        Assert.True(retried.IsSuccess, retried.IsFailure ? retried.Error.Code : null);
+
+        CovenantMutationReceipt replayed = Assert.Single(retried.Value);
+
+        Assert.True(replayed.Replayed);
+
+        Assert.Equal(Assert.Single(first.Value).ResultingVersionId, replayed.ResultingVersionId);
+
+        // The same batch with a fresh mutation ID still meets the stale epoch: only a replay is exempt.
+        Result<IReadOnlyList<CovenantMutationReceipt>> fresh = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(
+                generation,
+                CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.fresh", "One.", 0, 0)),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, fresh.Error.Code);
+    }
+
+    [Fact]
+    public async Task An_exact_retry_returns_its_receipt_at_the_receipt_ceiling()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
+
+        CovenantMutationBatch batch = CovenantMutationFixture.Batch(
+            generation,
+            CovenantMutationFixture.OperatorSet(
+                CovenantOperationScope.Global,
+                "global.ceiling",
+                "One.",
+                0,
+                0,
+                Guid.NewGuid()));
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> first =
+            await CovenantMutationFixture.ApplyAsync(fixture, batch, Token);
+
+        Assert.True(first.IsSuccess);
+
+        // Fill the Global scope's receipt ceiling exactly, counting the receipt that was just written.
+        await InsertFillerReceiptsAsync(
+            fixture,
+            CovenantLimits.MaxMutationReceiptsPerScope
+                - (int)await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
+
+        Assert.Equal(
+            CovenantLimits.MaxMutationReceiptsPerScope,
+            await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
+
+        // A retry writes no receipt, so it has no capacity to be refused for.
+        Result<IReadOnlyList<CovenantMutationReceipt>> retried =
+            await CovenantMutationFixture.ApplyAsync(fixture, batch, Token);
+
+        Assert.True(retried.IsSuccess, retried.IsFailure ? retried.Error.Code : null);
+
+        Assert.True(Assert.Single(retried.Value).Replayed);
+
+        // A genuinely new mutation at the ceiling is still refused.
+        Result<IReadOnlyList<CovenantMutationReceipt>> refused = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(
+                generation,
+                CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.newer", "One.", 0, 0)),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refused.Error.Code);
+    }
+
+    [Fact]
+    public async Task A_batch_that_mixes_a_replay_with_a_new_mutation_still_meets_the_stale_epoch_for_the_new_one()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
+
+        CovenantMutationIntent committed = CovenantMutationFixture.OperatorSet(
+            CovenantOperationScope.Global,
+            "global.committed",
+            "One.",
+            0,
+            0,
+            Guid.NewGuid());
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> first = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(generation, committed),
+            Token);
+
+        Assert.True(first.IsSuccess);
+
+        await fixture.AddCampaignAsync(CampaignOne, "one", Token);
+
+        // The replayed intent is exempt, but the new one has something to apply, so the batch is stale.
+        Result<IReadOnlyList<CovenantMutationReceipt>> mixed = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(
+                generation,
+                committed,
+                CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.added", "Two.", 0, 0)),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, mixed.Error.Code);
     }
 
     [Fact]
     public async Task Provenance_leaves_are_stored_and_summarized_on_their_version()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -891,13 +987,11 @@ public sealed class CovenantMutationKernelTests
 
         // The aggregate the kernel stored has to be the one a later detailed read recomputes.
         Assert.True(page.DigestMatches);
-
     }
 
     [Fact]
     public async Task One_batch_allocates_exactly_one_search_sequence_and_ordered_outbox_rows()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -927,13 +1021,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(
             3,
             await ScalarAsync(fixture, "SELECT COUNT(DISTINCT Ordinal) FROM covenant_search_outbox;"));
-
     }
 
     [Fact]
     public async Task A_failed_batch_writes_nothing_at_all()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -957,13 +1049,11 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(0, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_entries;"));
 
         Assert.Equal(0, await ScalarAsync(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"));
-
     }
 
     [Fact]
     public async Task An_ungated_agent_retirement_the_factory_built_persists_null_legacy_ward_fields()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CovenantTask6Fixture.CampaignId, "one", Token);
@@ -1013,13 +1103,11 @@ public sealed class CovenantMutationKernelTests
             await ScalarAsync(
                 fixture,
                 "SELECT COUNT(*) FROM covenant_versions WHERE OperationCode = 2 AND AuthorizationModeCode IS NULL;"));
-
     }
 
     [Fact]
     public async Task A_historical_ward_backed_agent_retirement_preserves_its_exact_digest_and_mode()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CovenantTask6Fixture.CampaignId, "one", Token);
@@ -1065,12 +1153,33 @@ public sealed class CovenantMutationKernelTests
             await ScalarAsync(
                 fixture,
                 "SELECT AuthorizationModeCode FROM covenant_versions WHERE OperationCode = 2;"));
+    }
 
+    private static async Task InsertFillerReceiptsAsync(CovenantCanonicalFixture fixture, int count)
+    {
+        await using SqliteCommand command = fixture.Connection.CreateCommand();
+
+        command.CommandText = """
+            WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < $count)
+            INSERT INTO covenant_mutation_receipts (
+                MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, MutationKindCode,
+                ScopeCode, CampaignId, TargetIdentityDigest, LaneCode, OutcomeCode, ResultingVersionId,
+                ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc, EntryId)
+            SELECT lower(hex(randomblob(16))), zeroblob(32), zeroblob(32), zeroblob(32), 1,
+                   1, NULL, zeroblob(32), 1, 2, NULL,
+                   NULL, zeroblob(32), NULL, $committed, NULL
+            FROM n;
+            """;
+
+        _ = command.Parameters.AddWithValue("$count", count);
+
+        _ = command.Parameters.AddWithValue("$committed", UtcInstantText.Format(CovenantMutationFixture.CommitTime));
+
+        _ = await command.ExecuteNonQueryAsync(Token);
     }
 
     private static async Task<byte[]> BlobAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
@@ -1078,12 +1187,10 @@ public sealed class CovenantMutationKernelTests
         object? value = await command.ExecuteScalarAsync(Token);
 
         return Assert.IsType<byte[]>(value);
-
     }
 
     private static async Task<long> ScalarAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
@@ -1091,7 +1198,6 @@ public sealed class CovenantMutationKernelTests
         object? value = await command.ExecuteScalarAsync(Token);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -1100,12 +1206,10 @@ public sealed class CovenantMutationKernelTests
     /// </summary>
     private sealed class CovenantAgentRetirementCapability : IAsyncDisposable
     {
-
         private readonly CancellationTokenSource _turn = new();
 
         public CovenantAgentRetirementCapability(long targetLaneRevision, long keyEpoch)
         {
-
             CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
 
             CovenantMutationCollector collector = new(
@@ -1126,20 +1230,15 @@ public sealed class CovenantMutationKernelTests
                     targetLaneRevision: targetLaneRevision,
                     keyEpoch: keyEpoch),
                 _turn.Token);
-
         }
 
         public CovenantToolInvocationContext Context { get; }
 
         public async ValueTask DisposeAsync()
         {
-
             await Context.DisposeAsync();
 
             _turn.Dispose();
-
         }
-
     }
-
 }

@@ -15,13 +15,11 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantQueryPlanTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public async Task The_turn_snapshot_searches_both_partial_active_head_indexes()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         string plan = await ExplainAsync(
@@ -42,7 +40,6 @@ public sealed class CovenantQueryPlanTests
         Assert.DoesNotContain("SCAN v", plan, StringComparison.Ordinal);
 
         Assert.DoesNotContain("TEMP B-TREE", plan, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -50,7 +47,6 @@ public sealed class CovenantQueryPlanTests
     [InlineData(false)]
     public async Task The_lane_head_probe_searches_its_scope_index(bool campaignScoped)
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         (string Name, object Value)[] parameters = campaignScoped
@@ -79,7 +75,6 @@ public sealed class CovenantQueryPlanTests
         Assert.Contains("covenant_key_epochs", plan, StringComparison.Ordinal);
 
         Assert.DoesNotContain("SCAN h", plan, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -96,7 +91,6 @@ public sealed class CovenantQueryPlanTests
     [InlineData(false)]
     public async Task The_detail_curation_read_seeks_its_subject_index(bool campaignScoped)
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         (string Name, object Value)[] parameters = campaignScoped
@@ -121,7 +115,6 @@ public sealed class CovenantQueryPlanTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("SCAN ch", plan, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -140,7 +133,6 @@ public sealed class CovenantQueryPlanTests
     [InlineData(false)]
     public async Task The_curation_effect_read_seeks_its_subject_index(bool campaignScoped)
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         (string Name, object Value)[] parameters = campaignScoped
@@ -169,7 +161,6 @@ public sealed class CovenantQueryPlanTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("SCAN ch", plan, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -189,23 +180,18 @@ public sealed class CovenantQueryPlanTests
     [InlineData(false, 2)]
     public async Task The_section_occupancy_read_searches_its_scope_index(bool campaignScoped, int excludedKeys)
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         List<(string Name, object Value)> parameters = [("$lane", 1)];
 
         if (campaignScoped)
         {
-
             parameters.Add(("$campaign", CovenantOperationGateFixture.CampaignOne.ToString("D")));
-
         }
 
         for (int index = 0; index < excludedKeys; index++)
         {
-
             parameters.Add(($"$key{index}", $"excluded.key{index}"));
-
         }
 
         string plan = await ExplainAsync(
@@ -225,7 +211,6 @@ public sealed class CovenantQueryPlanTests
         Assert.DoesNotContain("SCAN v", plan, StringComparison.Ordinal);
 
         Assert.DoesNotContain("TEMP B-TREE", plan, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -237,16 +222,13 @@ public sealed class CovenantQueryPlanTests
         bool campaignScoped,
         int excludedKeys)
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         List<(string Name, object Value)> parameters = [];
 
         if (campaignScoped)
         {
-
             parameters.Add(("$campaign", CovenantOperationGateFixture.CampaignOne.ToString("D")));
-
         }
 
         // Both forms, because the excluded-key list changes the statement's text and a plan proved for
@@ -255,9 +237,7 @@ public sealed class CovenantQueryPlanTests
         // with keys is the one a live turn issues.
         for (int index = 0; index < excludedKeys; index++)
         {
-
             parameters.Add(($"$xkey{index}", $"excluded.key{index}"));
-
         }
 
         string plan = await ExplainAsync(
@@ -278,9 +258,10 @@ public sealed class CovenantQueryPlanTests
                 .Where(static line => !line.Equals("SCAN CONSTANT ROW", StringComparison.Ordinal)),
         ];
 
-        // Two of the ten counters are whole-table counts by definition -- receipts in the scope and
-        // pending outbox rows -- so they cannot seek. What they must not do is touch the row bodies,
-        // and both are bounded by their own ceilings rather than by the corpus.
+        // One of the ten counters is a whole-table count by definition -- the pending outbox rows -- so
+        // it cannot seek. What it must not do is touch the row bodies, and it is bounded by its own
+        // ceiling rather than by the corpus. The receipts counter is scoped, so it seeks its own index,
+        // which The_quota_snapshot_read_receipts_counter_seeks_its_scope_index pins.
         Assert.All(
             scans,
             scan => Assert.Contains("USING COVERING INDEX", scan, StringComparison.Ordinal));
@@ -290,13 +271,57 @@ public sealed class CovenantQueryPlanTests
         Assert.DoesNotContain("TEMP B-TREE", plan, StringComparison.Ordinal);
 
         Assert.Contains("covenant_heads", plan, StringComparison.Ordinal);
+    }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_quota_snapshot_read_receipts_counter_seeks_its_scope_index(bool campaignScoped)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        List<(string Name, object Value)> parameters = [];
+
+        if (campaignScoped)
+        {
+            parameters.Add(("$campaign", CovenantOperationGateFixture.CampaignOne.ToString("D")));
+        }
+
+        string plan = await ExplainAsync(fixture, CovenantStoreSql.QuotaSnapshot(campaignScoped, 0), parameters);
+
+        // The counter charges one scope's receipts against that scope's ceiling. The index leads with the
+        // scope discriminator, so a predicate on the Campaign column alone cannot seek it and walks the
+        // receipts of every Campaign on the installation instead.
+        Assert.Contains(
+            "SEARCH covenant_mutation_receipts USING COVERING INDEX idx_covenant_mutation_receipts_scope_quota",
+            plan,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SCAN covenant_mutation_receipts", plan, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_cleanup_receipt_delete_seeks_the_scope_index()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        string plan = await ExplainAsync(
+            fixture,
+            CovenantStoreSql.DeleteCampaignMutationReceipts,
+            [("$campaign", CovenantOperationGateFixture.CampaignOne.ToString("D"))]);
+
+        // A delete may seek the index as a covering one or as an ordinary one; either is a seek, and
+        // what it must not be is a walk of every Campaign's receipts.
+        Assert.Matches(
+            @"SEARCH covenant_mutation_receipts USING (COVERING )?INDEX idx_covenant_mutation_receipts_scope_quota",
+            plan);
+
+        Assert.DoesNotContain("SCAN covenant_mutation_receipts", plan, StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task The_turn_receipt_backlog_read_groups_on_an_index()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         string plan = await ExplainAsync(
@@ -321,13 +346,11 @@ public sealed class CovenantQueryPlanTests
         // Asserted rather than left implied, because a comment claiming a sort costs nothing is exactly
         // the kind of claim that stops being true when somebody moves the ordering.
         Assert.Contains("USE TEMP B-TREE FOR ORDER BY", plan, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task The_stable_list_page_uses_the_entry_and_version_keys()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         string plan = await ExplainAsync(
@@ -372,13 +395,11 @@ public sealed class CovenantQueryPlanTests
         Assert.DoesNotContain("SCAN e", plan, StringComparison.Ordinal);
 
         Assert.DoesNotContain("SCAN h", plan, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task The_descending_version_page_uses_the_entry_lane_revision_index()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         string plan = await ExplainAsync(
@@ -400,13 +421,11 @@ public sealed class CovenantQueryPlanTests
 
         // The index already yields descending revisions, so no ordering pass is needed inside the page.
         Assert.DoesNotContain("USE TEMP B-TREE FOR ORDER BY", plan, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task The_provenance_read_is_one_indexed_join_with_no_n_plus_one()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         string plan = await ExplainAsync(
@@ -419,13 +438,11 @@ public sealed class CovenantQueryPlanTests
         Assert.Contains("SEARCH p USING", plan, StringComparison.Ordinal);
 
         Assert.DoesNotContain("SCAN p", plan, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task The_global_effect_scan_streams_the_campaign_registry_by_key()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         string plan = await ExplainAsync(
@@ -449,13 +466,11 @@ public sealed class CovenantQueryPlanTests
             ]);
 
         Assert.DoesNotContain("SCAN c", scoped, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task The_effect_facts_read_touches_only_singleton_rows_and_the_key_epoch()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         string plan = await ExplainAsync(fixture, CovenantStoreSql.EffectFacts(), [("$key", "shared.key")]);
@@ -467,25 +482,20 @@ public sealed class CovenantQueryPlanTests
         Assert.DoesNotContain("SCAN covenant_key_epochs", plan, StringComparison.Ordinal);
 
         Assert.DoesNotContain("SCAN campaign_registry_state", plan, StringComparison.Ordinal);
-
     }
 
     private static int CountOccurrences(string plan, string needle)
     {
-
         int count = 0;
 
         for (int index = plan.IndexOf(needle, StringComparison.Ordinal);
             index >= 0;
             index = plan.IndexOf(needle, index + needle.Length, StringComparison.Ordinal))
         {
-
             count++;
-
         }
 
         return count;
-
     }
 
     private static async Task<string> ExplainAsync(
@@ -493,16 +503,13 @@ public sealed class CovenantQueryPlanTests
         string sql,
         IReadOnlyList<(string Name, object Value)> parameters)
     {
-
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = "EXPLAIN QUERY PLAN " + sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         System.Text.StringBuilder plan = new();
@@ -511,13 +518,9 @@ public sealed class CovenantQueryPlanTests
 
         while (await reader.ReadAsync(Token))
         {
-
             _ = plan.AppendLine(reader.GetString(reader.FieldCount - 1));
-
         }
 
         return plan.ToString();
-
     }
-
 }

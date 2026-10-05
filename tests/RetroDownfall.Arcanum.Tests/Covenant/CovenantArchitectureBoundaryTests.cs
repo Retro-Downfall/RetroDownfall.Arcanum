@@ -421,6 +421,95 @@ public sealed class CovenantArchitectureBoundaryTests
             static property => property.Name.Contains("Covenant", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Installed tables that no production code outside the schema tree reads or writes yet, each with the
+    /// reason it is installed anyway.
+    /// </summary>
+    /// <remarks>
+    /// A table with no reader or writer still installs, is guarded by triggers and appears in the UTC
+    /// inventory, so a reader of the schema would take it for live. Naming it here is the deliberate
+    /// alternative to dropping it from the head manifest. The list cannot rot in either direction: a table
+    /// that gains a production reference must leave it, and a table that appears with none must be added
+    /// with a reason.
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<string, string> ReservedInstalledTables =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["session_turn_maintenance_steps"] =
+                "Child of session_turn_claims: one checkpoint row per maintenance step (summary, title, Saga, Lexicon). "
+                + "Its writer is the turn-maintenance checkpoint work, which needs ISessionTurnClaimCoordinator wired into "
+                + "the turn begin path first; that coordinator is installed but unconsumed (DESIGN 10.18).",
+
+            ["owner_deletion_operation_intents"] =
+                "The managed owner-deletion journal. The Campaigns delete trigger already reads it, but no production "
+                + "path prepares an intent yet. Reserved for the Campaign delete path that names its workspace-marker "
+                + "effect before the owner row is removed.",
+
+            ["campaign_path_operation_receipts"] =
+                "Replay ledger of the Campaign-path administration service, which DESIGN 10.18 lists as unbuilt.",
+
+            ["session_campaign_binding_resolution_receipts"] =
+                "Replay ledger of the Session-binding resolution service, which DESIGN 10.18 lists as unbuilt.",
+
+            ["disclosure_subject_aggregates"] =
+                "Target of disclosure receipt compaction. Its own head comment records that no live path writes it and "
+                + "that a future fold must not join it into external_disclosure_state again.",
+        };
+
+    [Fact]
+    public void Every_installed_table_has_a_production_reader_or_writer_or_a_written_reservation()
+    {
+        IReadOnlyList<ProductionSource> production = [.. ProductionSourceInventory.Sources()
+            .Where(static source => !source.RelativePath.Contains("/Data/Schema/", StringComparison.Ordinal))];
+
+        Assert.NotEmpty(production);
+
+        string[] tables = [.. RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.AllObjects
+            .Where(static schemaObject => schemaObject.Category == RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCategory.Tables)
+            .Select(static schemaObject => schemaObject.Name)
+            .Order(StringComparer.Ordinal)];
+
+        Assert.NotEmpty(tables);
+
+        string[] unreferenced = [.. tables.Where(table => !production.Any(source => NamesTable(source, table)))];
+
+        // A table nothing reads or writes must be reserved on purpose, with its reason written down.
+        Assert.Empty(unreferenced.Except(ReservedInstalledTables.Keys, StringComparer.Ordinal));
+
+        // And a reservation must not outlive its cause: the moment a table is referenced it leaves the list.
+        Assert.Empty(ReservedInstalledTables.Keys.Except(unreferenced, StringComparer.Ordinal));
+
+        Assert.All(ReservedInstalledTables, static reservation => Assert.False(string.IsNullOrWhiteSpace(reservation.Value)));
+
+        Assert.Empty(ReservedInstalledTables.Keys.Except(tables, StringComparer.Ordinal));
+    }
+
+    private static bool NamesTable(ProductionSource source, string table)
+    {
+        int index = source.Text.IndexOf(table, StringComparison.Ordinal);
+
+        while (index >= 0)
+        {
+            bool startsName = index == 0 || !IsIdentifierCharacter(source.Text[index - 1]);
+
+            int end = index + table.Length;
+
+            bool endsName = end >= source.Text.Length || !IsIdentifierCharacter(source.Text[end]);
+
+            if (startsName && endsName)
+            {
+                return true;
+            }
+
+            index = source.Text.IndexOf(table, end, StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    private static bool IsIdentifierCharacter(char character) =>
+        char.IsAsciiLetterOrDigit(character) || character == '_';
+
     [Fact]
     public void One_operation_gate_owns_installation_read_coverage()
     {

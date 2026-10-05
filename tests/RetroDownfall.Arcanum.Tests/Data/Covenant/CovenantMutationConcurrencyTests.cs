@@ -12,15 +12,19 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantMutationConcurrencyTests
 {
-
     private const int Writers = 8;
+
+    private const string LostLockRaceCode = "Test.WriterLostLockRace";
+
+    private const int SqliteBusy = 5;
+
+    private const int SqliteLocked = 6;
 
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public async Task Eight_writers_on_distinct_keys_all_commit_with_distinct_sequences()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -58,13 +62,11 @@ public sealed class CovenantMutationConcurrencyTests
         Assert.Equal(
             Writers,
             await ScalarAsync(fixture, "SELECT COUNT(DISTINCT SearchRowId) FROM covenant_heads;"));
-
     }
 
     [Fact]
     public async Task Eight_writers_on_one_key_produce_exactly_one_winner_per_revision()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -90,22 +92,33 @@ public sealed class CovenantMutationConcurrencyTests
 
         _ = Assert.Single(results, static result => result.IsSuccess);
 
+        // Every loser carries the kernel's own typed refusal and nothing else. Writers queue on the
+        // write lock, so a loser meets the winner's committed state, and every head write advances the
+        // key's epoch: the epoch guard is the first the kernel applies, and it answers StaleSnapshot.
+        // Neither a lost lock race nor an exception from the kernel's defensive fallbacks (a head that
+        // changed between its compare and its swap, a search sequence that moved) is an acceptable
+        // loser here, because either would mean the guards were bypassed and the writer was stopped
+        // only by luck. The revision comparison itself is pinned where the epoch matches and the
+        // revision does not, by CovenantMutationKernelTests.A_stale_expected_revision_fails_without_mutating.
         Assert.All(
             results.Where(static result => result.IsFailure),
-            result => Assert.Contains(
-                result.Error.Code,
-                (string[])[ErrorCodes.Covenant.RevisionConflict, ErrorCodes.Covenant.StaleSnapshot]));
+            result => Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code));
 
+        // The losers wrote nothing: one head, one version, one receipt, one outbox row, one sequence.
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_heads;"));
 
         Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
 
+        Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
+
+        Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_search_outbox;"));
+
+        Assert.Equal(1, await ScalarAsync(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"));
     }
 
     [Fact]
     public async Task A_rolled_back_batch_leaves_no_row_behind()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
@@ -132,7 +145,6 @@ public sealed class CovenantMutationConcurrencyTests
         Assert.Equal(0, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
 
         Assert.Equal(0, await ScalarAsync(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"));
-
     }
 
     private static async Task<Result<IReadOnlyList<CovenantMutationReceipt>>> WriteAsync(
@@ -140,12 +152,10 @@ public sealed class CovenantMutationConcurrencyTests
         CovenantMutationBatch batch,
         CancellationToken cancellationToken)
     {
-
         await using SqliteConnection connection = await fixture.OpenAdditionalConnectionAsync(cancellationToken);
 
         try
         {
-
             await using SqliteTransaction transaction = (SqliteTransaction)await connection
                 .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
 
@@ -157,40 +167,28 @@ public sealed class CovenantMutationConcurrencyTests
 
             if (receipts.IsSuccess)
             {
-
                 await transaction.CommitAsync(cancellationToken);
-
             }
             else
             {
-
                 await transaction.RollbackAsync(cancellationToken);
-
             }
 
             return receipts;
-
         }
-        catch (SqliteException exception)
+        catch (SqliteException exception) when (exception.SqliteErrorCode is SqliteBusy or SqliteLocked)
         {
-
-            // A busy or locked writer is a lost race, not a defect: the owner retries the whole
-            // transaction, and here losing is the outcome under test.
-            return new Error(ErrorCodes.Covenant.StaleSnapshot, exception.Message);
-
+            // Only a writer that lost the lock itself is reported as a lost race. Anything else the
+            // kernel or the database throws, a constraint failure or an InvalidOperationException from
+            // a defensive fallback included, escapes and fails the test: mapping it to an expected
+            // refusal would let a loser that was stopped by a constraint look like one the kernel's
+            // own checks refused.
+            return new Error(LostLockRaceCode, exception.Message);
         }
-        catch (InvalidOperationException exception)
-        {
-
-            return new Error(ErrorCodes.Covenant.RevisionConflict, exception.Message);
-
-        }
-
     }
 
     private static async Task<long> ScalarAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
@@ -198,7 +196,5 @@ public sealed class CovenantMutationConcurrencyTests
         object? value = await command.ExecuteScalarAsync(Token);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
-
     }
-
 }

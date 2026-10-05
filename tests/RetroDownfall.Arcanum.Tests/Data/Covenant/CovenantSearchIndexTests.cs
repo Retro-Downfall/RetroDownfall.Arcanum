@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantSearchIndexTests
 {
-
     private static readonly Guid CampaignOne = CovenantOperationGateFixture.CampaignOne;
 
     private static readonly Guid CampaignTwo = CovenantOperationGateFixture.CampaignTwo;
@@ -21,7 +20,6 @@ public sealed class CovenantSearchIndexTests
     [Fact]
     public async Task An_eligible_index_answers_in_deterministic_class_order()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -73,13 +71,11 @@ public sealed class CovenantSearchIndexTests
         Assert.Equal(CovenantSearchMatchClass.Ranked, page.Hits[2].MatchClass);
 
         Assert.Equal("tooling", page.Hits[2].NormalizedKey);
-
     }
 
     [Fact]
     public async Task A_dirty_applied_tuple_falls_back_to_canonical()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -111,13 +107,11 @@ public sealed class CovenantSearchIndexTests
         Assert.Equal(CovenantSearchRebuildGuidance.WaitForSynchronization, page.Guidance);
 
         _ = Assert.Single(page.Hits);
-
     }
 
     [Fact]
     public async Task An_unpublished_applied_tuple_beside_a_recorded_rebuild_asks_for_the_rebuild()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -145,7 +139,6 @@ public sealed class CovenantSearchIndexTests
         Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, page.Guidance);
 
         _ = Assert.Single(page.Hits);
-
     }
 
     /// <summary>
@@ -156,7 +149,6 @@ public sealed class CovenantSearchIndexTests
     [Fact]
     public async Task A_degraded_accelerator_tier_is_answered_from_canonical_though_its_tuple_is_current()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -183,12 +175,29 @@ public sealed class CovenantSearchIndexTests
 
         Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, page.ExecutionMode);
 
-        // A degraded tier is not one the outbox can be waited on to carry forward, so the debt a fresh
-        // installation records decides, as it does in status.
-        Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, page.Guidance);
+        // A degraded tier is not one the outbox can be waited on to carry forward, so the recorded debt
+        // decides, as it does in status. The first synchronization pass adopted the empty projection
+        // and cleared the debt a fresh installation records, so nothing is owed and the tier's own
+        // recovery is the only thing to wait for.
+        Assert.Equal(CovenantSearchRebuildGuidance.WaitForSynchronization, page.Guidance);
 
         _ = Assert.Single(page.Hits);
 
+        // The same tier with a full rebuild recorded as owed asks for that rebuild instead.
+        await using (Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE covenant_state SET RebuildStateCode = 2 WHERE StateKey = 1;";
+
+            _ = await command.ExecuteNonQueryAsync(Token);
+        }
+
+        CovenantSearchPage owed = await SearchAsync(
+            fixture,
+            "findable",
+            null,
+            accelerator: CovenantCapabilityState.Degraded);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, owed.Guidance);
     }
 
     /// <summary>
@@ -198,7 +207,6 @@ public sealed class CovenantSearchIndexTests
     [Fact]
     public async Task An_unavailable_accelerator_tier_is_answered_from_canonical_with_no_remedy_to_wait_for()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -223,13 +231,11 @@ public sealed class CovenantSearchIndexTests
         Assert.Equal(CovenantSearchRebuildGuidance.AcceleratorUnavailable, page.Guidance);
 
         _ = Assert.Single(page.Hits);
-
     }
 
     [Fact]
     public async Task An_absent_accelerator_still_answers_from_canonical()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -248,18 +254,15 @@ public sealed class CovenantSearchIndexTests
         Assert.Equal(CovenantSearchRebuildGuidance.AcceleratorUnavailable, page.Guidance);
 
         _ = Assert.Single(page.Hits);
-
     }
 
     [Fact]
     public async Task Pages_continue_through_their_keyset()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         for (int index = 0; index < 5; index++)
         {
-
             _ = await fixture.SeedHeadAsync(
                 CovenantScope.Global,
                 null,
@@ -268,7 +271,6 @@ public sealed class CovenantSearchIndexTests
                 CovenantOperation.Set,
                 "Shared marker text.",
                 Token);
-
         }
 
         await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
@@ -290,13 +292,11 @@ public sealed class CovenantSearchIndexTests
         _ = Assert.Single(third.Hits);
 
         Assert.Null(third.NextKeyset);
-
     }
 
     [Fact]
     public async Task Scope_filters_are_honoured_in_both_modes()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CampaignOne, "one", Token);
@@ -332,13 +332,11 @@ public sealed class CovenantSearchIndexTests
         CovenantSearchPage all = await SearchAllScopesAsync(fixture, "marker");
 
         Assert.Equal(2, all.Hits.Length);
-
     }
 
     [Fact]
     public async Task An_all_scopes_search_requires_the_installation_lease()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
@@ -351,13 +349,11 @@ public sealed class CovenantSearchIndexTests
             .SearchAsync(Query("marker", CovenantCursorScopeSelection.AllScopes, null), scoped, Token);
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
-
     }
 
     [Fact]
     public async Task A_scoped_search_refuses_a_lease_over_another_campaign()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
@@ -371,13 +367,11 @@ public sealed class CovenantSearchIndexTests
             .SearchAsync(Query("marker", CovenantCursorScopeSelection.Campaign, CampaignOne), other, Token);
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
-
     }
 
     [Fact]
     public async Task A_released_lease_cannot_search()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
@@ -391,13 +385,11 @@ public sealed class CovenantSearchIndexTests
             .SearchAsync(Query("marker", CovenantCursorScopeSelection.Global, null), lease, Token);
 
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
-
     }
 
     [Fact]
     public async Task A_retired_head_indexes_its_key_but_not_its_text()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         SeededHead head = await fixture.SeedHeadAsync(
@@ -435,13 +427,11 @@ public sealed class CovenantSearchIndexTests
         CovenantSearchHit tombstone = Assert.Single(byKey.Hits);
 
         Assert.Equal(CovenantLifecycle.Retired, tombstone.Lifecycle);
-
     }
 
     [Fact]
     public async Task The_page_reports_the_sources_it_was_answered_from()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -462,7 +452,6 @@ public sealed class CovenantSearchIndexTests
         Assert.True(page.Sources.AcceleratorEligible);
 
         Assert.Equal(page.Sources.CanonicalSearchSequence, page.Sources.AppliedSearchSequence);
-
     }
 
     internal static CovenantSearchQuery Query(
@@ -474,13 +463,11 @@ public sealed class CovenantSearchIndexTests
         CovenantLifecycle lifecycle = CovenantLifecycle.Set,
         CovenantCapabilityState accelerator = CovenantCapabilityState.Healthy)
     {
-
         Result<CovenantCompiledSearchTerms> compiled = new CovenantSearchQueryCompiler().Compile(text);
 
         Assert.True(compiled.IsSuccess);
 
         return new CovenantSearchQuery(compiled.Value, selection, campaignId, null, lifecycle, pageSize, after, accelerator);
-
     }
 
     private static async Task<CovenantSearchPage> SearchAsync(
@@ -492,7 +479,6 @@ public sealed class CovenantSearchIndexTests
         CovenantLifecycle lifecycle = CovenantLifecycle.Set,
         CovenantCapabilityState accelerator = CovenantCapabilityState.Healthy)
     {
-
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
         CovenantOperationScope scope = campaignId is { } id
@@ -518,12 +504,10 @@ public sealed class CovenantSearchIndexTests
         Assert.True(page.IsSuccess, page.IsFailure ? page.Error.Message : null);
 
         return page.Value;
-
     }
 
     private static async Task<CovenantSearchPage> SearchAllScopesAsync(CovenantCanonicalFixture fixture, string text)
     {
-
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
         await using CovenantInstallationReadLease lease = (await gate.AcquireInstallationReadAsync(Token)).Value;
@@ -535,7 +519,5 @@ public sealed class CovenantSearchIndexTests
         Assert.True(page.IsSuccess, page.IsFailure ? page.Error.Message : null);
 
         return page.Value;
-
     }
-
 }

@@ -12,13 +12,11 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantSearchFallbackTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public void There_is_exactly_one_public_search_method()
     {
-
         System.Reflection.MethodInfo[] declared = [.. typeof(CovenantSearchIndex)
             .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
                 | System.Reflection.BindingFlags.DeclaredOnly)];
@@ -32,13 +30,11 @@ public sealed class CovenantSearchFallbackTests
         Assert.Equal(
             [typeof(CovenantSearchQuery), typeof(ICovenantSnapshotReadLease), typeof(CancellationToken)],
             only.GetParameters().Select(static parameter => parameter.ParameterType));
-
     }
 
     [Fact]
     public async Task Exact_and_ranked_results_agree_between_modes()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -77,13 +73,58 @@ public sealed class CovenantSearchFallbackTests
         Assert.Equal(CovenantSearchMatchClass.ExactKey, fallback.Hits[0].MatchClass);
 
         Assert.Equal(CovenantSearchMatchClass.ExactKey, indexed.Hits[0].MatchClass);
+    }
 
+    [Theory]
+    [InlineData("A sport for everyone.", "sport", 1)]
+    [InlineData("A sport for everyone.", "spor", 1)]
+    [InlineData("A sport for everyone.", "ort", 0)]
+    [InlineData("A sport for everyone.", "port", 0)]
+    [InlineData("A sport for everyone.", "athletics", 1)]
+    [InlineData("A sport for everyone.", "letic", 0)]
+    [InlineData("A book: किताब", "ताब", 1)]
+    [InlineData("A book: किताब", "ब", 1)]
+    [InlineData("A book: किताब", "किताब", 1)]
+    [InlineData("A book: हिंदी", "दी", 1)]
+    [InlineData("abc\u20DDdef", "def", 1)]
+    [InlineData("ab\u0903sport", "sport", 1)]
+    [InlineData("ab\u0308sport", "sport", 0)]
+    [InlineData("naive \u0301sport", "sport", 1)]
+    public async Task Fts_and_fallback_return_the_same_hits_for_a_mid_word_term(string text, string term, int expectedHits)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "athletics",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            text,
+            Token);
+
+        CovenantSearchPage fallback = await SearchAsync(fixture, term);
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, fallback.ExecutionMode);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        CovenantSearchPage indexed = await SearchAsync(fixture, term);
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, indexed.ExecutionMode);
+
+        // A term is a token prefix in both modes: it matches a word that begins with it and never one
+        // that merely contains it, so a hit does not appear and vanish as the accelerator catches up.
+        Assert.Equal(expectedHits, indexed.Hits.Length);
+
+        Assert.Equal(
+            indexed.Hits.Select(static hit => hit.EntryId).OrderBy(static id => id),
+            fallback.Hits.Select(static hit => hit.EntryId).OrderBy(static id => id));
     }
 
     [Fact]
     public async Task Like_metacharacters_from_the_caller_cannot_expand()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -101,13 +142,11 @@ public sealed class CovenantSearchFallbackTests
         Assert.Empty(page.Hits);
 
         Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, page.ExecutionMode);
-
     }
 
     [Fact]
     public async Task A_truncated_candidate_set_is_reported_rather_than_implied()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         // Far cheaper than seeding 2,049 real heads, and it exercises the same comparison: the page
@@ -128,13 +167,11 @@ public sealed class CovenantSearchFallbackTests
         Assert.False(page.Truncated);
 
         Assert.Equal(CovenantSearchRebuildGuidance.AcceleratorUnavailable, page.Guidance);
-
     }
 
     [Fact]
     public async Task The_fallback_materializes_its_candidates_and_stops_at_the_cap()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         string sql = CovenantSearchSql.FallbackPage(
@@ -156,6 +193,8 @@ public sealed class CovenantSearchFallbackTests
             [
                 ("$like0", "%marker%"),
 
+                ("$term0", "marker"),
+
                 ("$exactKey", "marker"),
 
                 ("$prefixKey", "marker%"),
@@ -170,18 +209,15 @@ public sealed class CovenantSearchFallbackTests
         Assert.Contains("SEARCH h USING INDEX", plan, StringComparison.Ordinal);
 
         Assert.DoesNotContain("SCAN h", plan, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Fallback_pages_continue_through_the_same_keyset_type()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         for (int index = 0; index < 3; index++)
         {
-
             _ = await fixture.SeedHeadAsync(
                 CovenantScope.Global,
                 null,
@@ -190,7 +226,6 @@ public sealed class CovenantSearchFallbackTests
                 CovenantOperation.Set,
                 "Marker body.",
                 Token);
-
         }
 
         CovenantSearchPage first = await SearchAsync(fixture, "marker", pageSize: 2);
@@ -207,13 +242,11 @@ public sealed class CovenantSearchFallbackTests
 
         Assert.Empty(
             first.Hits.Select(static hit => hit.EntryId).Intersect(second.Hits.Select(static hit => hit.EntryId)));
-
     }
 
     [Fact]
     public async Task A_corrupt_index_degrades_to_a_successful_fallback_page()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -237,7 +270,6 @@ public sealed class CovenantSearchFallbackTests
         Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, page.ExecutionMode);
 
         _ = Assert.Single(page.Hits);
-
     }
 
     private static async Task<CovenantSearchPage> SearchAsync(
@@ -246,7 +278,6 @@ public sealed class CovenantSearchFallbackTests
         int pageSize = 50,
         CovenantSearchKeyset? after = null)
     {
-
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
         await using CovenantReadLease lease =
@@ -267,7 +298,6 @@ public sealed class CovenantSearchFallbackTests
         Assert.True(page.IsSuccess, page.IsFailure ? page.Error.Message : null);
 
         return page.Value;
-
     }
 
     private static async Task<string> ExplainAsync(
@@ -275,16 +305,13 @@ public sealed class CovenantSearchFallbackTests
         string sql,
         IReadOnlyList<(string Name, object Value)> parameters)
     {
-
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = "EXPLAIN QUERY PLAN " + sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         System.Text.StringBuilder plan = new();
@@ -293,24 +320,18 @@ public sealed class CovenantSearchFallbackTests
 
         while (await reader.ReadAsync(Token))
         {
-
             _ = plan.AppendLine(reader.GetString(reader.FieldCount - 1));
-
         }
 
         return plan.ToString();
-
     }
 
     private static async Task ExecuteAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(Token);
-
     }
-
 }

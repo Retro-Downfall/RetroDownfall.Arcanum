@@ -22,6 +22,18 @@ internal static class CovenantStoreSql
     internal const int CampaignOwnerKindCode = 1;
 
     /// <summary>
+    /// Removes one Campaign's mutation receipts, seeking the scope index rather than walking every
+    /// Campaign's receipts.
+    /// </summary>
+    /// <remarks>
+    /// Names <c>ScopeCode = 2</c> beside the Campaign because the quota index leads with the scope
+    /// discriminator: a predicate on the Campaign column alone cannot seek it. A Campaign receipt is
+    /// always scope 2, which the table's own check enforces.
+    /// </remarks>
+    internal const string DeleteCampaignMutationReceipts =
+        "DELETE FROM covenant_mutation_receipts WHERE ScopeCode = 2 AND CampaignId = $campaign;";
+
+    /// <summary>
     /// The projected head-and-version columns every canonical head read shares, in one fixed order.
     /// </summary>
     private const string HeadProjection = """
@@ -233,6 +245,15 @@ internal static class CovenantStoreSql
 
         string scopePredicate = campaignScoped ? "CampaignId = $campaign" : "CampaignId IS NULL";
 
+        // The receipts counter has its own predicate because the receipts' quota index leads with the
+        // scope discriminator, and the shared one names the Campaign column alone: it cannot seek that
+        // index and walks every Campaign's receipts for each mutation and each proposing turn. The
+        // shared predicate is also applied to heads and entries, which have no such index, so it is not
+        // widened.
+        string receiptsPredicate = campaignScoped
+            ? "ScopeCode = 2 AND CampaignId = $campaign"
+            : "ScopeCode = 1 AND CampaignId IS NULL";
+
         // A Global batch has no Campaign of its own, so the pair it has to fit inside is the one the
         // widest Campaign would form with it; a Campaign batch is measured against its own pair.
         string campaignSideOfTurnLoad = campaignScoped
@@ -262,7 +283,7 @@ internal static class CovenantStoreSql
                 (SELECT COALESCE(SUM(v.CompiledByteCost), 0) FROM covenant_versions v
                     JOIN covenant_entries e ON e.EntryId = v.EntryId
                     WHERE e.{scopePredicate} AND v.OriginCode IN (2, 3)),
-                (SELECT COUNT(*) FROM covenant_mutation_receipts WHERE {scopePredicate}),
+                (SELECT COUNT(*) FROM covenant_mutation_receipts WHERE {receiptsPredicate}),
                 (SELECT COUNT(*) FROM covenant_version_attachment_provenance p
                     JOIN covenant_versions v ON v.VersionId = p.VersionId
                     JOIN covenant_entries e ON e.EntryId = v.EntryId

@@ -448,15 +448,30 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         // The applied tuple moves as one unit, including the Campaign-deletion watermark: a partial
         // tuple would let a stale generation pass an equality check against a fresh sequence.
+        //
+        // The owed full rebuild clears in the same statement once the tuple reaches the canonical
+        // sequence. A fresh installation, a reset, and a restore all record that debt because their
+        // accelerator was never built, and the adoption checks above are what prove the outbox can build
+        // it from empty; a tuple that has caught up to canonical is therefore the projection the debt
+        // asked for. Only FullRebuildRequired clears: a rebuild in progress is cleared by its own
+        // verification, and a state that owes nothing has nothing to clear.
         command.CommandText = """
             UPDATE covenant_state
             SET AppliedDatasetGeneration = $dataset,
                 AppliedSearchSequence = $target,
                 AppliedCampaignDeletionSequence = COALESCE(
                     (SELECT MAX(Sequence) FROM owner_deletion_events WHERE OwnerKindCode = 1), 0),
+                RebuildStateCode = CASE
+                    WHEN RebuildStateCode = $owed AND CanonicalSearchSequence = $target THEN $idle
+                    ELSE RebuildStateCode
+                END,
                 UpdatedAtUtc = $updated
             WHERE StateKey = 1;
             """;
+
+        _ = command.Parameters.AddWithValue("$owed", (long)CovenantFtsRebuildState.FullRebuildRequired);
+
+        _ = command.Parameters.AddWithValue("$idle", (long)CovenantFtsRebuildState.Idle);
 
         _ = command.Parameters.AddWithValue("$dataset", datasetGeneration.ToByteArray());
 
