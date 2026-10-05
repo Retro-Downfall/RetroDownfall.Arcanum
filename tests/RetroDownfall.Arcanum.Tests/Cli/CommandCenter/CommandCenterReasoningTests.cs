@@ -411,6 +411,38 @@ public sealed class CommandCenterReasoningTests
             Assert.Single(entries, static entry => entry.Kind == SessionLogEntryKind.Assistant).Text);
     }
 
+    /// <summary>
+    /// The flush cadence holds back a chunk that arrives inside the interval, and with the model then silent
+    /// nothing would ever flush it: the last words of a burst stayed off the screen for as long as the model
+    /// paused. Two chunks arrive back to back, so the second is always inside the interval of the first
+    /// flush, and the stream then goes quiet.
+    /// </summary>
+    [Fact]
+    public async Task A_burst_followed_by_a_pause_reaches_the_transcript_without_waiting_for_the_next_event()
+    {
+        BlockingAfterPayloadStream stream = new(
+            Encoding.UTF8.GetBytes(SerializeFrames(
+                new IntelligenceEvent(IntelligenceEventType.Token, "par", "par"),
+                new IntelligenceEvent(IntelligenceEventType.Token, "tial", "tial"))));
+        CommandCenterChatRunner runner = CreateRunner(new StreamingHandler(stream));
+        CommandCenterState state = new(new SessionLogBuffer());
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        using CancellationTokenSource cancellation = new();
+
+        Task run = runner.RunTurnAsync("question", state, updates.Writer, cancellation.Token);
+        await stream.ReadBlocked.WaitAsync(AsyncTestTimeout);
+
+        // The stream is silent from here on and nothing else can flush the tail.
+        await WaitUntilAsync(
+            () => state.Log.Snapshot().Any(static entry =>
+                entry.Kind == SessionLogEntryKind.Assistant && entry.Text == "partial"),
+            AsyncTestTimeout);
+        Assert.False(run.IsCompleted);
+
+        cancellation.Cancel();
+        await run.WaitAsync(AsyncTestTimeout);
+    }
+
     [Fact]
     public async Task Error_after_reasoning_cleans_up_without_leaking_reasoning_into_answer()
     {

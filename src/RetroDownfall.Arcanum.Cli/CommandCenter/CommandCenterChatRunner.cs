@@ -141,8 +141,13 @@ internal sealed class CommandCenterChatRunner(
                 ScryingFoci: attachments.ScryingFoci?.ToList(),
                 AttachmentReferences: attachmentReferences);
 
-            await foreach (IntelligenceEvent evt in apiClient
-                               .AskStreamAsync(ping, cancellationToken)
+            // The coalescer holds back a chunk that arrives inside its flush interval; wrapping the stream
+            // is what flushes that chunk when the model goes quiet instead of leaving it off the screen
+            // until the next event.
+            await foreach (IntelligenceEvent evt in coalescer
+                               .WithTrailingFlushAsync(
+                                   apiClient.AskStreamAsync(ping, cancellationToken),
+                                   cancellationToken)
                                .ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -364,7 +369,7 @@ internal sealed class CommandCenterChatRunner(
         {
             cancelled = true;
             _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
-            await coalescer.FlushCancelledAsync(CancellationToken.None).ConfigureAwait(false);
+            await coalescer.FlushCancelledAsync().ConfigureAwait(false);
         }
         catch (OperationCanceledException ex)
         {

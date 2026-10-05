@@ -138,29 +138,38 @@ public sealed class CommandCenterTranscriptRenderingTests
     /// <summary>
     /// A streaming flush used to re-wrap the whole answer, so a long answer cost O(n) per flush and
     /// O(n²) overall, on the UI thread. Lines the stream has already terminated cannot change, so only the
-    /// new ones (and the still-open tail) are wrapped.
+    /// new ones (and the still-open tail) are wrapped: every line the previous flush settled comes back as
+    /// the very same string instance, which a wrap done again could not produce.
     /// </summary>
     [Fact]
-    public void A_streaming_flush_wraps_only_the_new_lines_not_the_whole_answer()
+    public void A_streaming_flush_reuses_the_lines_it_already_wrapped()
     {
         SessionLogBuffer log = new();
         SessionLogEntry entry = log.Append(SessionLogEntryKind.Assistant, string.Empty, streaming: true);
-        ObservableCollection<string> lines = [];
-        const int lineCount = 300;
+        const int lineCount = 120;
         StringBuilder answer = new();
+        ObservableCollection<string> previous = [];
 
         for (int i = 0; i < lineCount; i++)
         {
             _ = answer.Append($"line {i} of the streamed answer, long enough that it needs wrapping at forty cells\n");
             log.UpdateStreaming(entry, answer.ToString());
-            log.CopyLinesTo(lines, lineAnchors: null, wrapWidth: 40);
-        }
 
-        // Each flush wraps its one new terminated line plus the open tail segment; re-wrapping the whole
-        // entry each time would be on the order of lineCount * lineCount / 2.
-        Assert.True(
-            log.WrappedSegmentCount <= lineCount * 3,
-            $"expected linear wrapping work, saw {log.WrappedSegmentCount} segments for {lineCount} flushes");
+            // A fresh collection every flush, so an instance that survives was reused by the buffer and not
+            // kept by the collection's own tail edit.
+            ObservableCollection<string> current = [];
+            log.CopyLinesTo(current, lineAnchors: null, wrapWidth: 40);
+
+            // Everything but the open tail was already settled at the previous flush.
+            for (int k = 0; k < previous.Count - 1; k++)
+            {
+                Assert.True(
+                    ReferenceEquals(previous[k], current[k]),
+                    $"flush {i} wrapped settled line {k} again instead of reusing it");
+            }
+
+            previous = current;
+        }
     }
 
     [Theory]

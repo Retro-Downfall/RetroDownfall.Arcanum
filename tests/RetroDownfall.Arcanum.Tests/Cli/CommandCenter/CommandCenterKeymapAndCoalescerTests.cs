@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -394,7 +395,7 @@ public sealed class StreamingUiCoalescerTests
     }
 
     [Fact]
-    public async Task NoteToken_with_newline_flushes_once_the_interval_has_elapsed()
+    public async Task The_first_chunk_after_the_interval_has_elapsed_since_creation_flushes()
     {
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
         DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
@@ -413,12 +414,13 @@ public sealed class StreamingUiCoalescerTests
     }
 
     /// <summary>
-    /// Each flush copies the whole answer and re-wraps its entry on the UI thread, so a newline that
-    /// bypassed the interval made a line-heavy answer (a log, a table, a code block) flush once per line.
-    /// Newlines are held to the same cadence as every other chunk.
+    /// Each flush copies the whole answer and re-wraps its entry on the UI thread, so a flush per line
+    /// made a line-heavy answer (a log, a table, a code block) cost one rebuild per line. The coalescer is
+    /// told a chunk arrived and never what it contained, so a newline cannot bypass the interval: a burst
+    /// of chunks inside it is held until it elapses.
     /// </summary>
     [Fact]
-    public async Task Newline_chunks_inside_the_flush_interval_do_not_flush_each_time()
+    public async Task A_burst_of_chunks_inside_the_flush_interval_is_held_until_it_elapses()
     {
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
         DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
@@ -479,11 +481,12 @@ public sealed class StreamingUiCoalescerTests
     }
 
     /// <summary>
-    /// The flush that follows a cancellation is the one that gets the cut-off text onto the screen, so it
-    /// cannot be abandoned because the turn's token is already cancelled: that is exactly when it runs.
+    /// The flush that follows a cancellation is the one that gets the cut-off text onto the screen. It
+    /// takes no token: it runs because the turn's token is already cancelled, so the write it makes must
+    /// not depend on any token at all (the UI channel is unbounded, so it completes at once).
     /// </summary>
     [Fact]
-    public async Task FlushCancelled_with_a_cancelled_token_still_writes_the_refresh()
+    public async Task FlushCancelled_writes_the_pending_refresh()
     {
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
         DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
@@ -495,7 +498,7 @@ public sealed class StreamingUiCoalescerTests
         await coalescer.NoteTokenAsync();
         Assert.True(coalescer.HasPending);
 
-        await coalescer.FlushCancelledAsync(new CancellationToken(canceled: true));
+        await coalescer.FlushCancelledAsync();
 
         Assert.Equal(1, coalescer.FlushCount);
         Assert.False(coalescer.HasPending);
@@ -524,5 +527,209 @@ public sealed class StreamingUiCoalescerTests
         await coalescer.DisposeAsync();
         Assert.Equal(2, coalescer.FlushCount);
         Assert.False(coalescer.HasPending);
+    }
+
+    /// <summary>
+    /// A chunk held back by the cadence is only flushed by the next chunk, block or final flush, so a model
+    /// that pauses right after a burst left its last words off the screen for as long as it paused. The
+    /// stream wrapper flushes what is pending when the wait for the next event outlasts the interval.
+    /// </summary>
+    [Fact]
+    public async Task A_pending_chunk_is_flushed_when_the_stream_stalls_for_the_rest_of_the_interval()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        ManualDelay delay = new();
+        TaskCompletionSource end = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using StreamingUiCoalescer coalescer = new(
+            channel.Writer,
+            flushInterval: TimeSpan.FromMilliseconds(50),
+            utcNow: () => now,
+            delay: delay.Delay);
+
+        Task consumer = Task.Run(async () =>
+        {
+            await foreach (int _ in coalescer.WithTrailingFlushAsync(OneItemThenAStall(end)))
+            {
+                await coalescer.NoteTokenAsync();
+            }
+        });
+
+        TimeSpan waitingFor = await delay.FirstArmed.WaitAsync(AsyncTestTimeout);
+
+        Assert.Equal(TimeSpan.FromMilliseconds(50), waitingFor);
+        Assert.True(coalescer.HasPending);
+        Assert.Equal(0, coalescer.FlushCount);
+
+        now = now.AddMilliseconds(50);
+        delay.ElapseAll();
+
+        CommandCenterUiUpdate update = await channel.Reader.ReadAsync().AsTask().WaitAsync(AsyncTestTimeout);
+        Assert.Equal(CommandCenterUiUpdateKind.RefreshLog, update.Kind);
+        Assert.False(coalescer.HasPending);
+
+        end.SetResult();
+        await consumer.WaitAsync(AsyncTestTimeout);
+
+        Assert.Equal(1, coalescer.FlushCount);
+    }
+
+    [Fact]
+    public async Task A_chunk_the_next_event_flushes_first_is_not_flushed_again_by_the_timer()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        ManualDelay delay = new();
+        TaskCompletionSource secondItem = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using StreamingUiCoalescer coalescer = new(
+            channel.Writer,
+            flushInterval: TimeSpan.FromMilliseconds(50),
+            utcNow: () => now,
+            delay: delay.Delay);
+
+        Task consumer = Task.Run(async () =>
+        {
+            await foreach (int _ in coalescer.WithTrailingFlushAsync(TwoItemsWithAStallBetween(secondItem)))
+            {
+                await coalescer.NoteTokenAsync();
+            }
+        });
+
+        _ = await delay.FirstArmed.WaitAsync(AsyncTestTimeout);
+
+        // The next event arrives before the timer does, and by then the interval has elapsed, so noting it
+        // flushes everything that was pending.
+        now = now.AddMilliseconds(60);
+        secondItem.SetResult();
+        await consumer.WaitAsync(AsyncTestTimeout);
+
+        delay.ElapseAll();
+
+        Assert.True(delay.FirstWasCancelled);
+        Assert.Equal(1, coalescer.FlushCount);
+    }
+
+    /// <summary>
+    /// A cancelled wait must end with the cancellation, and must not give the read up while it is still
+    /// running: disposing an async iterator in the middle of its <c>MoveNextAsync</c> throws, and that
+    /// exception would replace the cancellation. The read here ignores its token until the test releases it,
+    /// as a read stalled inside the transport does.
+    /// </summary>
+    [Fact]
+    public async Task A_cancelled_wait_ends_with_the_cancellation_once_the_outstanding_read_finishes()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        ManualDelay delay = new();
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenSource run = new();
+        await using StreamingUiCoalescer coalescer = new(
+            channel.Writer,
+            flushInterval: TimeSpan.FromMilliseconds(50),
+            utcNow: () => now,
+            delay: delay.Delay);
+
+        Task consumer = Task.Run(async () =>
+        {
+            await foreach (int _ in coalescer.WithTrailingFlushAsync(OneItemThenAReadThatIgnoresCancellation(release), run.Token))
+            {
+                await coalescer.NoteTokenAsync(run.Token);
+            }
+        });
+
+        _ = await delay.FirstArmed.WaitAsync(AsyncTestTimeout);
+        run.Cancel();
+
+        // The read is still outstanding, so the stream has not ended yet. (A wait that gave it up would
+        // already have thrown from disposing the iterator under it.)
+        Task first = await Task.WhenAny(consumer, Task.Delay(TimeSpan.FromMilliseconds(250)));
+        Assert.NotSame(consumer, first);
+
+        release.SetResult();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => consumer.WaitAsync(AsyncTestTimeout));
+
+        // What was pending stays pending for the caller's own cancelled-turn flush; the timer did not take it.
+        Assert.True(coalescer.HasPending);
+        Assert.Equal(0, coalescer.FlushCount);
+    }
+
+    private static async IAsyncEnumerable<int> OneItemThenAStall(
+        TaskCompletionSource end,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        yield return 1;
+        await end.Task.WaitAsync(cancellationToken);
+    }
+
+    private static async IAsyncEnumerable<int> OneItemThenAReadThatIgnoresCancellation(
+        TaskCompletionSource release,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        yield return 1;
+        await release.Task;
+        cancellationToken.ThrowIfCancellationRequested();
+        yield return 2;
+    }
+
+    private static async IAsyncEnumerable<int> TwoItemsWithAStallBetween(
+        TaskCompletionSource secondItem,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        yield return 1;
+        await secondItem.Task.WaitAsync(cancellationToken);
+        yield return 2;
+    }
+
+    private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Stands in for the flush timer so a test decides when the interval "elapses" instead of racing a
+    /// real clock. A delay completes only when the test says so, or is cancelled with its token.
+    /// </summary>
+    private sealed class ManualDelay
+    {
+        private readonly TaskCompletionSource<TimeSpan> _firstArmed =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly List<TaskCompletionSource> _delays = [];
+
+        public Task<TimeSpan> FirstArmed => _firstArmed.Task;
+
+        public bool FirstWasCancelled
+        {
+            get
+            {
+                lock (_delays)
+                {
+                    return _delays[0].Task.IsCanceled;
+                }
+            }
+        }
+
+        public Task Delay(TimeSpan interval, CancellationToken cancellationToken)
+        {
+            TaskCompletionSource delay = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _ = cancellationToken.Register(() => delay.TrySetCanceled(cancellationToken));
+
+            lock (_delays)
+            {
+                _delays.Add(delay);
+            }
+
+            _ = _firstArmed.TrySetResult(interval);
+            return delay.Task;
+        }
+
+        public void ElapseAll()
+        {
+            lock (_delays)
+            {
+                foreach (TaskCompletionSource delay in _delays)
+                {
+                    _ = delay.TrySetResult();
+                }
+            }
+        }
     }
 }
