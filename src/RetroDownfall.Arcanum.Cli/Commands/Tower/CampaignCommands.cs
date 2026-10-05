@@ -161,7 +161,8 @@ public sealed class CampaignCommands(
                 async (offset, token) => HostPageWalker.ByOffset(
                     await apiClient.GetCampaignsPageAsync(workspaceType, null, offset, token).ConfigureAwait(false),
                     offset),
-                cancellationToken)
+                cancellationToken,
+                firstPageCursor: 0)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -553,7 +554,8 @@ public sealed class CampaignCommands(
                 async (offset, token) => HostPageWalker.ByOffset(
                     await apiClient.GetCampaignPromptsAsync(campaignId, query, tag, offset, token).ConfigureAwait(false),
                     offset),
-                cancellationToken)
+                cancellationToken,
+                firstPageCursor: 0)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -651,17 +653,17 @@ public sealed class CampaignCommands(
         // The host is allowed to report more rows with no cursor and no rows: hasMore is computed
         // before a tie group is reloaded, and the reload comes back empty if those sessions were
         // archived or deleted in between. That is a host fault in either output mode, so it is
-        // decided before the mode is — the same typed no-progress fault the workspace and
-        // session-workspace consumers already raise.
+        // decided before the mode is — the same typed no-progress fault every cursor walk raises.
         if (result.Value is { HasMore: true, NextBeforeUpdatedAt: null } && sessions.Length == 0)
         {
-            CliErrorOutput.WriteMarkupLine(
-                themePalette.ErrorMarkup(
-                    Markup.Escape(
-                        "Api.PaginationNoProgress: the host reported more sessions without "
-                        + "an advancing cursor. Re-run the command.")));
+            Error noProgress = HostPageWalker.NoProgressError(
+                "campaign session list",
+                "reported more rows without naming where they continue",
+                0);
 
-            return 1;
+            WriteError(noProgress);
+
+            return CliFailureExit.ExitCode(noProgress);
         }
 
         // The paging advice below is operator prose about how to ask for the next page, which a

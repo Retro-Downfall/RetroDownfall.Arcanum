@@ -686,45 +686,20 @@ public sealed class WorkspaceCommands(
     private async Task<Result<CampaignDto[]>> GetAllCampaignsAsync(
         CancellationToken cancellationToken)
     {
-        List<CampaignDto> campaigns = [];
+        Result<HostListing<CampaignDto>> campaigns = await HostPageWalker
+            .ReadAsync<CampaignDto, int>(
+                "campaign list",
+                singlePage: false,
+                async (offset, token) => HostPageWalker.ByOffset(
+                    await apiClient.GetCampaignsPageAsync(null, 100, offset, token).ConfigureAwait(false),
+                    offset),
+                cancellationToken,
+                firstPageCursor: 0)
+            .ConfigureAwait(false);
 
-        int offset = 0;
-
-        while (true)
-        {
-            Result<ListPageResult<CampaignDto>> result = await apiClient
-                .GetCampaignsPageAsync(
-                    null,
-                    100,
-                    offset,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (result.IsFailure)
-            {
-                return Result<CampaignDto[]>.Failure(result.Error);
-            }
-
-            campaigns.AddRange(result.Value.Items);
-
-            if (!result.Value.HasMore
-                || result.Value.NextOffset is not { } nextOffset)
-            {
-                return Result<CampaignDto[]>.Success([.. campaigns]);
-            }
-
-            // A non-advancing offset would append the same page forever, so it fails here rather
-            // than growing the accumulated list until the process runs out of memory.
-            if (nextOffset <= offset)
-            {
-                return Result<CampaignDto[]>.Failure(
-                    new Error(
-                        "Api.PaginationNoProgress",
-                        $"The campaign list returned non-advancing offset {nextOffset} after {offset}. Retry after repairing or upgrading the host."));
-            }
-
-            offset = nextOffset;
-        }
+        return campaigns.IsFailure
+            ? Result<CampaignDto[]>.Failure(campaigns.Error)
+            : Result<CampaignDto[]>.Success(campaigns.Value.Items);
     }
 
     private void WriteWorkspace(WorkspaceInfo workspace)

@@ -1360,8 +1360,18 @@ public sealed class CovenantCommandTests : IDisposable
 
         Assert.Contains("Api.PaginationNoProgress", result.Output + result.Error, StringComparison.Ordinal);
 
-        // First page, the page behind A, the page behind B, and the page behind A again, which is the repeat.
-        Assert.InRange(handler.Requests.Count(request => !request.EndsWith("detail", StringComparison.Ordinal)), 1, 4);
+        // The first page names A, the page behind A names B, and the page behind B names A again, which is
+        // the repeat: exactly three pages are read, and no further one.
+        Assert.Equal(3, handler.Requests.Count(request => !request.EndsWith("detail", StringComparison.Ordinal)));
+
+        // No partial listing reached stdout: the one document there is the error envelope and nothing else.
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(
+            ["error", "exitCode"],
+            document.RootElement.EnumerateObject().Select(static property => property.Name).Order(StringComparer.Ordinal).ToArray());
+
+        Assert.Equal((int)CliExitCode.GenericError, document.RootElement.GetProperty("exitCode").GetInt32());
     }
 
     private static readonly Guid MaskCampaignId = new("55555555-5555-4555-8555-555555555555");

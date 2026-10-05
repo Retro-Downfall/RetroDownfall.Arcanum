@@ -15,8 +15,8 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 {
     private const int ContentPreviewChars = 80;
 
-    /// <summary>The rows <c>GET /api/saga</c> returns when no limit is named.</summary>
-    private const int HostDefaultListLimit = 100;
+    /// <summary>The page size a listing that follows the host to its end reads, which is the host's own default.</summary>
+    private const int FollowPageRows = 100;
 
     /// <summary>The most rows <c>GET /api/saga</c> returns; it clamps a larger limit down to this.</summary>
     private const int HostMaxListLimit = 10_000;
@@ -49,31 +49,34 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             sessionId = parsedSessionId;
         }
 
-        // The host answers with a bare array and no page marker, so one row beyond what is shown is
-        // requested: an extra row is the host's proof that the page was a prefix of the listing.
-        int shown = Math.Clamp(limit ?? HostDefaultListLimit, 1, HostMaxListLimit);
-
         int firstRow = Math.Max(0, offset ?? 0);
 
-        Result<SagaMemoryDto[]> result = await apiClient
-            .SagaListAsync(query, sessionId, Math.Min(shown + 1, HostMaxListLimit), firstRow, cancellationToken)
+        // The host answers with a bare array and no page marker. Without --limit the listing follows it to
+        // its end, as every other list does; with --limit it is exactly that one page, and "more exist" is
+        // a row the host actually returned (one past the page, or one past the host's own ceiling), never a
+        // guess from a full page.
+        Result<HostListing<SagaMemoryDto>> listing = await HostPageWalker
+            .ReadRowsAsync(
+                "Saga memory list",
+                firstRow,
+                limit,
+                HostMaxListLimit,
+                FollowPageRows,
+                (rows, start, token) => apiClient.SagaListAsync(query, sessionId, rows, start, token),
+                static memory => memory.Id,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        if (result.IsFailure)
+        if (listing.IsFailure)
         {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(listing.Error));
 
-            return CliFailureExit.ExitCode(result.Error);
+            return CliFailureExit.ExitCode(listing.Error);
         }
 
-        // At the host's own ceiling there is no room to ask for the extra row, so a full page is the
-        // most that can be said: it may be the whole listing or a prefix of it.
-        bool moreAvailable = result.Value.Length > shown
-            || (shown == HostMaxListLimit && result.Value.Length == shown);
+        bool moreAvailable = listing.Value.MoreAvailable;
 
-        SagaMemoryDto[] memories = result.Value.Length > shown
-            ? result.Value[..shown]
-            : result.Value;
+        SagaMemoryDto[] memories = listing.Value.Items;
 
         Table table = new();
 

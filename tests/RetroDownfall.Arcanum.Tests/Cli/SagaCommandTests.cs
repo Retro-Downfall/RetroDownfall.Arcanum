@@ -173,6 +173,122 @@ public sealed class SagaCommandTests
     }
 
     /// <summary>
+    /// Without <c>--limit</c> the listing is every memory, as it is for every other list: the host bounds
+    /// each request and returns a bare array, so the listing reads pages until one is short.
+    /// </summary>
+    [Fact]
+    public void List_without_a_limit_follows_the_host_to_the_last_memory()
+    {
+        List<string> queries = [];
+
+        RecordingHandler handler = new(request =>
+        {
+            System.Collections.Specialized.NameValueCollection query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+
+            queries.Add(request.RequestUri.Query);
+
+            int limit = int.Parse(query["limit"]!, System.Globalization.CultureInfo.InvariantCulture);
+
+            int offset = int.Parse(query["offset"]!, System.Globalization.CultureInfo.InvariantCulture);
+
+            SagaMemoryDto[] rows = Enumerable
+                .Range(offset + 1, Math.Max(0, Math.Min(limit, 250 - offset)))
+                .Select(static index => new SagaMemoryDto($"mem-{index:D4}", $"payload{index}", DateTimeOffset.UnixEpoch, null, null, null))
+                .ToArray();
+
+            return CreateResponse(
+                new ApiResponse<SagaMemoryDto[]>(rows, true, null),
+                ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
+        });
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(3, queries.Count);
+
+        Assert.Contains("offset=100", queries[1], StringComparison.Ordinal);
+
+        Assert.Contains("offset=200", queries[2], StringComparison.Ordinal);
+
+        Assert.Contains("payload1 ", result.Output + " ", StringComparison.Ordinal);
+
+        Assert.Contains("payload250", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--offset", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A host that returns the same rows whatever the offset would be followed for ever; it is refused
+    /// with the shared no-progress fault, and no partial listing is printed.
+    /// </summary>
+    [Fact]
+    public void List_without_a_limit_refuses_a_host_that_ignores_the_offset()
+    {
+        int requests = 0;
+
+        RecordingHandler handler = new(_ =>
+        {
+            requests++;
+
+            if (requests > 12)
+            {
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+            }
+
+            SagaMemoryDto[] rows = Enumerable
+                .Range(1, 100)
+                .Select(static index => new SagaMemoryDto($"mem-{index:D4}", $"payload{index}", DateTimeOffset.UnixEpoch, null, null, null))
+                .ToArray();
+
+            return CreateResponse(
+                new ApiResponse<SagaMemoryDto[]>(rows, true, null),
+                ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
+        });
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Equal(2, requests);
+
+        Assert.Contains("Api.PaginationNoProgress", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("payload1", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>--offset</c> alone starts the listing at that row and still follows it to its end.
+    /// </summary>
+    [Fact]
+    public void List_without_a_limit_starts_at_the_offset_it_was_given()
+    {
+        List<string> queries = [];
+
+        RecordingHandler handler = new(request =>
+        {
+            queries.Add(request.RequestUri!.Query);
+
+            return CreateResponse(
+                new ApiResponse<SagaMemoryDto[]>(
+                    [new SagaMemoryDto("mem-0051", "payload51", DateTimeOffset.UnixEpoch, null, null, null)],
+                    true,
+                    null),
+                ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
+        });
+
+        CliTestResult result = RunCommand(handler, ["saga", "list", "--offset", "50"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string only = Assert.Single(queries);
+
+        Assert.Contains("offset=50", only, StringComparison.Ordinal);
+
+        Assert.Contains("limit=100", only, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The listing is where an operator reads the identifier to hand to <c>saga delete</c>, so it
     /// prints the whole identifier rather than a fragment no verb accepts.
     /// </summary>

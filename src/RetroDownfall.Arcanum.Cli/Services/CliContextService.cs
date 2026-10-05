@@ -935,43 +935,23 @@ internal sealed class CliContextService(
     private async Task<(bool IsSuccess, CampaignDto[] Items)> GetCampaignsAsync(
         CancellationToken cancellationToken)
     {
-        List<CampaignDto> campaigns = [];
+        // A host that cannot list its campaigns, or whose cursor does not advance, degrades the caller to
+        // "not loaded" rather than failing it: the walker refuses a non-advancing cursor, so the
+        // accumulator cannot grow without bound.
+        Result<HostListing<CampaignDto>> campaigns = await HostPageWalker
+            .ReadAsync<CampaignDto, int>(
+                "campaign list",
+                singlePage: false,
+                async (offset, token) => HostPageWalker.ByOffset(
+                    await apiClient.GetCampaignsPageAsync(null, 100, offset, token).ConfigureAwait(false),
+                    offset),
+                cancellationToken,
+                firstPageCursor: 0)
+            .ConfigureAwait(false);
 
-        int offset = 0;
-
-        while (true)
-        {
-            Result<ListPageResult<CampaignDto>> result = await apiClient
-                .GetCampaignsPageAsync(
-                    null,
-                    100,
-                    offset,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (result.IsFailure)
-            {
-                return (false, []);
-            }
-
-            campaigns.AddRange(result.Value.Items);
-
-            if (!result.Value.HasMore
-                || result.Value.NextOffset is not { } nextOffset)
-            {
-                return (true, [.. campaigns]);
-            }
-
-            if (nextOffset <= offset)
-            {
-                // A cursor that does not advance would loop forever while the accumulator grows without
-                // bound. ArcanumApiClient.ListLoreAsync refuses the same shape; here the caller already
-                // degrades gracefully when campaigns cannot be listed.
-                return (false, []);
-            }
-
-            offset = nextOffset;
-        }
+        return campaigns.IsFailure
+            ? (false, [])
+            : (true, campaigns.Value.Items);
     }
 
     private void AddRelationshipWarnings(
