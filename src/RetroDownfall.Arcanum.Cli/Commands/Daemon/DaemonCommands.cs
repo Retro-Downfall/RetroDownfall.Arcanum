@@ -16,16 +16,38 @@ public sealed class DaemonCommands(
     IDaemonManager daemonManager,
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
-    IConsoleDispatcher dispatcher)
+    IConsoleDispatcher dispatcher,
+    IDaemonServiceAccountPrompt accountPrompt)
 {
     /// <summary>
-    /// Install and start the Arcanum background daemon.
+    /// Install and start the Arcanum background daemon. A manager that needs a service account (the Windows one)
+    /// gets it from <see cref="IDaemonServiceAccountPrompt"/> first; an invocation with no way to ask stops with a
+    /// configuration error before anything is created.
     /// </summary>
     public async Task<int> Install(CancellationToken cancellationToken)
     {
+        DaemonInstallRequest request = DaemonInstallRequest.ForInvokingUser;
+
+        if (daemonManager.RequiresServiceAccount)
+        {
+            Result<DaemonServiceCredential> credential = await accountPrompt
+                .ReadAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (credential.IsFailure)
+            {
+                CliErrorOutput.WriteMarkupLine(
+                    themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), credential.Error));
+
+                return (int)CliExitCode.ConfigurationError;
+            }
+
+            request = new DaemonInstallRequest(credential.Value);
+        }
+
         dispatcher.WriteDiagnostic("Installing the background daemon\u2026");
 
-        Result result = await daemonManager.InstallAsync(cancellationToken).ConfigureAwait(false);
+        Result result = await daemonManager.InstallAsync(request, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {

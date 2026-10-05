@@ -1,6 +1,8 @@
+using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
@@ -60,6 +62,50 @@ public sealed class GrimoireBootstrapLockCallSiteTests
         Assert.True(
             productionCallSites >= 2,
             $"Expected the host and CLI bootstrap call sites, found {productionCallSites}.");
+    }
+
+    /// <summary>
+    /// The scan above reads call-site text, so a variable that holds null, or a path that reaches the shared
+    /// implementation another way, would slip past it. The type is the stronger guarantee: with the lock
+    /// non-nullable on every entry point the compiler refuses a possibly-null argument, and the one shape that
+    /// accepts no lock is private to the bootstrapper.
+    /// </summary>
+    [Fact]
+    public void Every_non_private_bootstrap_entry_point_requires_a_non_null_lock_by_type()
+    {
+        NullabilityInfoContext nullability = new();
+
+        MethodInfo[] entryPoints =
+        [
+            .. typeof(GrimoireDatabaseBootstrapper)
+                .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(static method => method.Name == EntryPoint && !method.IsPrivate),
+        ];
+
+        Assert.NotEmpty(entryPoints);
+
+        foreach (MethodInfo method in entryPoints)
+        {
+            ParameterInfo lockParameter = Assert.Single(
+                method.GetParameters(),
+                static parameter => parameter.Name == "heldInstallationLock");
+
+            Assert.True(
+                nullability.Create(lockParameter).WriteState is NullabilityState.NotNull,
+                $"{method} declares its installation lock as nullable.");
+        }
+
+        // The shared implementation that does accept a missing lock must not be reachable from the rest of src.
+        MethodInfo[] nullableCores =
+        [
+            .. typeof(GrimoireDatabaseBootstrapper)
+                .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(static method => method.GetParameters().Any(
+                    static parameter => parameter.Name == "heldInstallationLock"
+                        && new NullabilityInfoContext().Create(parameter).WriteState is NullabilityState.Nullable)),
+        ];
+
+        Assert.All(nullableCores, static method => Assert.True(method.IsPrivate, $"{method} accepts no lock but is not private."));
     }
 
     [Fact]

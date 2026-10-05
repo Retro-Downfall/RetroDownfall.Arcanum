@@ -173,6 +173,73 @@ public sealed class LongRunningOperationStartupHostedServiceTests
     }
 
     [Fact]
+    public async Task A_second_StopAsync_after_a_joined_stop_returns_without_throwing()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        SetBackgroundTask(host, Task.CompletedTask);
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The generic host calls StopAsync once, but a second call (a test, a retried shutdown, a composition that
+        // stops the service itself) must find the source already disposed and do nothing, not report a failure.
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task A_detached_owner_that_later_faults_is_logged_not_silently_dropped()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        TestCapturingLogger<LongRunningOperationStartupHostedService> logger = new();
+        LongRunningOperationStartupHostedService host = Host(
+            scopes,
+            time,
+            gate,
+            TimeSpan.FromMilliseconds(100),
+            logger);
+        TaskCompletionSource neverReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SetBackgroundTask(host, neverReleased.Task);
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        InvalidOperationException late = new("the detached owner failed after shutdown");
+
+        neverReleased.SetException(late);
+
+        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+
+        while (DateTime.UtcNow < deadline
+            && !logger.Entries.Any(static entry => entry.Level == LogLevel.Error))
+        {
+            await Task.Delay(10);
+        }
+
+        TestLogEntry logged = Assert.Single(
+            logger.Entries,
+            static entry => entry.Level == LogLevel.Error);
+
+        Assert.Same(late, logged.Exception?.GetBaseException());
+    }
+
+    [Fact]
     public async Task Background_db_only_recovery_acquires_before_each_private_scope_without_a_group()
     {
         FakeTimeProvider time = new();

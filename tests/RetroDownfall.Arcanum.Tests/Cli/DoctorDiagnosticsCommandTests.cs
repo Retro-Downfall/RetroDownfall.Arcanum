@@ -29,7 +29,22 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
 
     public DoctorDiagnosticsCommandTests()
     {
-        Directory.CreateDirectory(_testHome);
+        // The maintenance lock sits beside the Grimoire directory, in <home>/.config, and the lock check refuses a
+        // parent that is not owner-only. Whatever creates that directory first under the common 022 umask makes it
+        // 0755, so the doctor reported the lock as unsafe before the repair under test ever ran. Create it owner-only
+        // up front, the way an installation that has ever taken the lock has it.
+        string lockParent = Path.Combine(_testHome, ".config");
+
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(lockParent);
+        }
+        else
+        {
+            Directory.CreateDirectory(
+                lockParent,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
 
         SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
 

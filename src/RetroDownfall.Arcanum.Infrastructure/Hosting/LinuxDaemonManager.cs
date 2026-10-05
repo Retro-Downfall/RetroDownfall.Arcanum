@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 public sealed class LinuxDaemonManager : IDaemonManager
 {
     internal const string ServiceUnitFileName = "arcanum.service";
-    private static readonly string ServiceUnitPath = Path.Combine(
+    private static readonly string DefaultServiceUnitPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         ".config",
         "systemd",
@@ -22,19 +22,37 @@ public sealed class LinuxDaemonManager : IDaemonManager
     private const string RunningMessage = "Arcanum daemon is running.";
     private readonly IDaemonProcessRunner _runner;
 
+    private readonly string _serviceUnitPath;
+
+    private readonly Func<bool> _isRunningInContainer;
+
     public LinuxDaemonManager()
-        : this(DaemonProcessRunner.Default)
+        : this(DaemonProcessRunner.Default, DefaultServiceUnitPath, IsRunningInContainer)
     {
     }
 
-    internal LinuxDaemonManager(IDaemonProcessRunner runner)
+    internal LinuxDaemonManager(
+        IDaemonProcessRunner runner,
+        string serviceUnitPath,
+        Func<bool> isRunningInContainer)
     {
         _runner = runner;
+        _serviceUnitPath = serviceUnitPath;
+        _isRunningInContainer = isRunningInContainer;
     }
 
-    public Task<Result> InstallAsync(CancellationToken cancellationToken)
+    public bool RequiresServiceAccount => false;
+
+    public Task<Result> InstallAsync(DaemonInstallRequest request, CancellationToken cancellationToken)
     {
-        if (IsRunningInContainer())
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (DaemonInstallRequestPolicy.RefuseServiceAccount(request, "A systemd user unit") is { } refused)
+        {
+            return Task.FromResult(Result.Failure(refused));
+        }
+
+        if (_isRunningInContainer())
         {
             return Task.FromResult(Result.Failure(ContainerUnsupportedError));
         }
@@ -44,7 +62,7 @@ public sealed class LinuxDaemonManager : IDaemonManager
 
     public Task<Result> UninstallAsync(CancellationToken cancellationToken)
     {
-        if (IsRunningInContainer())
+        if (_isRunningInContainer())
         {
             return Task.FromResult(Result.Failure(ContainerUnsupportedError));
         }
@@ -54,7 +72,7 @@ public sealed class LinuxDaemonManager : IDaemonManager
 
     public Task<Result<string>> GetStatusAsync(CancellationToken cancellationToken)
     {
-        if (IsRunningInContainer())
+        if (_isRunningInContainer())
         {
             return Task.FromResult(Result<string>.Failure(ContainerUnsupportedError));
         }
@@ -83,7 +101,7 @@ public sealed class LinuxDaemonManager : IDaemonManager
             return Result.Failure(new Error("DaemonProcessPath", "Could not resolve the current executable path."));
         }
 
-        string? directory = Path.GetDirectoryName(ServiceUnitPath);
+        string? directory = Path.GetDirectoryName(_serviceUnitPath);
         if (string.IsNullOrEmpty(directory))
         {
             return Result.Failure(new Error("DaemonUnitPath", "Invalid systemd user unit path."));
@@ -102,7 +120,7 @@ public sealed class LinuxDaemonManager : IDaemonManager
             cancellationToken).ConfigureAwait(false);
         if (reloadOutcome.FatalError is { } fatalReload)
         {
-            return Result.Failure(fatalReload);
+            return Result.Failure(WithSystemdHint(fatalReload));
         }
 
         if (reloadOutcome.ExitCode != 0)
@@ -120,7 +138,7 @@ public sealed class LinuxDaemonManager : IDaemonManager
             cancellationToken).ConfigureAwait(false);
         if (enableOutcome.FatalError is { } fatalEnable)
         {
-            return Result.Failure(fatalEnable);
+            return Result.Failure(WithSystemdHint(fatalEnable));
         }
 
         if (enableOutcome.ExitCode != 0)
@@ -144,14 +162,14 @@ public sealed class LinuxDaemonManager : IDaemonManager
             cancellationToken).ConfigureAwait(false);
         if (disableOutcome.FatalError is { } fatalDisable)
         {
-            return Result.Failure(fatalDisable);
+            return Result.Failure(WithSystemdHint(fatalDisable));
         }
 
         try
         {
-            if (File.Exists(ServiceUnitPath))
+            if (File.Exists(_serviceUnitPath))
             {
-                File.Delete(ServiceUnitPath);
+                File.Delete(_serviceUnitPath);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -167,7 +185,7 @@ public sealed class LinuxDaemonManager : IDaemonManager
 
     private async Task<Result<string>> GetStatusCoreAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(ServiceUnitPath))
+        if (!File.Exists(_serviceUnitPath))
         {
             return Result<string>.Success(NotLoadedMessage);
         }
@@ -177,7 +195,7 @@ public sealed class LinuxDaemonManager : IDaemonManager
             cancellationToken).ConfigureAwait(false);
         if (showOutcome.FatalError is { } fatal)
         {
-            return Result<string>.Failure(fatal);
+            return Result<string>.Failure(WithSystemdHint(fatal));
         }
 
         if (showOutcome.ExitCode != 0)
@@ -232,7 +250,7 @@ WantedBy=default.target
         return builder.ToString();
     }
 
-    private static async Task<Result> WriteServiceUnitAtomicallyAsync(
+    private async Task<Result> WriteServiceUnitAtomicallyAsync(
         string directory,
         string unitContent,
         CancellationToken cancellationToken)
@@ -241,7 +259,7 @@ WantedBy=default.target
         try
         {
             await File.WriteAllTextAsync(tempPath, unitContent, cancellationToken).ConfigureAwait(false);
-            File.Move(tempPath, ServiceUnitPath, overwrite: true);
+            File.Move(tempPath, _serviceUnitPath, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -268,6 +286,15 @@ WantedBy=default.target
         {
         }
     }
+
+    /// <summary>
+    /// A <c>systemctl</c> that cannot be started at all usually means this host has no systemd, which the bare start
+    /// failure does not say.
+    /// </summary>
+    private static Error WithSystemdHint(Error fatal) =>
+        string.Equals(fatal.Code, DaemonProcessRunner.StartErrorCode, StringComparison.Ordinal)
+            ? new Error(fatal.Code, fatal.Message + " systemd may not be available on this host.")
+            : fatal;
 
     private static Error ToolError(string code, string message, string stderr, int exitCode)
     {

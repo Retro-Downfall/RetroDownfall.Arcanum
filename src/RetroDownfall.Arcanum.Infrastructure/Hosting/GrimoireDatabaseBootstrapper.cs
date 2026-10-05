@@ -102,7 +102,7 @@ public static class GrimoireDatabaseBootstrapper
     /// Bootstraps the Grimoire while the caller holds the installation maintenance lock. The lock is required:
     /// both production callers (the host's start-up and the CLI's exclusive operations) own it before they
     /// bootstrap, because Covenant authority preparation and topology recovery need exclusive ownership of
-    /// the guarded root.
+    /// the guarded root. A null lock throws <see cref="ArgumentNullException"/> from the full overload these forward to.
     /// </summary>
     internal static Task EnsureInitializedAsync(
         ISecretStore secretStore,
@@ -119,8 +119,7 @@ public static class GrimoireDatabaseBootstrapper
             scopeFactory,
             dbPath,
             grimoireDirectory,
-            heldInstallationLock
-                ?? throw new ArgumentNullException(nameof(heldInstallationLock)),
+            heldInstallationLock,
             expectedInstallationId,
             postRestoreTopology: null,
             restoreDisclosureWriterAfterAuthenticatedTransition: false,
@@ -144,8 +143,7 @@ public static class GrimoireDatabaseBootstrapper
             scopeFactory,
             dbPath,
             grimoireDirectory,
-            heldInstallationLock
-                ?? throw new ArgumentNullException(nameof(heldInstallationLock)),
+            heldInstallationLock,
             expectedInstallationId,
             postRestoreTopology,
             restoreDisclosureWriterAfterAuthenticatedTransition: false,
@@ -182,7 +180,7 @@ public static class GrimoireDatabaseBootstrapper
         string grimoireDirectory,
         bool restoreDisclosureWriterAfterAuthenticatedTransition,
         CancellationToken cancellationToken) =>
-        EnsureInitializedAsync(
+        EnsureInitializedCoreAsync(
             secretStore,
             passphraseSource,
             scopeFactory,
@@ -195,11 +193,44 @@ public static class GrimoireDatabaseBootstrapper
             cancellationToken);
 
     /// <summary>
-    /// The one implementation behind every entry point above. <paramref name="heldInstallationLock"/> is
-    /// nullable only so the test-only seam can exercise the schema and key paths without a lock; every
-    /// production caller passes the lock it holds.
+    /// The full lock-required entry point. The lock is a non-nullable parameter, so the compiler (nullable analysis,
+    /// with warnings as errors) refuses any <c>src/</c> call that passes a null literal or a variable that may be
+    /// null; the only path that accepts no lock is the private core behind the test-only seam above.
     /// </summary>
-    internal static async Task EnsureInitializedAsync(
+    internal static Task EnsureInitializedAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        string dbPath,
+        string grimoireDirectory,
+        ArcanumMaintenanceLock heldInstallationLock,
+        Guid? expectedInstallationId,
+        Func<CancellationToken, Task<MasterApiKeyBootstrapResult?>>?
+            postRestoreTopology,
+        bool restoreDisclosureWriterAfterAuthenticatedTransition,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        return EnsureInitializedCoreAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            dbPath,
+            grimoireDirectory,
+            heldInstallationLock,
+            expectedInstallationId,
+            postRestoreTopology,
+            restoreDisclosureWriterAfterAuthenticatedTransition,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// The one implementation behind every entry point above. <paramref name="heldInstallationLock"/> is
+    /// nullable only so the test-only seam can exercise the schema and key paths without a lock; it is private so
+    /// that nothing else can reach that shape, and every production caller passes the lock it holds.
+    /// </summary>
+    private static async Task EnsureInitializedCoreAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,
         IServiceScopeFactory scopeFactory,

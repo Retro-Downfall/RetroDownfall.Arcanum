@@ -27,6 +27,7 @@ internal sealed class ProviderHealthProbeService(
     IProviderHealthProbe probe,
     IProviderHealthTracker tracker,
     IGrimoireConnectionAdmissionGate admissionGate,
+    TimeProvider timeProvider,
     ILogger<ProviderHealthProbeService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -65,7 +66,7 @@ internal sealed class ProviderHealthProbeService(
                     : ArcanumSettingClamps.HealthProbeIntervalSeconds(
                         defaults.HealthProbeIntervalSeconds);
 
-                await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), stoppingToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), timeProvider, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

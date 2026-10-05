@@ -32,8 +32,17 @@ public sealed class MacOsDaemonManager : IDaemonManager
         _plistPath = plistPath;
     }
 
-    public async Task<Result> InstallAsync(CancellationToken cancellationToken)
+    public bool RequiresServiceAccount => false;
+
+    public async Task<Result> InstallAsync(DaemonInstallRequest request, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (DaemonInstallRequestPolicy.RefuseServiceAccount(request, "A launchd user agent") is { } refused)
+        {
+            return Result.Failure(refused);
+        }
+
         Result<string> uidResult = await TryResolveUidAsync(cancellationToken).ConfigureAwait(false);
         if (uidResult.IsFailure)
         {
@@ -173,7 +182,8 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
     /// <summary>
     /// Boots the agent out of the user's GUI domain. Success covers both a loaded agent that was unloaded and
-    /// one that was not loaded to begin with; any other failure keeps its launchctl diagnostics.
+    /// one that was not loaded to begin with, and a "not loaded" answer is confirmed against the agent list before it
+    /// is believed; any other failure keeps its launchctl diagnostics.
     /// </summary>
     private async Task<Result> BootoutAsync(string guiDomain, CancellationToken cancellationToken)
     {
@@ -186,12 +196,40 @@ public sealed class MacOsDaemonManager : IDaemonManager
             return Result.Failure(fatalBootout);
         }
 
-        if (bootoutOutcome.ExitCode != 0 && !IndicatesNotLoaded(bootoutOutcome.ExitCode, bootoutOutcome.StdErr))
+        if (bootoutOutcome.ExitCode == 0)
+        {
+            return Result.Success();
+        }
+
+        if (!IndicatesNotLoaded(bootoutOutcome.ExitCode, bootoutOutcome.StdErr))
         {
             return Result.Failure(
                 ToolError(
                     "DaemonBootout",
                     "launchctl bootout failed.",
+                    bootoutOutcome.StdErr,
+                    bootoutOutcome.ExitCode));
+        }
+
+        // The not-loaded answers are matched by exit code and text that differ between macOS releases, and exit 5
+        // (EIO) is also what launchctl says when a loaded agent could not be unloaded, so a "not loaded" answer is
+        // confirmed against the agent list before the plist is allowed to go. Otherwise an uninstall would delete the
+        // plist and leave the agent loaded.
+        DaemonProcessOutcome stillLoaded = await _runner.RunAsync(
+            "/bin/launchctl",
+            ["list", LaunchdLabel],
+            cancellationToken).ConfigureAwait(false);
+        if (stillLoaded.FatalError is { } fatalList)
+        {
+            return Result.Failure(fatalList);
+        }
+
+        if (stillLoaded.ExitCode == 0)
+        {
+            return Result.Failure(
+                ToolError(
+                    "DaemonBootout",
+                    "launchctl bootout reported the agent as not loaded, but it is still loaded.",
                     bootoutOutcome.StdErr,
                     bootoutOutcome.ExitCode));
         }

@@ -264,6 +264,11 @@ internal static class CliApplicationFactory
 
         services.AddTransient<DaemonCommands>();
 
+        services.AddTransient<IDaemonServiceAccountPrompt>(
+            static sp => new DaemonServiceAccountPrompt(
+                sp.GetRequiredService<ICliInvocationContext>(),
+                SystemSensitiveValueConsole.Instance));
+
         services.AddTransient<CampaignCommands>();
 
         services.AddTransient<CampaignCodexCommands>();

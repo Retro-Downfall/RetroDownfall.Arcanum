@@ -13,12 +13,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 /// </summary>
 internal sealed class ProviderHealthProbe(
     IHttpClientFactory httpFactory,
-    IProviderApiKeyResolver? apiKeyResolver = null) : IProviderHealthProbe
+    IProviderApiKeyResolver apiKeyResolver) : IProviderHealthProbe
 {
     public const string HttpClientName = "ProviderHealthProbe";
-
-    private readonly IProviderApiKeyResolver _apiKeyResolver =
-        apiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
 
     public async Task<bool> ProbeAsync(ProviderSettings provider, CancellationToken cancellationToken)
     {
@@ -58,7 +55,7 @@ internal sealed class ProviderHealthProbe(
             // though this named client is shared across concurrent probes for different providers.
             HttpClient client = httpFactory.CreateClient(HttpClientName);
 
-            string? resolvedApiKey = await _apiKeyResolver
+            string? resolvedApiKey = await apiKeyResolver
                 .ResolveAsync(provider, timeoutCts.Token)
                 .ConfigureAwait(false);
 

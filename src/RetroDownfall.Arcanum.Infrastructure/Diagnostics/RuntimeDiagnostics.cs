@@ -48,12 +48,12 @@ public sealed class PidFileCheck : IDoctorCheck
 
             PidFileKind.Malformed => new DoctorFinding(
                 DoctorOutcome.Degraded,
-                "The PID file does not contain a process id. 'arcanum serve' will refuse to start until it is removed.",
+                "The PID file does not contain a process id. 'arcanum serve' treats this as crash residue and replaces it on the next start.",
                 [StaleRemedy]),
 
             _ => new DoctorFinding(
                 DoctorOutcome.Degraded,
-                $"The PID file names process {posture.Pid}, which is no longer running. "
+                $"The PID file names process {posture.Pid}, which is no longer running or has been reused by a process that started after the file was written. "
                 + "'arcanum serve' treats this as crash residue and clears it on the next start.",
                 [StaleRemedy]),
         };
@@ -211,7 +211,7 @@ public sealed class RemoveStalePidRepair : IDoctorRepair
     private static string DescribeBefore(PidFilePosture posture) =>
         posture.Kind == PidFileKind.Malformed
             ? "present, no process id"
-            : $"present, names dead process {posture.Pid}";
+            : $"present, names process {posture.Pid}, which is not the host that wrote it";
 
     private static DoctorRepairResult Converged() =>
         new(
