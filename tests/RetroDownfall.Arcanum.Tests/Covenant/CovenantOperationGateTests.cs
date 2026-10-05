@@ -1,7 +1,10 @@
+using Microsoft.Extensions.Logging;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -594,7 +597,9 @@ public sealed class CovenantOperationGateTests
     [Fact]
     public async Task Exclusive_acquisition_removes_its_closure_when_a_revocation_callback_throws()
     {
-        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+        TestCapturingLogger<CovenantOperationGate> logger = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(logger: logger);
 
         CovenantReadLease reader = (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
 
@@ -622,6 +627,13 @@ public sealed class CovenantOperationGateTests
             (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
 
         Assert.Equal(CovenantScope.Global, reopened.Snapshot.Scope!.Value.Kind);
+
+        // The fault is not swallowed without a trace: one warning, and it carries nothing the callback threw.
+        TestLogEntry warning = Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.Null(warning.Exception);
+
+        Assert.DoesNotContain("a consumer callback that faults", warning.Message, StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -1357,14 +1357,14 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 // The holder released between the drain set being snapshotted and this cancellation.
                 // That is the outcome the revocation was asking for, so there is nothing left to do.
             }
-            catch (AggregateException faulted)
+            catch (AggregateException)
             {
                 // Cancel() runs every registered callback and then throws what they threw. The token is
                 // already cancelled, which is all a revocation asks for; a consumer's fault must not
-                // abort the close that revoked it or leave its closure installed.
+                // abort the close that revoked it or leave its closure installed. Only that a callback
+                // faulted is logged: what it threw can carry anything its owner put in a message.
                 _gate._logger.LogWarning(
-                    "{Count} Covenant revocation callback(s) faulted; the lease is revoked regardless.",
-                    faulted.InnerExceptions.Count);
+                    "A Covenant revocation callback faulted; the lease is revoked regardless.");
             }
         }
 
