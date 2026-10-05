@@ -264,11 +264,11 @@ public sealed class PromptImportHelperTests
             return Task.FromResult(Existing);
         }
 
-        public Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default)
+        public Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default)
         {
             Added = prompt;
             AddCancellationToken = cancellationToken;
-            return Task.FromResult(prompt);
+            return Task.FromResult(Result<Prompt>.Success(prompt));
         }
 
         public Task<Prompt?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -287,7 +287,7 @@ public sealed class PromptImportHelperTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Prompt> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+        public Task<Result<Prompt>> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>

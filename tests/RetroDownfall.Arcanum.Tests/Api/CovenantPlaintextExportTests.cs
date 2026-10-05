@@ -757,10 +757,10 @@ public sealed class CovenantPlaintextExportTests
             Guid? campaignId,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+        public Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Prompt> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+        public Task<Result<Prompt>> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>

@@ -157,7 +157,12 @@ internal static class PromptImportHelper
 
         Prompt prompt = BuildPrompt(payload, request.CampaignId);
 
-        await repo.AddAsync(prompt, ct).ConfigureAwait(false);
+        Result<Prompt> added = await repo.AddAsync(prompt, ct).ConfigureAwait(false);
+
+        if (added.IsFailure)
+        {
+            return Result<PromptSummaryDto>.Failure(added.Error);
+        }
 
         return Result<PromptSummaryDto>.Success(PromptMapping.ToSummaryDto(prompt));
     }

@@ -75,7 +75,7 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
             UpdatedAt = now,
         };
 
-        Prompt saved = await repository.AddAsync(prompt, CancellationToken.None);
+        Prompt saved = await repository.AddSucceededAsync(prompt, CancellationToken.None);
 
         Prompt? byId = await repository.GetByIdAsync(saved.Id, CancellationToken.None);
 
@@ -133,19 +133,19 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
 
         PromptRepository repository = new(_db, NullLogger<PromptRepository>.Instance);
 
-        Prompt alpha = await repository.AddAsync(
+        Prompt alpha = await repository.AddSucceededAsync(
             CreatePrompt(null, "alpha", "1", now.AddMinutes(-3)),
             CancellationToken.None);
 
-        Prompt summonV1 = await repository.AddAsync(
+        Prompt summonV1 = await repository.AddSucceededAsync(
             CreatePrompt(null, "summon", "1", now.AddMinutes(-2)),
             CancellationToken.None);
 
-        Prompt summonV2 = await repository.AddAsync(
+        Prompt summonV2 = await repository.AddSucceededAsync(
             CreatePrompt(null, "summon", "2", now.AddMinutes(-1)),
             CancellationToken.None);
 
-        Prompt campaignSummon = await repository.AddAsync(
+        Prompt campaignSummon = await repository.AddSucceededAsync(
             CreatePrompt(campaignId, "summon", "campaign", now),
             CancellationToken.None);
 
@@ -210,13 +210,13 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
 
         foreach (string name in new[] { "echo", "alpha", "delta", "bravo", "charlie", "foxtrot" })
         {
-            byName[name] = await repository.AddAsync(
+            byName[name] = await repository.AddSucceededAsync(
                 CreatePrompt(null, name, "1", now.AddMinutes(-byName.Count)),
                 CancellationToken.None);
         }
 
         // Two versions of one name sort newest first within the name.
-        Prompt alphaNewer = await repository.AddAsync(
+        Prompt alphaNewer = await repository.AddSucceededAsync(
             CreatePrompt(null, "alpha", "2", now),
             CancellationToken.None);
 
@@ -274,7 +274,7 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
 
         PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
 
-        Prompt prompt = await repository.AddAsync(
+        Prompt prompt = await repository.AddSucceededAsync(
             CreatePrompt(null, "rollback", "1", DateTimeOffset.UtcNow),
             CancellationToken.None);
 
@@ -301,7 +301,7 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        Prompt alpha = await repository.AddAsync(
+        Prompt alpha = await repository.AddSucceededAsync(
             new Prompt
             {
                 Id = Guid.NewGuid(),
@@ -313,7 +313,7 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
             },
             CancellationToken.None);
 
-        Prompt beta = await repository.AddAsync(
+        Prompt beta = await repository.AddSucceededAsync(
             new Prompt
             {
                 Id = Guid.NewGuid(),
@@ -327,7 +327,7 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
 
         alpha.Template = "A revised";
 
-        await repository.UpdateAsync(alpha, CancellationToken.None);
+        _ = await repository.UpdateSucceededAsync(alpha, CancellationToken.None);
 
         Prompt? updated = await repository.GetByIdAsync(alpha.Id, CancellationToken.None);
 
@@ -383,7 +383,7 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        Task<Prompt> addTask = repository.AddAsync(
+        Task<Prompt> addTask = repository.AddSucceededAsync(
             new Prompt
             {
                 Id = Guid.NewGuid(),
@@ -412,6 +412,71 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
 
         Assert.NotNull(
             await repository.GetByIdAsync(saved.Id, CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task AddAsync_maps_a_unique_index_violation_to_DuplicateVersion_and_leaves_the_context_usable()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        _ = await repository.AddSucceededAsync(CreatePrompt(null, "taken", "1", now), CancellationToken.None);
+
+        Result<Prompt> loser = await repository.AddAsync(CreatePrompt(null, "taken", "1", now), CancellationToken.None);
+
+        Assert.True(loser.IsFailure);
+
+        Assert.Equal(ErrorCodes.Prompt.DuplicateVersion, loser.Error.Code);
+
+        // The failed entity must not stay tracked, or this unrelated write would replay it.
+        _ = await repository.AddSucceededAsync(CreatePrompt(null, "free", "1", now), CancellationToken.None);
+
+        Assert.Equal(
+            ["free", "taken"],
+            (await repository.ListAsync(null, cancellationToken: CancellationToken.None)).Items.Select(static p => p.Name));
+    }
+
+    [SkippableFact]
+    public async Task AddAsync_maps_a_missing_campaign_to_CampaignNotFound()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        Result<Prompt> result = await repository.AddAsync(
+            CreatePrompt(Guid.NewGuid(), "orphan", "1", DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Campaign.NotFound, result.Error.Code);
+    }
+
+    [SkippableFact]
+    public async Task UpdateAsync_maps_a_unique_index_violation_to_DuplicateVersion_and_changes_nothing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        _ = await repository.AddSucceededAsync(CreatePrompt(null, "alpha", "1", now), CancellationToken.None);
+
+        Prompt beta = await repository.AddSucceededAsync(CreatePrompt(null, "beta", "1", now), CancellationToken.None);
+
+        beta.Name = "alpha";
+
+        Result<Prompt> result = await repository.UpdateAsync(beta, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Prompt.DuplicateVersion, result.Error.Code);
+
+        Assert.Equal("beta", (await repository.GetByIdAsync(beta.Id, CancellationToken.None))!.Name);
     }
 
     [SkippableFact]
@@ -636,4 +701,31 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
             CreatedAt = timestamp,
             UpdatedAt = timestamp,
         };
+}
+
+internal static class PromptRepositoryTestExtensions
+{
+    public static async Task<Prompt> AddSucceededAsync(
+        this PromptRepository repository,
+        Prompt prompt,
+        CancellationToken cancellationToken)
+    {
+        Result<Prompt> result = await repository.AddAsync(prompt, cancellationToken);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        return result.Value;
+    }
+
+    public static async Task<Prompt> UpdateSucceededAsync(
+        this PromptRepository repository,
+        Prompt prompt,
+        CancellationToken cancellationToken)
+    {
+        Result<Prompt> result = await repository.UpdateAsync(prompt, cancellationToken);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        return result.Value;
+    }
 }

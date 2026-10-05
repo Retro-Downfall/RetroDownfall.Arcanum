@@ -239,11 +239,11 @@ public sealed class ProvingGroundsRunnerTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new ListPageResult<Prompt>([], false));
 
-        public Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
-            Task.FromResult(prompt);
+        public Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Prompt>.Success(prompt));
 
-        public Task<Prompt> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
-            Task.FromResult(prompt);
+        public Task<Result<Prompt>> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Prompt>.Success(prompt));
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);

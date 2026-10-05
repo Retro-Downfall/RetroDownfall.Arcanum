@@ -136,7 +136,7 @@ internal static class PromptEndpoints
 
         apiGroup.MapPost(
             "/prompts",
-            async (CreatePromptRequest? request, IPromptRepository repo, HttpContext ctx) =>
+            async (CreatePromptRequest? request, IPromptRepository repo, ICampaignRepository campaignRepo, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -146,6 +146,12 @@ internal static class PromptEndpoints
                         ApiResponse<PromptDetailDto>.FromResult(
                             Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.InvalidRequest, "Name and version are required.")),
                             traceId));
+                }
+
+                if (request.CampaignId is Guid requestedCampaignId
+                    && await campaignRepo.GetByIdAsync(requestedCampaignId, ctx.RequestAborted).ConfigureAwait(false) is null)
+                {
+                    return CampaignNotFound(traceId);
                 }
 
                 Prompt? existing = await repo
@@ -182,7 +188,12 @@ internal static class PromptEndpoints
                     UpdatedAt = now,
                 };
 
-                await repo.AddAsync(prompt, ctx.RequestAborted).ConfigureAwait(false);
+                Result<Prompt> added = await repo.AddAsync(prompt, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (added.IsFailure)
+                {
+                    return SpellApiResults.MapFailure(added.Error, traceId, ArcanumJsonContext.Default.ApiResponsePromptDetailDto);
+                }
 
                 return Results.Created(
                     $"/api/prompts/{prompt.Id}",
@@ -219,15 +230,48 @@ internal static class PromptEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                if (request.Name is not null)
+                // A name or version the caller sends must survive trimming, as on create, and a rename onto a
+                // (name, version) another prompt of the same scope already holds is the documented
+                // Prompt.DuplicateVersion rather than a unique-index failure.
+                string newName = request.Name is null ? existing.Name : request.Name.Trim();
+
+                string newVersion = request.Version is null ? existing.Version : request.Version.Trim();
+
+                if (newName.Length == 0)
                 {
-                    existing.Name = request.Name.Trim();
+                    return Results.BadRequest(
+                        ApiResponse<PromptDetailDto>.FromResult(
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.InvalidName, "Name must not be blank.")),
+                            traceId));
                 }
 
-                if (request.Version is not null)
+                if (newVersion.Length == 0)
                 {
-                    existing.Version = request.Version.Trim();
+                    return Results.BadRequest(
+                        ApiResponse<PromptDetailDto>.FromResult(
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.InvalidVersion, "Version must not be blank.")),
+                            traceId));
                 }
+
+                if (!string.Equals(newName, existing.Name, StringComparison.Ordinal)
+                    || !string.Equals(newVersion, existing.Version, StringComparison.Ordinal))
+                {
+                    Prompt? holder = await repo
+                        .GetByNameAndVersionAsync(newName, newVersion, existing.CampaignId, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
+                    if (holder is not null && holder.Id != id)
+                    {
+                        return Results.BadRequest(
+                            ApiResponse<PromptDetailDto>.FromResult(
+                                Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.DuplicateVersion, "A prompt with this name and version already exists.")),
+                                traceId));
+                    }
+                }
+
+                existing.Name = newName;
+
+                existing.Version = newVersion;
 
                 if (request.Description is not null)
                 {
@@ -281,7 +325,12 @@ internal static class PromptEndpoints
 
                 existing.UpdatedAt = DateTimeOffset.UtcNow;
 
-                await repo.UpdateAsync(existing, ctx.RequestAborted).ConfigureAwait(false);
+                Result<Prompt> updated = await repo.UpdateAsync(existing, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (updated.IsFailure)
+                {
+                    return SpellApiResults.MapFailure(updated.Error, traceId, ArcanumJsonContext.Default.ApiResponsePromptDetailDto);
+                }
 
                 return Results.Ok(
                     ApiResponse<PromptDetailDto>.FromResult(
@@ -293,7 +342,7 @@ internal static class PromptEndpoints
 
         apiGroup.MapPost(
             "/prompts/{id:guid}/clone",
-            async (Guid id, ClonePromptRequest? request, IPromptRepository repo, HttpContext ctx) =>
+            async (Guid id, ClonePromptRequest? request, IPromptRepository repo, ICampaignRepository campaignRepo, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -318,6 +367,12 @@ internal static class PromptEndpoints
                 }
 
                 Guid? targetCampaignId = request.CampaignId ?? source.CampaignId;
+
+                if (request.CampaignId is Guid requestedCampaignId
+                    && await campaignRepo.GetByIdAsync(requestedCampaignId, ctx.RequestAborted).ConfigureAwait(false) is null)
+                {
+                    return CampaignNotFound(traceId);
+                }
 
                 Prompt? existing = await repo
                     .GetByNameAndVersionAsync(request.NewName, request.NewVersion, targetCampaignId, ctx.RequestAborted)
@@ -353,7 +408,12 @@ internal static class PromptEndpoints
                     UpdatedAt = now,
                 };
 
-                await repo.AddAsync(cloned, ctx.RequestAborted).ConfigureAwait(false);
+                Result<Prompt> clonedResult = await repo.AddAsync(cloned, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (clonedResult.IsFailure)
+                {
+                    return SpellApiResults.MapFailure(clonedResult.Error, traceId, ArcanumJsonContext.Default.ApiResponsePromptDetailDto);
+                }
 
                 return Results.Created(
                     $"/api/prompts/{cloned.Id}",
@@ -671,7 +731,7 @@ internal static class PromptEndpoints
 
                 return result.IsSuccess
                     ? Results.Ok(ApiResponse<PromptSummaryDto>.FromResult(result, traceId))
-                    : Results.BadRequest(ApiResponse<PromptSummaryDto>.FromResult(result, traceId));
+                    : SpellApiResults.MapFailure(result.Error, traceId, ArcanumJsonContext.Default.ApiResponsePromptSummaryDto);
             })
         .WithName("ImportPrompt")
         .WithLargeRequestBody();
@@ -935,6 +995,12 @@ internal static class PromptEndpoints
 
         return apiGroup;
     }
+
+    private static IResult CampaignNotFound(string traceId) =>
+        SpellApiResults.MapFailure(
+            new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."),
+            traceId,
+            ArcanumJsonContext.Default.ApiResponsePromptDetailDto);
 
     private static void ResolvePreviewModel(
         ArcanumSettings settings,
