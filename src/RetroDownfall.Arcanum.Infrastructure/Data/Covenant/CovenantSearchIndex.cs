@@ -171,6 +171,8 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         for (int index = 0; index < query.Terms.LikePatterns.Length; index++)
         {
             Bind(command, $"$like{index}", query.Terms.LikePatterns[index]);
+
+            Bind(command, $"$term{index}", query.Terms.NormalizedTerms[index]);
         }
 
         long candidateCount = await CountCandidatesAsync(connection, transaction, query, scope, cancellationToken)

@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConnectionInitializer
 {
-
     internal const int BusyTimeoutMs = 5000;
 
     /// <summary>
@@ -75,17 +74,14 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         CovenantSqliteConnectionMode mode,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         _nativeRuntime.Initialize();
 
         if (connection.State != ConnectionState.Open)
         {
-
             throw new InvalidOperationException(
                 "A SQLCipher connection must be open before Covenant policy is applied to it.");
-
         }
 
         CovenantSqliteConnectionState state = States.GetOrCreateValue(connection);
@@ -99,28 +95,23 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         await ApplyPolicyAsync(connection, mode, cancellationToken).ConfigureAwait(false);
 
         await VerifyPolicyAsync(connection, mode, cancellationToken).ConfigureAwait(false);
-
     }
 
     public CovenantSqliteAuthorizationScope Authorize(
         SqliteConnection connection,
         CovenantSqliteAuthorizationKind kind)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         if (kind == CovenantSqliteAuthorizationKind.RestoreStagingManagedAuthoritySanitization)
         {
-
             throw new ArgumentOutOfRangeException(
                 nameof(kind),
                 "Restore-staging authority sanitization is granted only through the sealed "
                 + "restore-staging capability, never through the general authorization entry point.");
-
         }
 
         return AuthorizeCore(connection, kind);
-
     }
 
     /// <inheritdoc />
@@ -128,7 +119,6 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         RestoreStagingManagedAuthoritySanitizationCapability authority,
         RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity)
     {
-
         ArgumentNullException.ThrowIfNull(authority);
 
         ArgumentNullException.ThrowIfNull(runIdentity);
@@ -137,7 +127,6 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         // ordinary one-shot scope. It never returns the connection, transaction, command, or kernel,
         // so this method cannot become a way to obtain any of them.
         return authority.BorrowCode11Scope(this, runIdentity);
-
     }
 
     /// <summary>
@@ -149,28 +138,22 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         SqliteConnection connection,
         CovenantSqliteAuthorizationKind kind)
     {
-
         if (connection.State != ConnectionState.Open)
         {
-
             throw new InvalidOperationException(
                 "A closed connection cannot be authorized for a privileged Grimoire operation.");
-
         }
 
         if (!States.TryGetValue(connection, out CovenantSqliteConnectionState? state))
         {
-
             throw new InvalidOperationException(
                 "This connection was not initialized through the Covenant connection initializer, "
                 + "so its authorization functions are not registered.");
-
         }
 
         state.Acquire(kind);
 
         return new CovenantSqliteAuthorizationScope(state, connection, kind);
-
     }
 
     /// <summary>
@@ -189,13 +172,11 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
     /// </remarks>
     internal void EnsureAuthorizationFunctions(SqliteConnection connection)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         _nativeRuntime.Initialize();
 
         RegisterAuthorizationFunctions(connection, States.GetOrCreateValue(connection));
-
     }
 
     /// <summary>
@@ -207,23 +188,26 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         SqliteConnection connection,
         CovenantSqliteConnectionState state)
     {
-
         connection.CreateFunction<string?, string?, bool>("arcanum_ordinal_contains",
             static (value, query) => value is not null && query is not null
                 && value.Contains(query, StringComparison.OrdinalIgnoreCase),
             isDeterministic: true);
 
+        // The canonical search fallback refines its substring prefilter with this, so a term matches
+        // only where a token can begin, as it does in the full-text index.
+        connection.CreateFunction<string?, string?, bool>(
+            CovenantTokenStartMatcher.FunctionName,
+            static (value, term) => CovenantTokenStartMatcher.Contains(value, term),
+            isDeterministic: true);
+
         foreach (CovenantSqliteAuthorizationKind kind in Enum.GetValues<CovenantSqliteAuthorizationKind>())
         {
-
             CovenantSqliteAuthorizationKind captured = kind;
 
             connection.CreateFunction(
                 FunctionNames[(int)kind],
                 () => state.IsAuthorized(captured) ? 1L : 0L);
-
         }
-
     }
 
     private static async Task ApplyPolicyAsync(
@@ -231,7 +215,6 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         CovenantSqliteConnectionMode mode,
         CancellationToken cancellationToken)
     {
-
         // secure_delete overwrites freed pages instead of leaving them readable in the file. It
         // matters for every tier, not just Covenant: a deleted row that survives in free space is
         // still recoverable from an encrypted database once the key is known.
@@ -246,7 +229,6 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
 
         if (mode is CovenantSqliteConnectionMode.ReadWrite)
         {
-
             await ExecuteAsync(
                 connection,
                 """
@@ -254,19 +236,15 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
                 PRAGMA synchronous=NORMAL;
                 """,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (mode is CovenantSqliteConnectionMode.ExclusiveMaintenance)
         {
-
             await ExecuteAsync(
                 connection,
                 "PRAGMA locking_mode=EXCLUSIVE;",
                 cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -277,7 +255,6 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         CovenantSqliteConnectionMode mode,
         CancellationToken cancellationToken)
     {
-
         await RequireAsync(connection, "PRAGMA foreign_keys;", "1", "foreign_keys", cancellationToken)
             .ConfigureAwait(false);
 
@@ -296,16 +273,13 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
 
         if (string.IsNullOrWhiteSpace(cipherVersion))
         {
-
             throw new InvalidOperationException(
                 "This connection reports no cipher version, so it is not a SQLCipher connection. "
                 + "Arcanum refuses to use an unencrypted SQLite engine for the Grimoire.");
-
         }
 
         if (mode is CovenantSqliteConnectionMode.ReadWrite)
         {
-
             string? journalMode = await ScalarAsync(connection, "PRAGMA journal_mode;", cancellationToken)
                 .ConfigureAwait(false);
 
@@ -314,14 +288,10 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
             if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(journalMode, "memory", StringComparison.OrdinalIgnoreCase))
             {
-
                 throw new InvalidOperationException(
                     $"Expected WAL journaling on a read-write Grimoire connection, but it reports '{journalMode}'.");
-
             }
-
         }
-
     }
 
     private static async Task RequireAsync(
@@ -331,17 +301,13 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         string label,
         CancellationToken cancellationToken)
     {
-
         string? actual = await ScalarAsync(connection, sql, cancellationToken).ConfigureAwait(false);
 
         if (!string.Equals(actual, expected, StringComparison.Ordinal))
         {
-
             throw new InvalidOperationException(
                 $"Grimoire connection policy did not take effect: {label} reports '{actual}', expected '{expected}'.");
-
         }
-
     }
 
     private static async Task ExecuteAsync(
@@ -349,13 +315,11 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<string?> ScalarAsync(
@@ -363,7 +327,6 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -371,7 +334,5 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? null : Convert.ToString(value);
-
     }
-
 }
