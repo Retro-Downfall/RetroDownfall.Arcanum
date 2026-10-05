@@ -740,6 +740,58 @@ public sealed class DocumentationCodeContradictionTests
                 + string.Join('\n', missing.Order(StringComparer.Ordinal)));
     }
 
+    /// <summary>
+    /// The documents name the command framework the CLI uses, System.CommandLine, and not the one it
+    /// left. The testing chapter check above reads one chapter; this one reads every governed document,
+    /// because the stale vocabulary lived in the CLI composition and parsing sections, and it named a
+    /// type (<c>RepeatableOptionMerger</c>) that exists nowhere in the source.
+    /// </summary>
+    [Fact]
+    public void The_documents_do_not_name_the_command_framework_the_cli_left()
+    {
+        string root = TestRepositoryPaths.RepositoryRoot();
+
+        string[] documents =
+        [
+            Path.Combine(root, "README.md"),
+            Path.Combine(root, "AGENTS.md"),
+            .. Directory.EnumerateFiles(Path.Combine(root, "docs"), "*.md", SearchOption.TopDirectoryOnly),
+        ];
+
+        Regex retired = new(
+            @"\bCAF\b|ConsoleAppFramework|RepeatableOptionMerger",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(5));
+
+        List<string> offenders = [];
+
+        foreach (string document in documents)
+        {
+            string[] lines = File.ReadAllText(document).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+            for (int index = 0; index < lines.Length; index++)
+            {
+                Match match = retired.Match(lines[index]);
+
+                if (match.Success)
+                {
+                    offenders.Add($"{Path.GetRelativePath(root, document).Replace(Path.DirectorySeparatorChar, '/')}:{index + 1}: {match.Value}");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A document names the retired command framework or a type that exists nowhere:\n" + string.Join('\n', offenders));
+
+        // The sentences that replaced them name the behavior the run and watch tests pin.
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.Contains("A repeated flag accumulates into its array-valued option", design, StringComparison.Ordinal);
+
+        Assert.Contains("System.CommandLine command tree", design, StringComparison.Ordinal);
+    }
+
     private static IEnumerable<string> CorpusFiles(string root)
     {
         string[] extensions = [".cs", ".csproj", ".props", ".targets", ".runsettings", ".sh", ".py", ".yml", ".yaml"];
