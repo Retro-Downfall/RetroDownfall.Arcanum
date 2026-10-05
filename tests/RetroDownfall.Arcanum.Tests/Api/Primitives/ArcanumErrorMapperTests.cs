@@ -240,4 +240,20 @@ public sealed class ArcanumErrorMapperTests
 
         Assert.Equal(StatusCodes.Status500InternalServerError, actual);
     }
+
+    /// <summary>
+    /// A memory-review apply that could not commit its transaction answers <c>Saga.WriteFailed</c> or
+    /// <c>Covenant.WriteFailed</c>, and the API reference lists both under the explicit failures the
+    /// default-400 resolver never downgrades. A failed write is a server fault whichever route family
+    /// carries it, so a route that downgrades unmapped codes must not turn it into a client error.
+    /// </summary>
+    [Theory]
+    [InlineData(ErrorCodes.Saga.WriteFailed)]
+    [InlineData(ErrorCodes.Covenant.WriteFailed)]
+    public void ResolveStatusCodeDefaultBadRequest_MemoryReviewWriteFailure_IsNotDowngradedTo400(string code)
+    {
+        int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(code);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, actual);
+    }
 }

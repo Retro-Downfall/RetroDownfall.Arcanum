@@ -341,6 +341,8 @@ internal static class ArcanumErrorMapper
             or ErrorCodes.Workspace.WriteFailed
             or ErrorCodes.Workspace.DeleteFailed
             or ErrorCodes.Spell.WriteFailed
+            or ErrorCodes.Saga.WriteFailed
+            or ErrorCodes.Covenant.WriteFailed
             or ErrorCodes.Saga.SearchFailed
             or ErrorCodes.MemoryErasure.ErasureIncomplete
             or ErrorCodes.Hub.Error)
