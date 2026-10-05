@@ -408,6 +408,47 @@ public sealed class ContextCompressionServiceTests
         Assert.Empty(grimoire.DeletedEntryIds);
     }
 
+    /// <summary>
+    /// The tool-group-safe set is dispatched as one unit, so a cancellation that lands after the first
+    /// delete must not leave a ToolCall without its ToolResult (or the reverse): once deleting has
+    /// begun, the loop finishes.
+    /// </summary>
+    [Fact]
+    public async Task Compress_WhenCancelledMidDelete_LeavesAWholeToolGroupOrNone()
+    {
+        Entry call = CreateEntry("[ToolCall:read_file] " + new string('c', 20_000), createdAtOffset: 0);
+        call.Role = MessageRole.Assistant;
+        call.ToolName = "read_file";
+        Entry result = CreateEntry("[ToolResult:read_file] ok", createdAtOffset: 1);
+        result.Role = MessageRole.System;
+        Entry[] fillers = Enumerable.Range(2, 4)
+            .Select(index => CreateEntry($"filler-{index}", isPinned: true, createdAtOffset: index))
+            .ToArray();
+        Session session = CreateSession([call, result, .. fillers]);
+        using CancellationTokenSource cancellation = new();
+        CompressionGrimoireRepository grimoire = new()
+        {
+            Session = session,
+            CancelAfterFirstDelete = cancellation,
+        };
+        ContextCompressionService service = CreateService(grimoire);
+
+        try
+        {
+            _ = await service.CompressSessionAsync(session.Id, 256, cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // The caller's cancellation may still surface from the reporting reads that follow.
+        }
+
+        bool callGone = session.Entries.All(entry => entry.Id != call.Id);
+        bool resultGone = session.Entries.All(entry => entry.Id != result.Id);
+
+        Assert.Equal(callGone, resultGone);
+        Assert.True(callGone, "The deletion had begun, so the whole group must have been removed.");
+    }
+
     private static ContextCompressionService CreateService(
         CompressionGrimoireRepository grimoire,
         ILogger<ContextCompressionService>? logger = null,
@@ -604,6 +645,9 @@ public sealed class ContextCompressionServiceTests
 
         public List<Guid> DeletedEntryIds { get; } = [];
 
+        /// <summary>Cancelled right after the first delete commits, to model a caller that goes away mid-loop.</summary>
+        public CancellationTokenSource? CancelAfterFirstDelete { get; init; }
+
         public int EntryLookupCount { get; private set; }
 
         public Task<Session?> GetSessionAsync(
@@ -640,6 +684,11 @@ public sealed class ContextCompressionServiceTests
             if (entry is not null)
             {
                 _ = Session!.Entries.Remove(entry);
+            }
+
+            if (DeletedEntryIds.Count == 1)
+            {
+                CancelAfterFirstDelete?.Cancel();
             }
 
             return Task.FromResult(entry is not null);
