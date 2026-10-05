@@ -351,7 +351,7 @@ Successful endpoints use `Results.Ok(ApiResponse<T>.FromResult(result, traceId))
 
 - **`POST /api/unseen-servant/jobs/{name}/initiative`** — `ApiResponse<UnseenServantJobStatusDto>` on every path. **400** `Validation.InvalidBody` for a missing or unparsable body and for an `intervalMinutes` outside the inclusive range **1..10080**; **400** `Validation.InvalidJobName` for a blank route name; **404** `Daemon.NotFound` when no job of that trimmed name is configured under `Arcanum:Daemon:Jobs`, with a message naming `arcanum daemon jobs` as the way to list the configured names; **200** with the recomputed job status once the dynamic interval is applied. `UnseenServantPacer.SetDynamicInterval` is a no-op for an unconfigured name, so the **404** is what keeps a mistyped name from reading as an applied change.
 
-- **`POST /api/mcp/reload`** and **`POST /api/intelligence/arsenal`** — Optional JSON body **`OptionalWorkspaceRequest`** (`{ "workingDirectory": "..." }` only). Responses remain `ApiResponse<T>` as today.
+- **`POST /api/mcp/reload`** and **`POST /api/intelligence/arsenal`** — Optional JSON body **`OptionalWorkspaceRequest`** (`{ "workingDirectory": "..." }` only). Responses remain `ApiResponse<T>` as today. The arsenal passes the MCP manager only the *normalized* workspace root: a `workingDirectory` that does not normalize to a workspace is treated as no workspace, so its server statuses come from the global surface alone and no workspace-local MCP configuration is resolved from the raw request text.
 
 ### 8.5 NDJSON streaming pipeline
 

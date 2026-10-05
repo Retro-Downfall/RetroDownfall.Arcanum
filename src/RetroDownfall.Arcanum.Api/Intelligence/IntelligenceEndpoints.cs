@@ -335,7 +335,10 @@ internal static class IntelligenceEndpoints
 
             List<string> nativeTools = builtInTools.GetToolNames().ToList();
 
-            List<McpServerStatusDto> servers = await mcp.GetServerStatusesAsync(workingDirectory, ct).ConfigureAwait(false);
+            // The normalized root, never the raw request text: a working directory that did not
+            // normalize to a workspace is not one, and the MCP manager would otherwise resolve
+            // workspace-local server configuration from whatever the caller typed.
+            List<McpServerStatusDto> servers = await mcp.GetServerStatusesAsync(spellRoot ?? string.Empty, ct).ConfigureAwait(false);
 
             WorkspaceCheckCapabilityStatus checkStatus =
                 await workspaceCheckCapability
