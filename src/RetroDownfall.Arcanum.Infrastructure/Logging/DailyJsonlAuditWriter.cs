@@ -13,9 +13,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// serializes same-family writes, while the shared managed-log gate orders publication against factory
 /// reset.
 ///
-/// Permissions are applied only to what the writer creates: a new day file is owner-only, and so is a
-/// directory the writer had to create. A directory that already exists belongs to whoever configured
-/// the <c>FilePath</c> (it may be a shared log directory), so its mode is never changed.
+/// Permissions are applied only to what the writer creates: a new day file is owner-only, and so is
+/// every directory the writer had to create, intermediate parents included, each created with that
+/// posture rather than chmod-ed afterwards. A directory that already exists, or that another process
+/// creates first, belongs to whoever configured the <c>FilePath</c> (it may be a shared log directory),
+/// so its mode is never changed.
 /// </summary>
 internal sealed class DailyJsonlAuditWriter(
     string logName,
@@ -132,12 +134,7 @@ internal sealed class DailyJsonlAuditWriter(
     {
         try
         {
-            if (!Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-
-                SecureFilePermissions.ApplyOwnerOnlyDirectory(directory);
-            }
+            SecureFilePermissions.CreateMissingOwnerOnlyDirectories(directory);
         }
         catch (Exception ex)
         {

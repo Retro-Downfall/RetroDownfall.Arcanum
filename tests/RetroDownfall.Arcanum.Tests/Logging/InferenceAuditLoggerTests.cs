@@ -642,6 +642,35 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     }
 
     /// <summary>
+    /// Every directory the writer has to create is its own, so each is owner-only from the moment it
+    /// exists: the intermediate parents too, not only the leaf, and never by a chmod after the fact.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task LogAsync_CreatesEveryMissingAuditDirectoryOwnerOnly()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are not observable on Windows.");
+
+        const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+        string parent = Path.Combine(_tempDirectory, "owned-parent");
+
+        string owned = Path.Combine(parent, "nested", "audit");
+
+        InferenceAuditLogger logger = CreateLogger(enabled: true, directory: owned);
+
+        await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
+
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(parent));
+
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(Path.Combine(parent, "nested")));
+
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(owned));
+
+        Assert.Single(Directory.EnumerateFiles(owned));
+    }
+
+    /// <summary>
     /// <see cref="AuditLogPageReader"/> is the sole owner of dated-file discovery — QueryPageAsync
     /// delegates to it wholesale. A private copy on the logger is unreachable code that parses file
     /// stamps by different rules, so a maintainer editing the copy changes nothing at runtime.
