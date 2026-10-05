@@ -60,6 +60,8 @@ public sealed class EnvironmentIsolationContractTests
 
     private const string AspNetCoreEnvironmentVariable = "ASPNETCORE_ENVIRONMENT";
 
+    private const string TestingEnvironmentName = "Testing";
+
     private static readonly Lazy<IReadOnlyList<Type>> GlobalConsoleMutatingTestClasses =
         new(LoadGlobalConsoleMutatingTestClasses);
 
@@ -155,10 +157,14 @@ public sealed class EnvironmentIsolationContractTests
     /// <c>Console.SetOut</c>/<c>SetError</c>/<c>SetIn</c> and Spectre's
     /// <c>AnsiConsole.Console</c> are process-wide, so a class that swaps one while a parallel class
     /// writes the console loses or steals output. The CLI harness swaps all of them, so the scan
-    /// closes over it the same way the environment scan closes over its helpers.
+    /// closes over it the same way the environment scan closes over its helpers. The rule is
+    /// serialization, not one named collection: <c>GlobalConsole</c> is the home for CLI command
+    /// tests, but any <c>DisableParallelization</c> collection (the <c>ProcessEnvironment</c> one
+    /// that <c>CliErrorOutputTests</c> and <c>StaticSerilogBridgeTests</c> already share) cannot
+    /// race a console writer either, because those collections never overlap one another.
     /// </summary>
     [Fact]
-    public void Every_test_class_that_swaps_the_global_console_is_in_the_GlobalConsole_collection()
+    public void Every_test_class_that_swaps_the_global_console_runs_in_a_serialized_collection()
     {
         IReadOnlyDictionary<string, bool> serialized = CollectionParallelism.Value;
 
@@ -175,8 +181,6 @@ public sealed class EnvironmentIsolationContractTests
                 continue;
             }
 
-            // The rule is serialization: a class in the ProcessEnvironment collection cannot race a
-            // GlobalConsole class either, because DisableParallelization collections never overlap.
             if (!serialized.TryGetValue(collection, out bool disablesParallelization)
                 || !disablesParallelization)
             {
@@ -189,8 +193,8 @@ public sealed class EnvironmentIsolationContractTests
         Assert.True(
             offenders.Count == 0,
             "Console.SetOut/SetError/SetIn and AnsiConsole.Console are process-global, so every test "
-            + "class that assigns one, directly or through the CLI test harness, must run in the "
-            + "'GlobalConsole' collection (or another DisableParallelization collection): "
+            + "class that assigns one, directly or through the CLI test harness, must run in a "
+            + "DisableParallelization collection ('GlobalConsole' for CLI command tests): "
             + string.Join("; ", offenders));
     }
 
@@ -435,6 +439,38 @@ public sealed class EnvironmentIsolationContractTests
     }
 
     /// <summary>
+    /// A class that names <c>DOTNET_ENVIRONMENT</c>/<c>ASPNETCORE_ENVIRONMENT</c> only to read it,
+    /// to clear it, or to give it another value, or that mentions <c>Testing</c> for some other
+    /// variable, does not make <c>ArcanumPaths</c> honour <c>ARCANUM_TEST_HOME</c>, so a literal of
+    /// either kind alone must not satisfy the Testing rule above.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(HostEnvironmentReader))]
+    [InlineData(typeof(HostEnvironmentClearer))]
+    [InlineData(typeof(DevelopmentHostEnvironmentWriter))]
+    [InlineData(typeof(TestingForAnotherVariable))]
+    public void The_Testing_scan_ignores_classes_that_only_read_clear_or_reassign_the_host_environment(
+        Type fixture) =>
+        Assert.False(
+            ReadHostEnvironmentLiterals(fixture).SetsTesting,
+            $"{fixture.Name} does not set a Testing host environment");
+
+    /// <summary>
+    /// Guards the scan above from rejecting everything. The split shape is the one real fixtures
+    /// use when a helper takes the value as a parameter (<c>ArcanumPathsTestingOverrideTests</c>,
+    /// <c>LoggingBootstrapperTests</c>): the variable name and <c>Testing</c> meet only at class
+    /// level, so a per-method pairing would wrongly condemn them.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(TestingHostEnvironmentWriter))]
+    [InlineData(typeof(SplitTestingHostEnvironmentWriter))]
+    public void The_Testing_scan_accepts_a_class_that_names_the_host_environment_and_Testing(
+        Type fixture) =>
+        Assert.True(
+            ReadHostEnvironmentLiterals(fixture).SetsTesting,
+            $"{fixture.Name} sets a Testing host environment");
+
+    /// <summary>
     /// The archived-source packaging test performs a real Native AOT publish. Its five-minute
     /// deadline detects an actual hung toolchain only when the publish is not competing with the
     /// full parallel test suite for the runner's CPU and memory.
@@ -569,6 +605,60 @@ public sealed class EnvironmentIsolationContractTests
             // walk cannot see through; treat it as mutating so its users are covered here too.
             typeof(ArcanumWebApplicationFactory));
 
+    // IL-only fixtures for the Testing-scan control tests. Nothing calls them; they sit inside this
+    // class so every other scan attributes them to it, and it already runs serialized.
+    internal static class HostEnvironmentRecorder
+    {
+        internal static void Record(
+            string name,
+            string? value)
+        {
+            _ = name;
+
+            _ = value;
+        }
+    }
+
+    internal static class HostEnvironmentReader
+    {
+        internal static string? Read() =>
+            global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+    }
+
+    internal static class HostEnvironmentClearer
+    {
+        internal static void Clear() =>
+            HostEnvironmentRecorder.Record("ASPNETCORE_ENVIRONMENT", null);
+    }
+
+    internal static class DevelopmentHostEnvironmentWriter
+    {
+        internal static void Write() =>
+            HostEnvironmentRecorder.Record("DOTNET_ENVIRONMENT", "Development");
+    }
+
+    internal static class TestingForAnotherVariable
+    {
+        internal static void Write() =>
+            HostEnvironmentRecorder.Record("SOME_OTHER_ENVIRONMENT", "Testing");
+    }
+
+    internal static class TestingHostEnvironmentWriter
+    {
+        internal static void Write() =>
+            HostEnvironmentRecorder.Record("ASPNETCORE_ENVIRONMENT", "Testing");
+    }
+
+    internal static class SplitTestingHostEnvironmentWriter
+    {
+        internal static void Write() =>
+            Assign("Testing");
+
+        private static void Assign(
+            string value) =>
+            HostEnvironmentRecorder.Record("DOTNET_ENVIRONMENT", value);
+    }
+
     /// <summary>
     /// One outermost test class's relationship with the test-home variables, read from the string
     /// literals and call sites of its own IL and that of its nested closure and state-machine types.
@@ -581,7 +671,7 @@ public sealed class EnvironmentIsolationContractTests
 
     private static IReadOnlyList<TestHomeUse> LoadTestHomeUses()
     {
-        Dictionary<Type, (bool Home, bool Environment, bool Scope)> byClass = [];
+        Dictionary<Type, (bool Home, HostEnvironmentLiterals Literals, bool Scope)> byClass = [];
 
         foreach (Type type in AssemblyTypes.Value)
         {
@@ -594,27 +684,23 @@ public sealed class EnvironmentIsolationContractTests
                 continue;
             }
 
-            (bool home, bool environment, bool scope) = byClass.GetValueOrDefault(outermost);
+            (bool home, HostEnvironmentLiterals literals, bool scope) = byClass.GetValueOrDefault(outermost);
 
             foreach (MethodBase method in DeclaredMethods(type))
             {
-                foreach (string literal in LoadedStrings(method))
-                {
-                    home |= string.Equals(literal, TestHomeVariable, StringComparison.Ordinal);
-
-                    environment |=
-                        string.Equals(literal, DotnetEnvironmentVariable, StringComparison.Ordinal)
-                        || string.Equals(
-                            literal,
-                            AspNetCoreEnvironmentVariable,
-                            StringComparison.Ordinal);
-                }
+                home |= LoadedStrings(method)
+                    .Any(static literal => string.Equals(
+                        literal,
+                        TestHomeVariable,
+                        StringComparison.Ordinal));
 
                 scope |= CalledMethods(method)
                     .Any(static called => called.DeclaringType == typeof(ArcanumTestHomeScope));
             }
 
-            byClass[outermost] = (home, environment, scope);
+            literals = literals.Merge(ReadHostEnvironmentLiterals(type));
+
+            byClass[outermost] = (home, literals, scope);
         }
 
         return
@@ -631,9 +717,50 @@ public sealed class EnvironmentIsolationContractTests
                     entry.Value.Scope,
                     // The web-application factory sets Testing itself before any test runs.
                     entry.Value.Scope
-                        || entry.Value.Environment
+                        || entry.Value.Literals.SetsTesting
                         || FactoryDependents.Value.Contains(entry.Key))),
         ];
+    }
+
+    /// <summary>
+    /// What one type's string literals say about the host environment: whether it names
+    /// <c>DOTNET_ENVIRONMENT</c>/<c>ASPNETCORE_ENVIRONMENT</c>, and whether it names
+    /// <c>Testing</c>. A class sets a Testing host environment only when both appear, so merely
+    /// naming the variable (to read it, clear it, or give it another value) does not count. Real
+    /// fixtures pass the value through helper parameters, so the two literals are paired across the
+    /// whole class, nested closure and state-machine types included, rather than within one method.
+    /// This is literal pairing, not data-flow analysis: a class that names Testing for an unrelated
+    /// reason and also touches the variable passes, which the rule accepts rather than fail the
+    /// parameterised helpers.
+    /// </summary>
+    private readonly record struct HostEnvironmentLiterals(
+        bool Variable,
+        bool Testing)
+    {
+        internal bool SetsTesting => Variable && Testing;
+
+        internal HostEnvironmentLiterals Merge(
+            HostEnvironmentLiterals other) =>
+            new(Variable || other.Variable, Testing || other.Testing);
+    }
+
+    private static HostEnvironmentLiterals ReadHostEnvironmentLiterals(
+        Type type)
+    {
+        bool variable = false;
+
+        bool testing = false;
+
+        foreach (string literal in DeclaredMethods(type).SelectMany(LoadedStrings))
+        {
+            variable |=
+                string.Equals(literal, DotnetEnvironmentVariable, StringComparison.Ordinal)
+                || string.Equals(literal, AspNetCoreEnvironmentVariable, StringComparison.Ordinal);
+
+            testing |= string.Equals(literal, TestingEnvironmentName, StringComparison.Ordinal);
+        }
+
+        return new HostEnvironmentLiterals(variable, testing);
     }
 
     private static IReadOnlyList<Type> LoadProcessGlobalSeamMutatingTestClasses() =>

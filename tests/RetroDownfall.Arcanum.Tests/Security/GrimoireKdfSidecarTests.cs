@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection(ProcessGlobalSeamCollectionName.Value)]
 public sealed class GrimoireKdfSidecarTests : IDisposable
 {
     private readonly string _tempDir;

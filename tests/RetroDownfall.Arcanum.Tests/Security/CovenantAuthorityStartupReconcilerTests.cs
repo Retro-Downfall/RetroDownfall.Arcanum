@@ -17,6 +17,7 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// here rather than only at the services that consume the snapshot, because a service added later
 /// would otherwise inherit authority nobody re-checked.
 /// </remarks>
+[Collection(ProcessGlobalSeamCollectionName.Value)]
 public sealed class CovenantAuthorityStartupReconcilerTests
 {
     private const string Installation = "6F1C0B2E-9A44-4E1D-8B7A-2C5D3F6A8E90";

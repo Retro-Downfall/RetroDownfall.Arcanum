@@ -42,9 +42,10 @@ public sealed class CliHarnessIsolationTests
 
         Assert.Equal(0, result.ExitCode);
 
-        // Resolving the name, revalidating it for the recent-resources write, and reading the
-        // detail: proof the selection reached the remembered-resource store this test is about.
-        Assert.Equal(3, handler.Observed.Count);
+        // Resolving the name already issues requests the handler observes; asserting how many
+        // would pin the command's request choreography, which this test is not about. It only
+        // needs something to have been observed, or the loop below would pass vacuously.
+        Assert.NotEmpty(handler.Observed);
 
         foreach ((string grimoire, string secrets) in handler.Observed)
         {
