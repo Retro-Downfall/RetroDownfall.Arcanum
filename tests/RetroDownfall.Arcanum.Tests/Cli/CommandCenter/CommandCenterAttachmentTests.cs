@@ -38,16 +38,17 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     }
 
     [Fact]
-    public void Stages_text_file_from_at_token_and_strips_token()
+    public async Task Stages_text_file_from_at_token_and_strips_token()
     {
         string path = Path.Combine(_root, "notes.txt");
         File.WriteAllText(path, "hello attach", Encoding.UTF8);
 
-        TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             $"please read @{path}",
             workingDirectory: _root,
             preStagedPaths: [],
-            settings: DefaultSettings());
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
 
         Assert.DoesNotContain("@", result.Prompt, StringComparison.Ordinal);
         Assert.Contains("please read", result.Prompt, StringComparison.Ordinal);
@@ -59,7 +60,7 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     }
 
     [Fact]
-    public void Stages_png_as_scrying_focus()
+    public async Task Stages_png_as_scrying_focus()
     {
         string path = Path.Combine(_root, "shot.png");
         // Minimal PNG magic bytes + padding.
@@ -70,11 +71,12 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         ];
         File.WriteAllBytes(path, png);
 
-        TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             $"look at @{path}",
             workingDirectory: _root,
             preStagedPaths: [],
-            settings: DefaultSettings());
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
 
         Assert.Null(result.AttachedFiles);
         Assert.NotNull(result.ScryingFoci);
@@ -84,16 +86,17 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     }
 
     [Fact]
-    public void Pre_staged_path_from_attach_slash_is_included()
+    public async Task Pre_staged_path_from_attach_slash_is_included()
     {
         string path = Path.Combine(_root, "pre.txt");
         File.WriteAllText(path, "pre-staged", Encoding.UTF8);
 
-        TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             "use the attach",
             workingDirectory: _root,
             preStagedPaths: [path],
-            settings: DefaultSettings());
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
 
         Assert.NotNull(result.AttachedFiles);
         Assert.Single(result.AttachedFiles!);
@@ -102,13 +105,14 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     }
 
     [Fact]
-    public void Missing_at_path_keeps_literal_token_and_reports_status()
+    public async Task Missing_at_path_keeps_literal_token_and_reports_status()
     {
-        TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             "see @missing-file.txt please",
             workingDirectory: _root,
             preStagedPaths: [],
-            settings: DefaultSettings());
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
 
         Assert.Contains("@missing-file.txt", result.Prompt, StringComparison.Ordinal);
         Assert.Null(result.AttachedFiles);
@@ -120,18 +124,19 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     /// what they actually asked about, and the turn is dispatched (and billed) regardless.
     /// </summary>
     [Fact]
-    public void Oversized_text_file_is_rejected_and_keeps_the_literal_token()
+    public async Task Oversized_text_file_is_rejected_and_keeps_the_literal_token()
     {
         string path = Path.Combine(_root, "big.txt");
         long maxFileBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
             ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
         File.WriteAllBytes(path, new byte[checked((int)maxFileBytes + 1)]);
 
-        TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             $"summarize the failures in @{path} please",
             workingDirectory: _root,
             preStagedPaths: [],
-            settings: DefaultSettings());
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
 
         Assert.Null(result.AttachedFiles);
         Assert.Contains(result.StatusLines, static s => s.Contains("exceeds", StringComparison.OrdinalIgnoreCase));
@@ -146,7 +151,7 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     /// staging failure does not behave differently from the other.
     /// </summary>
     [Fact]
-    public void Oversized_image_keeps_the_literal_token()
+    public async Task Oversized_image_keeps_the_literal_token()
     {
         string path = Path.Combine(_root, "huge.png");
         byte[] png = new byte[2 * 1024 * 1024];
@@ -156,14 +161,158 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         png[3] = 0x47;
         File.WriteAllBytes(path, png);
 
-        TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             $"look at @{path} closely",
             workingDirectory: _root,
             preStagedPaths: [],
-            settings: DefaultSettings());
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
 
         Assert.Null(result.ScryingFoci);
         Assert.Contains($"@{path}", result.Prompt, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A FIFO reports a length of 0 and <c>File.Exists</c> says true, so only a type check keeps it out of
+    /// the read: opening it for reading blocks until a writer appears.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_fifo_named_by_an_at_token_is_rejected_and_keeps_the_literal_token()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_root, "trace.log");
+        Assert.True(PosixFifo.TryCreate(fifo), "mkfifo did not create the FIFO.");
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder
+            .BuildAsync(
+                "summarize @trace.log please",
+                workingDirectory: _root,
+                preStagedPaths: [],
+                settings: DefaultSettings(),
+                cancellationToken: CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Null(result.AttachedFiles);
+        Assert.Contains("@trace.log", result.Prompt, StringComparison.Ordinal);
+        Assert.Contains(
+            result.StatusLines,
+            static line => line.Contains("not a regular file", StringComparison.Ordinal)
+                && line.Contains("literal token kept in the prompt", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task A_pre_staged_fifo_is_skipped_with_a_status_line()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_root, "pipe.txt");
+        Assert.True(PosixFifo.TryCreate(fifo), "mkfifo did not create the FIFO.");
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder
+            .BuildAsync(
+                "use the attachment",
+                workingDirectory: _root,
+                preStagedPaths: [fifo],
+                settings: DefaultSettings(),
+                cancellationToken: CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Null(result.AttachedFiles);
+        Assert.Contains(
+            result.StatusLines,
+            static line => line.StartsWith("/attach:", StringComparison.Ordinal)
+                && line.Contains("not a regular file", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public void A_fifo_is_refused_when_it_is_staged_with_attach()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_root, "pipe.txt");
+        Assert.True(PosixFifo.TryCreate(fifo), "mkfifo did not create the FIFO.");
+
+        bool staged = CommandCenterTurnAttachmentBuilder.TryStagePathForNextTurn(
+            _root,
+            "pipe.txt",
+            DefaultSettings(),
+            out _,
+            out string statusLine);
+
+        Assert.False(staged);
+        Assert.Contains("not a regular file", statusLine, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task A_symbolic_link_to_a_regular_file_still_stages()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege on Windows.");
+
+        string target = Path.Combine(_root, "target.txt");
+        string link = Path.Combine(_root, "link.txt");
+        File.WriteAllText(target, "through the link", Encoding.UTF8);
+        File.CreateSymbolicLink(link, target);
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
+            "read @link.txt",
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
+
+        Assert.NotNull(result.AttachedFiles);
+        Assert.Equal("through the link", Assert.Single(result.AttachedFiles!).Content);
+    }
+
+    [Fact]
+    public async Task A_utf8_byte_order_mark_is_not_part_of_the_attached_text()
+    {
+        string path = Path.Combine(_root, "bom.txt");
+        File.WriteAllText(path, "hello", new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
+            "read @bom.txt",
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
+
+        Assert.Equal("hello", Assert.Single(result.AttachedFiles!).Content);
+    }
+
+    [Fact]
+    public async Task A_pre_staged_path_that_cannot_be_resolved_is_reported_instead_of_thrown()
+    {
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
+            "use the attachment",
+            workingDirectory: _root,
+            preStagedPaths: ["bad\0name.txt"],
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
+
+        Assert.Null(result.AttachedFiles);
+        Assert.Contains(
+            result.StatusLines,
+            static line => line.StartsWith("/attach:", StringComparison.Ordinal)
+                && line.Contains("could not be resolved", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_cancelled_build_throws_instead_of_reading_the_attachment()
+    {
+        string path = Path.Combine(_root, "notes.txt");
+        File.WriteAllText(path, "never read", Encoding.UTF8);
+        using CancellationTokenSource cts = new();
+        cts.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CommandCenterTurnAttachmentBuilder.BuildAsync(
+                "read @notes.txt",
+                workingDirectory: _root,
+                preStagedPaths: [],
+                settings: DefaultSettings(),
+                cancellationToken: cts.Token));
     }
 
     private static ArcanumSettings DefaultSettings() =>
@@ -171,6 +320,23 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         {
             Features = new FeatureSettings { Scrying = true },
         };
+}
+
+internal static class PosixFifo
+{
+    public static bool TryCreate(string path)
+    {
+        using System.Diagnostics.Process? mkfifo = System.Diagnostics.Process.Start(
+            new ProcessStartInfo("/usr/bin/mkfifo", [path]) { UseShellExecute = false });
+
+        if (mkfifo is null)
+        {
+            return false;
+        }
+
+        mkfifo.WaitForExit();
+        return mkfifo.ExitCode == 0 && File.Exists(path);
+    }
 }
 
 /// <summary>
@@ -194,10 +360,11 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
     }
 
     /// <summary>
-    /// A FIFO in the workspace is the unbounded case: <c>File.Exists</c> reports it as a file and the
-    /// read never returns until a writer appears. Staged attachments are read and base64-encoded at
-    /// submit time, so the turn has to reach its first yield before touching the filesystem — otherwise
-    /// the TUI is wedged with no cancel path.
+    /// A FIFO in the workspace is the unbounded case: <c>File.Exists</c> reports it as a file, its length
+    /// is 0 so the size guard passes, and opening it for reading blocks until a writer appears. Staging
+    /// rejects anything that is not a regular file, so the turn reports why and carries on with the
+    /// literal token instead of wedging the TUI; and the turn still reaches its first yield before it
+    /// touches the filesystem, because submit calls it from the Terminal.Gui main loop.
     /// </summary>
     [SkippableFact]
     public async Task A_turn_yields_before_it_reads_a_staged_attachment()
@@ -207,7 +374,7 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
             "mkfifo is POSIX-only; the blocking-read hazard this pins is a Unix file type.");
 
         string fifo = Path.Combine(_root, "trace.log");
-        Assert.True(TryMakeFifo(fifo), "mkfifo did not create the FIFO.");
+        Assert.True(PosixFifo.TryCreate(fifo), "mkfifo did not create the FIFO.");
 
         CommandCenterChatRunner runner = CreateRunner();
         CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = _root };
@@ -223,32 +390,72 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         mainLoop.Start();
         bool yielded = mainLoop.Join(TimeSpan.FromSeconds(5));
 
-        // Pair with the blocked reader — whichever thread it is on — so nothing is left wedged.
-        await File.WriteAllTextAsync(fifo, "trace body");
-        _ = mainLoop.Join(TimeSpan.FromSeconds(30));
-        await turn.WaitAsync(TimeSpan.FromSeconds(30));
-
         Assert.True(
             yielded,
             "RunTurnAsync blocked its caller reading a staged attachment; on the real submit path that "
                 + "caller is the Terminal.Gui main loop.");
+
+        // No writer ever pairs with the FIFO: the turn has to finish because staging refused it.
+        await turn.WaitAsync(TimeSpan.FromSeconds(30));
+
+        string transcript = state.Log.RenderPlainText();
+        Assert.Contains("not a regular file", transcript, StringComparison.Ordinal);
+        Assert.Contains("@trace.log", transcript, StringComparison.Ordinal);
+        Assert.False(state.ThinkingActive);
     }
 
-    private static bool TryMakeFifo(string path)
+    /// <summary>
+    /// Ctrl+C must always get the composer back. A staged FIFO used to park the build inside
+    /// <c>open(O_RDONLY)</c> on a thread-pool thread that cancellation could not reach, so the turn never
+    /// reached its <c>finally</c> and every later submit answered "Already generating".
+    /// </summary>
+    [SkippableFact]
+    public async Task A_cancelled_turn_with_a_staged_fifo_returns_and_clears_thinking()
     {
-        using System.Diagnostics.Process? mkfifo = System.Diagnostics.Process.Start(
-            new ProcessStartInfo("/usr/bin/mkfifo", [path]) { UseShellExecute = false });
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "mkfifo is POSIX-only; the blocking-open hazard this pins is a Unix file type.");
 
-        if (mkfifo is null)
-        {
-            return false;
-        }
+        string fifo = Path.Combine(_root, "trace.log");
+        Assert.True(PosixFifo.TryCreate(fifo), "mkfifo did not create the FIFO.");
 
-        mkfifo.WaitForExit();
-        return mkfifo.ExitCode == 0 && File.Exists(path);
+        CommandCenterChatRunner runner = CreateRunner();
+        CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = _root };
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        using CancellationTokenSource cts = new();
+
+        Task run = runner.RunTurnAsync("summarize @trace.log", state, updates.Writer, cts.Token);
+        cts.Cancel();
+
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(state.ThinkingActive);
+        Assert.DoesNotContain(state.Log.Snapshot(), static entry => entry.Streaming);
     }
 
-    private static CommandCenterChatRunner CreateRunner()
+    /// <summary>
+    /// The turn's finally is what gives the composer back, so it has to cover the setup too: a failure
+    /// before the stream starts used to escape with the Thinking spinner still on.
+    /// </summary>
+    [Fact]
+    public async Task A_turn_whose_setup_throws_still_clears_thinking_and_reports_the_error()
+    {
+        CommandCenterChatRunner runner = CreateRunner(new ThrowingOptionsMonitor());
+        CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = _root };
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        await runner.RunTurnAsync("hello", state, updates.Writer, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.False(state.ThinkingActive);
+        Assert.Contains("settings unavailable", state.Log.RenderPlainText(), StringComparison.Ordinal);
+        Assert.DoesNotContain(state.Log.Snapshot(), static entry => entry.Streaming);
+    }
+
+    private static CommandCenterChatRunner CreateRunner() =>
+        CreateRunner(new TestOptionsMonitor(new ArcanumSettings()));
+
+    private static CommandCenterChatRunner CreateRunner(IOptionsMonitor<ArcanumSettings> settingsMonitor)
     {
         string ndjson = JsonSerializer.Serialize(
             new IntelligenceEvent(IntelligenceEventType.Result, "done", "done"),
@@ -263,10 +470,19 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         CommandCenterHardModalArbiter arbiter = new();
         return new CommandCenterChatRunner(
             client,
-            new TestOptionsMonitor(new ArcanumSettings()),
+            settingsMonitor,
             workspace,
             new CommandCenterHumanPromptCoordinator(client, arbiter),
             NullLogger<CommandCenterChatRunner>.Instance);
+    }
+
+    private sealed class ThrowingOptionsMonitor : IOptionsMonitor<ArcanumSettings>
+    {
+        public ArcanumSettings CurrentValue => throw new InvalidOperationException("settings unavailable");
+
+        public ArcanumSettings Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
     }
 
     private sealed class StaticNdjsonHandler(string ndjson) : HttpMessageHandler
@@ -325,6 +541,81 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         public ArcanumSettings Get(string? name) => CurrentValue;
 
         public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
+    }
+}
+
+public sealed class AbandonableBlockingWorkTests
+{
+    private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
+
+    [Fact]
+    public async Task Completed_work_returns_its_value()
+    {
+        int value = await AbandonableBlockingWork.RunAsync(
+            static () => Task.FromResult(7),
+            CancellationToken.None);
+
+        Assert.Equal(7, value);
+    }
+
+    [Fact]
+    public async Task An_already_cancelled_token_never_starts_the_work()
+    {
+        bool started = false;
+        using CancellationTokenSource cts = new();
+        cts.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            AbandonableBlockingWork.RunAsync(
+                () =>
+                {
+                    started = true;
+                    return Task.FromResult(0);
+                },
+                cts.Token));
+
+        Assert.False(started);
+    }
+
+    /// <summary>
+    /// The case a plain <c>Task.Run(work, token)</c> gets wrong: once the delegate is parked in a system
+    /// call the token no longer reaches it, so cancellation has to release the caller on its own.
+    /// </summary>
+    [Fact]
+    public async Task Cancellation_releases_the_caller_while_the_work_is_still_blocked()
+    {
+        using ManualResetEventSlim running = new();
+        using ManualResetEventSlim release = new();
+        using CancellationTokenSource cts = new();
+
+        Task<int> call = AbandonableBlockingWork.RunAsync(
+            () =>
+            {
+                running.Set();
+                release.Wait(AsyncTestTimeout);
+                return Task.FromResult(1);
+            },
+            cts.Token);
+
+        Assert.True(running.Wait(AsyncTestTimeout), "The work never started.");
+
+        cts.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call.WaitAsync(AsyncTestTimeout));
+        Assert.False(release.IsSet);
+
+        release.Set();
+    }
+
+    [Fact]
+    public async Task A_fault_from_the_work_reaches_the_caller()
+    {
+        InvalidOperationException thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            AbandonableBlockingWork.RunAsync<int>(
+                static () => throw new InvalidOperationException("boom"),
+                CancellationToken.None));
+
+        Assert.Equal("boom", thrown.Message);
     }
 }
 
