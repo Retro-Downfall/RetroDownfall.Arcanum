@@ -1368,16 +1368,11 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>(),
             sp.GetRequiredService<IServiceScopeFactory>()));
         services.AddScoped<IDurableOperationDiagnostics, DurableOperationDiagnostics>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, BudgetReservationRecoveryHandler>();
 
         // Issue #40: every kind in LongRunningOperationRecoveryRegistry owns a handler, so a stranded
-        // operation reaches explicit recovery instead of falling through to "handler missing".
-        services.AddScoped<ILongRunningOperationRecoveryHandler, InferenceRunRecoveryHandler>();
+        // operation reaches explicit recovery instead of falling through to "handler missing". A kind is
+        // registered only together with the production code that creates its rows.
         services.AddScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, IdempotencyClaimRecoveryHandler>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, ApprenticeRecoveryHandler>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, AttachmentPromotionRecoveryHandler>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, WorkspaceIndexRecoveryHandler>();
 
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
         services.AddScoped<BlobEncryptionFileProcessor>();

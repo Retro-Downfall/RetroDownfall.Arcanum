@@ -119,10 +119,10 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
-            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+            LongRunningOperationKinds.Subagent,
+            LongRunningOperationRecoveryPolicy.AbandonSafely);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.Subagent,
             supportedCheckpointVersion: 0);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order);
@@ -162,11 +162,11 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         LongRunningOperation seeded = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             supportedCheckpointVersion: 0,
             _ =>
             {
@@ -209,7 +209,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order);
@@ -221,7 +221,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0)
@@ -279,10 +279,10 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         LongRunningOperation seeded = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             supportedCheckpointVersion: 0);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order) { RefuseFirstGroup = true };
@@ -315,7 +315,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order) { ThrowOnGroupDisposal = true };
@@ -325,7 +325,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0);
@@ -349,7 +349,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order) { ThrowOnGroupBegin = true };
@@ -359,7 +359,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0);
@@ -382,8 +382,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
-            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+            LongRunningOperationKinds.Subagent,
+            LongRunningOperationRecoveryPolicy.AbandonSafely);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order);
         RecoveryScopeFactory scopes = new(
@@ -392,7 +392,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.WorkspaceIndex,
+                    LongRunningOperationKinds.Subagent,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0)
@@ -418,7 +418,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order);
@@ -428,7 +428,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0)
@@ -457,7 +457,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order) { ThrowOnGroupDisposal = true };
@@ -467,7 +467,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0)

@@ -70,6 +70,13 @@ internal sealed class BatchRecoveryService(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            // InProgress is the live state of a batch this process is dispatching, not evidence that
+            // it was stranded; sealing its lines would cut off the running worker.
+            if (batchProcessing.IsBatchInFlight(batch.Id))
+            {
+                continue;
+            }
+
             await RecoverStrandedBatchAsync(
                 batch,
                 batches,

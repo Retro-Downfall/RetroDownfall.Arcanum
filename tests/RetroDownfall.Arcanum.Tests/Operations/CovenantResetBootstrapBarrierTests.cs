@@ -515,7 +515,7 @@ public sealed class CovenantResetBootstrapBarrierTests
         // first. Without the BeforeStateWrites priority the reconciler would therefore settle it
         // first and this test would fail — the ordering it asserts cannot come from discovery order.
         LongRunningOperation ordinary = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently,
             leaseExpiresAt: clock.GetUtcNow().AddMinutes(-5));
 
@@ -530,11 +530,11 @@ public sealed class CovenantResetBootstrapBarrierTests
         List<string> settled = [];
 
         RecordingRecoveryHandler ordinaryHandler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             supportedCheckpointVersion: 0,
             _ =>
             {
-                settled.Add(LongRunningOperationKinds.WorkspaceIndex);
+                settled.Add(LongRunningOperationKinds.BlobEncryptionMigration);
 
                 return LongRunningOperationRecoveryResult.Completed();
             });
@@ -561,7 +561,7 @@ public sealed class CovenantResetBootstrapBarrierTests
         Assert.Equal(
             [
                 LongRunningOperationKinds.DataRetentionMutation,
-                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationKinds.BlobEncryptionMigration,
             ],
             settled);
 

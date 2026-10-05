@@ -54,7 +54,7 @@ public sealed class DurableOperationDiagnosticsTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently,
             leaseExpiresAt: time.GetUtcNow().AddMinutes(-5));
 
@@ -110,7 +110,7 @@ public sealed class DurableOperationDiagnosticsTests
 
         DurableOperationDiagnosticsReport report = await Create(store, time).InspectAsync(time.GetUtcNow());
 
-        Assert.Contains(LongRunningOperationKinds.InferenceRun, report.KindsWithoutHandler);
+        Assert.Contains(LongRunningOperationKinds.Subagent, report.KindsWithoutHandler);
         Assert.True(report.NeedsAttention);
     }
 

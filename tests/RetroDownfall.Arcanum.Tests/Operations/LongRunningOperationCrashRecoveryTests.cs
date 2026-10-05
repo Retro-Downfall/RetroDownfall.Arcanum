@@ -168,10 +168,10 @@ public sealed class LongRunningOperationCrashRecoveryTests
     {
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
-        RecordingRecoveryHandler handler = new(LongRunningOperationKinds.Apprentice, 1);
+        RecordingRecoveryHandler handler = new(LongRunningOperationKinds.CovenantIndexRebuild, 1);
 
         LongRunningOperation crashed = store.Seed(
-            LongRunningOperationKinds.Apprentice,
+            LongRunningOperationKinds.CovenantIndexRebuild,
             LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
             checkpointVersion: 99,
             leaseExpiresAt: time.GetUtcNow().AddMinutes(-5));

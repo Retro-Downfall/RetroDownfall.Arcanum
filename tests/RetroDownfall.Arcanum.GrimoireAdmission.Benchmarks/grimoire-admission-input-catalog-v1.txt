@@ -358,6 +358,7 @@ R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureEffectFacts.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureIdentity.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureKey.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryReviewContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/MemoryReviewOutcomes.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryReviewTokenFacts.cs
 R	src/RetroDownfall.Arcanum.Core/Operations/DurableOperationDiagnosticsContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Operations/LongRunningOperationContracts.cs
@@ -747,6 +748,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteConnectio
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteConnectionState.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStoreSql.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantTokenStartMatcher.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantTurnReceiptCompactor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ExternalDisclosureStateFold.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ExternalDisclosureStateReader.cs
@@ -1555,6 +1557,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Logging/AuditLogCursorCodec.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Logging/AuditLogPageReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Logging/DaemonLogAttacher.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Logging/DailyJsonlAuditWriter.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Logging/GuardrailAuditLogger.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Logging/HostLockSerilogFileSink.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Logging/IDaemonLogAttacher.cs
@@ -1613,6 +1616,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpElicitationBridge.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpElicitationSink.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpExceptions.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpGlobalInitializationAuthority.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpHttpResponseBoundHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpInboundJsonRpc.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpLifecycleAdmission.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpSecurityLimits.cs
@@ -1633,19 +1637,15 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureProtocol.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureRelease.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureTokens.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryReviewReceiptKeys.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryReviewTokenCodec.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryErasureService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ApprenticeRecoveryHandler.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Operations/AttachmentPromotionRecoveryHandler.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Operations/BudgetReservationRecoveryHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/DurableOperationDiagnostics.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationClassifiedRecoveryLeaseAcquisition.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationGenericRecoveryDiscovery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationMaintenanceLeaseAdoption.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationSameOwnerLeaseResumption.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Operations/IdempotencyClaimRecoveryHandler.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Operations/InferenceRunRecoveryHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationCoordinator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationReconciler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationReconciliationStatus.cs
@@ -1653,7 +1653,6 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationRecove
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationStartupHostedService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningRecoveryOwnerEvidence.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/SubagentRecoveryHandler.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Operations/WorkspaceIndexRecoveryHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Pattern/EyeOfTheWorldService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Platform/MacOsRlimitInterop.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Platform/ProcessResourceLimiter.cs
@@ -1714,9 +1713,11 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantEnvelopeCodec.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantEnvelopeMasterKeyProvider.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantRecoveryAuthorityBootstrapper.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantRuntimeGenerationProvider.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/CredentialMirror.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionKeyPaths.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionSecretStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/EncryptedBlobPresenceInspector.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/FileContentBaseline.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/FileEncryptionKeyProvider.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/FileEncryptionRuntimeStatus.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/FileHandleIdentity.cs
@@ -1741,9 +1742,12 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Security/IdentityOwnedFileSystemClean
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ListenAnySecurityPolicy.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/MasterApiKeyUnavailableException.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/MemoryErasureKeyring.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/MirroredOsCredential.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/NoFollowPathTopology.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/OutboundUrlGuard.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/OwnerOnlyAtomicFile.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/ProtectedCredentialFile.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ProviderApiKeyResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ProviderCredentialStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ResourceLimitDenialFormatter.cs
@@ -1825,6 +1829,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/SpellPathPolicy.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/SpellScanner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/SpellVersionPathPolicy.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/WorkspacePathResolver.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/WorkspaceProtectedPaths.cs
 R	src/RetroDownfall.Arcanum.NativeSqlCipher/RetroDownfall.Arcanum.NativeSqlCipher.csproj
 R	src/RetroDownfall.Arcanum.NativeSqlCipher/build/RetroDownfall.Arcanum.NativeSqlCipher.targets
 R	src/RetroDownfall.Arcanum.NativeSqlCipher/buildTransitive/RetroDownfall.Arcanum.NativeSqlCipher.targets

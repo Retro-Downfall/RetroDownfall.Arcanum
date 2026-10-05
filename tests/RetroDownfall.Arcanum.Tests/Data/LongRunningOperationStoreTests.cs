@@ -288,7 +288,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         _ = await store.CreateAsync(
             new LongRunningOperationCreateRequest(
-                Kind: LongRunningOperationKinds.WorkspaceIndex,
+                Kind: LongRunningOperationKinds.BlobEncryptionMigration,
                 RecoveryPolicy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 PublicSummary: "Reference spelling test.",
                 CreatedAt: now,
@@ -465,7 +465,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         LongRunningOperation unrelated = await firstStore.CreateAsync(
             new LongRunningOperationCreateRequest(
-                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationKinds.BlobEncryptionMigration,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 "Index an unrelated workspace.",
                 now));
@@ -1194,9 +1194,9 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         LongRunningOperation parent = await CreateAsync(store, now);
 
         LongRunningOperation child = await store.CreateAsync(new LongRunningOperationCreateRequest(
-            Kind: LongRunningOperationKinds.Apprentice,
-            RecoveryPolicy: LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
-            PublicSummary: "Child apprentice recovery.",
+            Kind: LongRunningOperationKinds.Subagent,
+            RecoveryPolicy: LongRunningOperationRecoveryPolicy.AbandonSafely,
+            PublicSummary: "Child subagent recovery.",
             CreatedAt: now.AddSeconds(1),
             RootOperationId: parent.Id,
             ParentOperationId: parent.Id,
@@ -1229,7 +1229,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             "dead-host",
             now.AddMinutes(-5),
             now.AddMinutes(-4));
-        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex);
+        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.BlobEncryptionMigration);
         LongRunningOperationReconciler reconciler = new(
             store,
             [handler],
@@ -1274,7 +1274,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                 now.AddMinutes(-4));
         }
 
-        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex);
+        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.BlobEncryptionMigration);
 
         LongRunningOperationReconciler reconciler = new(
             store,
@@ -1317,7 +1317,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             checkpointReference: null,
             publicSummary: "Safe checkpoint summary.",
             now.AddMinutes(-4));
-        ThrowingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex, supportedCheckpointVersion: 1);
+        ThrowingRecoveryHandler handler = new(LongRunningOperationKinds.BlobEncryptionMigration, supportedCheckpointVersion: 1);
         LongRunningOperationReconciler reconciler = new(
             store,
             [handler],
@@ -1344,7 +1344,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             "dead-host",
             now.AddMinutes(-3),
             now.AddMinutes(-2));
-        ThrowingRecoveryHandler corruptHandler = new(LongRunningOperationKinds.WorkspaceIndex, supportedCheckpointVersion: 0);
+        ThrowingRecoveryHandler corruptHandler = new(LongRunningOperationKinds.BlobEncryptionMigration, supportedCheckpointVersion: 0);
         LongRunningOperationReconciler corruptReconciler = new(
             store,
             [corruptHandler],
@@ -1519,29 +1519,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task BudgetReservationRecovery_ReleasesStrandedReservationIdempotently()
-    {
-        RequireSqlCipher();
-        LongRunningOperationStore store = Store(_db!);
-        Guid reservationId = Guid.NewGuid();
-        LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
-            LongRunningOperationKinds.BudgetReservation,
-            LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            "Release stranded reservation.",
-            DateTimeOffset.UtcNow,
-            BudgetReservationId: reservationId));
-        RecordingBudgetReservationService reservations = new();
-        BudgetReservationRecoveryHandler handler = new(reservations);
-
-        LongRunningOperationRecoveryResult first = await handler.RecoverAsync(operation, default);
-        LongRunningOperationRecoveryResult duplicate = await handler.RecoverAsync(operation, default);
-
-        Assert.Equal(LongRunningOperationState.Completed, first.State);
-        Assert.Equal(LongRunningOperationState.Completed, duplicate.State);
-        Assert.Equal([reservationId, reservationId], reservations.Released);
-    }
-
-    [SkippableFact]
     public async Task Classified_recovery_claim_is_one_exact_compare_exchange_returning_the_claimed_row()
     {
         RequireSqlCipher();
@@ -1564,7 +1541,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         foreach (LongRunningOperationRecoveryFingerprint drifted in new[]
         {
             fingerprint with { Revision = fingerprint.Revision + 1 },
-            fingerprint with { Kind = LongRunningOperationKinds.Batch },
+            fingerprint with { Kind = LongRunningOperationKinds.Subagent },
             fingerprint with { CheckpointVersion = fingerprint.CheckpointVersion + 1 },
         })
         {
@@ -1650,7 +1627,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         LongRunningOperationStore store,
         DateTimeOffset createdAt) =>
         store.CreateAsync(new LongRunningOperationCreateRequest(
-            Kind: LongRunningOperationKinds.WorkspaceIndex,
+            Kind: LongRunningOperationKinds.BlobEncryptionMigration,
             RecoveryPolicy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
             PublicSummary: "Indexing workspace.",
             CreatedAt: createdAt));
@@ -1722,52 +1699,5 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             CallCount++;
             throw new InvalidDataException("checkpoint could not be decoded");
         }
-    }
-
-    private sealed class RecordingBudgetReservationService : IBudgetReservationService
-    {
-        public List<Guid> Released { get; } = [];
-
-        public Task<Result<BudgetReservation>> ReserveAsync(
-            BudgetReservationRequest request,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task<Result> AdjustAsync(
-            Guid reservationId,
-            decimal reservedUsd,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task ReconcileAsync(
-            Guid reservationId,
-            decimal actualCostUsd,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task ReleaseAsync(
-            Guid reservationId,
-            CancellationToken cancellationToken = default)
-        {
-            Released.Add(reservationId);
-            return Task.CompletedTask;
-        }
-
-        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
-
-        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
-
-        public Task ExtendExpiryAsync(
-            Guid reservationId,
-            DateTimeOffset expiresAt,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-
-        public Task<int> SweepExpiredAsync(
-            DateTimeOffset utcNow,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(0);
     }
 }

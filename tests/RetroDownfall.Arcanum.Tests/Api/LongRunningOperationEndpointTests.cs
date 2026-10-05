@@ -29,7 +29,7 @@ public sealed class LongRunningOperationEndpointTests
             scope.ServiceProvider.GetRequiredService<ILongRunningOperationStore>();
         DateTimeOffset now = DateTimeOffset.UtcNow;
         LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently,
             "Indexed 10 safe paths.",
             now));
@@ -69,7 +69,7 @@ public sealed class LongRunningOperationEndpointTests
             scope.ServiceProvider.GetRequiredService<ILongRunningOperationStore>();
         DateTimeOffset now = DateTimeOffset.UtcNow;
         LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently,
             "Retry API test.",
             now));

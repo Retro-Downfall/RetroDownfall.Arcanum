@@ -7,15 +7,7 @@ public sealed class LongRunningOperationRecoveryAdmissionTests
 {
     public static TheoryData<string, int, object> CompleteMatrix => new()
     {
-        { LongRunningOperationKinds.InferenceRun, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
         { LongRunningOperationKinds.Subagent, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
-        { LongRunningOperationKinds.BudgetReservation, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
-        { LongRunningOperationKinds.Batch, 0, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
-        { LongRunningOperationKinds.Apprentice, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
-        { LongRunningOperationKinds.Apprentice, 1, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
-        { LongRunningOperationKinds.AttachmentPromotion, 0, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
-        { LongRunningOperationKinds.WorkspaceIndex, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
-        { LongRunningOperationKinds.IdempotencyClaim, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
         { LongRunningOperationKinds.BlobEncryptionMigration, 0, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
         { LongRunningOperationKinds.BlobEncryptionMigration, 1, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
         { LongRunningOperationKinds.BlobEncryptionKeyRotation, 0, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },

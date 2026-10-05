@@ -206,37 +206,12 @@ internal sealed partial class DataRetentionService
     }
 
     private async Task<DataRetentionConflict[]> ReadMemoryResetConflictsAsync(
-        MemoryResetScope scope,
         CancellationToken cancellationToken)
     {
+        // Attachment promotion and workspace indexing record no durable operation, so no ledger row
+        // can stand for them here; the active-inference conflict is the reset's whole guard.
         List<DataRetentionConflict> conflicts =
             [.. await ReadActiveInferenceConflictsAsync(cancellationToken).ConfigureAwait(false)];
-
-        string? operationKind = scope switch
-        {
-            MemoryResetScope.Attachments => LongRunningOperationKinds.AttachmentPromotion,
-
-            MemoryResetScope.Workspace => LongRunningOperationKinds.WorkspaceIndex,
-
-            _ => null,
-        };
-
-        if (operationKind is not null
-            && await TableExistsAsync("LongRunningOperations", cancellationToken).ConfigureAwait(false))
-        {
-            conflicts.AddRange(
-                await ReadConflictsAsync(
-                    $"""
-                    SELECT Id
-                    FROM LongRunningOperations
-                    WHERE Kind = @kind
-                      AND State IN ({string.Join(",", ActiveOperationStates)})
-                    """,
-                    "Data.ActiveOperation",
-                    "An active derived-data operation protects this memory scope.",
-                    cancellationToken,
-                    ("@kind", operationKind)).ConfigureAwait(false));
-        }
 
         return [.. conflicts
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))];
@@ -2000,32 +1975,6 @@ internal sealed partial class DataRetentionService
             || candidates.Count >= limit
             || !await TableExistsAsync("workspace_file_chunks", cancellationToken).ConfigureAwait(false))
         {
-            return;
-        }
-
-        DataRetentionConflict[] activeWorkspaceOperations = await ReadConflictsAsync(
-            $"""
-            SELECT Id
-            FROM LongRunningOperations
-            WHERE Kind = @kind
-              AND State IN ({string.Join(",", ActiveOperationStates)})
-            """,
-            "Data.WorkspaceIndexActive",
-            "An active workspace-index operation protects derived workspace indexes.",
-            cancellationToken,
-            ("@kind", LongRunningOperationKinds.WorkspaceIndex)).ConfigureAwait(false);
-
-        if (activeWorkspaceOperations.Length > 0)
-        {
-            conflicts.AddRange(activeWorkspaceOperations);
-
-            blockers.Add(
-                new DataRetentionBlocker(
-                    RetentionDataClass.WorkspaceChunks,
-                    "workspace-index",
-                    "Data.WorkspaceIndexActive",
-                    "Workspace indexes cannot be pruned while an index operation is active."));
-
             return;
         }
 
@@ -5726,32 +5675,6 @@ internal sealed partial class DataRetentionService
 
         try
         {
-            await using DbCommand protection = connection.CreateCommand();
-
-            protection.Transaction = transaction;
-
-            protection.CommandText =
-                $"""
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM LongRunningOperations
-                    WHERE Kind = @kind
-                      AND State IN ({string.Join(",", ActiveOperationStates)}))
-                """;
-
-            Add(protection, "@kind", LongRunningOperationKinds.WorkspaceIndex);
-
-            bool active = Convert.ToInt64(
-                await protection.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                CultureInfo.InvariantCulture) != 0;
-
-            if (active)
-            {
-                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-
-                return CandidateDeleteResult.Empty;
-            }
-
             string? agedChunk = await ScalarStringInTransactionAsync(
                 connection,
                 transaction,

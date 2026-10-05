@@ -28,12 +28,10 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
-
     [SkippableFact]
 
     public async Task PlanAsync_Prune_UsesOneFrozenTimestampForSelectionAndGeneratedAt()
     {
-
         RequireSqlCipher();
 
         DateTimeOffset initial = DateTimeOffset.Parse("2026-01-31T00:00:00Z");
@@ -74,14 +72,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(initial, plan.GeneratedAt);
 
         Assert.Empty(plan.CandidateIds);
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_Prune_WhenEffectivePolicyChanges_ChangesPlanIdentity()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -123,7 +119,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(first.Items, second.Items);
 
         Assert.NotEqual(first.PlanId, second.PlanId);
-
     }
 
     [SkippableTheory]
@@ -145,7 +140,6 @@ public sealed partial class DataRetentionServiceTests
     public async Task ApplyAsync_Prune_WhenCandidateBecomesFreshAtMutationBoundary_PreservesCandidateAndCursor(
         string kind)
     {
-
         RequireSqlCipher();
 
         FreshnessCandidate seeded = await SeedFreshnessCandidateAsync(kind);
@@ -196,7 +190,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal("0", checkpointLines[2]);
 
         Assert.Equal("ARCADATA2", checkpointLines[0]);
-
     }
 
     /// <summary>
@@ -210,7 +203,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task ApplyAsync_Prune_WhenAJournalBearingCandidateFollowsAPreservedOne_KeepsTheCursorAtThePreservedCandidate()
     {
-
         RequireSqlCipher();
 
         FreshnessCandidate seeded = await SeedFreshnessCandidateAsync("batch");
@@ -270,14 +262,12 @@ public sealed partial class DataRetentionServiceTests
             .Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
         Assert.Equal("0", checkpointLines[2]);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenEntryFreshensAfterPrecheckButBeforeParentDelete_RollsBackCandidate()
     {
-
         RequireSqlCipher();
 
         (_, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -345,14 +335,12 @@ public sealed partial class DataRetentionServiceTests
             .Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
         Assert.Equal("0", checkpointLines[2]);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenWorkspaceChunkFreshensDuringDerivedDelete_RollsBackCandidate()
     {
-
         RequireSqlCipher();
 
         string chunkId = "fresh-workspace-" + Guid.NewGuid().ToString("N");
@@ -421,14 +409,12 @@ public sealed partial class DataRetentionServiceTests
             "workspace_file_embeddings",
             "ChunkId",
             chunkId));
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenEntryEmbeddingParentFreshensDuringDelete_RollsBackCandidate()
     {
-
         RequireSqlCipher();
 
         (_, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -477,14 +463,12 @@ public sealed partial class DataRetentionServiceTests
                 "entry_embeddings",
                 "EntryId",
                 entryId.ToString()));
-
     }
 
     [SkippableFact]
 
     public async Task RecoverPruneAsync_WhenPolicyShortens_EnforcesPersistedOriginalCandidateCutoff()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.NewGuid();
@@ -588,14 +572,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(
             1,
             await CountNormalizedKeyAsync("Batches", "Id", batchId.ToString()));
-
     }
 
     [SkippableFact]
 
     public async Task RecoverPruneAsync_WithLegacyCheckpoint_FailsClosed()
     {
-
         RequireSqlCipher();
 
         DataRetentionService service = CreateService(CreatePruneSettings());
@@ -646,18 +628,14 @@ public sealed partial class DataRetentionServiceTests
             () => service.RecoverPruneAsync(
                 interrupted,
                 CancellationToken.None));
-
     }
 
     private async Task<FreshnessCandidate> SeedFreshnessCandidateAsync(string kind)
     {
-
         switch (kind)
         {
-
             case "batch":
             {
-
                 Guid fileId = Guid.NewGuid();
 
                 Guid batchId = Guid.NewGuid();
@@ -683,12 +661,10 @@ public sealed partial class DataRetentionServiceTests
                     "Id",
                     batchId.ToString(),
                     static retention => retention.CompletedBatches = EnabledRule());
-
             }
 
             case "entry":
             {
-
                 (_, Guid entryId) = await SeedSessionAsync(pinned: false);
 
                 return DatabaseFreshnessCandidate(
@@ -698,12 +674,10 @@ public sealed partial class DataRetentionServiceTests
                     "Id",
                     entryId.ToString(),
                     static retention => retention.Entries = EnabledRule());
-
             }
 
             case "saga":
             {
-
                 string memoryId = "freshness-" + Guid.NewGuid().ToString("N");
 
                 await ExecuteAsync(
@@ -721,12 +695,10 @@ public sealed partial class DataRetentionServiceTests
                     "Id",
                     memoryId,
                     static retention => retention.SagaMemories = EnabledRule());
-
             }
 
             case "lexicon":
             {
-
                 string entryId = "freshness-" + Guid.NewGuid().ToString("N");
 
                 await ExecuteAsync(
@@ -746,12 +718,10 @@ public sealed partial class DataRetentionServiceTests
                     "Id",
                     entryId,
                     static retention => retention.LexiconEntries = EnabledRule());
-
             }
 
             case "operation":
             {
-
                 LongRunningOperationStore operations = new(
                     _db!,
                     TestOrdinaryConnectionFactory.For(_db!));
@@ -760,7 +730,7 @@ public sealed partial class DataRetentionServiceTests
 
                 LongRunningOperation operation = await operations.CreateAsync(
                     new LongRunningOperationCreateRequest(
-                        LongRunningOperationKinds.WorkspaceIndex,
+                        LongRunningOperationKinds.BlobEncryptionMigration,
                         LongRunningOperationRecoveryPolicy.RestartIdempotently,
                         "Old completed operation.",
                         createdAt));
@@ -788,12 +758,10 @@ public sealed partial class DataRetentionServiceTests
                     "Id",
                     operation.Id.ToString(),
                     static retention => retention.LongRunningOperations = EnabledRule());
-
             }
 
             case "sanctum":
             {
-
                 Guid campaign = Guid.NewGuid();
 
                 string campaignId = Canonical(campaign);
@@ -827,12 +795,10 @@ public sealed partial class DataRetentionServiceTests
                     "Id",
                     breachId.ToString(),
                     static retention => retention.SanctumBreaches = EnabledRule());
-
             }
 
             case "audit-log":
             {
-
                 string fileName = "audit-20000101.jsonl";
 
                 string path = Path.Combine(_logsRoot, fileName);
@@ -850,32 +816,25 @@ public sealed partial class DataRetentionServiceTests
                     static retention => retention.AuditLogs = EnabledRule(),
                     () => Task.FromResult(File.Exists(path)),
                     path);
-
             }
 
             default:
                 throw new InvalidOperationException("Unknown freshness scenario.");
-
         }
-
     }
 
     private sealed class AdvancingTimeProvider(
         DateTimeOffset initial,
         TimeSpan increment) : TimeProvider
     {
-
         private long _calls;
 
         public override DateTimeOffset GetUtcNow()
         {
-
             long call = Interlocked.Increment(ref _calls) - 1;
 
             return initial.AddTicks(increment.Ticks * call);
-
         }
-
     }
 
     private FreshnessCandidate DatabaseFreshnessCandidate(
@@ -900,7 +859,6 @@ public sealed partial class DataRetentionServiceTests
         string keyColumn,
         string key)
     {
-
         SqliteConnection connection =
             (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -916,16 +874,13 @@ public sealed partial class DataRetentionServiceTests
         object? value = await command.ExecuteScalarAsync();
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private async Task ArrangeFreshnessChangeAfterPruneStartsAsync(
         FreshnessCandidate candidate)
     {
-
         if (candidate.FilePath is not null)
         {
-
             SqliteConnection connection =
                 (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -933,13 +888,11 @@ public sealed partial class DataRetentionServiceTests
                 "freshen_retention_log",
                 () =>
                 {
-
                     File.SetLastWriteTimeUtc(
                         candidate.FilePath,
                         DateTime.UtcNow.AddDays(1));
 
                     return 1;
-
                 });
 
             await ExecuteAsync(
@@ -953,7 +906,6 @@ public sealed partial class DataRetentionServiceTests
                 """);
 
             return;
-
         }
 
         await ExecuteAsync(
@@ -968,7 +920,6 @@ public sealed partial class DataRetentionServiceTests
                     = lower(replace('{candidate.Key}', '-', ''));
             END;
             """);
-
     }
 
     private sealed record FreshnessCandidate(
@@ -980,5 +931,4 @@ public sealed partial class DataRetentionServiceTests
         Action<RetentionSettings> Enable,
         Func<Task<bool>> Exists,
         string? FilePath);
-
 }

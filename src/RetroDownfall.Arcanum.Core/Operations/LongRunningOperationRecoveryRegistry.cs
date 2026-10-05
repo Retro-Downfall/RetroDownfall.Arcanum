@@ -58,21 +58,6 @@ public static class LongRunningOperationRecoveryRegistry
         new[]
         {
             new LongRunningOperationRecoveryDescriptor(
-                LongRunningOperationKinds.InferenceRun,
-                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-                Owner: "TurnEngine / WizardIntelligenceProvider",
-                MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 0,
-                LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent:
-                    "Resolve the interrupted run, keep already-ledgered provider usage, release or reconcile "
-                    + "its reservation, and make a claim without fully captured terminal bytes non-replayable. "
-                    + "A live stream is never replayed.",
-                ManualRepairGuidance:
-                    "Compare 'arcanum operation show <id>' against the provider's own usage dashboard before "
-                    + "retrying; Arcanum cannot prove what a crashed provider call was billed for."),
-
-            new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.Subagent,
                 LongRunningOperationRecoveryPolicy.AbandonSafely,
                 Owner: "SubagentRunner",
@@ -84,86 +69,6 @@ public static class LongRunningOperationRecoveryRegistry
                     + "and reservation once, and never restart it — restarting is how a recursion storm begins.",
                 ManualRepairGuidance:
                     "Re-issue the parent request. The child is not resumable and was not re-billed."),
-
-            new LongRunningOperationRecoveryDescriptor(
-                LongRunningOperationKinds.BudgetReservation,
-                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-                Owner: "BudgetReservationService",
-                MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 0,
-                LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent:
-                    "Idempotently release a stranded reservation when actual cost cannot be established, so "
-                    + "the daily limit is not permanently consumed by a dead process.",
-                ManualRepairGuidance:
-                    "Check 'arcanum budget' for outstanding reservations; releasing is safe and idempotent."),
-
-            new LongRunningOperationRecoveryDescriptor(
-                LongRunningOperationKinds.Batch,
-                LongRunningOperationRecoveryPolicy.RestartIdempotently,
-                Owner: "BatchRecoveryService",
-                MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 0,
-                LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent:
-                    "Seal dispatched-but-unrecorded lines, clear partial output artifacts, and re-queue from "
-                    + "durable line checkpoints. Completed lines are never dispatched twice.",
-                ManualRepairGuidance:
-                    "Use 'POST /v1/batches/{id}/reset' when the input file is still present; a batch whose input "
-                    + "is gone is failed deliberately and must be resubmitted."),
-
-            new LongRunningOperationRecoveryDescriptor(
-                LongRunningOperationKinds.Apprentice,
-                LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
-                Owner: "ApprenticeService / ConclaveArchmage",
-                MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 1,
-                LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent:
-                    "Hand the Apprentice back to its own documented checkpoint resume path, preserving step "
-                    + "position, completed tool-call ids, and parent/child lineage.",
-                ManualRepairGuidance:
-                    "Inspect 'arcanum apprentice show <id>'; cancel it with 'arcanum apprentice cancel <id>' if "
-                    + "its checkpoint is no longer meaningful."),
-
-            new LongRunningOperationRecoveryDescriptor(
-                LongRunningOperationKinds.AttachmentPromotion,
-                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-                Owner: "SessionAttachmentStore",
-                MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 0,
-                LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent:
-                    "Verify content hashes, drop incomplete temp files and half-written versions, and keep every "
-                    + "valid prior version. A promotion is either fully applied or fully absent.",
-                ManualRepairGuidance:
-                    "Re-upload the attachment. Prior versions are intact; no duplicate version was created."),
-
-            new LongRunningOperationRecoveryDescriptor(
-                LongRunningOperationKinds.WorkspaceIndex,
-                LongRunningOperationRecoveryPolicy.RestartIdempotently,
-                Owner: "WorkspaceIndexingService",
-                MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 0,
-                LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent:
-                    "Close the row without re-enumerating; already-indexed rows remain the authority, so "
-                    + "nothing is reconciled until the next background tick names the workspace again.",
-                ManualRepairGuidance:
-                    "Re-run 'arcanum workspace index'; indexing is idempotent by file identity and content hash."),
-
-            new LongRunningOperationRecoveryDescriptor(
-                LongRunningOperationKinds.IdempotencyClaim,
-                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-                Owner: "IdempotencyClaimStore",
-                MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 0,
-                LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent:
-                    "Settle the linked claim so it cannot stay stranded. A claim whose terminal bytes were fully "
-                    + "captured stays replayable; anything else is marked abandoned and must be re-sent.",
-                ManualRepairGuidance:
-                    "Re-send the original request with the same Idempotency-Key; an abandoned claim is safe to retry."),
 
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.BlobEncryptionMigration,

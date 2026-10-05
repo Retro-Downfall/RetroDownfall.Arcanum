@@ -2671,9 +2671,7 @@ internal sealed partial class DataRetentionService(
                 ? []
                 : [new DataRetentionPlanItem(dataClass, 0, 0, 0, rows)],
             [],
-            await ReadMemoryResetConflictsAsync(
-                request.MemoryScope!.Value,
-                cancellationToken).ConfigureAwait(false),
+            await ReadMemoryResetConflictsAsync(cancellationToken).ConfigureAwait(false),
             rows == 0 ? [] : [MemoryResetCandidateId(request.MemoryScope!.Value, request.TargetId)],
             requiresConfirmation: true);
     }
@@ -3544,7 +3542,6 @@ internal sealed partial class DataRetentionService(
                 await ReadMemoryResetConflictsInTransactionAsync(
                     connection,
                     transaction,
-                    scope,
                     cancellationToken).ConfigureAwait(false);
 
             if (conflicts.Length > 0)
@@ -4500,7 +4497,6 @@ internal sealed partial class DataRetentionService(
     private async Task<DataRetentionConflict[]> ReadMemoryResetConflictsInTransactionAsync(
         DbConnection connection,
         DbTransaction transaction,
-        MemoryResetScope scope,
         CancellationToken cancellationToken)
     {
         List<DataRetentionConflict> conflicts =
@@ -4515,33 +4511,8 @@ internal sealed partial class DataRetentionService(
                 ("@running", (int)InferenceRunStatus.Running)).ConfigureAwait(false),
         ];
 
-        string? operationKind = scope switch
-        {
-            MemoryResetScope.Attachments => LongRunningOperationKinds.AttachmentPromotion,
-
-            MemoryResetScope.Workspace => LongRunningOperationKinds.WorkspaceIndex,
-
-            _ => null,
-        };
-
-        if (operationKind is not null)
-        {
-            conflicts.AddRange(
-                await ReadConflictsInTransactionAsync(
-                    connection,
-                    transaction,
-                    $"""
-                    SELECT Id
-                    FROM LongRunningOperations
-                    WHERE Kind = @kind
-                      AND State IN ({string.Join(",", ActiveOperationStates)})
-                    """,
-                    "Data.ActiveOperation",
-                    "An active derived-data operation protects this memory scope.",
-                    cancellationToken,
-                    ("@kind", operationKind)).ConfigureAwait(false));
-        }
-
+        // Attachment promotion and workspace indexing record no durable operation, so no ledger row
+        // can stand for them here; the active-inference conflict above is the reset's whole guard.
         return [.. conflicts
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))];
     }
