@@ -72,7 +72,8 @@ internal static class AtomicFile
     /// </param>
     /// <param name="flushParentDirectory">
     /// The directory barrier issued right after the rename, and again after a rollback that renamed the
-    /// destination aside or the backup back; <see cref="DurableDirectoryFlush.TryFlushParentOf"/> when unset. This exists so tests can observe the barrier; normal callers leave it unset.
+    /// destination aside or the backup back; <see cref="DurableDirectoryFlush.TryFlushParentOf"/> when
+    /// unset. This exists so tests can observe the barrier; normal callers leave it unset.
     /// </param>
     /// <returns>
     /// An <see cref="AtomicReplaceStatus"/> describing whether the destination was replaced and
