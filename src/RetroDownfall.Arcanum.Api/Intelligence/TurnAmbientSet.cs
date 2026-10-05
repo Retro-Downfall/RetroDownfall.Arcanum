@@ -42,8 +42,10 @@ internal sealed class TurnAmbientSet
 
     public ITurnRunWriter? AccountingWriter { get; private set; }
 
+    private IDisposable? _covenantStagingPush;
+
     /// <summary>The staging material of the latest admitted provider dispatch, when the turn may stage.</summary>
-    public CovenantToolStagingContext? CovenantStaging { get; set; }
+    public CovenantToolStagingContext? CovenantStaging { get; private set; }
 
     /// <summary>The attended turn's one live human-prompt emitter.</summary>
     public IHumanPromptLiveEmitter? HumanPromptEmitter { get; set; }
@@ -58,6 +60,34 @@ internal sealed class TurnAmbientSet
         Accounting = accounting;
 
         AccountingWriter = writer;
+    }
+
+    /// <summary>
+    /// Makes <paramref name="context"/> the turn's Covenant staging material for this provider round,
+    /// or clears it when the round's dispatch earned no admission receipt.
+    /// </summary>
+    /// <remarks>
+    /// Pushed for the provider call in the calling segment, and captured for the tool calls that run
+    /// after the round's ToolCall frames, where the push is already gone. Clearing matters as much as
+    /// setting: the captured set outlives the round, so without it a previous round's receipt would
+    /// ride into this round's tool calls and authorize staging against a dispatch it does not
+    /// describe.
+    /// </remarks>
+    public void StageCovenantRound(CovenantToolStagingContext? context)
+    {
+        _covenantStagingPush?.Dispose();
+
+        _covenantStagingPush = context is null ? null : CovenantToolStagingAmbient.Push(context);
+
+        CovenantStaging = context;
+    }
+
+    /// <summary>Undoes the turn's last staging push when the turn ends.</summary>
+    public void EndCovenantStaging()
+    {
+        _covenantStagingPush?.Dispose();
+
+        _covenantStagingPush = null;
     }
 
     public void SetProviderRound(int providerRound)

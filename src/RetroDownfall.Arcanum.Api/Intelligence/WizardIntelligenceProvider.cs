@@ -1630,11 +1630,6 @@ public sealed partial class WizardIntelligenceProvider(
 
         ChatResponse? bufferedFinalResponse = null;
 
-        // Published once a dispatch has earned an admission receipt, because a staging capability is
-        // minted from that receipt: a tool call with no admission behind it has nothing to prove it
-        // belongs to this turn's plan.
-        IDisposable? streamCovenantStaging = null;
-
         // R-008: every ambient a tool call reads, captured as the turn creates it. This method is an
         // async iterator, so an AsyncLocal it writes is gone after its next yield return; the set is
         // re-applied inside ProcessWithLiveWardsAsync before each tool call, and the turn's own
@@ -3044,41 +3039,24 @@ public sealed partial class WizardIntelligenceProvider(
                         break;
                     }
 
-                    if (streamCovenantGate.Value is { Receipt: not null } streamAdmitted
+                    // Staging material only for a dispatch that earned an admission receipt, because a
+                    // staging capability is minted from that receipt; a round that earned none
+                    // replaces the previous round's with nothing.
+                    streamTurnAmbients.StageCovenantRound(
+                        streamCovenantGate.Value is { Receipt: not null } streamAdmitted
                         && covenantScope is { Collector: not null, HeadProbe: not null } stagingScope
                         && invocationContext.Campaign is { } stagingCampaign
-                        && covenantToolCapabilities is not null)
-                    {
-                        streamCovenantStaging?.Dispose();
-
-                        CovenantToolStagingContext stagingContext = new(
-                            stagingScope.Collector,
-                            stagingCampaign,
-                            streamAdmitted.Receipt,
-                            streamAdmitted.Receipt.Materialization,
-                            stagingScope.HeadProbe,
-                            invocationContext.CanStageCovenantMutation,
-                            covenantToolCapabilities,
-                            inferenceToken);
-
-                        // Pushed for the provider call in this segment, and captured for the tool calls
-                        // that run after this round's ToolCall frames, where the push is already gone.
-                        streamCovenantStaging = CovenantToolStagingAmbient.Push(stagingContext);
-
-                        streamTurnAmbients.CovenantStaging = stagingContext;
-                    }
-                    else
-                    {
-                        // A round that earned no admission receipt has nothing to stage under. The
-                        // captured set outlives the round, so without this the previous round's
-                        // receipt would ride into this round's tool calls and authorize staging
-                        // against a dispatch it does not describe.
-                        streamCovenantStaging?.Dispose();
-
-                        streamCovenantStaging = null;
-
-                        streamTurnAmbients.CovenantStaging = null;
-                    }
+                        && covenantToolCapabilities is not null
+                            ? new CovenantToolStagingContext(
+                                stagingScope.Collector,
+                                stagingCampaign,
+                                streamAdmitted.Receipt,
+                                streamAdmitted.Receipt.Materialization,
+                                stagingScope.HeadProbe,
+                                invocationContext.CanStageCovenantMutation,
+                                covenantToolCapabilities,
+                                inferenceToken)
+                            : null);
 
                     ModelCallPurpose streamPurpose = streamToolRoundCount == 0
                         ? streamToolCompatibilityRetry
@@ -4393,7 +4371,7 @@ public sealed partial class WizardIntelligenceProvider(
         }
         finally
         {
-            streamCovenantStaging?.Dispose();
+            streamTurnAmbients.EndCovenantStaging();
 
             liveHumanPromptChannel?.Writer.TryComplete();
 
