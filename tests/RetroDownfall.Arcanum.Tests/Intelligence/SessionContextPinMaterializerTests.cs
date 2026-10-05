@@ -508,6 +508,35 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.DoesNotContain("generated.cs", sourceText, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Directory_snapshot_reads_only_the_first_part_of_an_oversized_gitignore_and_ends_at_a_whole_line()
+    {
+        string comment = "# " + new string('x', 1_000) + "\n";
+
+        // Enough comment lines to push the last rule past the read limit, which cuts mid-line.
+        string padding = string.Concat(
+            Enumerable.Repeat(comment, (SessionContextPinMaterializer.MaxGitIgnoreBytes / comment.Length) + 2));
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_workspace, ".gitignore"),
+            "early.tmp\n" + padding + "late.tmp\n");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "early.tmp"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "late.tmp"), "x");
+
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "plain.txt"), "x");
+
+        string text = await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.DirectorySnapshot, ".", "workspace", null));
+
+        Assert.DoesNotContain("early.tmp", text, StringComparison.Ordinal);
+
+        Assert.Contains("late.tmp", text, StringComparison.Ordinal);
+
+        Assert.Contains("plain.txt", text, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public async Task Directory_snapshot_does_not_follow_a_gitignore_that_is_a_symlink()
     {
