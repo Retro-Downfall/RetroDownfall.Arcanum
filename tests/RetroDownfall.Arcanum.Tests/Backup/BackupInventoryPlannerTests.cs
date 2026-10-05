@@ -673,6 +673,38 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             CancellationToken.None);
 
     [Fact]
+    public async Task A_plan_that_carries_recovery_keys_warns_about_the_passphrase_minimum()
+    {
+        await CreateInventoryDatabaseAsync(seedSql: null);
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory withKeys = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.PortableRecoveryKeys],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Contains(BackupPassphrasePolicy.CreateWarning, withKeys.Plan.SecurityWarnings);
+
+        BackupInventory withoutKeys = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.DoesNotContain(BackupPassphrasePolicy.CreateWarning, withoutKeys.Plan.SecurityWarnings);
+    }
+
+    [Fact]
     public async Task Configuration_inventory_includes_committed_preset_state_and_rollback()
     {
         await WriteFileAsync("arcanum.json", "{}");

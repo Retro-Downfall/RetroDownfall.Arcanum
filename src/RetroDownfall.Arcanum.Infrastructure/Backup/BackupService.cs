@@ -154,6 +154,18 @@ public sealed class BackupService : IBackupService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // First, before the output directory, the staging root or any other effect exists: a refused
+        // passphrase must cost nothing. Applied here, at creation, because this is where a passphrase
+        // is chosen; opening, verifying and restoring an archive written under a shorter one is not
+        // touched by it (see BackupPassphrasePolicy).
+        if (!request.ReusesExistingPassphrase
+            && !BackupPassphrasePolicy.MeetsCreateMinimum(recoveryPassphrase.Span))
+        {
+            throw new ArgumentException(
+                BackupPassphrasePolicy.CreateMinimumMessage,
+                nameof(recoveryPassphrase));
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
 
         Guid operationId = Guid.NewGuid();

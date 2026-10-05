@@ -2211,6 +2211,44 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static phase => phase.Phase == BackupRestorePhase.SafetyPoint);
     }
 
+    /// <summary>
+    /// The creation floor on a recovery passphrase is not a restore floor: an archive written under a
+    /// shorter passphrase before the floor existed restores, safety backup included.
+    /// </summary>
+    /// <remarks>
+    /// The safety backup is protected by the passphrase of the archive being restored, which the
+    /// operator did not choose just now and cannot change, so it takes the reuse exemption rather than
+    /// turning every restore of an older archive into a refusal.
+    /// </remarks>
+    [Fact]
+    public async Task A_restore_of_an_archive_under_a_short_passphrase_still_takes_its_safety_backup()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("short-passphrase-source.arcbackup");
+
+        const string shortPassphrase = "legacy";
+
+        string legacy = await fixture.RewriteArchiveUnderPassphraseAsync(
+            archive,
+            "short-passphrase.arcbackup",
+            shortPassphrase);
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret },
+                safetyBackups: fixture.BackupService)
+            .RestoreAsync(
+                new BackupRestoreRequest(legacy, Confirmed: true),
+                shortPassphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        string safety = Assert.IsType<string>(result.SafetyBackupPath);
+
+        Assert.True(File.Exists(safety));
+    }
+
     [Fact]
     public async Task A_pre_restore_safety_backup_that_does_not_complete_stops_the_restore_before_the_destructive_step()
     {
@@ -2944,6 +2982,58 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 rewritten,
                 sources,
                 Passphrase.AsMemory(),
+                overwrite: true,
+                CancellationToken.None);
+
+            return archive;
+        }
+
+        /// <summary>
+        /// A real archive rewritten under another recovery passphrase, entry for entry.
+        /// </summary>
+        /// <remarks>
+        /// Creation refuses a passphrase below the floor, so an archive protected by one can only be
+        /// had by writing it below the service, through the codec, as an older build would have.
+        /// </remarks>
+        public async Task<string> RewriteArchiveUnderPassphraseAsync(
+            string original,
+            string name,
+            string passphrase)
+        {
+            string extractRoot = Path.Combine(archives, "extract-" + Guid.NewGuid().ToString("N"));
+
+            string scratchRoot = Path.Combine(archives, "scratch-" + Guid.NewGuid().ToString("N"));
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(extractRoot);
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(scratchRoot);
+
+            BackupArchiveExtraction extraction = await codec.ExtractAsync(
+                original,
+                Passphrase.AsMemory(),
+                extractRoot,
+                scratchRoot,
+                CancellationToken.None);
+
+            BackupManifest manifest = extraction.Manifest!;
+
+            BackupArchiveSource[] sources =
+            [
+                .. manifest.Entries.Select(
+                    entry => new BackupArchiveSource(
+                        entry.Path,
+                        Path.Combine(
+                            extractRoot,
+                            entry.Path.Replace('/', Path.DirectorySeparatorChar)))),
+            ];
+
+            string archive = Path.Combine(archives, name);
+
+            _ = await codec.WriteAsync(
+                archive,
+                manifest,
+                sources,
+                passphrase.AsMemory(),
                 overwrite: true,
                 CancellationToken.None);
 

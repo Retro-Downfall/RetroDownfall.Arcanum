@@ -849,6 +849,91 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Equal("{\"b\":2}", await File.ReadAllTextAsync(configurationPath));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("short")]
+    [InlineData("11 chars...")]
+    public async Task Create_refuses_a_passphrase_shorter_than_the_documented_minimum(
+        string passphrase)
+    {
+        Assert.Equal(11, "11 chars...".Length);
+
+        Assert.Equal(12, BackupPassphrasePolicy.MinimumCreateCharacters);
+
+        BackupService service = CreateService(Paths(), new CountingSecretReader());
+
+        string archive = Path.Combine(_root, "weak.arcbackup");
+
+        ArgumentException refusal = await Assert.ThrowsAnyAsync<ArgumentException>(
+            () => service.CreateAsync(
+                new BackupCreateRequest(
+                    new BackupPlanRequest(
+                        BackupScope.MetadataOnly,
+                        SessionId: null,
+                        Include: [],
+                        Exclude: []),
+                    archive,
+                    Overwrite: false),
+                passphrase.AsMemory(),
+                CancellationToken.None));
+
+        Assert.Contains(
+            BackupPassphrasePolicy.MinimumCreateCharacters.ToString(),
+            refusal.Message,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            passphrase.Length == 0 ? "\0" : passphrase,
+            refusal.Message,
+            StringComparison.Ordinal);
+
+        // Refused before anything was created: no archive, no staging root.
+        Assert.False(File.Exists(archive));
+
+        Assert.Empty(Directory.GetFileSystemEntries(_root, ".arcanum-backup-stage-*"));
+    }
+
+    [Fact]
+    public async Task Create_accepts_a_passphrase_of_exactly_the_documented_minimum()
+    {
+        BackupService service = CreateService(Paths(), new CountingSecretReader());
+
+        BackupCreateResult created = await service.CreateAsync(
+            new BackupCreateRequest(
+                new BackupPlanRequest(
+                    BackupScope.MetadataOnly,
+                    SessionId: null,
+                    Include: [],
+                    Exclude: []),
+                Path.Combine(_root, "minimum.arcbackup"),
+                Overwrite: false),
+            new string('p', BackupPassphrasePolicy.MinimumCreateCharacters).AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupCreateStatus.Complete, created.Status);
+    }
+
+    [Fact]
+    public async Task A_passphrase_that_already_protects_an_archive_is_accepted_below_the_minimum()
+    {
+        BackupService service = CreateService(Paths(), new CountingSecretReader());
+
+        BackupCreateResult created = await service.CreateAsync(
+            new BackupCreateRequest(
+                new BackupPlanRequest(
+                    BackupScope.MetadataOnly,
+                    SessionId: null,
+                    Include: [],
+                    Exclude: []),
+                Path.Combine(_root, "reused.arcbackup"),
+                Overwrite: false,
+                ReusesExistingPassphrase: true),
+            "legacy".AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupCreateStatus.Complete, created.Status);
+    }
+
     /// <summary>
     /// A selected file is read once for the inventory fingerprint and once for the archive pass, which
     /// is the single re-verification; the manifest takes its checksum from the inventory rather than

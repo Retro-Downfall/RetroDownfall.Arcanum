@@ -2458,7 +2458,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 new BackupCreateRequest(
                     new BackupPlanRequest(BackupScope.Full, SessionId: null, Include: [], Exclude: []),
                     path,
-                    Overwrite: false),
+                    Overwrite: false,
+                    ReusesExistingPassphrase: true),
                 recoveryPassphrase,
                 cancellationToken)
             .ConfigureAwait(false);

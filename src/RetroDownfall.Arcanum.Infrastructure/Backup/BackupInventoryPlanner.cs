@@ -385,6 +385,11 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
     {
         List<string> warnings = [];
 
+        if (selected.Contains(BackupComponent.PortableRecoveryKeys))
+        {
+            warnings.Add(BackupPassphrasePolicy.CreateWarning);
+        }
+
         if (selected.Contains(BackupComponent.McpConfiguration))
         {
             warnings.Add("Global MCP configuration can contain literal environment values and is sensitive.");
