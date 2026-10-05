@@ -1,18 +1,12 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Api.Models;
 
 /// <summary>
 /// Request body for <c>POST /api/tools/invoke</c> — directly executes a built-in tool by name.
 /// </summary>
-public sealed record ToolInvokeRequest
-{
-
-    [JsonPropertyName("toolName")]
-    public string ToolName { get; init; } = string.Empty;
-
-    [JsonPropertyName("arguments")]
-    public JsonElement Arguments { get; init; }
-
-}
+/// <remarks>
+/// Member names come from the camelCase policy on <c>ArcanumJsonContext</c>; the defaults are what a member the
+/// body omits takes, so a body of <c>{}</c> binds to an empty tool name rather than failing in the binder.
+/// </remarks>
+public sealed record ToolInvokeRequest(string ToolName = "", JsonElement Arguments = default);

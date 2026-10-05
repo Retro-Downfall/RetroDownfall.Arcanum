@@ -371,16 +371,11 @@ public sealed class McpCommands(
         {
             Result<McpToolInvokeResponse> blocked = await apiClient
                 .InvokeDiagnosticMcpToolAsync(
-                    new McpToolInvokeRequest
-                    {
-                        ToolName = toolIdentifier.Trim(),
-
-                        Arguments = arguments,
-
-                        ServerName = serverIdentifier,
-
-                        WorkingDirectory = workingDirectory,
-                    },
+                    new McpToolInvokeRequest(
+                        toolIdentifier.Trim(),
+                        arguments,
+                        serverIdentifier,
+                        workingDirectory),
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -461,16 +456,11 @@ public sealed class McpCommands(
 
         Result<McpToolInvokeResponse> result = await apiClient
             .InvokeDiagnosticMcpToolAsync(
-                new McpToolInvokeRequest
-                {
-                    ToolName = selected.Name,
-
-                    Arguments = arguments,
-
-                    ServerName = selected.ServerName,
-
-                    WorkingDirectory = workingDirectory,
-                },
+                new McpToolInvokeRequest(
+                    selected.Name,
+                    arguments,
+                    selected.ServerName,
+                    workingDirectory),
                 cancellationToken)
             .ConfigureAwait(false);
 

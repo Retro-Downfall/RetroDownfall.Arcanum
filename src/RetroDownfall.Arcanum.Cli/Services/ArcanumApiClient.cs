@@ -4231,11 +4231,7 @@ public sealed partial class ArcanumApiClient(
         JsonElement arguments,
         CancellationToken cancellationToken = default)
     {
-        ToolInvokeRequest request = new()
-        {
-            ToolName = toolName,
-            Arguments = arguments,
-        };
+        ToolInvokeRequest request = new(toolName, arguments);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.ToolInvokeRequest);
 

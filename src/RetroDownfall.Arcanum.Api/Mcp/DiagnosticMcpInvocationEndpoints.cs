@@ -22,15 +22,12 @@ namespace RetroDownfall.Arcanum.Api.Mcp;
 /// </summary>
 internal static class DiagnosticMcpInvocationEndpoints
 {
-
     internal static RouteGroupBuilder MapDiagnosticMcpInvocationEndpoints(this RouteGroupBuilder group)
     {
-
         _ = group.MapPost("/mcp/tools/invoke", HandleInvokeAsync)
             .WithName("PostDiagnosticMcpInvoke");
 
         return group;
-
     }
 
     private static async Task<IResult> HandleInvokeAsync(
@@ -40,7 +37,6 @@ internal static class DiagnosticMcpInvocationEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         ArcanumEdition edition = ArcanumEnvironment.ResolveEdition(settings.Value.Edition);
@@ -63,7 +59,6 @@ internal static class DiagnosticMcpInvocationEndpoints
 
         if (result.IsFailure)
         {
-
             int statusCode = ArcanumErrorMapper.ResolveStatusCode(result.Error.Code);
 
             return Results.Json(
@@ -72,24 +67,19 @@ internal static class DiagnosticMcpInvocationEndpoints
                     traceId),
                 ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse,
                 statusCode: statusCode);
-
         }
 
         DiagnosticMcpInvocationOutcome outcome = result.Value;
 
-        McpToolInvokeResponse response = new()
-        {
-            Result = outcome.Result,
-            ServerName = outcome.ServerName,
-            ToolName = outcome.ToolName,
-            DurationMs = outcome.DurationMs,
-            Truncated = outcome.Truncated,
-        };
+        McpToolInvokeResponse response = new(
+            outcome.Result,
+            outcome.ServerName,
+            outcome.ToolName,
+            outcome.DurationMs,
+            outcome.Truncated);
 
         return Results.Ok(ApiResponse<McpToolInvokeResponse>.FromResult(
             Result<McpToolInvokeResponse>.Success(response),
             traceId));
-
     }
-
 }
