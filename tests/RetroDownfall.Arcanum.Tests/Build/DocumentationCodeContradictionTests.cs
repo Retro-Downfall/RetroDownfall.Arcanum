@@ -449,6 +449,54 @@ public sealed class DocumentationCodeContradictionTests
     }
 
     /// <summary>
+    /// The headers-first, capped-reader guarantee is stated on the bullet of the type that makes the request,
+    /// not on the multiplexer's, which neither sends nor drains anything.
+    /// </summary>
+    /// <remarks>
+    /// Inserting the multiplexer's bullet into the error-sanitization list once carried the sentence away from
+    /// the dispatcher's bullet and onto its own, so the dispatcher stopped stating a guarantee only it
+    /// provides and the multiplexer claimed one it cannot. The source side of the pair is the claim's anchor:
+    /// <c>ResponseHeadersRead</c> and the capped drain live in the dispatcher and nowhere in the multiplexer.
+    /// </remarks>
+    [Fact]
+    public void The_commlink_capped_reader_guarantee_is_stated_on_the_dispatcher_bullet_not_the_multiplexer_bullet()
+    {
+        string dispatcherSource = ReadSource("Infrastructure", "CommLink", "WebhookCommLinkDispatcher.cs");
+
+        string multiplexerSource = ReadSource("Infrastructure", "CommLink", "CommLinkMultiplexer.cs");
+
+        Assert.Contains("HttpCompletionOption.ResponseHeadersRead", dispatcherSource, StringComparison.Ordinal);
+
+        Assert.Contains("HttpResponseBodyDrainer.DrainAsync", dispatcherSource, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ResponseHeadersRead", multiplexerSource, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("HttpResponseBodyDrainer", multiplexerSource, StringComparison.Ordinal);
+
+        string[] lines = ReadDocument("Arcanum.DESIGN.md").Split('\n');
+
+        string dispatcherBullet = Assert.Single(
+            lines,
+            static line => line.StartsWith("- **`WebhookCommLinkDispatcher`** — outbound webhook exceptions", StringComparison.Ordinal));
+
+        string multiplexerBullet = Assert.Single(
+            lines,
+            static line => line.StartsWith("- **`CommLinkMultiplexer`** — a sink that throws", StringComparison.Ordinal));
+
+        Assert.Contains("`ResponseHeadersRead`", dispatcherBullet, StringComparison.Ordinal);
+
+        Assert.Contains("existing capped reader", dispatcherBullet, StringComparison.Ordinal);
+
+        Assert.Contains("cannot force full-body buffering", dispatcherBullet, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ResponseHeadersRead", multiplexerBullet, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("capped reader", multiplexerBullet, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("full-body buffering", multiplexerBullet, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The diagnostic MCP invocation route and the Scalar reference UI are both gated, and the API
     /// reference says so where a reader meets the route, not only in a design section. The claims hold
     /// while the route refuses outside the Development edition and Scalar maps only on its feature flag.

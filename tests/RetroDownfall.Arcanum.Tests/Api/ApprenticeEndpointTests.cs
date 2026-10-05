@@ -1,11 +1,16 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -174,6 +179,85 @@ public sealed class ApprenticeEndpointTests
     }
 
     /// <summary>
+    /// A page that is one timestamp wider than the tie-group bound is the server's problem to report, not
+    /// something to clip: the route answers a logged 500 <c>Hub.Unhandled</c> and never echoes the
+    /// repository's message.
+    /// </summary>
+    /// <remarks>
+    /// <c>GET /api/apprentices</c> has no catch of its own, so the repository's
+    /// <see cref="InvalidOperationException"/> reaches <c>ArcanumExceptionHandler</c>. The repository throw
+    /// and the handler arm are each pinned on their own; this is the one place the route's status is.
+    /// <c>docs/Arcanum.API.md</c> and DESIGN section 19.6 state it as contract. The group is seeded through
+    /// EF (the write lane) in a factory of its own so no other test in the shared host ever lists it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task GetApprentices_a_tie_group_past_the_widening_bound_is_a_logged_500_Hub_Unhandled()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingLoggerProvider recording = new();
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.RemoveAll<ILoggerFactory>();
+
+                services.AddSingleton<ILoggerFactory>(new LoggerFactory([recording]));
+            },
+        };
+
+        DateTimeOffset tied = new(2026, 3, 1, 9, 0, 0, TimeSpan.Zero);
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            for (int index = 0; index < ApprenticeRepository.MaxTieGroupWidening + 1; index++)
+            {
+                db.Apprentices.Add(
+                    new Apprentice
+                    {
+                        Id = Guid.NewGuid(),
+                        Name = "tied-" + index,
+                        Goal = "Share one timestamp",
+                        Status = ApprenticeStatus.Idle.ToString(),
+                        WorkspacePath = factory.TempHome,
+                        CreatedAt = tied,
+                        UpdatedAt = tied,
+                    });
+            }
+
+            _ = await db.SaveChangesAsync();
+        }
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.GetAsync("/api/apprentices?limit=1");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<string>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseString);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Hub.Unhandled, body.Error?.Code);
+
+        Assert.DoesNotContain("share the timestamp", json, StringComparison.Ordinal);
+
+        Assert.Contains(
+            recording.Entries,
+            static entry => entry.Level == LogLevel.Error
+                && entry.Exception is InvalidOperationException failure
+                && failure.Message.Contains("share the timestamp", StringComparison.Ordinal)
+                && entry.Message.Contains("Unhandled exception on GET /api/apprentices", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// A client that stops reading is told, in its own stream, that events were dropped for it.
     /// </summary>
     /// <remarks>
@@ -275,4 +359,36 @@ public sealed class ApprenticeEndpointTests
 
         return body.Data.Id;
     }
+
+    private sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+        private readonly ConcurrentQueue<RecordedLog> _entries = new();
+
+        public IReadOnlyCollection<RecordedLog> Entries => _entries;
+
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(_entries);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class RecordingLogger(ConcurrentQueue<RecordedLog> entries) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull =>
+                null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter) =>
+                entries.Enqueue(new RecordedLog(logLevel, formatter(state, exception), exception));
+        }
+    }
+
+    private sealed record RecordedLog(LogLevel Level, string Message, Exception? Exception);
 }

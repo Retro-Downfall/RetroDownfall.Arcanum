@@ -325,11 +325,14 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// <c>ILogger&lt;Owner&gt;? logger = null</c> are read as the interface defaults they are. The
     /// pattern used to need an identifier directly before the question mark, which let exactly the
     /// settings dependency whose absence turns a denylist into an empty one slip past. The collection
-    /// interfaces are excluded by name: an optional <c>IReadOnlyList&lt;T&gt;?</c> is a data value the
-    /// owner reads, not a collaborator whose omission disables a guard.
+    /// interfaces are excluded, by whole name: an optional <c>IReadOnlyList&lt;T&gt;?</c> is a data value
+    /// the owner reads, not a collaborator whose omission disables a guard. The exclusion is anchored to
+    /// the end of the name (a <c>&lt;</c> or the <c>?</c> must follow it), because a prefix test also hides
+    /// every first-party interface that merely begins with one of those words (<c>ISetupPrompt</c>,
+    /// <c>ISettingsStore</c>, <c>IListener</c>), and a collaborator hidden here defaults to null unseen.
     /// </remarks>
     private static readonly Regex NullableInterfaceDefault = new(
-        @"\b(I(?!ReadOnly|Enumerable|AsyncEnumerable|List|Collection|Dictionary|Set)[A-Z]\w*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\?\s+(\w+)\s*=\s*null\b",
+        @"\b(I(?!(?:ReadOnlyList|ReadOnlyCollection|ReadOnlyDictionary|ReadOnlySet|Enumerable|AsyncEnumerable|List|Collection|Dictionary|Set)[<?])[A-Z]\w*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\?\s+(\w+)\s*=\s*null\b",
         RegexOptions.Compiled,
         TimeSpan.FromSeconds(5));
 
@@ -344,6 +347,16 @@ public sealed class NullableInterfaceConstructorDefaultTests
     [InlineData("IOptions<ArcanumSettings>? settings=null", "IOptions<ArcanumSettings>", "settings")]
     [InlineData("ILogger<Owner>? logger = null", "ILogger<Owner>", "logger")]
     [InlineData("IEqualityComparer<Dictionary<string, int>>? comparer = null", "IEqualityComparer<Dictionary<string, int>>", "comparer")]
+    // Collaborators whose names merely begin with a collection word. The exclusions are whole names, so
+    // none of these may be hidden: ISetupPrompt is a first-party interface, and so is every ISetup* sibling.
+    [InlineData("ISetupPrompt? prompt = null", "ISetupPrompt", "prompt")]
+    [InlineData("ISetupCommitter? committer = null", "ISetupCommitter", "committer")]
+    [InlineData("ISettingsStore? settings = null", "ISettingsStore", "settings")]
+    [InlineData("IListener? listener = null", "IListener", "listener")]
+    [InlineData("ICollectionSource? source = null", "ICollectionSource", "source")]
+    [InlineData("IDictionaryProvider<Owner>? provider = null", "IDictionaryProvider<Owner>", "provider")]
+    [InlineData("IReadOnlyStore? store = null", "IReadOnlyStore", "store")]
+    [InlineData("IEnumerableSource? source = null", "IEnumerableSource", "source")]
     public void The_pattern_reads_every_spelling_of_a_nullable_interface_default(
         string parameter,
         string expectedType,
@@ -362,6 +375,14 @@ public sealed class NullableInterfaceConstructorDefaultTests
     [InlineData("IReadOnlyList<string>? values = null")]
     [InlineData("IReadOnlySet<Guid>? ids = null")]
     [InlineData("IEnumerable<string>? names = null")]
+    [InlineData("IEnumerable? names = null")]
+    [InlineData("IAsyncEnumerable<string>? names = null")]
+    [InlineData("IReadOnlyCollection<string>? values = null")]
+    [InlineData("IReadOnlyDictionary<string, int>? values = null")]
+    [InlineData("IList<string>? values = null")]
+    [InlineData("ICollection<string>? values = null")]
+    [InlineData("IDictionary<string, int>? values = null")]
+    [InlineData("ISet<string>? values = null")]
     [InlineData("Func<IFoo>? factory = null")]
     [InlineData("IFoo foo")]
     [InlineData("IOptionsMonitor<ArcanumSettings> settings")]
