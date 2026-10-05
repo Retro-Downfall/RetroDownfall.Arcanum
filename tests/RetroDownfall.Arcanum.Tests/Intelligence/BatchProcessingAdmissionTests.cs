@@ -109,7 +109,22 @@ public sealed partial class BatchProcessingServiceTests
         {
             stopping.Cancel();
 
-            try { await processing; } catch (OperationCanceledException) { } catch (ArgumentOutOfRangeException) { }
+            // The cleanup only needs the processing loop to have stopped. Cancellation is how a passing run
+            // ends it; an ArgumentOutOfRangeException is how a regression ends it when the loop hands the
+            // gate a negative observed generation (ProcessBatchAsync clamps the predecessor generation at
+            // zero for exactly that reason), and the owning assertions above already reported that.
+            try
+            {
+                await processing;
+            }
+            catch (OperationCanceledException)
+            {
+                // The expected end: the stopping token was cancelled while the loop waited at zero.
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // The negative-generation regression described above, already reported by the assertions.
+            }
 
             await gate.ReopenAsync(closing);
         }

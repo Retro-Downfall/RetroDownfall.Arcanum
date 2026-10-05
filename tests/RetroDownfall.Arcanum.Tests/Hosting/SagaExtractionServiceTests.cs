@@ -1573,6 +1573,58 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Abandonment removes the pending work and retains its segment as one step under the policy lock. A test
+    /// that polls the pending snapshot until it is empty and then reads the abandoned segments (a couple of
+    /// dozen of them do) must therefore see both sides of that step or neither: the snapshot waits for the
+    /// lock instead of reading in the gap between the two writes. Holding the lock here is the one
+    /// deterministic way to observe that; the reader is blocked when its thread reports a wait state.
+    /// </summary>
+    [SkippableFact]
+    public void PendingRequestsForTests_waits_for_an_abandonment_in_flight_instead_of_reading_between_its_two_writes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) =
+            BuildScope(new FakeWeaveService(), new FakeIntelligenceProvider());
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance);
+
+        object policyLock = typeof(SagaExtractionService)
+            .GetField("_pendingPolicySync", global::System.Reflection.BindingFlags.NonPublic | global::System.Reflection.BindingFlags.Instance)?
+            .GetValue(service)
+            ?? throw new InvalidOperationException("The saga service's policy lock was not found.");
+
+        Thread reader = new(() => _ = service.PendingRequestsForTests) { IsBackground = true };
+
+        Monitor.Enter(policyLock);
+
+        try
+        {
+            reader.Start();
+
+            _ = SpinWait.SpinUntil(
+                () => !reader.IsAlive || reader.ThreadState.HasFlag(ThreadState.WaitSleepJoin),
+                TimeSpan.FromSeconds(5));
+
+            Assert.True(
+                reader.IsAlive,
+                "The pending snapshot finished while the policy lock was held, so it can read between abandonment's two writes.");
+
+            Assert.True(reader.ThreadState.HasFlag(ThreadState.WaitSleepJoin));
+        }
+        finally
+        {
+            Monitor.Exit(policyLock);
+        }
+
+        Assert.True(reader.Join(TimeSpan.FromSeconds(5)), "The pending snapshot did not finish once the policy lock was released.");
+    }
+
+    /// <summary>
     /// The single channel reader is FIFO, so the ineligible item's disabled-policy decision is observed
     /// (the skip log precedes the <c>continue</c> that bypasses extraction), then the policy is enabled and
     /// an eligible second item is enqueued. The second item's provider call is the barrier: by the time it
@@ -1678,6 +1730,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Contains(eligibleContent, onlyCall, StringComparison.Ordinal);
 
         Assert.DoesNotContain(ineligibleContent, onlyCall, StringComparison.Ordinal);
+
+        // The provider call count proves nothing was asked of the model for the ineligible session; this
+        // proves nothing was stored for it either (the eligible session's own write races the stop, so only
+        // the ineligible session has a deterministic count).
+        Assert.Equal(0, await CreateStore().CountBySessionAsync(ineligibleSessionId, CancellationToken.None));
     }
 
     [SkippableFact]

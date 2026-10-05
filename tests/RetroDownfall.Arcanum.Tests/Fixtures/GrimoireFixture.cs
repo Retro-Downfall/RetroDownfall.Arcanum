@@ -113,14 +113,7 @@ public sealed class GrimoireFixture : IDisposable
             TestGrimoireSecret,
             _saltStatic);
 
-        try
-        {
-            _ = SweepAbandonedTestArtifacts(TemplateRoot, AbandonedArtifactGracePeriod);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // The sweep is an optimisation; never let it fail the static initializer.
-        }
+        _ = TrySweepAbandonedTestArtifacts(TemplateRoot, AbandonedArtifactGracePeriod);
 
         AppDomain.CurrentDomain.ProcessExit += static (_, _) => DeleteTemplateDirectory();
 
@@ -223,6 +216,32 @@ public sealed class GrimoireFixture : IDisposable
     }
 
     /// <summary>
+    /// Runs <see cref="SweepAbandonedTestArtifacts"/> without ever letting it throw. The sweep is an
+    /// optimisation and it runs from the static constructor, where an escaping exception fails this type's
+    /// initializer for good, so a failure of any kind (not only the I/O and access failures the sweep
+    /// expects) is reported to the diagnostic sink and the run carries on. Returns the number of entries
+    /// removed, or zero when the sweep failed.
+    /// </summary>
+    internal static int TrySweepAbandonedTestArtifacts(
+        string root,
+        TimeSpan gracePeriod,
+        Func<string, TimeSpan, int>? sweep = null,
+        Action<string>? report = null)
+    {
+        try
+        {
+            return (sweep ?? SweepAbandonedTestArtifacts)(root, gracePeriod);
+        }
+        catch (Exception ex)
+        {
+            (report ?? TestDiagnostics.Report)(
+                $"The abandoned test artifact sweep of '{root}' failed ({ex.GetType().Name}): {ex.Message}");
+
+            return 0;
+        }
+    }
+
+    /// <summary>
     /// Probes for a usable SQLCipher native library.
     /// </summary>
     /// <remarks>
@@ -232,7 +251,10 @@ public sealed class GrimoireFixture : IDisposable
     /// <c>Skip.IfNot</c> — would then throw <see cref="TypeInitializationException"/> instead of
     /// skipping. Any failure is therefore reported as unavailable with its own message.
     /// </remarks>
-    internal static (bool Available, string Reason) ProbeSqlCipher(string probePath, string passphrase)
+    internal static (bool Available, string Reason) ProbeSqlCipher(
+        string probePath,
+        string passphrase,
+        Action<string, string>? openProbe = null)
     {
         try
         {
@@ -240,18 +262,7 @@ public sealed class GrimoireFixture : IDisposable
 
             Directory.CreateDirectory(Path.GetDirectoryName(probePath)!);
 
-            {
-                using SqliteConnection probe = new(new SqliteConnectionStringBuilder
-                {
-                    DataSource = probePath,
-                    Password = passphrase,
-                    Pooling = false,
-                }.ToString());
-
-                probe.Open();
-
-                probe.Close();
-            }
+            (openProbe ?? OpenProbeDatabase)(probePath, passphrase);
 
             return (true, string.Empty);
         }
@@ -269,20 +280,45 @@ public sealed class GrimoireFixture : IDisposable
         }
     }
 
+    private static void OpenProbeDatabase(string probePath, string passphrase)
+    {
+        using SqliteConnection probe = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = probePath,
+            Password = passphrase,
+            Pooling = false,
+        }.ToString());
+
+        probe.Open();
+
+        probe.Close();
+    }
+
     /// <summary>
     /// Removes the probe database on a best-effort basis. The probe already proved SQLCipher works
     /// by opening an encrypted connection, so a scanner or indexer still holding the handle must
-    /// neither fail the probe nor throw out of the static constructor.
+    /// neither fail the probe nor throw out of the static constructor. That holds for any failure of the
+    /// delete: the I/O and access failures a held handle or a squatted path produce are the expected
+    /// outcome of a probe that failed, so they pass quietly, and anything else is reported to the
+    /// diagnostic sink. Either way a later run's sweep collects the file.
     /// </summary>
-    private static void TryDeleteProbe(string probePath)
+    internal static void TryDeleteProbe(
+        string probePath,
+        Action<string>? delete = null,
+        Action<string>? report = null)
     {
         try
         {
-            File.Delete(probePath);
+            (delete ?? File.Delete)(probePath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Best-effort cleanup of the probe database; a later run's sweep collects it.
+        }
+        catch (Exception ex)
+        {
+            (report ?? TestDiagnostics.Report)(
+                $"The SQLCipher probe database '{probePath}' could not be deleted ({ex.GetType().Name}): {ex.Message}");
         }
     }
 

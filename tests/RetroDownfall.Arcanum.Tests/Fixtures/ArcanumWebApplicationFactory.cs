@@ -66,7 +66,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     internal ArcanumWebApplicationFactory(
         RestartableArcanumProfileFixture profile,
-        bool ownsProfile)
+        bool ownsProfile,
+        Action<string>? report = null)
     {
         _profile = profile;
 
@@ -87,20 +88,37 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         catch
         {
             // A constructor that throws is never disposed, so nothing else would put the process-global
-            // environment back or release a profile this factory owns.
-            try
-            {
-                RestoreEnvironment();
-            }
-            finally
-            {
-                if (_ownsProfile)
-                {
-                    _profile.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                }
-            }
+            // environment back or release a profile this factory owns. Each cleanup failure is reported
+            // rather than thrown, so it can never replace the failure that explains the bad constructor.
+            ReleaseAfterConstructorFailure(report ?? TestDiagnostics.Report);
 
             throw;
+        }
+    }
+
+    private void ReleaseAfterConstructorFailure(Action<string> report)
+    {
+        try
+        {
+            RestoreEnvironment();
+        }
+        catch (Exception ex)
+        {
+            report($"The failed {nameof(ArcanumWebApplicationFactory)} could not restore the process environment ({ex.GetType().Name}): {ex.Message}");
+        }
+
+        if (!_ownsProfile)
+        {
+            return;
+        }
+
+        try
+        {
+            _profile.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            report($"The failed {nameof(ArcanumWebApplicationFactory)} could not release its profile ({ex.GetType().Name}): {ex.Message}");
         }
     }
 

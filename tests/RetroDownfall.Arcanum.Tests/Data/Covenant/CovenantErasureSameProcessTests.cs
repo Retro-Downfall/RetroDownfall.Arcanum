@@ -5578,6 +5578,8 @@ public sealed class CovenantErasureSameProcessTests
         TaskCompletionSource<bool> release,
         Task<Result<CovenantTurnContext>> result) : IAsyncDisposable
     {
+        private static readonly TimeSpan SettleTimeout = TimeSpan.FromSeconds(5);
+
         private int _released;
 
         internal Task WaitUntilPausedAsync() => paused.WaitAsync(TimeSpan.FromSeconds(5));
@@ -5594,8 +5596,22 @@ public sealed class CovenantErasureSameProcessTests
             Release();
 
             // WhenAny never rethrows the turn's own fault: the owning assertion reports that, and
-            // disposal only guarantees the turn was released and given time to settle.
-            _ = await Task.WhenAny(result, Task.Delay(TimeSpan.FromSeconds(5)));
+            // disposal only guarantees the turn was released and given time to settle. A turn that does
+            // not settle is the one outcome nothing else would report, so it goes to the diagnostic
+            // sink, and the settle timer is cancelled as soon as the turn finishes.
+            using CancellationTokenSource settleTimer = new();
+
+            Task settleTimeout = Task.Delay(SettleTimeout, settleTimer.Token);
+
+            if (await Task.WhenAny(result, settleTimeout) == result)
+            {
+                await settleTimer.CancelAsync();
+
+                return;
+            }
+
+            TestDiagnostics.Report(
+                $"{nameof(PausedTurn)} was released but the paused turn had not settled after {SettleTimeout.TotalSeconds:0} s.");
         }
 
         private void Release()

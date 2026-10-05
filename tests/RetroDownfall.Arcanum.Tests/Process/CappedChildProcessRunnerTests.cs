@@ -440,7 +440,7 @@ public sealed class CappedChildProcessRunnerTests
         }
         finally
         {
-            KillDescendantIfStillRunning(descendantPid);
+            TestDescendantProcess.KillTreeIfRunning(descendantPid);
         }
     }
 
@@ -496,7 +496,7 @@ public sealed class CappedChildProcessRunnerTests
         }
         finally
         {
-            KillDescendantIfStillRunning(descendantPid);
+            TestDescendantProcess.KillTreeIfRunning(descendantPid);
         }
     }
 
@@ -560,7 +560,7 @@ public sealed class CappedChildProcessRunnerTests
         }
         finally
         {
-            KillDescendantIfStillRunning(descendantPid);
+            TestDescendantProcess.KillTreeIfRunning(descendantPid);
         }
     }
 
@@ -644,21 +644,7 @@ public sealed class CappedChildProcessRunnerTests
         }
         finally
         {
-            try
-            {
-                using global::System.Diagnostics.Process descendant =
-                    global::System.Diagnostics.Process.GetProcessById(
-                        int.Parse(
-                            await File.ReadAllTextAsync(pidFile),
-                            System.Globalization.CultureInfo.InvariantCulture));
-
-                descendant.Kill(entireProcessTree: true);
-            }
-            catch (Exception ex) when (ex is IOException or FormatException or ArgumentException or InvalidOperationException or global::System.ComponentModel.Win32Exception)
-            {
-                // The descendant may never have written its pid file, or may already be gone; either way
-                // there is nothing left to kill and the test's own assertions have already run.
-            }
+            TestDescendantProcess.KillRecorded(pidFile);
 
             Directory.Delete(pidDirectory, recursive: true);
         }
@@ -727,7 +713,7 @@ public sealed class CappedChildProcessRunnerTests
         }
         finally
         {
-            KillRecordedDescendant(pidFile);
+            TestDescendantProcess.KillRecorded(pidFile);
 
             Directory.Delete(pidDirectory, recursive: true);
         }
@@ -1092,7 +1078,7 @@ public sealed class CappedChildProcessRunnerTests
         }
         finally
         {
-            KillRecordedDescendant(pidFile);
+            TestDescendantProcess.KillRecorded(pidFile);
 
             Directory.Delete(pidDirectory, recursive: true);
         }
@@ -1428,25 +1414,6 @@ public sealed class CappedChildProcessRunnerTests
             new(null, null, MonitoredMemoryLimitBytes: monitoredLimitBytes);
     }
 
-    private static void KillRecordedDescendant(string pidFile)
-    {
-        try
-        {
-            using global::System.Diagnostics.Process descendant =
-                global::System.Diagnostics.Process.GetProcessById(
-                    int.Parse(
-                        File.ReadAllText(pidFile),
-                        System.Globalization.CultureInfo.InvariantCulture));
-
-            descendant.Kill(entireProcessTree: true);
-        }
-        catch (Exception ex) when (ex is IOException or FormatException or ArgumentException or InvalidOperationException or global::System.ComponentModel.Win32Exception)
-        {
-            // The descendant may never have written its pid file, or may already be gone; either way
-            // there is nothing left to kill and the test's own assertions have already run.
-        }
-    }
-
     private static ProcessStartInfo CreateHarmlessEchoProcessStartInfo()
     {
         if (OperatingSystem.IsWindows())
@@ -1752,20 +1719,5 @@ public sealed class CappedChildProcessRunnerTests
 
             ArgumentList = { seconds.ToString() },
         };
-    }
-
-    private static void KillDescendantIfStillRunning(int descendantPid)
-    {
-        try
-        {
-            using global::System.Diagnostics.Process descendant =
-                global::System.Diagnostics.Process.GetProcessById(descendantPid);
-
-            descendant.Kill(entireProcessTree: true);
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or global::System.ComponentModel.Win32Exception)
-        {
-            // The descendant already exited, which is the outcome the test wants; nothing is left to kill.
-        }
     }
 }

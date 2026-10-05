@@ -60,18 +60,28 @@ internal static class TestDirectoryCleanup
         }
     }
 
+    /// <summary>
+    /// Grants the owner full access to <paramref name="path"/> and every real directory under it. A symlink
+    /// is never followed: <c>chmod</c> acts on the link's target, so granting access through one would
+    /// change directories outside the tree the cleanup was asked to delete.
+    /// </summary>
     [UnsupportedOSPlatform("windows")]
     private static void RestoreOwnerAccess(string path)
     {
         const UnixFileMode OwnerAll = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
-        EnumerationOptions options = new() { RecurseSubdirectories = true, AttributesToSkip = 0, IgnoreInaccessible = true };
+        EnumerationOptions options = new() { AttributesToSkip = 0, IgnoreInaccessible = true };
 
         File.SetUnixFileMode(path, File.GetUnixFileMode(path) | OwnerAll);
 
         foreach (string directory in Directory.EnumerateDirectories(path, "*", options))
         {
-            File.SetUnixFileMode(directory, File.GetUnixFileMode(directory) | OwnerAll);
+            if (new DirectoryInfo(directory).LinkTarget is not null)
+            {
+                continue;
+            }
+
+            RestoreOwnerAccess(directory);
         }
     }
 }

@@ -19,8 +19,12 @@ SECURITY_BRANCH_TARGET = 100.0
 # DEFAULT_BRANCH_TARGET apply to. The Cli is large and mostly an interactive surface; Secrets is
 # small and platform specific. Neither may move the floors Core, Infrastructure and Api are held to.
 # name -> (environment override, default line floor in percent). The defaults sit a few points under
-# what the Cli and Security test namespaces alone reach (Cli 80.7%, Secrets 66.7%), so the full suite
-# clears them with margin; a floor of 0 reports an assembly without gating it.
+# what the Cli and Security test namespaces alone reached, so the full suite clears them with margin; a
+# floor of 0 reports an assembly without gating it.
+#
+# Measured 2026-10-04 on macOS from a Cli + Security test-namespace subset (not the full suite): Cli
+# 80.69% of 32,834 lines, Secrets 66.72% of 568 lines. This is the one place the measurement is recorded;
+# docs/Arcanum.DESIGN.md section 13.1 states only the floors, because a percentage in prose goes stale.
 REPORTED_ASSEMBLY_LINE_FLOORS = {
     "RetroDownfall.Arcanum.Cli": ("COVERAGE_CLI_LINE_TARGET", 75.0),
     "RetroDownfall.Arcanum.Secrets": ("COVERAGE_SECRETS_LINE_TARGET", 60.0),
@@ -80,6 +84,12 @@ class PackageStats:
     ``branch-rate`` attributes but no counts, so the weights are rebuilt from the class line
     entries: unique (source file, line) pairs for lines, and the largest condition total any class
     reports for a line for branches. The rates stay exact; only the relative weights are counted.
+
+    Checked 2026-10-05 against a real five-assembly report from the instrumented test run: the summed
+    line weights equal the root ``lines-valid`` exactly, and the summed branch weights are within two of
+    the root ``branches-valid`` (75,518 against 75,520; coverlet's root counts a couple of conditions its
+    class lines do not list, and no per-class or per-method reading of the lines recovers them). That moves
+    a recombined rate by far less than a hundredth of a percentage point.
     """
 
     def __init__(self, package: ET.Element) -> None:
