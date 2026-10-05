@@ -51,19 +51,6 @@ internal sealed partial class WorkspaceIndexingService(
     IWorkspaceIndexRuntimeStatusProvider,
     IAsyncDisposable
 {
-    private static readonly HashSet<string> IgnoredDirectorySegments = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "bin",
-        "obj",
-        ".git",
-        "node_modules",
-        ".vs",
-        ".nuget",
-        "packages",
-        "dist",
-        "build",
-    };
-
     /// <summary>
     /// Path comparison for the visited canonical-directory set that terminates symlink cycles, matching
     /// <c>EyeOfTheWorldService.ScanWorkspace</c> and <c>SpellScanner</c>.
@@ -138,7 +125,9 @@ internal sealed partial class WorkspaceIndexingService(
 
                 string relativePath = Path.GetRelativePath(workspacePath, normalizedPath);
 
-                if (ContainsIgnoredDirectorySegment(relativePath))
+                // The shared rule, lexical half: a dot-prefixed or ignored segment is never indexed and
+                // anything already stored for it is removed.
+                if (!WorkspaceIndexEligibility.HasEligibleSegments(relativePath))
                 {
                     await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
@@ -165,9 +154,7 @@ internal sealed partial class WorkspaceIndexingService(
                     return WorkspaceUnitOutcome.Failed;
                 }
 
-                bool ignored = !extensions.Contains(Path.GetExtension(normalizedPath));
-
-                if (ignored || !File.Exists(normalizedPath))
+                if (!File.Exists(normalizedPath) || !IsEligibleOnDisk(workspacePath, relativePath, extensions))
                 {
                     await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
@@ -418,7 +405,8 @@ internal sealed partial class WorkspaceIndexingService(
     /// <summary>
     /// Manually walks <paramref name="workspacePath"/> breadth-first (mirroring
     /// <c>PhysicalFileSystemBrowser.ListAsync</c>'s recursive-listing walk), pruning
-    /// <see cref="IgnoredDirectorySegments"/> and symlink-escaping subdirectories <b>before</b>
+    /// every directory <see cref="WorkspaceIndexEligibility"/> rejects (ignored, dot-prefixed, hidden or
+    /// system) and symlink-escaping subdirectories <b>before</b>
     /// descending into them — unlike <see cref="Directory.EnumerateFiles(string, string, EnumerationOptions)"/>
     /// with <c>RecurseSubdirectories = true</c>, which would still visit every entry under a huge
     /// ignored directory (for example <c>node_modules</c>) only to discard them one by one. The walk
@@ -458,22 +446,22 @@ internal sealed partial class WorkspaceIndexingService(
                     continue;
                 }
 
-                if ((attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0)
+                bool isDirectory = (attributes & FileAttributes.Directory) != 0;
+
+                // The shared rule, judged on the entry's own name because every ancestor was vetted
+                // before the walk descended into it. A hidden, system, dot-prefixed or ignored
+                // directory is pruned before recursion, so its contents are never visited at all
+                // rather than being walked and discarded one entry at a time.
+                if (!WorkspaceIndexEligibility.IsEligible(
+                        Path.GetFileName(fullPath),
+                        attributes,
+                        isDirectory ? null : extensions))
                 {
                     continue;
                 }
 
-                if ((attributes & FileAttributes.Directory) != 0)
+                if (isDirectory)
                 {
-                    string name = Path.GetFileName(fullPath);
-
-                    if (IgnoredDirectorySegments.Contains(name))
-                    {
-                        // Pruned before recursion — its contents are never visited at all, rather
-                        // than being walked and discarded one entry at a time.
-                        continue;
-                    }
-
                     if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspacePath, fullPath, out _))
                     {
                         // Escaping symlinked directory — never descended into.
@@ -488,7 +476,7 @@ internal sealed partial class WorkspaceIndexingService(
 
                     pendingDirectories.Enqueue(fullPath);
                 }
-                else if (extensions.Contains(Path.GetExtension(fullPath)))
+                else
                 {
                     yield return fullPath;
                 }
@@ -1361,19 +1349,24 @@ internal sealed partial class WorkspaceIndexingService(
         cmd.Parameters.Add(parameter);
     }
 
-    private static bool ContainsIgnoredDirectorySegment(string relativePath)
+    /// <summary>
+    /// The shared eligibility rule applied to a file a watcher event named: dot-prefixed and ignored
+    /// segments, the Hidden/System attribute of the leaf and of every ancestor directory, and the
+    /// configured extensions. An entry whose attributes cannot be read is not eligible.
+    /// </summary>
+    private static bool IsEligibleOnDisk(string workspacePath, string relativePath, IReadOnlySet<string> extensions)
     {
-        foreach (string segment in relativePath.Split(
-                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                     StringSplitOptions.RemoveEmptyEntries))
+        try
         {
-            if (IgnoredDirectorySegments.Contains(segment))
-            {
-                return true;
-            }
+            return WorkspaceIndexEligibility.IsEligible(
+                relativePath,
+                prefix => File.GetAttributes(Path.Combine(workspacePath, prefix)),
+                extensions);
         }
-
-        return false;
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private enum PendingPathAction

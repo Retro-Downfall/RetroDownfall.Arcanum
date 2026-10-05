@@ -226,6 +226,63 @@ public sealed partial class WorkspaceIndexingServiceTests
         Assert.Equal(new WorkspaceIndexingService.WorkspaceSchedulerSnapshot(0, 0, false), service.GetSchedulerSnapshot());
     }
 
+    /// <summary>
+    /// A build writing thousands of files under <c>obj/</c> must not fill the 4,096-path coalescer: queued,
+    /// those events cost a delete statement apiece and overflow into a forced full re-walk of the whole
+    /// workspace.
+    /// </summary>
+    [SkippableFact]
+    public async Task WatcherEvents_UnderIgnoredDirectories_NeverEnterPendingDemand()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out _, watcherFactory: watchers);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        FakeWorkspaceFileWatcher watcher = watchers.Single;
+
+        string generated = Path.Combine(_workspace.Root, "obj", "Debug");
+
+        for (int index = 0; index < 5_000; index++)
+        {
+            watcher.TriggerCreated(Path.Combine(generated, $"generated-{index}.json"));
+        }
+
+        watcher.TriggerChanged(Path.Combine(_workspace.Root, "node_modules", "pkg", "index.js"));
+
+        watcher.TriggerDeleted(Path.Combine(_workspace.Root, ".git", "index"));
+
+        watcher.TriggerRenamed(
+            Path.Combine(_workspace.Root, "build", "old.json"),
+            Path.Combine(_workspace.Root, "dist", "new.json"));
+
+        WorkspaceIndexRuntimeStatus afterEvents = service.GetRuntimeStatus(_workspace.Root);
+
+        Assert.NotNull(afterEvents.LastEventAt);
+
+        Assert.False(afterEvents.Overflowed);
+
+        Assert.False(afterEvents.Degraded);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        WorkspaceIndexRuntimeStatus afterDrain = service.GetRuntimeStatus(_workspace.Root);
+
+        // No demand ever existed, so no handle ran: nothing was reconciled, indexed or embedded.
+        Assert.Null(afterDrain.LastSuccessfulIndexAt);
+
+        Assert.False(afterDrain.Overflowed);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        await service.DisposeAsync();
+    }
+
     private static async Task ProcessPendingWatcherEventsAsync(WorkspaceIndexingService service, string path, CancellationToken cancellationToken)
     {
         service.QueuePendingWatcherEvents(path, cancellationToken);

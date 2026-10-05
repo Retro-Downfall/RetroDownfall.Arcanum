@@ -316,6 +316,16 @@ internal sealed partial class WorkspaceIndexingService
 
     private void QueueWatcherChange(WorkspaceEntry entry, WatcherRegistration registration, WorkspaceFileChange change)
     {
+        // A path the shared eligibility rule rejects (an ignored directory, a dot-prefixed or hidden
+        // segment) never enters Pending: queued, it would cost a delete statement per event and count
+        // toward the 4,096-path cap that forces a full re-walk, so a build writing thousands of files
+        // under obj/ would trigger one. Judged before the scheduler gate is taken.
+        bool queueOldPath = change.Kind == WorkspaceFileChangeKind.Renamed
+            && change.OldFullPath is not null
+            && IsIndexablePath(entry.Path, change.OldFullPath);
+
+        bool queuePath = IsIndexablePath(entry.Path, change.FullPath);
+
         lock (_schedulerGate)
         {
             if (_intakeClosed || !IsCurrentLocked(entry) || !ReferenceEquals(entry.Watcher, registration))
@@ -325,15 +335,23 @@ internal sealed partial class WorkspaceIndexingService
 
             entry.Status.MarkEvent();
 
-            bool overflowed = false;
-
-            if (change.Kind == WorkspaceFileChangeKind.Renamed && change.OldFullPath is not null)
+            if (!queueOldPath && !queuePath)
             {
-                overflowed |= entry.Pending.Add(change.OldFullPath, PendingPathAction.Delete);
+                return;
             }
 
-            overflowed |= entry.Pending.Add(change.FullPath,
-                change.Kind == WorkspaceFileChangeKind.Deleted ? PendingPathAction.Delete : PendingPathAction.Upsert);
+            bool overflowed = false;
+
+            if (queueOldPath)
+            {
+                overflowed |= entry.Pending.Add(change.OldFullPath!, PendingPathAction.Delete);
+            }
+
+            if (queuePath)
+            {
+                overflowed |= entry.Pending.Add(change.FullPath,
+                    change.Kind == WorkspaceFileChangeKind.Deleted ? PendingPathAction.Delete : PendingPathAction.Upsert);
+            }
 
             if (overflowed)
             {
@@ -342,6 +360,26 @@ internal sealed partial class WorkspaceIndexingService
         }
 
         SignalWatcherWork();
+    }
+
+    /// <summary>
+    /// Whether a watcher event's path may be queued: the workspace root itself (a directory event that
+    /// still requests reconciliation) or a path whose relative segments pass the lexical half of
+    /// <see cref="WorkspaceIndexEligibility"/>. A path that cannot be made relative is dropped.
+    /// </summary>
+    private static bool IsIndexablePath(string workspacePath, string fullPath)
+    {
+        try
+        {
+            string relativePath = Path.GetRelativePath(workspacePath, fullPath);
+
+            return string.Equals(relativePath, ".", StringComparison.Ordinal)
+                || WorkspaceIndexEligibility.HasEligibleSegments(relativePath);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     private void HandleWatcherError(WorkspaceEntry entry, WatcherRegistration registration, Exception exception)
