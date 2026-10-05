@@ -919,6 +919,41 @@ public sealed class CovenantMutationKernelTests
     }
 
     [Fact]
+    public async Task An_empty_batch_still_meets_the_stale_dataset_generation_and_epochs()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
+
+        // Receipt replay resolves "for every intent", and a batch with no intents has none to resolve:
+        // it must not be answered as though it were a batch made entirely of replays, which would skip
+        // every comparison a batch with nothing to apply is still held to.
+        Result<IReadOnlyList<CovenantMutationReceipt>> wrongGeneration = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(Guid.NewGuid()),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, wrongGeneration.Error.Code);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> wrongKeyEpoch = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            new CovenantMutationBatch(generation, 2, 1, CovenantMutationFixture.CommitTime, []),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, wrongKeyEpoch.Error.Code);
+
+        // A current empty batch has nothing to write and says so.
+        Result<IReadOnlyList<CovenantMutationReceipt>> current = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(generation),
+            Token);
+
+        Assert.True(current.IsSuccess, current.IsFailure ? current.Error.Code : null);
+
+        Assert.Empty(current.Value);
+    }
+
+    [Fact]
     public async Task Provenance_leaves_are_stored_and_summarized_on_their_version()
     {
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
