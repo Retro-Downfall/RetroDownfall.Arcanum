@@ -11,11 +11,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class AskCommandErrorHandlingTests
 {
-
     [Fact]
     public void Ask_yields_exit_one_when_turn_throws_unexpected_exception()
     {
-
         // An unexpected (non-OCE) fault inside the ask turn must surface as a formatted
         // error + exit 1, not as an unhandled exception / raw stack trace. This exercises
         // the real Program.Main wiring (CliApplicationFactory.RunAsync) with the eye
@@ -38,7 +36,6 @@ public sealed class AskCommandErrorHandlingTests
         CliTestResult result = CliTestHarness.Run(services, "run", "hello");
 
         Assert.Equal(1, result.ExitCode);
-
     }
 
     /// <summary>
@@ -46,12 +43,11 @@ public sealed class AskCommandErrorHandlingTests
     /// <c>ex.Message</c> verbatim, so an <see cref="IOException"/> naming a local path reached the
     /// operator's stderr unredacted, and the exit code was a hardcoded 1 rather than
     /// <see cref="CliFailureMapper"/>'s classification. Routed through the mapper, only its safe
-    /// copy and exit code reach the console; the raw message is confined to <c>-v</c> output.
+    /// copy and exit code reach the console; the raw message reaches no output at all, <c>-v</c> included.
     /// </summary>
     [Fact]
     public void Ask_routes_unexpected_exceptions_through_the_safe_failure_mapper()
     {
-
         const string LeakedPath = "/Users/x/.arcanum/secret.bin";
 
         ServiceCollection services = new();
@@ -76,7 +72,35 @@ public sealed class AskCommandErrorHandlingTests
         Assert.DoesNotContain("IOException", result.Error, StringComparison.Ordinal);
 
         Assert.Contains(expected.SafeMessage, result.Error, StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// <c>-v</c> after an unexpected failure adds the exception type and never its message, because an
+    /// upstream message can carry a secret or a path. The ask turn used to print <c>ex.Message</c> under
+    /// <c>-v</c>, which contradicted the documented global option and the type-only line every other
+    /// command gets from the factory's catch.
+    /// </summary>
+    [Fact]
+    public void Ask_under_verbose_names_the_exception_type_and_never_its_message()
+    {
+        const string LeakedPath = "/Users/x/.arcanum/secret.bin";
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+
+        services.AddSingleton<IEyeOfTheWorld>(
+            new ThrowingEyeWith(new IOException($"{LeakedPath} denied")));
+
+        CliTestResult result = CliTestHarness.Run(services, "-v", "run", "hello");
+
+        Assert.Contains(typeof(IOException).FullName!, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(LeakedPath, result.Output + result.Error, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -90,7 +114,6 @@ public sealed class AskCommandErrorHandlingTests
     [Fact]
     public void Ask_maps_a_network_exception_to_the_network_exit_code()
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -109,27 +132,19 @@ public sealed class AskCommandErrorHandlingTests
         Assert.Equal((int)expected.ExitCode, result.ExitCode);
 
         Assert.Contains(expected.SafeMessage, result.Error, StringComparison.Ordinal);
-
     }
 
     private sealed class ThrowingEye : IEyeOfTheWorld
     {
-
         public Task<PatternSnapshot> PerceivePatternAsync(string directoryPath, CancellationToken cancellationToken)
         {
-
             throw new InvalidOperationException("simulated eye failure");
-
         }
-
     }
 
     private sealed class ThrowingEyeWith(Exception exception) : IEyeOfTheWorld
     {
-
         public Task<PatternSnapshot> PerceivePatternAsync(string directoryPath, CancellationToken cancellationToken) =>
             throw exception;
-
     }
-
 }

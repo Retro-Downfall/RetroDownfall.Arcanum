@@ -37,7 +37,9 @@ internal sealed class ServeProcessLauncher : IServeProcessLauncher
             startInfo.Environment[key] = value;
         }
 
-        Process process = Process.Start(startInfo)
+        // Only the id leaves this method, so the handle is released here. Disposing a Process never
+        // stops the child it started: the host keeps running exactly as before.
+        using Process process = Process.Start(startInfo)
             ?? throw new InvalidOperationException($"Failed to start process '{options.ExecutablePath}'.");
 
         return Task.FromResult(new StartedProcess(process.Id));

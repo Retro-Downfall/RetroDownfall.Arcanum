@@ -391,7 +391,8 @@ public sealed class AskCommand(
 
             CliFailure failure = CliFailureMapper.Map(ex);
 
-            dispatcher.WriteVerbose(ex.Message);
+            // Type only, as for every other command: an upstream message can carry a secret or a path.
+            dispatcher.WriteVerbose($"Exception type: {ex.GetType().FullName}");
 
             stderrConsole.MarkupLine(
                 palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(failure.SafeMessage)));

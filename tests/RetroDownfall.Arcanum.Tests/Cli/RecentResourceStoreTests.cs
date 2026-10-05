@@ -88,9 +88,9 @@ public sealed class RecentResourceStoreTests : IDisposable
     }
 
     /// <summary>
-    /// <c>CreateOwnerOnlyTempFile</c> narrows the file at creation on Unix, but on Windows it leaves
-    /// the ACL for the caller to apply, so the recent-resources staging file has to be hardened
-    /// explicitly, and before the first byte, not after the move. The action stands in for the
+    /// <c>CreateOwnerOnlyTempFile</c> narrows the file at creation on every platform, and the
+    /// recent-resources staging file repeats the narrowing explicitly, before the first byte and not
+    /// after the move, as belt and braces for a file the create reused. The action stands in for the
     /// platform narrowing so the order can be pinned on every host.
     /// </summary>
     [Fact]

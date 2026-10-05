@@ -665,11 +665,14 @@ public sealed class DocumentationCodeContradictionTests
     /// <summary>
     /// <c>ServeProcessLauncher</c> spawns the host in the launching command's own process group, so the
     /// terminal signals it only while that command is the terminal's foreground job. After
-    /// <c>run</c> or <c>ask</c> has returned the host is still up (a pseudo-terminal probe on macOS saw
-    /// it survive both Ctrl+C at the shell and closing the terminal), so a sentence that says Ctrl+C or
-    /// closing the terminal ends an auto-launched host, or that an implicit invocation never leaves a
-    /// listener behind, is false for the common case and security-relevant. The sentences are true
-    /// only while the launcher adds no detach step, which is the source half of the pairing.
+    /// <c>run</c> or <c>ask</c> has returned the host is still up (job control: the terminal signals its
+    /// foreground group and the shell, and the shell no longer lists the finished command), so a
+    /// sentence that says Ctrl+C or closing the terminal ends an auto-launched host, or that an
+    /// implicit invocation never leaves a listener behind, is false for the common case and
+    /// security-relevant. The sentences are true only while the launcher adds no detach step, which is
+    /// the source half of the pairing. The design says this is the job-control rule and that the
+    /// repository ships no probe of it, because an unreproducible "observed with a probe" is not
+    /// evidence a reader can check.
     /// </summary>
     [Fact]
     public void An_auto_launched_host_is_not_documented_as_ending_with_its_terminal()
@@ -709,16 +712,22 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("only while that command is still the terminal's foreground job", commands, StringComparison.Ordinal);
 
         Assert.Contains("keeps running until `arcanum serve quit`", commands, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("pseudo-terminal probe", design, StringComparison.Ordinal);
+
+        Assert.Contains("no probe of it ships here", design, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// <c>CreateOwnerOnlyTempFile</c> narrows the file at creation on Unix only; on Windows its own
-    /// comment leaves the ACL to a later <c>ApplyOwnerOnlyFile</c>. A sentence that says the CLI's temp
-    /// files are owner-only before the first byte, with no platform, is therefore false on Windows
-    /// until each site narrows for itself, which the design now says site by site.
+    /// <c>CreateOwnerOnlyTempFile</c> makes a temp file owner-only from the create on every platform: a
+    /// create mode on Unix and, on Windows, a protected current-user-only security descriptor supplied in
+    /// the create call. The design says so once for every site. A sentence that says the helper
+    /// "hardens nothing at creation" on Windows, or that a site narrows for itself because it does not,
+    /// is false for as long as the helper builds the descriptor, which is the source half of the
+    /// pairing.
     /// </summary>
     [Fact]
-    public void The_cli_temp_file_posture_is_documented_per_platform()
+    public void The_cli_temp_file_posture_is_documented_for_every_platform()
     {
         string design = ReadDocument("Arcanum.DESIGN.md");
 
@@ -731,17 +740,18 @@ public sealed class DocumentationCodeContradictionTests
                 "SecureFilePermissions.cs"))
             .Replace("\r\n", "\n", StringComparison.Ordinal);
 
-        // The claim is true only while the helper leaves Windows hardening to its caller.
-        Assert.Contains("ACL hardening is applied", helper, StringComparison.Ordinal);
+        // The claim is true only while the helper supplies the Windows descriptor in the create call.
+        Assert.Contains("CreateWindowsOwnerOnlyTempFile", helper, StringComparison.Ordinal);
 
-        Assert.DoesNotContain(
-            "so they are owner-only before the first byte is written rather than narrowed after the write.",
-            design,
-            StringComparison.Ordinal);
+        Assert.Contains("security.SetAccessRuleProtection(", helper, StringComparison.Ordinal);
 
-        Assert.Contains("On Windows that helper hardens nothing at creation", design, StringComparison.Ordinal);
+        Assert.DoesNotContain("On Windows that helper hardens nothing at creation", design, StringComparison.Ordinal);
 
-        Assert.Contains("RecentResourceStore.CreateStagingFile", design, StringComparison.Ordinal);
+        Assert.DoesNotContain("keeps the ACL it inherits from the destination directory", design, StringComparison.Ordinal);
+
+        Assert.Contains("a protected current-user-only ACL on Windows", design, StringComparison.Ordinal);
+
+        Assert.Contains("`attachment export` staging file", design, StringComparison.Ordinal);
     }
 
     private static string ReadDocument(string fileName) =>

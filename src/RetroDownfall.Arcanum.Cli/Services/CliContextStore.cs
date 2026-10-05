@@ -147,7 +147,8 @@ public sealed class CliContextStore :
 
         try
         {
-            // Owner-only before the first byte, not narrowed after the write.
+            // Owner-only before the first byte on every platform (a create mode on Unix, a protected
+            // ACL on Windows), not narrowed after the write.
             using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
             {
                 JsonSerializer.Serialize(

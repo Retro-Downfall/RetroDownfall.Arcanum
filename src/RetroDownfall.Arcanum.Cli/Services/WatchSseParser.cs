@@ -2,8 +2,6 @@ using System.Buffers;
 
 using System.Runtime.CompilerServices;
 
-using System.Text;
-
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -16,19 +14,14 @@ internal static class WatchSseParser
 
     /// <summary>
     /// The most characters a single line, or the data of one event joined, may hold before the event is
-    /// discarded. It is a runaway guard, not a payload policy: the server's own ceiling on one tool
-    /// output is 64 MiB, so nothing the server is allowed to send reaches it, while a stream that never
-    /// ends a line cannot grow the client without bound.
+    /// discarded. See <see cref="BoundedLineReader.DefaultMaxLineLength"/> for why it is a runaway guard
+    /// and not a payload policy.
     /// </summary>
-    internal const int DefaultMaxEventLength = 64 * 1024 * 1024;
+    internal const int DefaultMaxEventLength = BoundedLineReader.DefaultMaxLineLength;
 
     private static readonly Error InvalidJsonError = new(
         "Api.InvalidResponse",
         "Malformed or non-object JSON event received from the API.");
-
-    private static readonly Error OversizedEventError = new(
-        "Api.InvalidResponse",
-        "An event larger than the client limit was received and discarded.");
 
     internal static IAsyncEnumerable<WatchSseFrame> ParseAsync(
         TextReader reader,
@@ -84,7 +77,7 @@ internal static class WatchSseParser
 
         string? eventName = null;
 
-        Task<SseLine?>? pendingRead = null;
+        Task<BoundedLine?>? pendingRead = null;
 
         CancellationTokenSource? idleWindow = null;
 
@@ -139,7 +132,7 @@ internal static class WatchSseParser
                     continue;
                 }
 
-                SseLine? read = await pendingRead
+                BoundedLine? read = await pendingRead
                     .ConfigureAwait(false);
 
                 pendingRead = null;
@@ -150,7 +143,7 @@ internal static class WatchSseParser
                 {
                     if (oversized)
                     {
-                        yield return CreateOversizedFrame();
+                        yield return CreateOversizedFrame(maxEventLength);
                     }
                     else if (dataLines.Count > 0)
                     {
@@ -195,7 +188,7 @@ internal static class WatchSseParser
                     {
                         ResetEvent(dataLines, ref eventName, ref dataLength, ref oversized);
 
-                        yield return CreateOversizedFrame();
+                        yield return CreateOversizedFrame(maxEventLength);
 
                         continue;
                     }
@@ -281,10 +274,12 @@ internal static class WatchSseParser
         }
     }
 
-    private static WatchSseFrame CreateOversizedFrame() =>
+    private static WatchSseFrame CreateOversizedFrame(int maxEventLength) =>
         new(
             WatchSseFrameType.Error,
-            Error: OversizedEventError,
+            Error: new Error(
+                "Api.InvalidResponse",
+                BoundedLineReader.DescribeOversizedLine(maxEventLength)),
             Recoverable: true);
 
     private static WatchSseFrame CreateEventFrame(
@@ -424,151 +419,5 @@ internal static class WatchSseParser
         dataLength = 0;
 
         oversized = false;
-    }
-
-    /// <summary>
-    /// One line of the stream. A line over the limit is not kept: <see cref="TooLong"/> says it existed.
-    /// </summary>
-    private readonly record struct SseLine(string Text, bool TooLong);
-
-    /// <summary>
-    /// Splits a character stream into lines on LF, CR or CRLF, the three terminators the SSE format
-    /// allows, without ever holding more than <c>maxLineLength</c> characters of one line. A line is
-    /// complete the moment its terminator arrives; a LF that follows a CR in a later read is swallowed
-    /// rather than read as an empty line.
-    /// </summary>
-    private sealed class BoundedLineReader(TextReader reader, int maxLineLength)
-    {
-        private readonly char[] _buffer = new char[4096];
-
-        private readonly StringBuilder _line = new();
-
-        private int _start;
-
-        private int _end;
-
-        private bool _skipLineFeed;
-
-        private bool _lineTooLong;
-
-        public async Task<SseLine?> ReadLineAsync(CancellationToken cancellationToken)
-        {
-            _line.Clear();
-
-            _lineTooLong = false;
-
-            while (true)
-            {
-                if (_start == _end)
-                {
-                    _start = 0;
-
-                    _end = 0;
-
-                    _end = await reader
-                        .ReadAsync(_buffer.AsMemory(), cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (_end == 0)
-                    {
-                        return _lineTooLong || _line.Length > 0
-                            ? CompleteLine()
-                            : null;
-                    }
-                }
-
-                if (TryConsumeLine(out SseLine line))
-                {
-                    return line;
-                }
-            }
-        }
-
-        private bool TryConsumeLine(out SseLine line)
-        {
-            line = default;
-
-            if (_skipLineFeed)
-            {
-                _skipLineFeed = false;
-
-                if (_buffer[_start] == '\n')
-                {
-                    _start++;
-
-                    return false;
-                }
-            }
-
-            ReadOnlySpan<char> available = _buffer.AsSpan(_start, _end - _start);
-
-            int terminator = available.IndexOfAny('\r', '\n');
-
-            if (terminator < 0)
-            {
-                Append(available);
-
-                _start = _end;
-
-                return false;
-            }
-
-            ReadOnlySpan<char> segment = available[..terminator];
-
-            bool carriageReturn = available[terminator] == '\r';
-
-            _start += terminator + 1;
-
-            if (carriageReturn)
-            {
-                if (_start == _end)
-                {
-                    _skipLineFeed = true;
-                }
-                else if (_buffer[_start] == '\n')
-                {
-                    _start++;
-                }
-            }
-
-            if (_line.Length == 0
-                && !_lineTooLong
-                && segment.Length <= maxLineLength)
-            {
-                line = new SseLine(new string(segment), TooLong: false);
-
-                return true;
-            }
-
-            Append(segment);
-
-            line = CompleteLine();
-
-            return true;
-        }
-
-        private void Append(ReadOnlySpan<char> segment)
-        {
-            if (_lineTooLong)
-            {
-                return;
-            }
-
-            if (_line.Length + segment.Length > maxLineLength)
-            {
-                _lineTooLong = true;
-
-                _line.Clear();
-
-                return;
-            }
-
-            _line.Append(segment);
-        }
-
-        private SseLine CompleteLine() =>
-            _lineTooLong
-                ? new SseLine(string.Empty, TooLong: true)
-                : new SseLine(_line.ToString(), TooLong: false);
     }
 }

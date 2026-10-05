@@ -143,9 +143,9 @@ public sealed class RecentResourceStore : IRecentResourceStore
 
     /// <summary>
     /// Creates the staging file owner-only before any byte is written, on every platform.
-    /// <see cref="SecureFilePermissions.CreateOwnerOnlyTempFile"/> narrows the file at creation on Unix
-    /// but leaves the ACL to a later <c>ApplyOwnerOnlyFile</c> on Windows, so the narrowing is applied
-    /// here too: it is a repeat of the creation mode on Unix and the first hardening on Windows.
+    /// <see cref="SecureFilePermissions.CreateOwnerOnlyTempFile"/> already does so at creation (a create
+    /// mode on Unix, a protected ACL on Windows), so the narrowing applied here is belt and braces: a
+    /// repeat on a file the create made, and the repair for one it reused.
     /// </summary>
     internal static FileStream CreateStagingFile(string path, Action<string> applyOwnerOnly)
     {

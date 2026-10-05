@@ -660,6 +660,74 @@ public sealed class FileBatchCommandTests
         }
     }
 
+    /// <summary>
+    /// A destination the runtime cannot normalise (an embedded NUL here; a reserved character on
+    /// Windows) used to escape the command's own <c>Path.GetFullPath</c> as an unhandled exception and
+    /// exit 1 as "An unexpected CLI error occurred." It is a destination the operator can fix, so it is
+    /// the same typed <c>Files.WriteFailed</c> the client reports for a bad destination, and nothing is
+    /// downloaded.
+    /// </summary>
+    [Fact]
+
+    public void File_download_to_a_path_that_cannot_be_normalised_reports_a_write_failure()
+    {
+        RecordingHandler handler = new(_ => JsonResponse(FileJson));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["file", "download", FileId, "--output", "bad\0name.jsonl"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Files.WriteFailed", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            handler.Requests,
+            static request => request.Path.EndsWith("/content", StringComparison.Ordinal));
+    }
+
+    [Fact]
+
+    public void Batch_output_to_a_path_that_cannot_be_normalised_reports_a_write_failure()
+    {
+        RecordingHandler handler = new(_ => JsonResponse(BatchJsonWithArtifacts("file-33333333333333333333333333333333", null)));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["batch", "output", BatchId, "--output", "bad\0name.jsonl"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Files.WriteFailed", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            handler.Requests,
+            static request => request.Path.EndsWith("/content", StringComparison.Ordinal));
+    }
+
+    [Fact]
+
+    public void File_upload_of_a_path_that_cannot_be_normalised_reports_it_as_not_found()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["file", "upload", "bad\0name.jsonl"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Local file not found", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.Ordinal);
+
+        Assert.Empty(handler.Requests);
+    }
+
     [Fact]
 
     public void Batch_output_resolves_server_artifact_id_and_downloads_jsonl()

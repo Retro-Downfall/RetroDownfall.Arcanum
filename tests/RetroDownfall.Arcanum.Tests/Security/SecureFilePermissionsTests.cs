@@ -457,6 +457,87 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Windows has no create mode, so the owner-only posture of a temp file there is an ACL, and an ACL
+    /// applied after the open leaves a window in which the file carries the parent directory's
+    /// inherited permissions. The create itself has to carry a protected, current-user-only security
+    /// descriptor. The seam stands in for the Windows create so the request it makes can be pinned on
+    /// every host; <see cref="CreateOwnerOnlyTempFile_is_owner_only_from_the_create_on_windows"/> proves
+    /// the real create on Windows.
+    /// </summary>
+    [Fact]
+    public void CreateOwnerOnlyTempFile_asks_the_platform_create_for_a_protected_current_user_only_acl()
+    {
+        string tempPath = Path.Combine(_temp.Root, "windows-acl.tmp." + Guid.NewGuid().ToString("N"));
+
+        List<(string Path, bool ProtectFromInheritance, bool CurrentUserOnly)> requests = [];
+
+        SecureFilePermissions.WindowsOwnerOnlyTempFileCreateForTests =
+            (path, protectFromInheritance, currentUserOnly) =>
+            {
+                requests.Add((path, protectFromInheritance, currentUserOnly));
+
+                return new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+            };
+
+        try
+        {
+            using FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath);
+
+            Assert.Equal(0, stream.Length);
+        }
+        finally
+        {
+            SecureFilePermissions.WindowsOwnerOnlyTempFileCreateForTests = null;
+
+            File.Delete(tempPath);
+        }
+
+        (string Path, bool ProtectFromInheritance, bool CurrentUserOnly) request = Assert.Single(requests);
+
+        Assert.Equal(tempPath, request.Path);
+
+        Assert.True(request.ProtectFromInheritance);
+
+        Assert.True(request.CurrentUserOnly);
+    }
+
+    /// <summary>
+    /// The Windows lane of the test above: the real create, observed while the stream is still open
+    /// and before anything was written, already has a protected ACL owned by, and granting only, the
+    /// current user. It needs a Windows host to run and is skipped everywhere else.
+    /// </summary>
+    [SkippableFact]
+    public void CreateOwnerOnlyTempFile_is_owner_only_from_the_create_on_windows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The ACL posture of a created file is what this asserts against.");
+
+        // Dead on any other host once Skip.IfNot has run; kept so the platform analyzer sees the guard.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string tempPath = Path.Combine(_temp.Root, "windows-acl.tmp." + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            using FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath);
+
+            Assert.Equal(0, stream.Length);
+
+            Assert.True(
+                SecureFilePermissions.HasOwnerOnlyPosture(tempPath, isDirectory: false),
+                "The temp file did not carry a protected current-user-only ACL when it was created.");
+
+            stream.Write([1, 2, 3]);
+        }
+        finally
+        {
+            File.Delete(tempPath);
+        }
+    }
+
+    /// <summary>
     /// Every secret-bearing save consults the strict-verification override — the credential mirrors,
     /// the <c>.kdf</c> sidecar, the stale marker and the Data Protection key ring — and test
     /// collections run in parallel. An override one test installs must therefore stay in that test's

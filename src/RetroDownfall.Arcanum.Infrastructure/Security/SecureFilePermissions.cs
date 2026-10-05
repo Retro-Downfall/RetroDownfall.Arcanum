@@ -50,6 +50,22 @@ public static partial class SecureFilePermissions
         WindowsOwnerOnlyDirectoryCreateForTests
     { get; set; }
 
+    private static readonly AsyncLocal<Func<string, bool, bool, FileStream>?> WindowsOwnerOnlyTempFileCreateOverride = new();
+
+    /// <summary>
+    /// Test seam that replaces the Windows owner-only create of a temp file, for the current async flow
+    /// only, and receives what that create is asked for: the path, whether the descriptor is protected
+    /// from inheritance, and whether it grants the current user alone. Every temp file in the
+    /// installation is created through <see cref="CreateOwnerOnlyTempFile"/>, so a process-global
+    /// override would hand an unrelated parallel test the wrong stream.
+    /// </summary>
+    internal static Func<string, bool, bool, FileStream>? WindowsOwnerOnlyTempFileCreateForTests
+    {
+        get => WindowsOwnerOnlyTempFileCreateOverride.Value;
+
+        set => WindowsOwnerOnlyTempFileCreateOverride.Value = value;
+    }
+
     private static readonly AsyncLocal<Action<string>?> AfterOwnerOnlyTempFileCreatedOverride = new();
 
     /// <summary>
@@ -497,14 +513,16 @@ public static partial class SecureFilePermissions
     }
 
     /// <summary>
-    /// Creates a new empty file at <paramref name="tempPath"/> and applies owner-only Unix permissions
-    /// before any bytes are written, so the temp file is never world/group-readable during the write
-    /// window. On Windows the file is created with <see cref="FileShare.None"/>; ACL hardening is applied
-    /// by <see cref="ApplyOwnerOnlyFile"/> after the final move.
+    /// Creates a new empty file at <paramref name="tempPath"/> that is owner-only from the create
+    /// itself, before any byte is written, so the temp file is never readable by another principal
+    /// during the write window. On Unix the open carries an owner-only create mode. On Windows the open
+    /// carries a protected security descriptor that grants the current user alone, so the file never
+    /// exists with the parent directory's inherited permissions; <see cref="ApplyOwnerOnlyFile"/> after
+    /// the final move stays as belt and braces for a file that already existed.
     /// </summary>
     public static FileStream CreateOwnerOnlyTempFile(string tempPath)
     {
-        FileStream stream = new(tempPath, OwnerOnlyCreateOptions(FileMode.Create, FileAccess.Write, FileShare.None));
+        FileStream stream = CreateOwnerOnlyStream(tempPath);
 
         AfterOwnerOnlyTempFileCreatedForTests?.Invoke(tempPath);
 
@@ -516,6 +534,65 @@ public static partial class SecureFilePermissions
         }
 
         return stream;
+    }
+
+    private static FileStream CreateOwnerOnlyStream(string tempPath)
+    {
+        const bool protectFromInheritance = true;
+
+        const bool currentUserOnly = true;
+
+        if (WindowsOwnerOnlyTempFileCreateForTests is { } testCreate)
+        {
+            return testCreate(tempPath, protectFromInheritance, currentUserOnly);
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            return CreateWindowsOwnerOnlyTempFile(tempPath);
+        }
+
+        return new FileStream(tempPath, OwnerOnlyCreateOptions(FileMode.Create, FileAccess.Write, FileShare.None));
+    }
+
+    /// <summary>
+    /// Creates the file with its final security descriptor in the one create call: owned by the current
+    /// user, protected from inheritance, and granting that user alone. An existing file keeps the ACL it
+    /// has, as <see cref="FileMode.Create"/> reuses it, which is what the later
+    /// <see cref="ApplyOwnerOnlyFile"/> repairs.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static FileStream CreateWindowsOwnerOnlyTempFile(string tempPath)
+    {
+        SecurityIdentifier? currentUser = WindowsIdentity.GetCurrent().User;
+
+        if (currentUser is null)
+        {
+            throw new UnauthorizedAccessException(
+                "The current Windows user has no security identifier.");
+        }
+
+        FileSecurity security = new();
+
+        security.SetOwner(currentUser);
+
+        security.SetAccessRuleProtection(
+            isProtected: true,
+            preserveInheritance: false);
+
+        security.AddAccessRule(
+            new FileSystemAccessRule(
+                currentUser,
+                FileSystemRights.Modify,
+                AccessControlType.Allow));
+
+        return new FileInfo(tempPath).Create(
+            FileMode.Create,
+            FileSystemRights.Modify,
+            FileShare.None,
+            bufferSize: 4096,
+            FileOptions.Asynchronous,
+            security);
     }
 
     /// <summary>

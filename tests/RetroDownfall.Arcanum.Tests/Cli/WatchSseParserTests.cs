@@ -4,6 +4,8 @@ using System.Threading.Channels;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 /// <summary>
@@ -39,7 +41,7 @@ public sealed class WatchSseParserTests
 
         using OneByteReadStream stream = new(Encoding.UTF8.GetBytes(wire));
 
-        using StreamReader reader = CreateProductionReader(stream);
+        using StreamingTextReader reader = CreateProductionReader(stream);
 
         List<WatchSseFrame> frames = await CollectAsync(
             WatchSseParser.ParseAsync(reader, CancellationToken.None));
@@ -70,7 +72,7 @@ public sealed class WatchSseParserTests
     {
         await using ScriptedStream stream = new();
 
-        using StreamReader reader = CreateProductionReader(stream);
+        using StreamingTextReader reader = CreateProductionReader(stream);
 
         await using IAsyncEnumerator<WatchSseFrame> frames = WatchSseParser
             .ParseAsync(reader, CancellationToken.None)
@@ -205,6 +207,12 @@ public sealed class WatchSseParserTests
                 Assert.True(rejected.Recoverable);
 
                 Assert.Null(rejected.Data);
+
+                // The retained-boundary rule: the diagnostic names the limit and the way to recover
+                // the record, so the operator is not left with a bare "too large".
+                Assert.Contains("128 characters", rejected.Error.Value.Message, StringComparison.Ordinal);
+
+                Assert.Contains("show or export", rejected.Error.Value.Message, StringComparison.Ordinal);
             },
             accepted =>
             {
@@ -312,7 +320,9 @@ public sealed class WatchSseParserTests
     {
         await using ScriptedStream stream = new();
 
-        using StreamReader reader = CreateProductionReader(stream);
+        using StreamingTextReader reader = CreateProductionReader(stream);
+
+        using CancellationTokenSource shutdown = new();
 
         WindowedDelay delays = new();
 
@@ -321,32 +331,54 @@ public sealed class WatchSseParserTests
                 reader,
                 TimeSpan.FromMinutes(1),
                 delays.WaitAsync,
-                CancellationToken.None)
+                shutdown.Token)
             .GetAsyncEnumerator();
 
-        stream.Push(": keep-alive\n");
+        Task<bool>? nextFrame = null;
 
-        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
+        try
+        {
+            stream.Push(": keep-alive\n");
 
-        Assert.Contains("keep-alive", frames.Current.Diagnostic!, StringComparison.OrdinalIgnoreCase);
+            Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
-        Task<bool> nextFrame = frames.MoveNextAsync().AsTask();
+            Assert.Contains("keep-alive", frames.Current.Diagnostic!, StringComparison.OrdinalIgnoreCase);
 
-        await delays.Armed(0).WaitAsync(AsyncTestTimeout);
+            nextFrame = frames.MoveNextAsync().AsTask();
 
-        delays.Expire(0);
+            await delays.Armed(0).WaitAsync(AsyncTestTimeout);
 
-        await delays.Armed(1).WaitAsync(AsyncTestTimeout);
+            // The line that arrived inside window 0 must not have started a window of its own: the old
+            // parser armed a fresh delay per line, so a second delay here is the regression.
+            Assert.Equal(1, delays.ArmedCount);
 
-        Assert.False(nextFrame.IsCompleted);
+            delays.Expire(0);
 
-        delays.Expire(1);
+            await delays.Armed(1).WaitAsync(AsyncTestTimeout);
 
-        Assert.True(await nextFrame.WaitAsync(AsyncTestTimeout));
+            Assert.Equal(2, delays.ArmedCount);
 
-        Assert.Equal(WatchSseFrameType.Heartbeat, frames.Current.Type);
+            Assert.False(nextFrame.IsCompleted);
 
-        Assert.Contains("No stream activity", frames.Current.Diagnostic!, StringComparison.Ordinal);
+            delays.Expire(1);
+
+            Assert.True(await nextFrame.WaitAsync(AsyncTestTimeout));
+
+            Assert.Equal(WatchSseFrameType.Heartbeat, frames.Current.Type);
+
+            Assert.Contains("No stream activity", frames.Current.Diagnostic!, StringComparison.Ordinal);
+        }
+        finally
+        {
+            // An assertion that fails while a read is outstanding would otherwise surface as the
+            // iterator's "dispose during MoveNext" error and hide the real failure.
+            await shutdown.CancelAsync();
+
+            if (nextFrame is not null)
+            {
+                _ = await Task.WhenAny(nextFrame);
+            }
+        }
     }
 
     private static IAsyncEnumerable<WatchSseFrame> ParseWithLimit(
@@ -362,15 +394,12 @@ public sealed class WatchSseParserTests
     /// <summary>
     /// The reader <c>WatchSseAsync</c> builds over the response stream.
     /// </summary>
-    private static StreamReader CreateProductionReader(Stream stream) =>
+    private static StreamingTextReader CreateProductionReader(Stream stream) =>
         new(
             stream,
             new UTF8Encoding(
                 encoderShouldEmitUTF8Identifier: false,
-                throwOnInvalidBytes: true),
-            detectEncodingFromByteOrderMarks: true,
-            bufferSize: 4096,
-            leaveOpen: true);
+                throwOnInvalidBytes: true));
 
     private static async Task<List<WatchSseFrame>> CollectAsync(
         IAsyncEnumerable<WatchSseFrame> source)
@@ -383,75 +412,6 @@ public sealed class WatchSseParserTests
         }
 
         return frames;
-    }
-
-    /// <summary>
-    /// Serves the bytes it was given but never more than one per read, on both the sync and the async
-    /// path, and remembers the largest read it was asked to satisfy so a test can prove it was in the
-    /// loop.
-    /// </summary>
-    private sealed class OneByteReadStream(byte[] content) : Stream
-    {
-        private int _position;
-
-        public int LargestRead { get; private set; }
-
-        public override bool CanRead => true;
-
-        public override bool CanSeek => false;
-
-        public override bool CanWrite => false;
-
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position
-        {
-            get => throw new NotSupportedException();
-
-            set => throw new NotSupportedException();
-        }
-
-        public override int Read(byte[] buffer, int offset, int count) =>
-            Read(buffer.AsSpan(offset, count));
-
-        public override int Read(Span<byte> buffer)
-        {
-            if (buffer.IsEmpty || _position >= content.Length)
-            {
-                return 0;
-            }
-
-            buffer[0] = content[_position++];
-
-            LargestRead = Math.Max(LargestRead, 1);
-
-            return 1;
-        }
-
-        public override ValueTask<int> ReadAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(Read(buffer.Span));
-
-        public override Task<int> ReadAsync(
-            byte[] buffer,
-            int offset,
-            int count,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Read(buffer.AsSpan(offset, count)));
-
-        public override void Flush()
-        {
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) =>
-            throw new NotSupportedException();
-
-        public override void SetLength(long value) =>
-            throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count) =>
-            throw new NotSupportedException();
     }
 
     /// <summary>
@@ -562,6 +522,17 @@ public sealed class WatchSseParserTests
             }
 
             return expiry.Task.WaitAsync(cancellationToken);
+        }
+
+        public int ArmedCount
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _expiry.Count;
+                }
+            }
         }
 
         public Task Armed(int index)

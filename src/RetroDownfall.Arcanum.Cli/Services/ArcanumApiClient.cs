@@ -26,6 +26,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Wards;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -45,6 +46,18 @@ public sealed partial class ArcanumApiClient(
     internal static readonly TimeSpan DefaultRequestResponseHeadersTimeout = TimeSpan.FromMinutes(5);
 
     internal TimeSpan RequestResponseHeadersTimeout { get; init; } = DefaultRequestResponseHeadersTimeout;
+
+    /// <summary>
+    /// The clock the response-headers deadline runs on. Production uses the system clock; a test
+    /// substitutes one it advances by hand so a deadline never depends on how fast a thread runs.
+    /// </summary>
+    internal TimeProvider HeadersDeadlineClock { get; init; } = TimeProvider.System;
+
+    /// <summary>
+    /// The most characters one line of an NDJSON or Chronicle stream may hold before it is discarded
+    /// with a diagnostic. Without it a stream that never ends a line grows the client without bound.
+    /// </summary>
+    internal int MaxStreamLineLength { get; init; } = BoundedLineReader.DefaultMaxLineLength;
 
     /// <summary>
     /// The one rule for who carries the headers deadline: a call on the short-call client does, a
@@ -284,7 +297,8 @@ public sealed partial class ArcanumApiClient(
                         canReplayAfterUnauthorized: true,
                         ArcanumAuthenticatedHttpSender.PresenceProbeTimeout,
                         cancellationToken,
-                        ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout))
+                        ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout),
+                        HeadersDeadlineClock)
                     .ConfigureAwait(false);
 
                 if (!sent.IsAuthenticated)
@@ -1728,18 +1742,10 @@ public sealed partial class ArcanumApiClient(
 
             long byteCount = 0;
 
-            await using (FileStream destination = new(
-                             temporaryPath,
-
-                             FileMode.CreateNew,
-
-                             FileAccess.Write,
-
-                             FileShare.None,
-
-                             bufferSize: 81_920,
-
-                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The staging file holds decrypted content, so it is owner-only before the first byte is
+            // written, like the file and batch download staging file, not created with the umask's
+            // permissions and narrowed after the move.
+            await using (FileStream destination = SecureFilePermissions.CreateOwnerOnlyTempFile(temporaryPath))
 
             {
                 byte[] buffer = new byte[81_920];
@@ -2223,17 +2229,19 @@ public sealed partial class ArcanumApiClient(
             {
                 Stream openedStream = responseStream!;
 
-                using StreamReader lineReader = new(openedStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+                using StreamingTextReader streamReader = new(openedStream, Encoding.UTF8);
+
+                BoundedLineReader lineReader = new(streamReader, MaxStreamLineLength);
 
                 while (true)
                 {
-                    string? line = null;
+                    BoundedLine? read = null;
 
                     string? readError = null;
 
                     try
                     {
-                        line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                        read = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -2252,10 +2260,21 @@ public sealed partial class ArcanumApiClient(
                         yield break;
                     }
 
-                    if (line is null)
+                    if (read is not { } bounded)
                     {
                         break;
                     }
+
+                    if (bounded.TooLong)
+                    {
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Status,
+                            BoundedLineReader.DescribeOversizedLine(MaxStreamLineLength));
+
+                        continue;
+                    }
+
+                    string line = bounded.Text;
 
                     if (string.IsNullOrWhiteSpace(line))
                     {
@@ -3758,17 +3777,19 @@ public sealed partial class ArcanumApiClient(
 
             await using (responseStream!)
             {
-                using StreamReader lineReader = new(responseStream!, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+                using StreamingTextReader streamReader = new(responseStream!, Encoding.UTF8);
+
+                BoundedLineReader lineReader = new(streamReader, MaxStreamLineLength);
 
                 while (true)
                 {
-                    string? line = null;
+                    BoundedLine? read = null;
 
                     string? readError = null;
 
                     try
                     {
-                        line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                        read = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -3787,10 +3808,22 @@ public sealed partial class ArcanumApiClient(
                         yield break;
                     }
 
-                    if (line is null)
+                    if (read is not { } bounded)
                     {
                         break;
                     }
+
+                    if (bounded.TooLong)
+                    {
+                        yield return new ChronicleFrame(
+                            "warning",
+                            null,
+                            BoundedLineReader.DescribeOversizedLine(MaxStreamLineLength));
+
+                        continue;
+                    }
+
+                    string line = bounded.Text;
 
                     if (line.Length == 0 || line[0] == ':')
                     {
@@ -4161,22 +4194,19 @@ public sealed partial class ArcanumApiClient(
                 .ReadAsStreamAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            using StreamReader reader = new(
-                stream,
-                Encoding.UTF8,
-                detectEncodingFromByteOrderMarks: false,
-                bufferSize: 4_096,
-                leaveOpen: true);
+            using StreamingTextReader streamReader = new(stream, Encoding.UTF8);
+
+            BoundedLineReader reader = new(streamReader, MaxStreamLineLength);
 
             while (true)
             {
-                string? line = null;
+                BoundedLine? read = null;
 
                 string? readError = null;
 
                 try
                 {
-                    line = await reader.ReadLineAsync(cancellationToken)
+                    read = await reader.ReadLineAsync(cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (Exception exception)
@@ -4201,10 +4231,22 @@ public sealed partial class ArcanumApiClient(
                     yield break;
                 }
 
-                if (line is null)
+                if (read is not { } bounded)
                 {
                     break;
                 }
+
+                if (bounded.TooLong)
+                {
+                    yield return ResearchError(
+                        new Error(
+                            "Api.InvalidResponse",
+                            BoundedLineReader.DescribeOversizedLine(MaxStreamLineLength)));
+
+                    continue;
+                }
+
+                string line = bounded.Text;
 
                 if (string.IsNullOrWhiteSpace(line))
                 {
