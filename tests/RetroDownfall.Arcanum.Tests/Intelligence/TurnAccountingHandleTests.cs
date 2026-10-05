@@ -147,6 +147,83 @@ public sealed class TurnAccountingHandleTests
         }
     }
 
+    /// <summary>
+    /// What settlement deliberately leaves alone. A nested handle a tool task captured before its
+    /// turn settled still writes the provider usage it records: the row counts toward the day's
+    /// spend, outside the settled run's reconciled total, because dropping real spend would be worse.
+    /// And the delegated-spend attribution keeps naming the turn's reservation, because a Sending the
+    /// task dispatches is still work that turn delegated.
+    /// </summary>
+    [Fact]
+    public async Task Settlement_KeepsLateUsageAndDelegatedAttributionButNotTheReconciledTotal()
+    {
+        TurnAccountingAmbient.Clear();
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle turn = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        TurnAccountingHandle nested = turn.CreateNestedOperationHandle();
+
+        try
+        {
+            TurnAccountingAmbient.Publish(nested, writer);
+
+            await turn.CompleteAsync(
+                writer,
+                reservations,
+                InferenceRunStatus.Completed,
+                CancellationToken.None);
+
+            Assert.Null(TurnAccountingAmbient.Current);
+            Assert.Equal(turn.ReservationId, DelegatedSpendAttribution.BudgetReservationId);
+            Assert.Equal(0m, reservations.ReconciledUsd);
+
+            await nested.RecordChatUsageAsync(
+                writer,
+                "provider",
+                "reasoner",
+                promptTokens: 10_000,
+                completionTokens: 0,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                pricing.DefaultPricing,
+                CancellationToken.None);
+
+            Assert.NotNull(writer.LastOperation);
+            Assert.Equal(0.10m, writer.RecordedCostUsd);
+            Assert.Equal(1, reservations.ReconcileCalls);
+            Assert.Equal(0m, reservations.ReconciledUsd);
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
+    /// <summary>
+    /// The reservation disposition follows the spend, with one exception for the label: a
+    /// <c>Completed</c> run reconciles even at zero (a provider that reported no usage still
+    /// answered), while any other run with nothing recorded releases.
+    /// </summary>
+    [Theory]
+    [InlineData(InferenceRunStatus.Completed, false)]
+    [InlineData(InferenceRunStatus.Failed, true)]
+    [InlineData(InferenceRunStatus.Abandoned, true)]
+    public async Task CompleteAsync_ACompletedRunReconcilesEvenAtZeroAndAnyOtherUnspentRunReleases(
+        InferenceRunStatus status,
+        bool released)
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        TurnAccountingHandle turn = await BeginReasonerTurnAsync(writer, reservations, ReasonerPricing());
+
+        await turn.CompleteAsync(writer, reservations, status, CancellationToken.None);
+
+        Assert.Equal(released, reservations.WasReleased);
+        Assert.Equal(released ? 0 : 1, reservations.ReconcileCalls);
+        Assert.Equal(status, writer.CompletedStatus);
+    }
+
     [Fact]
     public async Task BeginAsync_ReservesTypedOutputAndReasoningHeadroom()
     {
