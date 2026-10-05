@@ -1176,6 +1176,86 @@ public sealed class WebWorkflowEndpointTests
     }
 
     /// <summary>
+    /// A source the synthesis prompt could not carry is one the model never read, so it must not be
+    /// cited as if it had been. Several pages are fetched, the last lands past what the prompt can hold
+    /// (the fetch budget counts page text, not the framing around it), and the result's citations are
+    /// exactly the sources whose framed block is in the prompt the model received. Without the call-site
+    /// filter the dropped source is cited too.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_cites_only_the_sources_the_synthesis_prompt_carried()
+
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new()
+        {
+            ChangingCitationRounds = 5,
+
+            ReadMarkdown = new string('x', 8_100),
+        };
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+                    Question = "What changed?",
+
+                    TokenBudget = 1_200,
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        WebResearchStreamFrame terminal = ndjson
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static line => JsonSerializer.Deserialize(
+                line,
+                ArcanumJsonContext.Default.WebResearchStreamFrame)!)
+            .Last();
+
+        Assert.Equal(WebResearchStreamFrameType.Result, terminal.Type);
+
+        Assert.NotNull(terminal.Result);
+
+        Assert.NotNull(intelligence.Request);
+
+        int[] carried =
+        [
+            .. Enumerable.Range(1, provider.ReadCalls).Where(
+                index => intelligence.Request.Prompt.Contains($"Source [{index}]", StringComparison.Ordinal)),
+        ];
+
+        // The fixture only means something if the prompt dropped a source it had been handed.
+        Assert.NotEmpty(carried);
+
+        Assert.True(
+            carried.Length < provider.ReadCalls,
+            $"all {provider.ReadCalls} fetched sources fit in the synthesis prompt, so the citation filter is not exercised.");
+
+        Assert.Equal(
+            carried,
+            terminal.Result.Citations.Select(static citation => citation.Index).ToArray());
+    }
+
+    /// <summary>
     /// Attachment is an optional side effect on an answer the operator has already paid for. The
     /// preflight narrows the window but cannot close it — the target session can still be archived or
     /// purged between preflight and persist — and when it is, the searches, the citation fetches and
