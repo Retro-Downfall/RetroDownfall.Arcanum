@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -35,6 +36,26 @@ public sealed class PidFileServiceTests : IDisposable
         Assert.Contains(PidPath, refusal.Message, StringComparison.Ordinal);
 
         Assert.Contains("no Arcanum process owns", refusal.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_recorded_owner_the_caller_cannot_open_is_refused_with_the_remedy_not_thrown_as_an_access_error()
+    {
+        WriteOwner(4242, writtenAt: DateTimeOffset.UtcNow);
+
+        PidFileService service = Service(
+            static _ => PidFileOwnership.Observe(
+                static () => throw new Win32Exception(5, "Access is denied."),
+                static () => DateTime.UtcNow));
+
+        InvalidOperationException refusal = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.StartAsync(CancellationToken.None));
+
+        Assert.Contains("4242", refusal.Message, StringComparison.Ordinal);
+
+        Assert.Contains(PidPath, refusal.Message, StringComparison.Ordinal);
+
+        Assert.Equal("4242", (await File.ReadAllTextAsync(PidPath)).Trim());
     }
 
     [Fact]

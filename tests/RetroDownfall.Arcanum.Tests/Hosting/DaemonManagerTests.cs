@@ -107,7 +107,7 @@ public sealed class DaemonManagerTests : IDisposable
     }
 
     [Fact]
-    public async Task Windows_install_creates_then_starts_the_service_through_sc()
+    public async Task Windows_install_refuses_a_localsystem_service_and_directs_to_a_per_user_scheduled_task()
     {
         ScriptedDaemonProcessRunner runner = new(
             static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
@@ -116,13 +116,35 @@ public sealed class DaemonManagerTests : IDisposable
 
         Result result = await manager.InstallAsync(CancellationToken.None);
 
-        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+        Assert.True(result.IsFailure);
 
-        Assert.Equal(2, runner.Calls.Count);
+        Assert.Equal("DaemonWindowsServiceUnsupported", result.Error.Code);
 
-        Assert.StartsWith("sc.exe create ArcanumDaemon ", runner.Calls[0], StringComparison.Ordinal);
+        Assert.Empty(runner.Calls);
 
-        Assert.Equal("sc.exe start ArcanumDaemon", runner.Calls[1]);
+        Assert.Contains("LocalSystem", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("Task Scheduler", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("schtasks /Create", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains(" serve", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Windows_real_runner_install_refuses_without_starting_sc_exe()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Exercises the real Windows process start path.");
+
+        WindowsDaemonManager manager = new(
+            DaemonProcessRunner.Default,
+            Path.Combine(_directory, "missing-sc.exe"));
+
+        Result result = await manager.InstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonWindowsServiceUnsupported", result.Error.Code);
     }
 
     [Fact]
@@ -133,7 +155,7 @@ public sealed class DaemonManagerTests : IDisposable
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
-        Result result = await manager.InstallAsync(CancellationToken.None);
+        Result result = await manager.UninstallAsync(CancellationToken.None);
 
         Assert.True(result.IsFailure);
 

@@ -16,9 +16,40 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("ProcessEnvironment")]
-public sealed class ArcanumServeLauncherTests
+public sealed class ArcanumServeLauncherTests : IDisposable
 {
     private const string ApiKey = "launcher-test-key";
+
+    // The launcher holds a retained file lock and writes its bootstrap log under the installation
+    // directory, so every test (xUnit builds one instance per test) gets its own redirected home.
+    private readonly ArcanumTestHomeScope _home = new("arcanum-serve-launcher-tests");
+
+    public void Dispose() => _home.Dispose();
+
+    [Fact]
+    public void Launch_lock_and_bootstrap_log_resolve_inside_a_redirected_test_home()
+    {
+        // The launcher takes and holds a real file lock under the installation directory. Without a
+        // redirected home every test in this class would create, chmod and hold the developer's own
+        // arcanum.serve.lock, and would fail whenever a real client held it.
+        Assert.False(
+            TestHomeGuard.AmbientHomeIsUnredirected(),
+            "The launcher tests would write the real installation directory.");
+
+        Assert.StartsWith(_home.Root, ArcanumServeLauncher.LaunchLockPath, StringComparison.Ordinal);
+
+        Assert.False(
+            TestHomeGuard.IsUnderRealDirectory(
+                ArcanumServeLauncher.LaunchLockPath,
+                TestProcessPaths.OriginalUserProfile,
+                TestProcessPaths.OriginalApplicationData));
+
+        Assert.False(
+            TestHomeGuard.IsUnderRealDirectory(
+                ArcanumServeLauncher.BootstrapLogPath,
+                TestProcessPaths.OriginalUserProfile,
+                TestProcessPaths.OriginalApplicationData));
+    }
 
     [Fact]
     public async Task Verified_running_host_uses_the_mirror_once_and_does_not_spawn()
@@ -274,28 +305,11 @@ public sealed class ArcanumServeLauncherTests
         string? originalAck = global::System.Environment.GetEnvironmentVariable(
             ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable);
 
-        string? originalDotnet = global::System.Environment.GetEnvironmentVariable(
-            "DOTNET_ENVIRONMENT");
-
-        string? originalAspNet = global::System.Environment.GetEnvironmentVariable(
-            "ASPNETCORE_ENVIRONMENT");
-
-        string? originalHome = global::System.Environment.GetEnvironmentVariable(
-            "ARCANUM_TEST_HOME");
-
-        string testHome = Path.Combine(
-            Path.GetTempPath(),
-            $"arcanum-launcher-listen-any-{Guid.NewGuid():N}");
-
         try
         {
             global::System.Environment.SetEnvironmentVariable(
                 ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable,
                 null);
-
-            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
-            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", testHome);
 
             PresenceSequenceHandler handler = new(
                 _ => throw ConnectionRefused());
@@ -337,15 +351,6 @@ public sealed class ArcanumServeLauncherTests
             global::System.Environment.SetEnvironmentVariable(
                 ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable,
                 originalAck);
-
-            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", originalDotnet);
-            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", originalAspNet);
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", originalHome);
-
-            if (Directory.Exists(testHome))
-            {
-                Directory.Delete(testHome, recursive: true);
-            }
         }
     }
 

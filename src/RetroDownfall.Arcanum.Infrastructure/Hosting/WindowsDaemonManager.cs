@@ -50,55 +50,22 @@ public sealed class WindowsDaemonManager : IDaemonManager
         _scExePath = scExePath;
     }
 
-    public async Task<Result> InstallAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Refuses to register a Windows Service. <c>sc create</c> without an <c>obj=</c> account runs the service as
+    /// LocalSystem, whose profile, API key and data directory are not the invoking user's, and a named account would
+    /// need its password on the <c>sc.exe</c> command line. The remedy is a per-user Task Scheduler entry, which runs
+    /// as the user with no stored credential. No <c>sc.exe</c> process is started.
+    /// </summary>
+    public Task<Result> InstallAsync(CancellationToken cancellationToken)
     {
-        string? processPath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(processPath))
-        {
-            return Result.Failure(new Error("DaemonProcessPath", "Could not resolve the current executable path."));
-        }
-
-        string binPathArgument = string.Create(
+        string processPath = string.IsNullOrWhiteSpace(Environment.ProcessPath)
+            ? "<path to arcanum.exe>"
+            : Environment.ProcessPath;
+        string message = string.Create(
             CultureInfo.InvariantCulture,
-            $"binPath= \"\\\"{processPath}\\\" serve\"");
-        DaemonProcessOutcome createOutcome = await RunScAsync(
-            ["create", ServiceName, binPathArgument, "start= auto"],
-            cancellationToken).ConfigureAwait(false);
-        if (createOutcome.FatalError is { } fatalCreate)
-        {
-            return Result.Failure(fatalCreate);
-        }
+            $"Arcanum does not install a Windows Service: one created without a user account runs as LocalSystem, whose profile, API key and data directory are not yours, so your own arcanum commands could not reach it. Register a per-user Task Scheduler task that runs the host as you at logon instead (Task Scheduler, or: schtasks /Create /TN Arcanum /SC ONLOGON /RL LIMITED /TR \"\\\"{processPath}\\\" serve\"). A service created by an earlier version is still reported by 'arcanum daemon status' and removed by 'arcanum daemon uninstall'.");
 
-        if (IndicatesElevationDenied(createOutcome.ExitCode, createOutcome.StdErr))
-        {
-            return Result.Failure(ElevationError);
-        }
-
-        if (createOutcome.ExitCode != 0)
-        {
-            return Result.Failure(
-                ToolError("DaemonScCreate", "sc create failed.", createOutcome.StdErr, createOutcome.ExitCode));
-        }
-        DaemonProcessOutcome startOutcome = await RunScAsync(
-            ["start", ServiceName],
-            cancellationToken).ConfigureAwait(false);
-        if (startOutcome.FatalError is { } fatalStart)
-        {
-            return Result.Failure(fatalStart);
-        }
-
-        if (IndicatesElevationDenied(startOutcome.ExitCode, startOutcome.StdErr))
-        {
-            return Result.Failure(ElevationError);
-        }
-
-        if (startOutcome.ExitCode != 0)
-        {
-            return Result.Failure(
-                ToolError("DaemonScStart", "sc start failed.", startOutcome.StdErr, startOutcome.ExitCode));
-        }
-
-        return Result.Success();
+        return Task.FromResult(Result.Failure(new Error("DaemonWindowsServiceUnsupported", message)));
     }
 
     public async Task<Result> UninstallAsync(CancellationToken cancellationToken)

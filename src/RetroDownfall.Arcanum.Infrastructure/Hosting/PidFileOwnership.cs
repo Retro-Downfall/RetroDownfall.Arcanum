@@ -24,7 +24,10 @@ internal static class PidFileOwnership
     internal static readonly TimeSpan ClockTolerance = TimeSpan.FromSeconds(2);
 
     /// <summary>
-    /// Reads the live process for <paramref name="pid"/>, or null when no such process is running.
+    /// Reads the live process for <paramref name="pid"/>, or null when no such process is running. A process
+    /// that exists but that the caller is not allowed to open (a protected or other-session process, which on
+    /// Windows answers <see cref="Win32Exception"/> "Access is denied" even to <c>HasExited</c>) is reported with
+    /// no start time, so it counts as live instead of failing the caller.
     /// </summary>
     internal static PidFileOwnerProcess? LookUp(int pid)
     {
@@ -32,25 +35,50 @@ internal static class PidFileOwnership
         {
             using Process process = Process.GetProcessById(pid);
 
-            if (process.HasExited)
-            {
-                return null;
-            }
-
-            try
-            {
-                return new PidFileOwnerProcess(new DateTimeOffset(process.StartTime.ToUniversalTime()));
-            }
-            catch (Exception exception) when (
-                exception is Win32Exception or InvalidOperationException or NotSupportedException)
-            {
-                return new PidFileOwnerProcess(null);
-            }
+            return Observe(() => process.HasExited, () => process.StartTime);
+        }
+        catch (Win32Exception)
+        {
+            return new PidFileOwnerProcess(null);
         }
         catch (Exception exception) when (
             exception is ArgumentException or InvalidOperationException or NotSupportedException)
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Classifies the two operating-system reads <see cref="LookUp"/> makes on a process, so the answer to each
+    /// failure can be pinned without a real process that refuses to be opened.
+    /// </summary>
+    internal static PidFileOwnerProcess? Observe(Func<bool> hasExited, Func<DateTime> startTime)
+    {
+        try
+        {
+            if (hasExited())
+            {
+                return null;
+            }
+        }
+        catch (Win32Exception)
+        {
+            return new PidFileOwnerProcess(null);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or NotSupportedException)
+        {
+            return null;
+        }
+
+        try
+        {
+            return new PidFileOwnerProcess(new DateTimeOffset(startTime().ToUniversalTime()));
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or InvalidOperationException or NotSupportedException)
+        {
+            return new PidFileOwnerProcess(null);
         }
     }
 
