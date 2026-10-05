@@ -12,11 +12,17 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 /// UI-agnostic turn attachment builder: inline <c>@path</c> tokens + pre-staged <c>/attach</c> paths.
 /// Text files → <see cref="AttachedFileDto"/>; images → <see cref="ScryingFocusDto"/> (ephemeral).
 /// </summary>
-internal static class CommandCenterTurnAttachmentBuilder
+internal static partial class CommandCenterTurnAttachmentBuilder
 {
-    private static readonly Regex AtTokenRegex = new(
+    /// <summary>
+    /// An <c>@path</c> token at the start of the prompt or after whitespace. The prompt is operator-typed
+    /// but can be a paste of anything, so the match carries a timeout instead of the engine's infinite default.
+    /// </summary>
+    [GeneratedRegex(
         @"(?<=^|\s)@([^\s]+)",
-        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        RegexOptions.CultureInvariant,
+        matchTimeoutMilliseconds: 250)]
+    private static partial Regex AtTokenRegex();
 
     private const int FileReadBufferBytes = 81920;
 
@@ -51,7 +57,7 @@ internal static class CommandCenterTurnAttachmentBuilder
         List<string> status = [];
 
         string workingPrompt = prompt;
-        MatchCollection atMatches = AtTokenRegex.Matches(workingPrompt);
+        MatchCollection atMatches = AtTokenRegex().Matches(workingPrompt);
 
         for (int mi = atMatches.Count - 1; mi >= 0; mi--)
         {
