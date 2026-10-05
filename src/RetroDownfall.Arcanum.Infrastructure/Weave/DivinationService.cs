@@ -31,7 +31,6 @@ internal sealed class DivinationService(
     WeaveIndexAvailability availability,
     ILogger<DivinationService> logger) : IDivinationService
 {
-
     private const string VecTableSuffix = "_vec";
 
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
@@ -46,30 +45,28 @@ internal sealed class DivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             DbConnection connection = db.Database.GetDbConnection();
 
             if (connection.State != ConnectionState.Open)
             {
                 await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             float[] queryVector = queryEmbedding.Vector.ToArray();
 
-            DivinationResult[] results = availability.IsVecAvailable
-                ? await SearchVecAsync(
-                    connection,
-                    tableName,
-                    primaryKeyColumn,
-                    embeddingColumn,
-                    queryVector,
-                    maxResults,
-                    similarityThreshold,
-                    cancellationToken).ConfigureAwait(false)
+            return availability.IsVecAvailable
+                ? Result<DivinationResult[]>.Success(
+                    await SearchVecAsync(
+                        connection,
+                        tableName,
+                        primaryKeyColumn,
+                        embeddingColumn,
+                        queryVector,
+                        maxResults,
+                        similarityThreshold,
+                        cancellationToken).ConfigureAwait(false))
                 : await SearchManagedAsync(
                     connection,
                     DeriveBlobTableName(tableName),
@@ -79,27 +76,19 @@ internal sealed class DivinationService(
                     maxResults,
                     similarityThreshold,
                     cancellationToken).ConfigureAwait(false);
-
-            return Result<DivinationResult[]>.Success(results);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(ex, "Divination search against {TableName} failed; treating as no results.", tableName);
 
             return Result<DivinationResult[]>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "Semantic search is temporarily unavailable. See server logs for detail."));
-
         }
-
     }
 
     public async Task<Result<DivinationResult[]>> SearchScopedAsync(
@@ -115,16 +104,13 @@ internal sealed class DivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             DbConnection connection = db.Database.GetDbConnection();
 
             if (connection.State != ConnectionState.Open)
             {
                 await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             float[] queryVector = queryEmbedding.Vector.ToArray();
@@ -133,7 +119,7 @@ internal sealed class DivinationService(
             // schema, so a scoped search always ranks via the managed brute-force path below instead —
             // but SQL-joined to the scope table so only in-scope rows are read (no unbounded IN of
             // every matching chunk id).
-            DivinationResult[] results = await SearchManagedScopedAsync(
+            return await SearchManagedScopedAsync(
                 connection,
                 DeriveBlobTableName(tableName),
                 primaryKeyColumn,
@@ -146,27 +132,19 @@ internal sealed class DivinationService(
                 maxResults,
                 similarityThreshold,
                 cancellationToken).ConfigureAwait(false);
-
-            return Result<DivinationResult[]>.Success(results);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(ex, "Scoped divination search against {TableName} failed; treating as no results.", tableName);
 
             return Result<DivinationResult[]>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "Semantic search is temporarily unavailable. See server logs for detail."));
-
         }
-
     }
 
     public async Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
@@ -179,25 +157,22 @@ internal sealed class DivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(scope);
 
         try
         {
-
             DbConnection connection = db.Database.GetDbConnection();
 
             if (connection.State != ConnectionState.Open)
             {
                 await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             // Unconditionally the managed path, and not because vec0 happens to be absent today. The
             // vec0 table has no per-row ownership column, so an accelerated scoped search could only
             // rank first and filter afterwards - a different candidate set, reached by whether an
             // optional native asset shipped. Routing both cases here is what makes the answer one answer.
-            DivinationResult[] results = await SearchManagedCampaignScopedAsync(
+            return await SearchManagedCampaignScopedAsync(
                 connection,
                 DeriveBlobTableName(tableName),
                 primaryKeyColumn,
@@ -207,19 +182,13 @@ internal sealed class DivinationService(
                 maxResults,
                 similarityThreshold,
                 cancellationToken).ConfigureAwait(false);
-
-            return Result<DivinationResult[]>.Success(results);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Campaign-scoped divination search against {TableName} failed; treating as no results.",
@@ -228,9 +197,7 @@ internal sealed class DivinationService(
             return Result<DivinationResult[]>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "Semantic search is temporarily unavailable. See server logs for detail."));
-
         }
-
     }
 
     /// <summary>
@@ -242,7 +209,7 @@ internal sealed class DivinationService(
     /// select the same rows - but only one of them says what it means to a reader, and only one of them
     /// stays correct if the ownership column ever gains a sentinel.
     /// </remarks>
-    private async Task<DivinationResult[]> SearchManagedCampaignScopedAsync(
+    private async Task<Result<DivinationResult[]>> SearchManagedCampaignScopedAsync(
         DbConnection connection,
         string blobTableName,
         string primaryKeyColumn,
@@ -253,7 +220,6 @@ internal sealed class DivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         string ownership = scope.CampaignId is null
@@ -276,7 +242,6 @@ internal sealed class DivinationService(
 
         if (scope.CampaignId is { } campaignId)
         {
-
             AddParameter(cmd, "@campaignScopeKind", scope.CampaignScopeKindCode);
 
             // saga_memories.CampaignId - the only column SagaStorageKeys.CampaignScope ever names here -
@@ -288,7 +253,6 @@ internal sealed class DivinationService(
             // Campaign-scoped recall returned about half of a Campaign's memories and reported nothing
             // about the rest.
             AddParameter(cmd, "@campaignId", campaignId.ToString("D").ToUpperInvariant());
-
         }
 
         return await ScoreManagedRowsAsync(
@@ -297,10 +261,9 @@ internal sealed class DivinationService(
             maxResults,
             similarityThreshold,
             cancellationToken).ConfigureAwait(false);
-
     }
 
-    private async Task<DivinationResult[]> SearchManagedScopedAsync(
+    private async Task<Result<DivinationResult[]>> SearchManagedScopedAsync(
         DbConnection connection,
         string blobTableName,
         string primaryKeyColumn,
@@ -314,7 +277,6 @@ internal sealed class DivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         // Table/column names are internal constants owned by the calling feature's retrieval code
@@ -335,7 +297,6 @@ internal sealed class DivinationService(
             maxResults,
             similarityThreshold,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<DivinationResult[]> SearchVecAsync(
@@ -348,7 +309,6 @@ internal sealed class DivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         // tableName/primaryKeyColumn/embeddingColumn are internal constants owned by the calling
@@ -374,7 +334,6 @@ internal sealed class DivinationService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string id = reader.GetString(0);
 
             double distance = reader.GetDouble(1);
@@ -385,18 +344,14 @@ internal sealed class DivinationService(
 
             if (similarity >= similarityThreshold)
             {
-
                 results.Add(new DivinationResult(id, similarity, EmptyMetadata));
-
             }
-
         }
 
         return [.. results];
-
     }
 
-    private async Task<DivinationResult[]> SearchManagedAsync(
+    private async Task<Result<DivinationResult[]>> SearchManagedAsync(
         DbConnection connection,
         string blobTableName,
         string primaryKeyColumn,
@@ -406,7 +361,6 @@ internal sealed class DivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText =
@@ -421,110 +375,201 @@ internal sealed class DivinationService(
             maxResults,
             similarityThreshold,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
     /// Scores every row from an already-configured command with a streaming top-K heap and never
     /// materializes a full scored list for <c>OrderBy</c>/<c>Take</c>.
     /// </summary>
-    private async Task<DivinationResult[]> ScoreManagedRowsAsync(
+    /// <remarks>
+    /// A row is compared only when it can be: a vector of another width than the query's, a blob that is not
+    /// a whole number of floats, and a vector with no direction (zero norm, or not finite) are each skipped
+    /// and counted rather than scored as similarity <c>0</c>, which cleared a threshold of zero and let a
+    /// corpus embedded at another width answer a query with arbitrary rows, and rather than letting one
+    /// corrupt row fail the whole scan. The skips are logged once per scan, not once per row. When rows of
+    /// another width were met and nothing at all could be scored, the corpus was embedded at a different
+    /// width than the query and the answer is <see cref="ErrorCodes.Embeddings.DimensionMismatch"/>, not an
+    /// empty result that looks like "nothing relevant". Equal similarity is ranked by id, lowest first, so
+    /// which rows a full heap keeps does not depend on the order the database returns them in.
+    /// </remarks>
+    private async Task<Result<DivinationResult[]>> ScoreManagedRowsAsync(
         DbCommand cmd,
         float[] queryVector,
         int maxResults,
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
-
         int take = Math.Max(0, maxResults);
 
         // The query vector is invariant across the whole scan, so its norm is computed once here rather
         // than re-derived inside the SIMD loop for every candidate row.
         double queryNormSquared = EmbeddingBlobCodec.NormSquared(queryVector);
 
-        // Min-heap by similarity: when full, the peek is the weakest of the current top-K.
-        PriorityQueue<string, float> topK = new();
+        // Min-heap by (similarity, then id descending): when full, the peek is the weakest of the current
+        // top-K, and among equal similarities that is the highest id.
+        PriorityQueue<string, RankedHit> topK = new(WeakestFirst.Instance);
+
+        int scored = 0;
+
+        int mismatched = 0;
+
+        int unreadable = 0;
+
+        int noSignal = 0;
 
         await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string id = reader.GetString(0);
-
-            byte[] blob = (byte[])reader[1];
 
             // Scored straight off the BLOB. Decoding into a fresh float[] would double the per-row
             // allocation of a scan that reads every in-scope row on every retrieval, for a copy nothing
             // outlives this iteration.
-            float similarity = EmbeddingBlobCodec.CosineSimilarity(
-                queryVector,
-                queryNormSquared,
-                EmbeddingBlobCodec.AsVector(blob));
+            switch (TryScoreRow(reader[1], queryVector, queryNormSquared, out float similarity))
+            {
+                case RowScore.DimensionMismatch:
+
+                    mismatched++;
+
+                    continue;
+
+                case RowScore.Unreadable:
+
+                    unreadable++;
+
+                    continue;
+
+                case RowScore.NoSignal:
+
+                    noSignal++;
+
+                    continue;
+            }
+
+            scored++;
 
             if (similarity < similarityThreshold || take == 0)
             {
-
                 continue;
-
             }
+
+            RankedHit hit = new(similarity, id);
 
             if (topK.Count < take)
             {
-
-                topK.Enqueue(id, similarity);
-
+                topK.Enqueue(id, hit);
             }
-            else if (topK.TryPeek(out _, out float weakest) && similarity > weakest)
+            else if (topK.TryPeek(out _, out RankedHit weakest) && WeakestFirst.Instance.Compare(hit, weakest) > 0)
             {
-
                 _ = topK.Dequeue();
 
-                topK.Enqueue(id, similarity);
-
+                topK.Enqueue(id, hit);
             }
+        }
 
+        int skipped = mismatched + unreadable + noSignal;
+
+        if (skipped > 0)
+        {
+            logger.LogWarning(
+                "Divination skipped {Skipped} stored embedding(s) it could not compare with a {QueryWidth}-dimension query: {Mismatched} of another width, {Unreadable} unreadable, {NoSignal} with no direction. A corpus embedded at another width needs an embeddings reset (POST /api/embeddings/reset?confirm=true) and a re-index.",
+                skipped,
+                queryVector.Length,
+                mismatched,
+                unreadable,
+                noSignal);
+        }
+
+        if (scored == 0 && mismatched > 0)
+        {
+            return Result<DivinationResult[]>.Failure(new Error(
+                ErrorCodes.Embeddings.DimensionMismatch,
+                $"The stored embeddings are not {queryVector.Length}-dimension vectors, so nothing could be compared with this query. Run an embeddings reset (POST /api/embeddings/reset?confirm=true) and re-index."));
         }
 
         if (topK.Count == 0)
         {
-
-            return [];
-
+            return Result<DivinationResult[]>.Success([]);
         }
 
-        (string Id, float Similarity)[] scored = new (string Id, float Similarity)[topK.Count];
+        DivinationResult[] results = new DivinationResult[topK.Count];
 
-        for (int i = scored.Length - 1; i >= 0; i--)
+        for (int i = results.Length - 1; i >= 0; i--)
         {
-
-            if (!topK.TryDequeue(out string? id, out float similarity))
+            if (!topK.TryDequeue(out string? id, out RankedHit ranked))
             {
-
                 break;
-
             }
 
-            scored[i] = (id, similarity);
-
+            results[i] = new DivinationResult(id, ranked.Similarity, EmptyMetadata);
         }
 
-        DivinationResult[] results = new DivinationResult[scored.Length];
+        return Result<DivinationResult[]>.Success(results);
+    }
 
-        for (int i = 0; i < scored.Length; i++)
+    private enum RowScore
+    {
+        Scored,
+
+        DimensionMismatch,
+
+        Unreadable,
+
+        NoSignal,
+    }
+
+    private static RowScore TryScoreRow(
+        object? embeddingColumn,
+        float[] queryVector,
+        double queryNormSquared,
+        out float similarity)
+    {
+        similarity = 0f;
+
+        ReadOnlySpan<float> candidate;
+
+        try
         {
-
-            results[i] = new DivinationResult(scored[i].Id, scored[i].Similarity, EmptyMetadata);
-
+            candidate = EmbeddingBlobCodec.AsVector((byte[]?)embeddingColumn);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or InvalidCastException)
+        {
+            return RowScore.Unreadable;
         }
 
-        return results;
+        if (candidate.Length != queryVector.Length)
+        {
+            return RowScore.DimensionMismatch;
+        }
 
+        return EmbeddingBlobCodec.TryCosineSimilarity(queryVector, queryNormSquared, candidate, out similarity)
+            ? RowScore.Scored
+            : RowScore.NoSignal;
+    }
+
+    private readonly record struct RankedHit(float Similarity, string Id);
+
+    /// <summary>
+    /// Orders the weakest hit first: lower similarity, then, for equal similarity, the higher id (so the
+    /// lowest id is the last to be displaced and ranks first in the answer).
+    /// </summary>
+    private sealed class WeakestFirst : IComparer<RankedHit>
+    {
+        public static WeakestFirst Instance { get; } = new();
+
+        public int Compare(RankedHit left, RankedHit right)
+        {
+            int bySimilarity = left.Similarity.CompareTo(right.Similarity);
+
+            return bySimilarity != 0
+                ? bySimilarity
+                : string.CompareOrdinal(right.Id, left.Id);
+        }
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -532,12 +577,10 @@ internal sealed class DivinationService(
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static string DeriveBlobTableName(string vecTableName) =>
         vecTableName.EndsWith(VecTableSuffix, StringComparison.Ordinal)
             ? vecTableName[..^VecTableSuffix.Length]
             : vecTableName;
-
 }

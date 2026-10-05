@@ -115,6 +115,12 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Data.OperationNotFinalized =>
                 StatusCodes.Status409Conflict,
 
+            // The stored vectors are of another width than the query's, so nothing could be compared. Not the
+            // caller's request and not a provider outage: the installation's embeddings have to be reset and
+            // re-indexed before the same call can succeed, which is a state conflict the operator resolves.
+            ErrorCodes.Embeddings.DimensionMismatch =>
+                StatusCodes.Status409Conflict,
+
             // 500 and deliberately not retryable: the mutation committed and quarantined bytes are
             // still on disk. It shares a status with Data.ReconciliationFailed and differs in the
             // one thing a client acts on - whether the data change already happened.
