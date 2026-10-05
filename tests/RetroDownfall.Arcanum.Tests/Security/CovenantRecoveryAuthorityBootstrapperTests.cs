@@ -378,6 +378,40 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Covenant.Unavailable, observed.Error.Code);
     }
 
+    /// <summary>
+    /// The canonical-state read answers every failure that is not an outage with the same refusal
+    /// as its sibling identity and launch-row reads, rather than letting the exception escape the pass.
+    /// </summary>
+    [Fact]
+    public async Task A_canonical_state_read_that_fails_without_an_outage_is_the_refusal()
+    {
+        SqliteNativeRuntime.Instance.Initialize();
+
+        string directory = Directory.CreateTempSubdirectory("arcanum-authority-state-").FullName;
+
+        try
+        {
+            await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(directory, "no-state.db"),
+                Pooling = false,
+            }.ToString());
+
+            await connection.OpenAsync(Token);
+
+            Result<CovenantOfflineTransitionSourceState> observed =
+                await CovenantRecoveryAuthorityBootstrapper.ReadObservedStateAsync(connection, Token);
+
+            Assert.True(observed.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, observed.Error.Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [SkippableFact]
     public async Task An_unpermitted_host_tools_policy_refuses_rather_than_warning()
     {

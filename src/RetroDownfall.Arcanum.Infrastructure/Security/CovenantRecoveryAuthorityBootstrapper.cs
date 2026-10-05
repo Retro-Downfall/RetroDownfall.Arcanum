@@ -584,8 +584,13 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
     }
 
     /// <summary>
-    /// The catalog's canonical generation and epoch tuple, or the refusal when it is not one.
+    /// The catalog's canonical generation and epoch tuple, the outage when the read meets an I/O
+    /// failure or a busy or locked catalog, or the refusal when it is not one.
     /// </summary>
+    /// <remarks>
+    /// The terminal-suffix finisher makes this same read on the same recovery connection, so one
+    /// method gives a failure here the same answer in both arms.
+    /// </remarks>
     internal static async Task<Result<CovenantOfflineTransitionSourceState>> ReadObservedStateAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
@@ -598,11 +603,17 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
                 .ReadOfflineTransitionObservedStateAsync(connection, transaction: null, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (
-            !cancellationToken.IsCancellationRequested
-            && GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
         {
             return Result<CovenantOfflineTransitionSourceState>.Failure(Outage());
+        }
+        catch (Exception)
+        {
+            return Result<CovenantOfflineTransitionSourceState>.Failure(Refusal().Error);
         }
 
         return observed.IsSuccess
