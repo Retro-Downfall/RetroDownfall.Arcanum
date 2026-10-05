@@ -4,6 +4,8 @@ using System.Net.Http.Headers;
 
 using System.Text;
 
+using System.Text.Json;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -220,6 +222,150 @@ public sealed class McpHttpResponseBoundHandlerTests
     }
 
     [Fact]
+    public async Task An_oversized_event_on_the_server_to_client_stream_is_abandoned_after_bounded_retries_and_leaves_the_session_usable()
+    {
+        // The unsolicited-message stream is a long-lived GET. A hostile server that answers it with one
+        // endless event is never buffered: each attempt is cut off at the bound, the SDK retries the
+        // stream a bounded number of times and then stops listening. The session itself is not torn down,
+        // because requests and their responses travel on POSTs; DESIGN says exactly that.
+        const int MaxReconnectionAttempts = 2;
+
+        EndlessStream eventBody = new(prefix: Encoding.UTF8.GetBytes("data: "));
+
+        int streamOpens = 0;
+
+        FakeStreamableHttpServer server = new(
+            onGet: () =>
+            {
+                _ = Interlocked.Increment(ref streamOpens);
+
+                StreamContent content = new(eventBody);
+
+                content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
+
+                return Respond(content);
+            });
+
+        TaskCompletionSource ended = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using SdkMcpClientWrapper client = CreateClient(
+            server,
+            maxReconnectionAttempts: MaxReconnectionAttempts,
+            onTransportEnded: () => ended.TrySetResult());
+
+        await client.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        // The first open plus every permitted retry, and then no more.
+        int expectedOpens = 1 + MaxReconnectionAttempts;
+
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+
+        while (Volatile.Read(ref streamOpens) < expectedOpens && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(20));
+        }
+
+        await Task.Delay(TimeSpan.FromMilliseconds(500));
+
+        Assert.Equal(expectedOpens, Volatile.Read(ref streamOpens));
+
+        // Every attempt was cut off at the bound (plus the one byte that proves it was exceeded).
+        Assert.Equal(expectedOpens * (BoundBytes + 1), eventBody.BytesServed);
+
+        Assert.False(ended.Task.IsCompleted, "An oversized event on the server-to-client stream ended the session.");
+
+        IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Empty(tools);
+    }
+
+    [Fact]
+    public async Task An_oversized_response_to_one_request_fails_that_call_without_ending_the_session()
+    {
+        EndlessStream oversized = new();
+
+        int toolListCalls = 0;
+
+        FakeStreamableHttpServer server = new(
+            onGet: () => new HttpResponseMessage(HttpStatusCode.MethodNotAllowed),
+            onToolsList: requestId =>
+            {
+                if (Interlocked.Increment(ref toolListCalls) > 1)
+                {
+                    return null;
+                }
+
+                StreamContent content = new(oversized);
+
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                return Respond(content);
+            });
+
+        TaskCompletionSource ended = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using SdkMcpClientWrapper client = CreateClient(
+            server,
+            maxReconnectionAttempts: 0,
+            onTransportEnded: () => ended.TrySetResult());
+
+        await client.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(
+            () => client.GetToolsAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+
+        // Cut off at the bound rather than buffered.
+        Assert.Equal(BoundBytes + 1, oversized.BytesServed);
+
+        // The next request on the same session goes through: one hostile message costs that call, not the
+        // session.
+        IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Empty(tools);
+
+        Assert.False(ended.Task.IsCompleted, "An oversized response to one request ended the session.");
+    }
+
+    private static SdkMcpClientWrapper CreateClient(
+        HttpMessageHandler server,
+        int maxReconnectionAttempts,
+        Action onTransportEnded)
+    {
+        McpHttpResponseBoundHandler handler = new(FrameBytes)
+        {
+            InnerHandler = server,
+        };
+
+        HttpClient httpClient = new(handler, disposeHandler: true);
+
+        HttpClientTransport transport = new(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("https://mcp.example/rpc"),
+                TransportMode = HttpTransportMode.StreamableHttp,
+                MaxReconnectionAttempts = maxReconnectionAttempts,
+                DefaultReconnectionInterval = TimeSpan.FromMilliseconds(10),
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: true);
+
+        return new SdkMcpClientWrapper(
+            transport,
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+            },
+            initializationTimeout: TimeSpan.FromSeconds(30),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink())
+        {
+            OnTransportEnded = onTransportEnded,
+        };
+    }
+
+    [Fact]
     public void The_McpHttp_named_client_pipeline_applies_the_bound()
     {
         ServiceCollection services = [];
@@ -242,6 +388,68 @@ public sealed class McpHttpResponseBoundHandlerTests
         }
 
         Assert.Contains(typeof(McpHttpResponseBoundHandler), pipeline);
+    }
+
+    [Fact]
+    public void The_McpHttp_named_client_bound_is_the_manager_frame_cap_plus_the_framing_allowance()
+    {
+        ServiceCollection services = [];
+
+        services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        using HttpMessageHandler handler = provider
+            .GetRequiredService<IHttpMessageHandlerFactory>()
+            .CreateHandler(McpConnectionManager.McpHttpClientName);
+
+        McpHttpResponseBoundHandler? bound = null;
+
+        for (HttpMessageHandler? current = handler;
+            current is DelegatingHandler delegating;
+            current = delegating.InnerHandler)
+        {
+            bound ??= delegating as McpHttpResponseBoundHandler;
+        }
+
+        Assert.NotNull(bound);
+
+        // The in-process transport and the HTTP bound enforce one code-owned cap; they must read it from
+        // the same place so neither can drift when the cap changes.
+        Assert.Equal(
+            McpSecurityLimits.MaxJsonRpcLineBytes + McpHttpResponseBoundHandler.FramingAllowanceBytes,
+            bound.BoundBytes);
+    }
+
+    [Fact]
+    public void The_code_owned_frame_cap_is_clamped_in_exactly_one_place()
+    {
+        string infrastructureRoot = Path.Combine(
+            global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Infrastructure");
+
+        List<string> readers = [];
+
+        foreach (string file in Directory.EnumerateFiles(infrastructureRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            string relative = Path.GetRelativePath(infrastructureRoot, file);
+
+            if (relative.StartsWith("bin" + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                || relative.StartsWith("obj" + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (File.ReadAllText(file).Contains("ArcanumSettingClamps.McpMaxJsonRpcLineBytes(", StringComparison.Ordinal))
+            {
+                readers.Add(relative);
+            }
+        }
+
+        // McpSecurityLimits.MaxJsonRpcLineBytes owns the clamp; the connection manager and the McpHttp
+        // client registration both use it instead of repeating it.
+        Assert.Equal([Path.Combine("Mcp", "McpSecurityLimits.cs")], readers.Order(StringComparer.Ordinal));
     }
 
     private static async Task<HttpResponseMessage> SendAsync(HttpResponseMessage inner)
@@ -269,9 +477,74 @@ public sealed class McpHttpResponseBoundHandlerTests
             Task.FromResult(response);
     }
 
-    private sealed class EndlessStream : Stream
+    // Answers every MCP request an initialize handshake needs, and hands the unsolicited-message GET to
+    // the supplied responder.
+    private sealed class FakeStreamableHttpServer(
+        Func<HttpResponseMessage> onGet,
+        Func<string, HttpResponseMessage?>? onToolsList = null) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                return onGet();
+            }
+
+            if (request.Method != HttpMethod.Post)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            string body = await request.Content!.ReadAsStringAsync(cancellationToken);
+
+            using JsonDocument document = JsonDocument.Parse(body);
+
+            JsonElement root = document.RootElement;
+
+            string? methodName = root.TryGetProperty("method", out JsonElement method) ? method.GetString() : null;
+
+            if (methodName == "tools/list")
+            {
+                string requestId = root.GetProperty("id").GetRawText();
+
+                return onToolsList?.Invoke(requestId)
+                    ?? new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            "{\"jsonrpc\":\"2.0\",\"id\":" + requestId + ",\"result\":{\"tools\":[]}}",
+                            Encoding.UTF8,
+                            "application/json"),
+                    };
+            }
+
+            if (methodName != "initialize")
+            {
+                return new HttpResponseMessage(HttpStatusCode.Accepted);
+            }
+
+            string reply =
+                "{\"jsonrpc\":\"2.0\",\"id\":" + root.GetProperty("id").GetRawText()
+                + ",\"result\":{\"protocolVersion\":\"" + root.GetProperty("params").GetProperty("protocolVersion").GetString() + "\""
+                + ",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1\"}}}";
+
+            HttpResponseMessage response = new(HttpStatusCode.OK)
+            {
+                Content = new StringContent(reply, Encoding.UTF8, "application/json"),
+            };
+
+            response.Headers.Add("Mcp-Session-Id", "arcanum-test-session");
+
+            return response;
+        }
+    }
+
+    private sealed class EndlessStream(byte[]? prefix = null) : Stream
     {
         private long _bytesServed;
+
+        private int _prefixServed;
 
         public long BytesServed => Interlocked.Read(ref _bytesServed);
 
@@ -289,18 +562,26 @@ public sealed class McpHttpResponseBoundHandlerTests
             set => throw new NotSupportedException();
         }
 
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            Array.Fill(buffer, (byte)'z', offset, count);
-
-            _ = Interlocked.Add(ref _bytesServed, count);
-
-            return count;
-        }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Read(buffer.AsSpan(offset, count));
 
         public override int Read(Span<byte> buffer)
         {
-            buffer.Fill((byte)'z');
+            // An optional leading field name (such as "data: ") is served once, then the body is endless.
+            int written = 0;
+
+            if (prefix is not null && _prefixServed < prefix.Length)
+            {
+                int take = Math.Min(prefix.Length - _prefixServed, buffer.Length);
+
+                prefix.AsSpan(_prefixServed, take).CopyTo(buffer);
+
+                _prefixServed += take;
+
+                written = take;
+            }
+
+            buffer[written..].Fill((byte)'z');
 
             _ = Interlocked.Add(ref _bytesServed, buffer.Length);
 

@@ -23,6 +23,14 @@ internal static class McpSecurityLimits
 
     public const int MaxMcpToolInputSchemaUtf8Bytes = 64 * 1024;
 
+    /// <summary>
+    /// The code-owned per-message cap (not an <c>Arcanum:Mcp</c> setting), clamped once here. The in-process
+    /// transport and the Streamable HTTP response bound both enforce it, so neither reads the default and
+    /// clamps it on its own.
+    /// </summary>
+    public static int MaxJsonRpcLineBytes =>
+        ArcanumSettingClamps.McpMaxJsonRpcLineBytes(ArcanumRuntimeDefaults.Mcp.MaxJsonRpcLineBytes);
+
     public static readonly JsonDocumentOptions JsonDocumentOptions = new()
     {
         MaxDepth = MaxJsonDepth,

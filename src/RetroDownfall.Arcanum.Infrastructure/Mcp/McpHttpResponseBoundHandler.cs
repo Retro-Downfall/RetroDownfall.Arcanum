@@ -12,8 +12,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// A <c>text/event-stream</c> response is long-lived and carries many messages, so it is bounded per
 /// event (the bytes between blank lines), never in total. Any other response is one message and is
 /// bounded in total, up front when it declares a <c>Content-Length</c> and while streaming otherwise.
-/// An oversized message fails the read with an <see cref="IOException"/>, which the SDK reports as the
-/// session ending; it is never buffered.
+/// An oversized message is never buffered. One whose declared length is over the bound fails the request
+/// with an <see cref="HttpRequestException"/> before any body byte is read; any other fails the read with
+/// an <see cref="IOException"/>. That costs the call (or SSE stream) it arrived on, not the session: the
+/// SDK abandons an oversized server-to-client stream after its bounded reconnection attempts.
 /// </para>
 /// </summary>
 internal sealed class McpHttpResponseBoundHandler(long maxFrameBytes) : DelegatingHandler
@@ -27,6 +29,9 @@ internal sealed class McpHttpResponseBoundHandler(long maxFrameBytes) : Delegati
     private readonly long _boundBytes = maxFrameBytes > 0L
         ? maxFrameBytes + FramingAllowanceBytes
         : throw new ArgumentOutOfRangeException(nameof(maxFrameBytes));
+
+    /// <summary>The largest message (or SSE event) this handler lets through, framing allowance included.</summary>
+    internal long BoundBytes => _boundBytes;
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
