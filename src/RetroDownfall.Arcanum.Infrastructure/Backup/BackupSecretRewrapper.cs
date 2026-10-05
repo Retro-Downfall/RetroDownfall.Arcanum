@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 using System.Security.Cryptography;
 
 using System.Text;
@@ -63,22 +65,23 @@ internal sealed record BackupSecretSnapshot(
     BackupCapturedSecret MasterApiKey)
 {
     /// <summary>
-    /// The first secret a replacement restore may overwrite whose prior state a rollback could not
+    /// The first secret a replacement restore will overwrite whose prior state a rollback could not
     /// reinstate, or <see langword="null"/> when every one of them can be.
     /// </summary>
     /// <remarks>
-    /// The master API key is only overwritten on explicit request, so its prior state only matters
-    /// then. The Grimoire secret is always written, and the key ring is written whenever the archive
-    /// carries keys, which is not known until after the capture.
+    /// Only a secret the restore writes matters, because only a written secret is ever reinstated. The
+    /// Grimoire secret is always written. The master API key is written only on explicit request, and
+    /// the key ring only when the archive carries file-encryption keys — which is known once the archive
+    /// is extracted, so the caller asks again then rather than refusing over a ring it would never touch.
     /// </remarks>
-    public BackupCapturedSecret? FirstUnreinstatable(bool restoreMasterApiKey)
+    public BackupCapturedSecret? FirstUnreinstatable(bool restoreMasterApiKey, bool writesFileEncryptionKeys)
     {
         if (!GrimoireSecret.IsReinstatable)
         {
             return GrimoireSecret;
         }
 
-        if (!FileEncryptionSecret.IsReinstatable)
+        if (writesFileEncryptionKeys && !FileEncryptionSecret.IsReinstatable)
         {
             return FileEncryptionSecret;
         }
@@ -164,14 +167,7 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                 return InvalidMaterial();
             }
 
-            if (recovery is null
-                || recovery.Version != 1
-                || recovery.GrimoireEncryptionSecretUtf8.Length == 0)
-            {
-                return InvalidMaterial();
-            }
-
-            if (!TryBuildKeyRing(recovery, out string? keyRing, out int keyCount))
+            if (!IsUsable(recovery, out string? keyRing, out int keyCount))
             {
                 return InvalidMaterial();
             }
@@ -227,6 +223,73 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
             CryptographicOperations.ZeroMemory(bytes);
         }
+    }
+
+    /// <summary>
+    /// Whether <see cref="RewrapAsync"/> would write this machine's file-encryption key ring from this
+    /// payload, which only a usable payload that carries keys does.
+    /// </summary>
+    /// <remarks>
+    /// Asked before the commit, so a replacement refuses over an unreadable key ring only when it would
+    /// actually overwrite that ring. A payload the rewrap would reject writes nothing at all, so it
+    /// answers false here and is refused by the rewrap itself, which reverses the commit.
+    /// </remarks>
+    public async Task<bool> WritesFileEncryptionKeysAsync(
+        string portableRecoveryPath,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(portableRecoveryPath);
+
+        string fullPath = Path.GetFullPath(portableRecoveryPath);
+
+        if (!File.Exists(fullPath) || new FileInfo(fullPath).Length > MaximumRecoveryBytes)
+        {
+            return false;
+        }
+
+        byte[] bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+
+        PortableBackupRecoveryMaterial? recovery = null;
+
+        try
+        {
+            try
+            {
+                recovery = JsonSerializer.Deserialize(
+                    bytes,
+                    BackupJsonContext.Default.PortableBackupRecoveryMaterial);
+            }
+            catch (Exception exception) when (
+                exception is JsonException or NotSupportedException)
+            {
+                return false;
+            }
+
+            return IsUsable(recovery, out string? keyRing, out _) && keyRing is not null;
+        }
+        finally
+        {
+            recovery?.Dispose();
+
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    /// <summary>
+    /// The one test of whether a parsed payload can be rewrapped at all, and the key ring it renders.
+    /// </summary>
+    private static bool IsUsable(
+        [NotNullWhen(true)] PortableBackupRecoveryMaterial? recovery,
+        out string? keyRing,
+        out int keyCount)
+    {
+        keyRing = null;
+
+        keyCount = 0;
+
+        return recovery is { Version: 1 }
+            && recovery.GrimoireEncryptionSecretUtf8.Length > 0
+            && TryBuildKeyRing(recovery, out keyRing, out keyCount);
     }
 
     /// <summary>

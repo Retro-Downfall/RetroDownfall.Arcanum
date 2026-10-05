@@ -172,6 +172,40 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     }
 
     /// <summary>
+    /// A fault between the spent disposition and the anchor's close keeps staging, because the anchor
+    /// still commits to the journal inside it.
+    /// </summary>
+    /// <remarks>
+    /// The disposition alone used to count as final, so the cleanup deleted staging — the V2 journal
+    /// with it — while the anchor that names that journal was still active. The next start would then
+    /// find an active anchor committing to a journal that no longer exists, which it can only refuse.
+    /// </remarks>
+    [Fact]
+    public async Task A_fault_after_the_disposition_but_before_the_anchor_closes_keeps_staging()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        harness.Markers.ReleaseFault = new InvalidOperationException("injected release fault");
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal("backup.restore_completion_failed", Assert.Single(result.Issues).Code);
+
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // Committed, so not reversed.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+
+        string staging = Assert.Single(harness.StagingRoots());
+
+        Assert.True(File.Exists(Path.Combine(staging, BackupRestoreJournalAnchorStore.JournalFileName)));
+    }
+
+    /// <summary>
     /// The window the previous test cannot reach: the gate has applied <c>CommitAndReopen</c> and admission
     /// is open, but the marker finalizer's own commit has not landed, so the session has not yet recorded
     /// the disposition. A full disk there is a <c>SqliteException</c> that used to surface in the service's
@@ -1420,8 +1454,18 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             return answer;
         }
 
+        /// <summary>Thrown from the next root release instead of releasing, when set.</summary>
+        internal Exception? ReleaseFault { get; set; }
+
         public ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)
         {
+            if (ReleaseFault is { } fault)
+            {
+                ReleaseFault = null;
+
+                throw fault;
+            }
+
             ReleasedOwnerOperationId = ownerOperationId;
 
             return ValueTask.CompletedTask;

@@ -291,7 +291,9 @@ public sealed class BackupSecretRewrapperTests : IDisposable
 
         Assert.Equal("archived-master-key", store.ApiKey);
 
-        _ = await rewrapper.RestoreAsync(prior);
+        Result restored = await rewrapper.RestoreAsync(prior);
+
+        Assert.True(restored.IsSuccess, restored.IsFailure ? restored.Error.Message : string.Empty);
 
         Assert.Null(store.ApiKey);
 
@@ -339,6 +341,78 @@ public sealed class BackupSecretRewrapperTests : IDisposable
         Assert.Contains(nameof(IOException), restored.Error.Message, StringComparison.Ordinal);
 
         Assert.Equal("archived-grimoire-secret", store.GrimoireSecret);
+    }
+
+    /// <summary>
+    /// Only a payload the rewrap would accept and that carries file-encryption keys writes the key
+    /// ring, which is what lets a replacement refuse over an unreadable ring only when it would
+    /// overwrite it.
+    /// </summary>
+    [Fact]
+    public async Task Only_a_usable_payload_carrying_file_keys_writes_the_key_ring()
+    {
+        byte[] key = RandomNumberGenerator.GetBytes(32);
+
+        string withKeys = WriteRecovery(
+            "grimoire-secret",
+            activeKeyId: KeyId(key),
+            keys: [(KeyId(key), key)],
+            masterApiKey: null);
+
+        string withoutKeys = WriteRecovery(
+            "grimoire-secret",
+            activeKeyId: null,
+            keys: [],
+            masterApiKey: null);
+
+        string malformed = Path.Combine(_root, "malformed.json");
+
+        await File.WriteAllTextAsync(malformed, "{ not recovery material");
+
+        BackupSecretRewrapper rewrapper = new(new RecordingSecretStore());
+
+        Assert.True(await rewrapper.WritesFileEncryptionKeysAsync(withKeys, CancellationToken.None));
+
+        Assert.False(await rewrapper.WritesFileEncryptionKeysAsync(withoutKeys, CancellationToken.None));
+
+        Assert.False(await rewrapper.WritesFileEncryptionKeysAsync(malformed, CancellationToken.None));
+
+        Assert.False(
+            await rewrapper.WritesFileEncryptionKeysAsync(
+                Path.Combine(_root, "absent.json"),
+                CancellationToken.None));
+    }
+
+    /// <summary>
+    /// An unreadable key ring blocks a replacement only when the archive would overwrite it; the
+    /// Grimoire secret, which every replacement writes, blocks whatever the archive carries.
+    /// </summary>
+    [Fact]
+    public void An_unreadable_key_ring_blocks_only_a_restore_that_would_overwrite_it()
+    {
+        BackupSecretSnapshot snapshot = new(
+            BackupCapturedSecret.From("the Grimoire encryption secret", SecretStoreReadResult.Ok("secret")),
+            BackupCapturedSecret.From(
+                "the file-encryption key ring",
+                SecretStoreReadResult.Unreadable("access denied")),
+            BackupCapturedSecret.From("the master API key", SecretStoreReadResult.Missing()));
+
+        Assert.Null(snapshot.FirstUnreinstatable(restoreMasterApiKey: true, writesFileEncryptionKeys: false));
+
+        Assert.Same(
+            snapshot.FileEncryptionSecret,
+            snapshot.FirstUnreinstatable(restoreMasterApiKey: false, writesFileEncryptionKeys: true));
+
+        BackupSecretSnapshot unreadableGrimoire = snapshot with
+        {
+            GrimoireSecret = BackupCapturedSecret.From(
+                "the Grimoire encryption secret",
+                SecretStoreReadResult.Corrupted("undecryptable")),
+        };
+
+        Assert.Same(
+            unreadableGrimoire.GrimoireSecret,
+            unreadableGrimoire.FirstUnreinstatable(restoreMasterApiKey: false, writesFileEncryptionKeys: false));
     }
 
     private static string KeyId(byte[] key) =>

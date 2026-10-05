@@ -291,10 +291,20 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             {
                 // The installation is provably back in its prior state, so the blocker this restore
                 // published has nothing left to guard. Retired on a token of its own, since the caller's
-                // is the one just cancelled; the lease's restore-evidence check still decides.
-                _ = await coordinationLease
+                // is the one just cancelled; the lease's restore-evidence check still decides. A refusal
+                // is safe — the blocker survives for the next start to retire — but never silent.
+                Result retired = await coordinationLease
                     .RemoveBlockerIfSafeAsync(CancellationToken.None)
                     .ConfigureAwait(false);
+
+                if (retired.IsFailure)
+                {
+                    Log.Warning(
+                        "The cancelled restore {OperationId} left its client-mutation blocker for the next start: {Code} {Message}",
+                        operationId,
+                        retired.Error.Code,
+                        retired.Error.Message);
+                }
 
                 throw;
             }
@@ -843,29 +853,30 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         stagingParent),
                 ]);
         }
+        catch (OperationCanceledException)
+        {
+            // Nothing is displaced before the phase loop, so a cancellation here is a proven exit: the
+            // staging this created is removed rather than left for the startup sweep, and the caller may
+            // retire its client blocker before the cancellation propagates.
+            DiscardUnusedStaging(createdStaging, liveRoot, indexedStagingPath);
+
+            exit.PriorInstallationIntact = true;
+
+            throw;
+        }
 
         // A replacement overwrites this machine's secrets after commit, and a rollback can return each
         // one only to a state the capture proved: its value, or its absence. A read that proved neither
-        // refuses here, while nothing has been displaced, rather than after the overwrite (§5.4.9).
+        // refuses here, while nothing has been displaced, rather than after the overwrite (§5.4.9). The
+        // key ring is asked about again once the archive is extracted, because only then is it known
+        // whether the archive carries keys that would overwrite it.
         if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
-            && priorSecrets.FirstUnreinstatable(request.RestoreMasterApiKey) is { } unreadable)
+            && priorSecrets.FirstUnreinstatable(request.RestoreMasterApiKey, writesFileEncryptionKeys: false)
+                is { } unreadable)
         {
             DiscardUnusedStaging(createdStaging, liveRoot, indexedStagingPath);
 
-            return Rejected(
-                operationId,
-                plan,
-                phases,
-                [
-                    new BackupVerifyIssue(
-                        "backup.restore_prior_secret_unreadable",
-                        $"This machine's {unreadable.Description} could not be read ({unreadable.Status}), "
-                        + "so a rollback could not reinstate it; the restore stopped before any destructive "
-                        + "step and the current installation is unchanged. Make the credential readable "
-                        + "(unlock the OS credential store, or restore the Data Protection key ring that "
-                        + "protects it) and retry. Only once it is confirmed unrecoverable, set it aside so "
-                        + "this machine provably holds none, and retry."),
-                ]);
+            return Rejected(operationId, plan, phases, [PriorSecretUnreadable(unreadable)]);
         }
 
         CommitOutcome? commit = null;
@@ -897,6 +908,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             plan.ArchivePath);
 
         bool durablyDisplaced = false;
+
+        // Whether the Covenant arm's anchor was closed, which is what stops it naming the journal inside
+        // staging. A spent disposition alone does not prove it: the anchor closes after the roots are
+        // released, and either step can still fail.
+        bool covenantAnchorClosed = false;
 
         try
         {
@@ -944,6 +960,27 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             if (extraction.Manifest is null)
             {
                 return Rejected(operationId, effectivePlan, phases, extraction.Issues);
+            }
+
+            if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
+            {
+                bool writesFileEncryptionKeys = await rewrapper
+                    .WritesFileEncryptionKeysAsync(
+                        Path.Combine(
+                            extractRoot,
+                            BackupArchivePaths.PortableRecoveryKeys.Replace('/', Path.DirectorySeparatorChar)),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (priorSecrets.FirstUnreinstatable(request.RestoreMasterApiKey, writesFileEncryptionKeys)
+                    is { } unreadableAfterExtraction)
+                {
+                    return Rejected(
+                        operationId,
+                        effectivePlan,
+                        phases,
+                        [PriorSecretUnreadable(unreadableAfterExtraction)]);
+                }
             }
 
             // Before the staged generation is composed, and before any owner is acquired. The archive
@@ -1141,7 +1178,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 {
                     retainStagingForReconciliation = true;
 
-                    RetainForReconciliation(staging.Path, journal, phases, commitReversal, Result.Success());
+                    string? commitJournalFault = RetainForReconciliation(
+                        staging.Path,
+                        journal,
+                        phases,
+                        commitReversal,
+                        Result.Success());
 
                     return ReversalIncomplete(
                         operationId,
@@ -1150,7 +1192,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         safetyBackupPath,
                         staging.Path,
                         commitReversal,
-                        Result.Success());
+                        Result.Success(),
+                        commitJournalFault);
                 }
 
                 return RolledBack(
@@ -1179,7 +1222,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 if (!rewrap.GrimoireSecretWritten)
                 {
-                    ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
+                    ReversalOutcome reversal = Reverse(
+                        request.ConflictMode,
+                        liveRoot,
+                        effectivePlan.DestinationRoot,
+                        stagedRoot,
+                        displacedRoot);
 
                     Result secrets = await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
 
@@ -1191,7 +1239,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     {
                         retainStagingForReconciliation = true;
 
-                        RetainForReconciliation(staging.Path, journal, phases, reversal, secrets);
+                        string? rewrapJournalFault = RetainForReconciliation(
+                            staging.Path,
+                            journal,
+                            phases,
+                            reversal,
+                            secrets);
 
                         return ReversalIncomplete(
                             operationId,
@@ -1200,7 +1253,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                             safetyBackupPath,
                             staging.Path,
                             reversal,
-                            secrets);
+                            secrets,
+                            rewrapJournalFault);
                     }
 
                     return RolledBack(
@@ -1300,6 +1354,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         [.. phases],
                         [Issue(reopened.Error)]);
                 }
+
+                covenantAnchorClosed = true;
             }
 
             _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Cleanup);
@@ -1310,6 +1366,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             // journal left at Reconcile already reads to startup recovery as "only cleanup remained".
             try
             {
+                _options.BeforeCleanupJournalAdvanceForTests?.Invoke();
+
                 journal = BackupRestoreJournal.Advance(staging.Path, journal, BackupRestorePhase.Cleanup);
             }
             catch (Exception exception) when (
@@ -1357,7 +1415,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             // restore the rest of the system has already begun to use.
             if (commit is { Succeeded: true } && covenant is not { Dispositioned: true })
             {
-                ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
+                ReversalOutcome reversal = Reverse(
+                    request.ConflictMode,
+                    liveRoot,
+                    effectivePlan.DestinationRoot,
+                    stagedRoot,
+                    displacedRoot);
 
                 Result secrets = await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
 
@@ -1367,21 +1430,28 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 {
                     retainStagingForReconciliation = true;
 
+                    string? cancelledJournalFault = RetainForReconciliation(
+                        staging.Path,
+                        journal,
+                        phases,
+                        reversal,
+                        secrets);
+
                     // A cancellation has no result to carry this, so it travels on the exception and
-                    // in the log. Logged before the journal write, which can itself fail.
+                    // in the log.
                     string incomplete = ReversalIncompleteMessage(
                         "The restore was cancelled after commit.",
+                        effectivePlan,
                         staging.Path,
                         safetyBackupPath,
                         reversal,
-                        secrets);
+                        secrets,
+                        cancelledJournalFault);
 
                     Log.Warning(
                         "The cancelled restore {OperationId} could not be rolled back cleanly: {Detail}",
                         operationId,
                         incomplete);
-
-                    RetainForReconciliation(staging.Path, journal, phases, reversal, secrets);
 
                     throw new OperationCanceledException(incomplete, cancelled, cancellationToken);
                 }
@@ -1420,7 +1490,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             if (commit is { Succeeded: true })
             {
-                ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
+                ReversalOutcome reversal = Reverse(
+                    request.ConflictMode,
+                    liveRoot,
+                    effectivePlan.DestinationRoot,
+                    stagedRoot,
+                    displacedRoot);
 
                 Result secrets = await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
 
@@ -1430,7 +1505,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 {
                     retainStagingForReconciliation = true;
 
-                    RetainForReconciliation(staging.Path, journal, phases, reversal, secrets);
+                    string? journalFault = RetainForReconciliation(
+                        staging.Path,
+                        journal,
+                        phases,
+                        reversal,
+                        secrets);
 
                     return ReversalIncomplete(
                         operationId,
@@ -1439,7 +1519,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         safetyBackupPath,
                         staging.Path,
                         reversal,
-                        secrets);
+                        secrets,
+                        journalFault);
                 }
 
                 return RolledBack(
@@ -1471,7 +1552,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             // and the adoptable owner survive for the next start.
             if (covenant is { Dispositioned: false } && maintenance is not null)
             {
-                _ = await _covenant!
+                Result aborted = await _covenant!
                     .AbortAsync(
                         covenant,
                         maintenance,
@@ -1479,6 +1560,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         provenPreSwap: !durablyDisplaced,
                         CancellationToken.None)
                     .ConfigureAwait(false);
+
+                // Only a rollback that spent its disposition and then closed the anchor releases it; a
+                // dispose without a disposition leaves the anchor active by design.
+                covenantAnchorClosed = aborted.IsSuccess && covenant.Dispositioned;
             }
 
             // Retention is the default once the installation is displaced. Staging — the journal and
@@ -1487,8 +1572,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             // CommitAndReopen disposition was spent, which is as final as Cleanup (§10.19.9; with the
             // installation displaced, the abort above never records a disposition). An exception outside
             // every catch filter above proves none of those, so it keeps everything for
-            // BackupRestoreRecovery instead of deleting the displaced installation (§5.4.9).
+            // BackupRestoreRecovery instead of deleting the displaced installation (§5.4.9). On the
+            // Covenant arm the anchor has to be closed as well: an active anchor names the V2 journal in
+            // this staging root, and deleting it under that anchor leaves the next start a commitment to
+            // a journal that no longer exists, which it can only refuse.
             if (!retainStagingForReconciliation
+                && (covenant is null || covenantAnchorClosed)
                 && (!durablyDisplaced || reachedCleanup || covenant is { Dispositioned: true }))
             {
                 BackupRestoreJournal.Delete(staging.Path);
@@ -1560,21 +1649,52 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// <para>A secret reinstatement failure is written into the journal as well. Directories that
     /// went back leave the same tree as a commit that never began, which the startup sweep would
     /// otherwise report as <c>RolledBack</c> and discard — the opposite of what this restore said.</para>
+    ///
+    /// <para>It never throws for the write. It runs after a reversal, from inside the restore's own
+    /// catches, so a fault escaping here would leave the restore as a bare exception — or, from the
+    /// rewrap arm, reach a catch that reads the already-reversed commit as never having happened and
+    /// reports the installation as untouched. The fault is logged, recorded, and returned for the
+    /// result to name instead; staging is retained either way.</para>
     /// </remarks>
-    private static void RetainForReconciliation(
+    /// <returns>The write's fault, or <see langword="null"/> when the journal recorded the retention.</returns>
+    private string? RetainForReconciliation(
         string stagingRoot,
         BackupRestoreJournalRecord journal,
         List<BackupRestorePhaseRecord> phases,
         ReversalOutcome reversal,
         Result secrets)
     {
-        _ = BackupRestoreJournal.Write(
-            stagingRoot,
-            journal with
-            {
-                Phase = BackupRestorePhase.Commit,
-                SecretReinstatementFailure = secrets.IsFailure ? secrets.Error.Message : null,
-            });
+        try
+        {
+            _options.BeforeRetainedJournalWriteForTests?.Invoke();
+
+            _ = BackupRestoreJournal.Write(
+                stagingRoot,
+                journal with
+                {
+                    Phase = BackupRestorePhase.Commit,
+                    SecretReinstatementFailure = secrets.IsFailure ? secrets.Error.Message : null,
+                });
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            Log.Warning(
+                "The restore {OperationId} could not rewrite its journal to retain staging for reconciliation: {Diagnostics}",
+                journal.OperationId,
+                exception.GetType().Name);
+
+            Record(
+                phases,
+                BackupRestorePhase.Cleanup,
+                "The restore journal could not be rewritten to retain staging ("
+                + exception.GetType().Name
+                + "); staging was kept under "
+                + stagingRoot
+                + " regardless.");
+
+            return exception.GetType().Name;
+        }
 
         Record(
             phases,
@@ -1583,8 +1703,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 ? "The prior installation's local secrets could not all be reinstated, so the restore "
                     + $"journal records that and was retained with staging under {stagingRoot}; the next "
                     + "start reports ReconciliationRequired rather than a clean rollback."
-                : "The reversal could not be verified, so the restore journal and the displaced "
-                    + $"installation were retained under {stagingRoot} for reconciliation at the next start.");
+                : "The reversal could not be verified, so the restore journal and staging were retained "
+                    + $"under {stagingRoot} for reconciliation at the next start.");
+
+        return null;
     }
 
     /// <summary>
@@ -2076,7 +2198,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         {
             // A rename failed partway. Undo whatever landed here and now, rather than leaving the
             // live root missing for the journal to repair at the next start.
-            ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
+            ReversalOutcome reversal = Reverse(
+                mode,
+                liveRoot,
+                destinationRoot,
+                stagedRoot,
+                displacedRoot);
 
             return new CommitOutcome(
                 false,
@@ -2100,10 +2227,17 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// start rather than tidying away the evidence.
     /// </remarks>
     private ReversalOutcome Reverse(
+        BackupRestoreConflictMode mode,
         string liveRoot,
+        string destinationRoot,
         string stagedRoot,
         string displacedRoot)
     {
+        if (mode == BackupRestoreConflictMode.NewProfileRoot)
+        {
+            return ReverseNewProfile(destinationRoot, stagedRoot);
+        }
+
         try
         {
             bool stagedStillPresent = Directory.Exists(stagedRoot);
@@ -2139,6 +2273,39 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         return Directory.Exists(displacedRoot)
             ? new ReversalOutcome(Restored: false, "the displaced installation is still in staging")
             : new ReversalOutcome(Restored: true, Diagnostics: null);
+    }
+
+    /// <summary>
+    /// Undoes a new-profile commit, which moved <c>staged/</c> to the new profile root and never touched
+    /// the live installation.
+    /// </summary>
+    /// <remarks>
+    /// The live root is deliberately never looked at. Read with the replacement rules, "staged/ gone and
+    /// the live root present" is a completed swap, and reversing it moves the current installation into
+    /// staging — which the cleanup then deletes. Only the restored tree moves back, and the reversal is
+    /// verified once it is in staging again: the new root then holds nothing this restore wrote. A new
+    /// root that existed empty before the commit is not recreated.
+    /// </remarks>
+    private ReversalOutcome ReverseNewProfile(string destinationRoot, string stagedRoot)
+    {
+        try
+        {
+            _options.BeforeReversalRenameForTests?.Invoke();
+
+            if (!Directory.Exists(stagedRoot) && Directory.Exists(destinationRoot))
+            {
+                Directory.Move(destinationRoot, stagedRoot);
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return new ReversalOutcome(Restored: false, exception.GetType().Name);
+        }
+
+        return Directory.Exists(stagedRoot)
+            ? new ReversalOutcome(Restored: true, Diagnostics: null)
+            : new ReversalOutcome(Restored: false, "the restored generation is still at the new profile root");
     }
 
     /// <summary>
@@ -2760,6 +2927,20 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     private static BackupVerifyIssue Issue(Error error) =>
         new(error.Code, error.Message);
 
+    /// <summary>
+    /// The refusal for a secret the restore would overwrite whose prior state a rollback could not
+    /// reinstate.
+    /// </summary>
+    private static BackupVerifyIssue PriorSecretUnreadable(BackupCapturedSecret unreadable) =>
+        new(
+            "backup.restore_prior_secret_unreadable",
+            $"This machine's {unreadable.Description} could not be read ({unreadable.Status}), "
+            + "so a rollback could not reinstate it; the restore stopped before any destructive "
+            + "step and the current installation is unchanged. Make the credential readable "
+            + "(unlock the OS credential store, or restore the Data Protection key ring that "
+            + "protects it) and retry. Only once it is confirmed unrecoverable, set it aside so "
+            + "this machine provably holds none, and retry.");
+
     private static void Record(
         List<BackupRestorePhaseRecord> phases,
         BackupRestorePhase phase,
@@ -2797,7 +2978,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         string? safetyBackupPath,
         string stagingRoot,
         ReversalOutcome reversal,
-        Result secrets) =>
+        Result secrets,
+        string? journalFault) =>
         new(
             BackupRestoreStatus.ReconciliationRequired,
             plan.ArchivePath,
@@ -2814,10 +2996,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     "backup.restore_reversal_incomplete",
                     ReversalIncompleteMessage(
                         "The restore failed after commit.",
+                        plan,
                         stagingRoot,
                         safetyBackupPath,
                         reversal,
-                        secrets)),
+                        secrets,
+                        journalFault)),
             ]);
 
     /// <summary>
@@ -2861,11 +3045,36 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// </remarks>
     private static string ReversalIncompleteMessage(
         string lead,
+        BackupRestorePlan plan,
         string stagingRoot,
         string? safetyBackupPath,
         ReversalOutcome reversal,
-        Result secrets)
+        Result secrets,
+        string? journalFault)
     {
+        // Everything below describes what the retained journal tells the next start. When it could not
+        // be rewritten, that is no longer true, and the operator has only this message and the log.
+        string unrecorded = journalFault is null
+            ? string.Empty
+            : " The restore journal could not be rewritten to record this (" + journalFault + "), so the "
+                + "next start may not report it; this message and the log are its only record.";
+
+        // A new-profile commit displaces nothing, so what a failed reversal leaves behind is the restored
+        // tree at its new root, never a displaced installation.
+        if (plan.ConflictMode == BackupRestoreConflictMode.NewProfileRoot && !reversal.Restored)
+        {
+            return lead
+                + " The restored generation could not be moved back off the new profile root at "
+                + plan.DestinationRoot
+                + "; the current installation was never touched. Delete that root before relying on it or "
+                + "restoring to it again. The restore journal is preserved under "
+                + stagingRoot
+                + " and the next start removes it. Diagnostics: "
+                + (reversal.Diagnostics ?? "the reversal did not complete")
+                + "."
+                + unrecorded;
+        }
+
         string files = reversal.Restored
             ? " The prior installation's files were returned to their original place, but not every local "
                 + "secret it held was. Nothing was deleted: the restore journal records the failure and is "
@@ -2882,6 +3091,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         return lead
             + files
+            + unrecorded
             + (secrets.IsFailure
                 ? " " + secrets.Error.Message + " "
                     + BackupRestoreRecovery.UnreinstatedSecretsAdvice(safetyBackupPath)
@@ -2917,10 +3127,14 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     private sealed class RestoreExitEvidence
     {
         /// <summary>
-        /// True while nothing durable remains: nothing was displaced, or a reversal was verified with
-        /// its secrets reinstated, and no staging was retained for reconciliation.
+        /// True only where an exit proved nothing durable remains: nothing was displaced, or a reversal
+        /// was verified with its secrets reinstated, and no staging was retained for reconciliation.
         /// </summary>
-        public bool PriorInstallationIntact { get; set; } = true;
+        /// <remarks>
+        /// False until an exit sets it, so an exit nobody anticipated leaves the client blocker for the
+        /// next start rather than retiring it on evidence that was never gathered.
+        /// </remarks>
+        public bool PriorInstallationIntact { get; set; }
     }
 
     private sealed record CommitOutcome(
