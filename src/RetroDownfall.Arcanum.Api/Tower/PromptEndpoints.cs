@@ -427,6 +427,7 @@ internal static class PromptEndpoints
                 ICampaignRepository campaignRepo,
                 IOptionsSnapshot<ArcanumSettings> settings,
                 PromptRenderer renderer,
+                SpellWorkspaceResolver workspaceResolver,
                 IMcpConnectionManager mcpManager,
                 IModelTokenEstimator tokenEstimator,
                 HttpContext ctx) =>
@@ -467,6 +468,31 @@ internal static class PromptEndpoints
 
                 string workingDirectory = request?.WorkingDirectory ?? string.Empty;
 
+                // A supplied workingDirectory is the codex containment root for a global prompt and the MCP
+                // workspace partition key for every prompt, so it must satisfy the same
+                // Arcanum:Security:SpellWorkspaceRoots allowlist as prompt execute, spell execute and ping.
+                // An unlisted directory is refused (403 Spell.PathNotAllowed) rather than quietly skipping the
+                // codex read and the tool listing: a silent skip would answer 200 for a request the
+                // other routes refuse. A blank workingDirectory is never resolved, so a test without one
+                // keeps working on an installation whose roots list is empty.
+                if (!string.IsNullOrWhiteSpace(workingDirectory))
+                {
+                    Result<string?> workingDirectoryResult = workspaceResolver.Resolve(workingDirectory);
+
+                    IResult? workingDirectoryFailure = SpellApiResults.MapOptionalWorkspaceFailure<PromptTestResultDto>(
+                        workingDirectoryResult,
+                        traceId,
+                        ArcanumJsonContext.Default.ApiResponsePromptTestResultDto,
+                        out string? resolvedWorkingDirectory);
+
+                    if (workingDirectoryFailure is not null)
+                    {
+                        return workingDirectoryFailure;
+                    }
+
+                    workingDirectory = resolvedWorkingDirectory ?? string.Empty;
+                }
+
                 string? codexContent = null;
 
                 if (!string.IsNullOrWhiteSpace(request?.CodexPath))
@@ -485,19 +511,7 @@ internal static class PromptEndpoints
                     if (string.IsNullOrWhiteSpace(containmentRoot)
                         && !string.IsNullOrWhiteSpace(workingDirectory))
                     {
-                        try
-                        {
-                            string normalizedWorkingDirectory = Path.GetFullPath(workingDirectory.Trim());
-
-                            if (Directory.Exists(normalizedWorkingDirectory))
-                            {
-                                containmentRoot = normalizedWorkingDirectory;
-                            }
-                        }
-                        catch (Exception)
-                        {
-                            // fall through
-                        }
+                        containmentRoot = workingDirectory;
                     }
 
                     // W3.5: use the effective codex cap (min of codex + workspace read caps), matching
