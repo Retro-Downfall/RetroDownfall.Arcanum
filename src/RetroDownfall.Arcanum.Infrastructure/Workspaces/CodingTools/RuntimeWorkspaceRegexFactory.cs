@@ -14,9 +14,7 @@ internal sealed record RuntimeWorkspaceRegexCreationResult(
     string? ErrorCode,
     bool FallbackAttempted)
 {
-
     internal bool Success => Regex is not null;
-
 }
 
 /// <summary>
@@ -26,37 +24,47 @@ internal sealed record RuntimeWorkspaceRegexCreationResult(
 /// </summary>
 internal static class RuntimeWorkspaceRegexFactory
 {
-
     internal static RuntimeWorkspaceRegexCreationResult Create(
         string pattern,
         bool caseSensitive,
-        TimeSpan matchTimeout)
-    {
+        TimeSpan matchTimeout) =>
+        Create(
+            pattern,
+            caseSensitive,
+            matchTimeout,
+            static (candidate, options, timeout) => new Regex(candidate, options, timeout));
 
+    /// <param name="construct">
+    /// Builds the regex for one attempt. Production uses the plain constructor; a test supplies its own to
+    /// prove the fallback does not depend on the wording of the engine's exception.
+    /// </param>
+    internal static RuntimeWorkspaceRegexCreationResult Create(
+        string pattern,
+        bool caseSensitive,
+        TimeSpan matchTimeout,
+        Func<string, RegexOptions, TimeSpan, Regex> construct)
+    {
         ArgumentNullException.ThrowIfNull(pattern);
+
+        ArgumentNullException.ThrowIfNull(construct);
 
         if (matchTimeout <= TimeSpan.Zero)
         {
-
             throw new ArgumentOutOfRangeException(
                 nameof(matchTimeout),
                 "The regex match timeout must be positive.");
-
         }
 
         RegexOptions commonOptions = RegexOptions.CultureInvariant;
 
         if (!caseSensitive)
         {
-
             commonOptions |= RegexOptions.IgnoreCase;
-
         }
 
         try
         {
-
-            Regex regex = new(
+            Regex regex = construct(
                 pattern,
                 commonOptions | RegexOptions.NonBacktracking,
                 matchTimeout);
@@ -66,49 +74,33 @@ internal static class RuntimeWorkspaceRegexFactory
                 RuntimeWorkspaceRegexEngine.NonBacktracking,
                 ErrorCode: null,
                 FallbackAttempted: false);
-
         }
         catch (ArgumentException)
         {
-
             return InvalidPattern(fallbackAttempted: false);
-
         }
-        catch (NotSupportedException exception) when (
-            IsNonBacktrackingUnsupportedFeature(exception))
+        catch (NotSupportedException)
         {
+            // Any NotSupportedException from the linear-time construction means that engine cannot
+            // take this syntax. Deciding that from the exception's message text broke whenever the
+            // wording changed; the interpreted attempt below is the real test of validity.
 
             try
             {
-
-                Regex regex = new(pattern, commonOptions, matchTimeout);
+                Regex regex = construct(pattern, commonOptions, matchTimeout);
 
                 return new RuntimeWorkspaceRegexCreationResult(
                     regex,
                     RuntimeWorkspaceRegexEngine.Interpreted,
                     ErrorCode: null,
                     FallbackAttempted: true);
-
             }
             catch (ArgumentException)
             {
-
                 return InvalidPattern(fallbackAttempted: true);
-
             }
-
         }
-
     }
-
-    private static bool IsNonBacktrackingUnsupportedFeature(
-        NotSupportedException exception) =>
-        exception.Message.Contains(
-            nameof(RegexOptions.NonBacktracking),
-            StringComparison.OrdinalIgnoreCase)
-        || exception.Message.Contains(
-            "non-backtracking",
-            StringComparison.OrdinalIgnoreCase);
 
     private static RuntimeWorkspaceRegexCreationResult InvalidPattern(
         bool fallbackAttempted) =>
@@ -117,5 +109,4 @@ internal static class RuntimeWorkspaceRegexFactory
             Engine: null,
             ErrorCode: "invalid_pattern",
             FallbackAttempted: fallbackAttempted);
-
 }
