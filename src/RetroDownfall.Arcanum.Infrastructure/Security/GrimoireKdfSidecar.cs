@@ -62,6 +62,20 @@ public static partial class GrimoireKdfSidecarFile
             throw new FileNotFoundException("Grimoire KDF sidecar was not found.", sidecarPath);
         }
 
+        // A refused or failed open says nothing about the sidecar's bytes, so it must not be reported as
+        // damage: callers and the doctor read InvalidDataException as "this file is bad, restore it", and a
+        // restore would overwrite a file whose only fault is who may read it (or a transient I/O error).
+        if (openStatus == SecureFileOpenStatus.AccessDenied)
+        {
+            throw new UnauthorizedAccessException(
+                $"Grimoire KDF sidecar at {sidecarPath} could not be opened: access was denied.");
+        }
+
+        if (openStatus == SecureFileOpenStatus.IoError)
+        {
+            throw new IOException($"Grimoire KDF sidecar at {sidecarPath} could not be opened: an I/O error occurred.");
+        }
+
         if (openStatus != SecureFileOpenStatus.Success || stream is null)
         {
             throw new InvalidDataException("Grimoire KDF sidecar is not an unaliased regular file.");

@@ -64,6 +64,49 @@ public sealed class GrimoireKeyMaterialCheckTests : IDisposable
         Assert.Equal(DoctorRemedyCommands.BackupRestore, remedy.Command);
     }
 
+    /// <summary>
+    /// A sidecar the check cannot open for permission reasons has unknown content, not known-bad content:
+    /// the finding is <c>Unavailable</c> and names no restore, because a restore would replace a file
+    /// whose only fault is who may read it.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_unreadable_sidecar_is_unavailable_and_offers_no_restore()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix permission bits are what make the sidecar unreadable here.");
+
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string database = CreateDatabaseFile();
+
+        string sidecarPath = GrimoireKdfSidecarFile.GetSidecarPath(database);
+
+        GrimoireKdfSidecarFile.Write(
+            database,
+            GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2));
+
+        File.SetUnixFileMode(sidecarPath, UnixFileMode.None);
+
+        try
+        {
+            Skip.If(CanOpenForRead(sidecarPath), "A superuser reads a mode 000 file, so there is no refusal to observe.");
+
+            DoctorFinding finding = await InspectAsync();
+
+            Assert.Equal(DoctorOutcome.Unavailable, finding.Outcome);
+
+            Assert.DoesNotContain("damaged", finding.Detail, StringComparison.OrdinalIgnoreCase);
+
+            Assert.True(finding.Remedies is null or { Count: 0 }, "A permission failure must not point at a restore.");
+        }
+        finally
+        {
+            File.SetUnixFileMode(sidecarPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
     [Fact]
     public async Task A_stranded_pending_upgrade_beside_a_valid_sidecar_stays_degraded()
     {
@@ -80,6 +123,20 @@ public sealed class GrimoireKeyMaterialCheckTests : IDisposable
         DoctorFinding finding = await InspectAsync();
 
         Assert.Equal(DoctorOutcome.Degraded, finding.Outcome);
+    }
+
+    private static bool CanOpenForRead(string path)
+    {
+        try
+        {
+            using FileStream stream = File.OpenRead(path);
+
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static string CreateDatabaseFile()

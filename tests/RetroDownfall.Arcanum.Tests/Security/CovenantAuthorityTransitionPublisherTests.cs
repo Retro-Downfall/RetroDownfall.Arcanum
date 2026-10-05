@@ -1168,6 +1168,12 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken)
         {
+            // The real exclusive registration refuses a cancelled token before it looks at the lease, so
+            // a publisher that hands it the caller's token after the durable commit is abandoned half
+            // way. The stub must refuse the same way, or the post-commit cancellation test can only pin
+            // the publisher's own cancellation check and never its choice of token.
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (RevalidationException is { } revalidationException)
             {
                 throw revalidationException;

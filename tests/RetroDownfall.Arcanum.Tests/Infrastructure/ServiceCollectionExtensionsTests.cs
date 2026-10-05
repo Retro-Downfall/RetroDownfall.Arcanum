@@ -1,9 +1,11 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Tests.Infrastructure;
 
@@ -102,6 +104,32 @@ public sealed class ServiceCollectionExtensionsTests
             services,
             static descriptor =>
                 descriptor.ServiceType == typeof(ILongRunningOperationClassifiedRecoveryLeaseAcquisition));
+    }
+
+    /// <summary>
+    /// The CLI container registers the attachment source resolver (the session store and the Grimoire
+    /// repository depend on it), and the resolver cannot be built without a workspace registry. Offline
+    /// maintenance has no registered workspaces, so the composition supplies a registry that knows none:
+    /// a claimed root is then refused as unregistered, and the resolver never has to run without one.
+    /// </summary>
+    [Fact]
+    public void CliStack_registers_a_workspace_registry_for_the_attachment_source_resolver()
+    {
+        ServiceCollection services = [];
+
+        services.AddArcanumGrimoireForCli();
+
+        Assert.Contains(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(IAttachmentSourceResolver));
+
+        ServiceDescriptor registry = Assert.Single(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(IWorkspaceRegistry));
+
+        Assert.Equal(ServiceLifetime.Singleton, registry.Lifetime);
+
+        Assert.Equal(typeof(InMemoryWorkspaceRegistry), registry.ImplementationType);
     }
 
     private static void AssertEachSingletonRegisteredOnce(IServiceCollection services)

@@ -350,6 +350,145 @@ public sealed class FileHandleIdentityTests : IDisposable
         Assert.Equal(48, layout.FileIndexLowOffset);
     }
 
+    /// <summary>
+    /// An NTFS file id is a 64-bit file reference whose upper half is zero, and the legacy identity (the
+    /// 32-bit volume serial and 64-bit file index) is exactly that id. It must come back unchanged, because
+    /// every registered Campaign root digest, marker and journal entry on an NTFS volume was derived from it.
+    /// </summary>
+    [Fact]
+    public void Windows_file_ids_that_fit_in_64_bits_keep_the_legacy_identity()
+    {
+        FileHandleIdentity legacy = new(0x1234ABCDUL, 0x0001000000000042UL);
+
+        FileHandleIdentity resolved = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0xAAAA00001234ABCDUL,
+            fileIdLow: 0x0001000000000042UL,
+            fileIdHigh: 0UL);
+
+        Assert.Equal(legacy, resolved);
+    }
+
+    /// <summary>
+    /// ReFS and Dev Drive file ids are 128-bit. The legacy 64-bit index drops the upper half, so two
+    /// different files whose ids differ only there had the same identity; the 128-bit id is what tells
+    /// them apart.
+    /// </summary>
+    [Fact]
+    public void Windows_128_bit_file_ids_that_differ_only_in_the_upper_half_have_distinct_identities()
+    {
+        FileHandleIdentity legacy = new(0x1234ABCDUL, 0x0000000000000007UL);
+
+        FileHandleIdentity first = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0x00000000_1234ABCDUL,
+            fileIdLow: 0x0000000000000007UL,
+            fileIdHigh: 1UL);
+
+        FileHandleIdentity second = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0x00000000_1234ABCDUL,
+            fileIdLow: 0x0000000000000007UL,
+            fileIdHigh: 2UL);
+
+        Assert.NotEqual(first, second);
+
+        Assert.NotEqual(legacy, first);
+
+        Assert.NotEqual(legacy, second);
+
+        // The same inputs always give the same identity.
+        Assert.Equal(
+            first,
+            FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+                legacy,
+                volumeSerialNumber: 0x00000000_1234ABCDUL,
+                fileIdLow: 0x0000000000000007UL,
+                fileIdHigh: 1UL));
+    }
+
+    /// <summary>
+    /// The volume half of an identity is a property of the volume alone: the same-volume checks compare it
+    /// across different files, so a wide id must never leak into it.
+    /// </summary>
+    [Fact]
+    public void Windows_128_bit_file_ids_keep_the_legacy_volume_and_separate_volumes_by_the_64_bit_serial()
+    {
+        FileHandleIdentity legacy = new(0x1234ABCDUL, 0x0000000000000007UL);
+
+        FileHandleIdentity onVolumeA = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0x00000001_1234ABCDUL,
+            fileIdLow: 0x0000000000000007UL,
+            fileIdHigh: 5UL);
+
+        FileHandleIdentity onVolumeB = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0x00000002_1234ABCDUL,
+            fileIdLow: 0x0000000000000007UL,
+            fileIdHigh: 5UL);
+
+        Assert.Equal(legacy.VolumeId, onVolumeA.VolumeId);
+
+        Assert.Equal(legacy.VolumeId, onVolumeB.VolumeId);
+
+        // Two volumes whose 32-bit serials agree but whose 64-bit serials differ no longer share file ids.
+        Assert.NotEqual(onVolumeA.FileId, onVolumeB.FileId);
+    }
+
+    [Fact]
+    public void Windows_file_id_info_layout_matches_native_FILE_ID_INFO()
+    {
+        WindowsFileIdInfoLayout layout = FileHandleIdentityInterop.GetWindowsFileIdInfoLayoutForTests();
+
+        Assert.Equal(24, layout.Size);
+
+        Assert.Equal(0, layout.VolumeSerialNumberOffset);
+
+        Assert.Equal(8, layout.FileIdLowOffset);
+
+        Assert.Equal(16, layout.FileIdHighOffset);
+    }
+
+    /// <summary>
+    /// The Windows lane: the identity a handle reports is the legacy identity widened by the handle's own
+    /// <c>FileIdInfo</c>, never a different file's. Not run on non-Windows hosts.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_handle_identity_is_resolved_from_FileIdInfo()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "FILE_ID_INFO is a Windows API.");
+
+        using SafeFileHandle handle = File.OpenHandle(_tempFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+        Assert.True(FileHandleIdentityInterop.TryGetHandleMetadata(handle, out FileHandleMetadata metadata));
+
+        Assert.True(
+            FileHandleIdentityInterop.TryReadWindowsFileIdInfoForTests(
+                handle,
+                out ulong volumeSerialNumber,
+                out ulong fileIdLow,
+                out ulong fileIdHigh));
+
+        FileHandleIdentity expected = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            new FileHandleIdentity(volumeSerialNumber & 0xFFFFFFFFUL, metadata.Identity.FileId),
+            volumeSerialNumber,
+            fileIdLow,
+            fileIdHigh);
+
+        if (fileIdHigh == 0)
+        {
+            // An NTFS volume: the identity is the legacy one, so previously registered roots still match.
+            Assert.Equal(fileIdLow, metadata.Identity.FileId);
+
+            Assert.True(metadata.Identity.VolumeId <= uint.MaxValue);
+        }
+        else
+        {
+            Assert.Equal(expected.FileId, metadata.Identity.FileId);
+        }
+    }
+
     [Fact]
     public void Windows_directory_enumeration_capability_requests_list_access()
     {

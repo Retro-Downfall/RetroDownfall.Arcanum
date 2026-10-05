@@ -430,9 +430,15 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            // Content unknown, not known bad: this includes the open itself being refused or failing
+            // (GrimoireKdfSidecarFile.Read reports those as UnauthorizedAccessException / IOException,
+            // never as damage). Point at the file's permissions and offer no restore, which would
+            // replace a sidecar whose only fault may be who is allowed to read it.
             return new DoctorFinding(
                 DoctorOutcome.Unavailable,
-                $"The key-derivation sidecar could not be read ({exception.GetType().Name}); it was left unchanged.");
+                $"The key-derivation sidecar could not be read ({exception.GetType().Name}: permissions or an I/O "
+                + "error), so its state is unknown. It was left unchanged: make it an owner-only regular file "
+                + "readable by this user and retry.");
         }
     }
 }

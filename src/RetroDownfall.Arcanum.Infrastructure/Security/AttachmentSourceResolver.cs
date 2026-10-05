@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 internal sealed class AttachmentSourceResolver(
     IHostWorkspaceContext workspaceContext,
-    IWorkspaceRegistry? workspaceRegistry = null)
+    IWorkspaceRegistry workspaceRegistry)
     : IAttachmentSourceResolver
 {
     private const int IoBufferSize = 64 * 1024;
@@ -873,16 +873,10 @@ internal sealed class AttachmentSourceResolver(
                 "The claimed registered workspace is unavailable.");
         }
 
-        // A claimed root is caller-asserted. Without a registry nothing can prove it names a registered
-        // workspace, so it is refused rather than trusted: trusting it would let any claim widen the
-        // containment root to an arbitrary directory.
-        if (workspaceRegistry is null)
-        {
-            return WorkspaceRootResolution.Failure(
-                AttachmentSourceStatus.Unsafe,
-                "The claimed workspace root cannot be verified without a workspace registry.");
-        }
-
+        // A claimed root is caller-asserted, so it is accepted only when the registry knows it: trusting
+        // the claim itself would let any caller widen the containment root to an arbitrary directory.
+        // The registry is a required dependency; a composition with no registered workspaces (offline
+        // maintenance) supplies one that knows none, and every claim is refused as unregistered.
         WorkspaceInfo? matched = await FindRegisteredWorkspaceByPathAsync(
             claimedRoot,
             cancellationToken).ConfigureAwait(false);
@@ -901,22 +895,19 @@ internal sealed class AttachmentSourceResolver(
         string workspaceIdentity,
         CancellationToken cancellationToken)
     {
-        if (workspaceRegistry is not null)
+        WorkspaceInfo? identified = await workspaceRegistry
+            .GetAsync(workspaceIdentity, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (identified is not null)
         {
-            WorkspaceInfo? identified = await workspaceRegistry
-                .GetAsync(workspaceIdentity, cancellationToken)
-                .ConfigureAwait(false);
+            string? identifiedRoot = NormalizeExistingWorkspaceRoot(identified.Path);
 
-            if (identified is not null)
-            {
-                string? identifiedRoot = NormalizeExistingWorkspaceRoot(identified.Path);
-
-                return identifiedRoot is null
-                    ? WorkspaceRootResolution.Failure(
-                        AttachmentSourceStatus.WorkspaceUnavailable,
-                        "The registered workspace for this attachment is unavailable.")
-                    : WorkspaceRootResolution.Success(identifiedRoot, identified.Id);
-            }
+            return identifiedRoot is null
+                ? WorkspaceRootResolution.Failure(
+                    AttachmentSourceStatus.WorkspaceUnavailable,
+                    "The registered workspace for this attachment is unavailable.")
+                : WorkspaceRootResolution.Success(identifiedRoot, identified.Id);
         }
 
         bool foundAvailableWorkspace = false;
@@ -936,30 +927,27 @@ internal sealed class AttachmentSourceResolver(
             }
         }
 
-        if (workspaceRegistry is not null)
+        WorkspaceInfo[] registered = await workspaceRegistry
+            .GetAllAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (WorkspaceInfo workspace in registered)
         {
-            WorkspaceInfo[] registered = await workspaceRegistry
-                .GetAllAsync(cancellationToken)
-                .ConfigureAwait(false);
+            string? root = NormalizeExistingWorkspaceRoot(workspace.Path);
 
-            foreach (WorkspaceInfo workspace in registered)
+            if (root is null)
             {
-                string? root = NormalizeExistingWorkspaceRoot(workspace.Path);
+                continue;
+            }
 
-                if (root is null)
-                {
-                    continue;
-                }
+            foundAvailableWorkspace = true;
 
-                foundAvailableWorkspace = true;
-
-                if (string.Equals(
-                        workspaceIdentity,
-                        WorkspaceIdentity(root),
-                        StringComparison.Ordinal))
-                {
-                    return WorkspaceRootResolution.Success(root, workspaceIdentity);
-                }
+            if (string.Equals(
+                    workspaceIdentity,
+                    WorkspaceIdentity(root),
+                    StringComparison.Ordinal))
+            {
+                return WorkspaceRootResolution.Success(root, workspaceIdentity);
             }
         }
 
@@ -976,11 +964,6 @@ internal sealed class AttachmentSourceResolver(
         string root,
         CancellationToken cancellationToken)
     {
-        if (workspaceRegistry is null)
-        {
-            return null;
-        }
-
         WorkspaceInfo[] registered = await workspaceRegistry
             .GetAllAsync(cancellationToken)
             .ConfigureAwait(false);

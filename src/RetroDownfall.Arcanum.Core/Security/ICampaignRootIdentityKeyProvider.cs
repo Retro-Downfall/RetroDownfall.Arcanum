@@ -18,13 +18,15 @@ namespace RetroDownfall.Arcanum.Core.Security;
 /// reference escapes the provider that owns its zeroization. Key loss returns
 /// <see langword="false"/>, which renders every Campaign identity unresolved until an authenticated
 /// repair — a safe failure, because an unresolved root grants nothing.</para>
+///
+/// <para>This port only reads. It never creates a key, so no reader can replace a lost key with a new
+/// one and orphan every registered root; creation is a separate, evidence-taking entry point owned by
+/// the registration flow in Infrastructure.</para>
 /// </remarks>
 public interface ICampaignRootIdentityKeyProvider
 {
-
     /// <summary>
-    /// Copies the 32-byte root-identity key, or reports that none is available.
+    /// Copies the 32-byte root-identity key, or reports that none is available. Never creates one.
     /// </summary>
     bool TryCopyRootIdentityKey(Span<byte> destination);
-
 }
