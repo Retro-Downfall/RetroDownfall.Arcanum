@@ -503,10 +503,14 @@ class CoverageThresholdParserTests(unittest.TestCase):
 
         # The case is only a case if the candidate answers are distinguishable: the blended root,
         # the unweighted mean of the package rates, and (for branches) the line weights.
+        security_count = len(coverage_threshold.SECURITY_TYPES)
+        line_weighted_branch = (80.0 * security_count + 50.0 * 3) / (security_count + 3)
+
         self.assertGreater(abs(expected_line - 40.0), 1.0)
         self.assertGreater(abs(expected_line - (90.0 + 50.0) / 2), 1.0)
         self.assertGreater(abs(expected_branch - 30.0), 1.0)
         self.assertGreater(abs(expected_branch - (80.0 + 50.0) / 2), 1.0)
+        self.assertGreater(abs(expected_branch - line_weighted_branch), 1.0)
 
         with mock.patch.dict(os.environ, {"COVERAGE_CLI_LINE_TARGET": "0"}):
             code, stdout, stderr = self._run_gate(xml)
@@ -726,6 +730,61 @@ class CoverageThresholdParserTests(unittest.TestCase):
         # therefore already inside the coverage denominator; only the 100% list omitted it,
         # and that is the one list where an omission is completely silent.
         self.assertIn("WorkspacePathPolicy", coverage_threshold.SECURITY_TYPES)
+
+
+class CoverageDocumentationTests(unittest.TestCase):
+    """DESIGN section 13.1 states the gate; these tie its names and defaults to the code."""
+
+    _LABELS = {
+        "RetroDownfall.Arcanum.Cli": "Cli",
+        "RetroDownfall.Arcanum.Secrets": "Secrets",
+    }
+
+    @staticmethod
+    def _design() -> str:
+        return (Path(__file__).parent.parent / "docs" / "Arcanum.DESIGN.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_design_table_states_each_reported_assembly_floor_default(self) -> None:
+        design = self._design()
+
+        for name, (_, default) in coverage_threshold.REPORTED_ASSEMBLY_LINE_FLOORS.items():
+            label = self._LABELS[name]
+            row = re.search(
+                rf"^\| `{label}` line coverage[^|]*\| \u2265 ([0-9.]+)% \| \u2265 ([0-9.]+)% \|$",
+                design,
+                re.MULTILINE,
+            )
+
+            self.assertIsNotNone(row, f"DESIGN 13.1 has no table row for the {label} line floor")
+            self.assertEqual(float(row.group(1)), default, f"{label} local target")
+            self.assertEqual(float(row.group(2)), default, f"{label} CI target")
+
+    def test_the_design_paragraph_states_each_reported_assembly_floor_default(self) -> None:
+        design = self._design()
+
+        for env_name, default in coverage_threshold.REPORTED_ASSEMBLY_LINE_FLOORS.values():
+            self.assertIn(f"`{env_name}` (default {default:g}%)", design)
+
+    def test_the_design_validation_sentence_names_every_environment_value_the_gate_reads(
+        self,
+    ) -> None:
+        names = {"COVERAGE_LINE_TARGET", "COVERAGE_BRANCH_TARGET"} | {
+            env_name
+            for env_name, _ in coverage_threshold.REPORTED_ASSEMBLY_LINE_FLOORS.values()
+        }
+        paragraphs = [
+            paragraph
+            for paragraph in self._design().split("\n\n")
+            if "validated as finite percentages" in paragraph
+        ]
+
+        self.assertEqual(len(paragraphs), 1, "DESIGN 13.1 states the validation rule once")
+        self.assertNotIn("Both environment values", paragraphs[0])
+
+        for name in sorted(names):
+            self.assertIn(name, paragraphs[0], f"the validation sentence omits {name}")
 
 
 if __name__ == "__main__":

@@ -19,8 +19,12 @@ SECURITY_BRANCH_TARGET = 100.0
 # DEFAULT_BRANCH_TARGET apply to. The Cli is large and mostly an interactive surface; Secrets is
 # small and platform specific. Neither may move the floors Core, Infrastructure and Api are held to.
 # name -> (environment override, default line floor in percent). The defaults sit a few points under
-# what the Cli and Security test namespaces alone reach (Cli 80.7%, Secrets 66.7%), so the full suite
-# clears them with margin; a floor of 0 reports an assembly without gating it.
+# what the Cli and Security test namespaces alone reached, so the full suite clears them with margin; a
+# floor of 0 reports an assembly without gating it.
+#
+# Measured 2026-10-04 on macOS from a Cli + Security test-namespace subset (not the full suite): Cli
+# 80.69% of 32,834 lines, Secrets 66.72% of 568 lines. This is the one place the measurement is recorded;
+# docs/Arcanum.DESIGN.md section 13.1 states only the floors, because a percentage in prose goes stale.
 REPORTED_ASSEMBLY_LINE_FLOORS = {
     "RetroDownfall.Arcanum.Cli": ("COVERAGE_CLI_LINE_TARGET", 75.0),
     "RetroDownfall.Arcanum.Secrets": ("COVERAGE_SECRETS_LINE_TARGET", 60.0),
