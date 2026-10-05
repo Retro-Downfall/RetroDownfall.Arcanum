@@ -232,5 +232,8 @@ public sealed class SensitiveValueInputTests
 
             return PromptResult;
         }
+
+        public string PromptVisible(string prompt, string defaultValue, CliInvocationOptions options) =>
+            defaultValue;
     }
 }

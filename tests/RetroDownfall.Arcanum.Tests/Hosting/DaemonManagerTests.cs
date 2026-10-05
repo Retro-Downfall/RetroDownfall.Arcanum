@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Reflection;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -34,9 +35,12 @@ public sealed class DaemonManagerTests : IDisposable
         await File.WriteAllTextAsync(plist, "<plist/>");
 
         ScriptedDaemonProcessRunner runner = new(
-            (_, arguments) => arguments[0] == "bootout"
-                ? ScriptedDaemonProcessRunner.Exit(exitCode, stderr: stderr)
-                : ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"));
+            (_, arguments) => arguments[0] switch
+            {
+                "bootout" => ScriptedDaemonProcessRunner.Exit(exitCode, stderr: stderr),
+                "list" => ScriptedDaemonProcessRunner.Exit(113, stderr: "Could not find service"),
+                _ => ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"),
+            });
 
         MacOsDaemonManager manager = new(runner, plist);
 
@@ -47,6 +51,84 @@ public sealed class DaemonManagerTests : IDisposable
         Assert.False(File.Exists(plist));
 
         Assert.Contains(runner.Calls, static call => call.Contains("bootout", StringComparison.Ordinal));
+
+        Assert.Contains(runner.Calls, static call => call.Contains("list", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task MacOs_uninstall_keeps_the_plist_when_bootout_says_not_loaded_but_the_agent_is_still_loaded()
+    {
+        string plist = Path.Combine(_directory, "com.retrodownfall.arcanum.plist");
+
+        await File.WriteAllTextAsync(plist, "<plist/>");
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) => arguments[0] switch
+            {
+                "bootout" => ScriptedDaemonProcessRunner.Exit(5, stderr: "Boot-out failed: 5: Input/output error"),
+                "list" => ScriptedDaemonProcessRunner.Exit(0, stdout: "-\t0\tcom.retrodownfall.arcanum\n"),
+                _ => ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"),
+            });
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result result = await manager.UninstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonBootout", result.Error.Code);
+
+        Assert.Contains("still loaded", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.True(File.Exists(plist), "A loaded agent must not lose the plist that describes it.");
+    }
+
+    [Fact]
+    public async Task MacOs_install_does_not_bootstrap_when_bootout_says_not_loaded_but_the_agent_is_still_loaded()
+    {
+        string plist = Path.Combine(_directory, "LaunchAgents", "com.retrodownfall.arcanum.plist");
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) => arguments[0] switch
+            {
+                "bootout" => ScriptedDaemonProcessRunner.Exit(5, stderr: "Boot-out failed: 5: Input/output error"),
+                "list" => ScriptedDaemonProcessRunner.Exit(0, stdout: "-\t0\tcom.retrodownfall.arcanum\n"),
+                _ => ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"),
+            });
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result result = await manager.InstallAsync(DaemonInstallRequest.ForInvokingUser, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonBootout", result.Error.Code);
+
+        Assert.DoesNotContain(runner.Calls, static call => call.Contains("bootstrap", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task MacOs_install_refuses_a_service_account_without_running_launchctl()
+    {
+        string plist = Path.Combine(_directory, "LaunchAgents", "com.retrodownfall.arcanum.plist");
+
+        ScriptedDaemonProcessRunner runner = new(static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result result = await manager.InstallAsync(
+            new DaemonInstallRequest(new DaemonServiceCredential("someone", "secret")),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonServiceAccountUnsupported", result.Error.Code);
+
+        Assert.Empty(runner.Calls);
+
+        Assert.False(File.Exists(plist));
+
+        Assert.DoesNotContain("secret", result.Error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -85,13 +167,14 @@ public sealed class DaemonManagerTests : IDisposable
                 "bootout" => ScriptedDaemonProcessRunner.Exit(
                     bootoutExitCode,
                     stderr: bootoutExitCode == 0 ? string.Empty : "Could not find specified service"),
+                "list" => ScriptedDaemonProcessRunner.Exit(113, stderr: "Could not find service"),
                 "bootstrap" => ScriptedDaemonProcessRunner.Exit(0),
                 _ => ScriptedDaemonProcessRunner.Exit(0, stdout: "501\n"),
             });
 
         MacOsDaemonManager manager = new(runner, plist);
 
-        Result result = await manager.InstallAsync(CancellationToken.None);
+        Result result = await manager.InstallAsync(DaemonInstallRequest.ForInvokingUser, CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
@@ -106,19 +189,26 @@ public sealed class DaemonManagerTests : IDisposable
         Assert.True(File.Exists(plist));
     }
 
+    private const string ServicePassword = "S3cret pass \"word\"";
+
+    private static readonly DaemonInstallRequest ServiceAccountRequest =
+        new(new DaemonServiceCredential(@".\arcanum", ServicePassword));
+
     [Fact]
-    public async Task Windows_install_refuses_a_localsystem_service_and_directs_to_a_per_user_scheduled_task()
+    public async Task Windows_install_without_an_account_refuses_and_directs_to_a_per_user_scheduled_task()
     {
         ScriptedDaemonProcessRunner runner = new(
             static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
-        Result result = await manager.InstallAsync(CancellationToken.None);
+        Assert.True(manager.RequiresServiceAccount);
+
+        Result result = await manager.InstallAsync(DaemonInstallRequest.ForInvokingUser, CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
-        Assert.Equal("DaemonWindowsServiceUnsupported", result.Error.Code);
+        Assert.Equal("DaemonServiceAccountRequired", result.Error.Code);
 
         Assert.Empty(runner.Calls);
 
@@ -131,8 +221,240 @@ public sealed class DaemonManagerTests : IDisposable
         Assert.Contains(" serve", result.Error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Windows_install_passes_an_explicit_service_account()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(2, runner.Invocations.Count);
+
+        ScriptedInvocation create = runner.Invocations[0];
+
+        Assert.Equal("sc.exe", create.FileName);
+
+        // Each sc.exe option and its value are separate arguments, the way sc.exe reads "obj= <account>".
+        Assert.Equal(
+            [
+                "create",
+                "ArcanumDaemon",
+                "binPath=",
+                $"\"{(global::System.Environment.ProcessPath)}\" serve",
+                "start=",
+                "auto",
+                "obj=",
+                @".\arcanum",
+                "password=",
+                ServicePassword,
+            ],
+            create.Arguments);
+
+        Assert.Equal(["start", "ArcanumDaemon"], runner.Invocations[1].Arguments);
+    }
+
+    [Theory]
+    [InlineData("LocalSystem")]
+    [InlineData("SYSTEM")]
+    [InlineData(@"NT AUTHORITY\SYSTEM")]
+    [InlineData(@".\LocalSystem")]
+    [InlineData("  localsystem  ")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Windows_install_refuses_an_account_that_would_run_as_localsystem_or_is_empty(string account)
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(
+            new DaemonInstallRequest(new DaemonServiceCredential(account, ServicePassword)),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonServiceAccountInvalid", result.Error.Code);
+
+        Assert.Empty(runner.Calls);
+
+        Assert.DoesNotContain(ServicePassword, result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Windows_install_refuses_an_empty_password_without_running_sc_exe()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(
+            new DaemonInstallRequest(new DaemonServiceCredential(@".\arcanum", string.Empty)),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonServiceAccountInvalid", result.Error.Code);
+
+        Assert.Empty(runner.Calls);
+    }
+
+    [Fact]
+    public async Task Windows_install_never_echoes_the_password_in_a_failure_message()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "create"
+                ? ScriptedDaemonProcessRunner.Exit(87, stderr: $"[SC] CreateService FAILED 87: bad value {ServicePassword}")
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonScCreate", result.Error.Code);
+
+        Assert.DoesNotContain(ServicePassword, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("<redacted>", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(ServicePassword, ServiceAccountRequest.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Windows_install_reports_an_existing_service_without_starting_or_deleting_it()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "create"
+                ? ScriptedDaemonProcessRunner.Exit(1073)
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonScCreate", result.Error.Code);
+
+        Assert.Contains("arcanum daemon uninstall", result.Error.Message, StringComparison.Ordinal);
+
+        _ = Assert.Single(runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Windows_install_reports_elevation_when_sc_create_is_denied()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => new DaemonProcessOutcome(-1, string.Empty, string.Empty, null, AccessDenied: true));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonElevationRequired", result.Error.Code);
+
+        _ = Assert.Single(runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Windows_install_removes_the_service_again_when_it_does_not_start()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "start"
+                ? ScriptedDaemonProcessRunner.Exit(1069, stderr: "[SC] StartService FAILED 1069")
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        using CancellationTokenSource cancellation = new();
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, cancellation.Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonScStart", result.Error.Code);
+
+        Assert.Contains("log on as a service", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("removed again", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(
+            ["create", "start", "delete"],
+            runner.Invocations.Select(static call => call.Arguments[0]));
+
+        Assert.Equal(["delete", "ArcanumDaemon"], runner.Invocations[2].Arguments);
+
+        Assert.DoesNotContain(ServicePassword, result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Windows_install_says_so_when_the_service_that_did_not_start_cannot_be_removed()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] switch
+            {
+                "start" => ScriptedDaemonProcessRunner.Exit(2, stderr: "[SC] StartService FAILED 2"),
+                "delete" => ScriptedDaemonProcessRunner.Exit(5, stderr: "Access is denied"),
+                _ => ScriptedDaemonProcessRunner.Exit(0),
+            });
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonScStart", result.Error.Code);
+
+        Assert.Contains("could not be removed", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("arcanum daemon uninstall", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Windows_install_removes_the_service_on_an_uncancelled_token_when_cancelled_while_starting()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) =>
+            {
+                if (arguments[0] == "start")
+                {
+                    cancellation.Cancel();
+
+                    throw new OperationCanceledException(cancellation.Token);
+                }
+
+                return ScriptedDaemonProcessRunner.Exit(0);
+            });
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => manager.InstallAsync(ServiceAccountRequest, cancellation.Token));
+
+        Assert.Equal(
+            ["create", "start", "delete"],
+            runner.Invocations.Select(static call => call.Arguments[0]));
+
+        Assert.False(
+            runner.Invocations[2].Token.CanBeCanceled,
+            "The rollback after a cancelled install must not be cancellable.");
+    }
+
     [SkippableFact]
-    public async Task Windows_real_runner_install_refuses_without_starting_sc_exe()
+    public async Task Windows_real_runner_install_without_an_account_refuses_without_starting_sc_exe()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "Exercises the real Windows process start path.");
 
@@ -140,11 +462,29 @@ public sealed class DaemonManagerTests : IDisposable
             DaemonProcessRunner.Default,
             Path.Combine(_directory, "missing-sc.exe"));
 
-        Result result = await manager.InstallAsync(CancellationToken.None);
+        Result result = await manager.InstallAsync(DaemonInstallRequest.ForInvokingUser, CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
-        Assert.Equal("DaemonWindowsServiceUnsupported", result.Error.Code);
+        Assert.Equal("DaemonServiceAccountRequired", result.Error.Code);
+    }
+
+    [SkippableFact]
+    public async Task Windows_real_runner_install_reports_a_missing_sc_exe_as_a_start_failure_not_an_elevation_problem()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Exercises the real Windows process start path.");
+
+        WindowsDaemonManager manager = new(
+            DaemonProcessRunner.Default,
+            Path.Combine(_directory, "missing-sc.exe"));
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(DaemonProcessRunner.StartErrorCode, result.Error.Code);
+
+        Assert.DoesNotContain(ServicePassword, result.Error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -208,6 +548,10 @@ public sealed class DaemonManagerTests : IDisposable
         Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
 
         Assert.True(result.IsFailure);
+
+        Assert.Equal(DaemonProcessRunner.StartErrorCode, result.Error.Code);
+
+        Assert.NotEqual("DaemonElevationRequired", result.Error.Code);
     }
 
     [Fact]
@@ -224,13 +568,155 @@ public sealed class DaemonManagerTests : IDisposable
 
         MacOsDaemonManager manager = new(runner, plist);
 
-        Result result = await manager.InstallAsync(CancellationToken.None);
+        Result result = await manager.InstallAsync(DaemonInstallRequest.ForInvokingUser, CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
         Assert.Equal("DaemonBootout", result.Error.Code);
 
         Assert.DoesNotContain(runner.Calls, static call => call.Contains("bootstrap", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Linux_install_refuses_a_service_account_without_writing_a_unit()
+    {
+        string unit = Path.Combine(_directory, "systemd", "user", "arcanum.service");
+
+        ScriptedDaemonProcessRunner runner = new(static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        LinuxDaemonManager manager = new(runner, unit, static () => false);
+
+        Assert.False(manager.RequiresServiceAccount);
+
+        Result result = await manager.InstallAsync(
+            new DaemonInstallRequest(new DaemonServiceCredential("someone", "secret")),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonServiceAccountUnsupported", result.Error.Code);
+
+        Assert.Empty(runner.Calls);
+
+        Assert.False(File.Exists(unit));
+    }
+
+    [Fact]
+    public async Task Linux_install_writes_the_user_unit_then_reloads_and_enables_it()
+    {
+        string unit = Path.Combine(_directory, "systemd", "user", "arcanum.service");
+
+        ScriptedDaemonProcessRunner runner = new(static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        LinuxDaemonManager manager = new(runner, unit, static () => false);
+
+        Result result = await manager.InstallAsync(DaemonInstallRequest.ForInvokingUser, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Contains("ExecStart=", await File.ReadAllTextAsync(unit), StringComparison.Ordinal);
+
+        Assert.Equal(
+            ["systemctl --user daemon-reload", "systemctl --user enable --now arcanum.service"],
+            runner.Calls);
+    }
+
+    [Fact]
+    public async Task Linux_install_names_a_missing_systemd_when_systemctl_cannot_be_started()
+    {
+        string unit = Path.Combine(_directory, "systemd", "user", "arcanum.service");
+
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => new DaemonProcessOutcome(
+                -1,
+                string.Empty,
+                string.Empty,
+                new Error(DaemonProcessRunner.StartErrorCode, "Could not start 'systemctl'. No such file or directory")));
+
+        LinuxDaemonManager manager = new(runner, unit, static () => false);
+
+        Result result = await manager.InstallAsync(DaemonInstallRequest.ForInvokingUser, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(DaemonProcessRunner.StartErrorCode, result.Error.Code);
+
+        Assert.Contains("systemd may not be available on this host", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Linux_uninstall_disables_the_unit_removes_it_and_reloads()
+    {
+        string unit = Path.Combine(_directory, "systemd", "user", "arcanum.service");
+
+        _ = Directory.CreateDirectory(Path.GetDirectoryName(unit)!);
+
+        await File.WriteAllTextAsync(unit, "[Unit]");
+
+        ScriptedDaemonProcessRunner runner = new(static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        LinuxDaemonManager manager = new(runner, unit, static () => false);
+
+        Result result = await manager.UninstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.False(File.Exists(unit));
+
+        Assert.Equal(
+            ["systemctl --user disable --now arcanum.service", "systemctl --user daemon-reload"],
+            runner.Calls);
+    }
+
+    [Theory]
+    [InlineData(false, "active\n", "Arcanum daemon is running.")]
+    [InlineData(false, "inactive\n", "Daemon is not currently loaded.")]
+    [InlineData(true, "", "Daemon is not currently loaded.")]
+    public async Task Linux_status_reads_the_unit_active_state(bool unitMissing, string activeState, string expected)
+    {
+        string unit = Path.Combine(_directory, "systemd", "user", "arcanum.service");
+
+        if (!unitMissing)
+        {
+            _ = Directory.CreateDirectory(Path.GetDirectoryName(unit)!);
+
+            await File.WriteAllTextAsync(unit, "[Unit]");
+        }
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, _) => ScriptedDaemonProcessRunner.Exit(0, stdout: activeState));
+
+        LinuxDaemonManager manager = new(runner, unit, static () => false);
+
+        Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(expected, result.Value);
+    }
+
+    [Fact]
+    public async Task Linux_manager_refuses_every_verb_inside_a_container()
+    {
+        string unit = Path.Combine(_directory, "systemd", "user", "arcanum.service");
+
+        ScriptedDaemonProcessRunner runner = new(static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        LinuxDaemonManager manager = new(runner, unit, static () => true);
+
+        Result install = await manager.InstallAsync(DaemonInstallRequest.ForInvokingUser, CancellationToken.None);
+
+        Result uninstall = await manager.UninstallAsync(CancellationToken.None);
+
+        Result<string> status = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.Equal("ContainerUnsupported", install.Error.Code);
+
+        Assert.Equal("ContainerUnsupported", uninstall.Error.Code);
+
+        Assert.Equal("ContainerUnsupported", status.Error.Code);
+
+        Assert.Empty(runner.Calls);
     }
 
     [Theory]

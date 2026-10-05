@@ -12,6 +12,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
+using RetroDownfall.Arcanum.Cli.Commands.Daemon;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.Hosting;
@@ -99,10 +101,105 @@ public sealed class DaemonCommandTests
         Assert.Contains("daemon", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
-    private sealed class StubDaemonManager : IDaemonManager
+    [Fact]
+    public void Install_on_a_manager_that_needs_an_account_hands_it_the_prompted_credential()
     {
-        public Task<Result> InstallAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
+        StubDaemonManager manager = new(requiresServiceAccount: true);
+
+        StubServiceAccountPrompt prompt = new(
+            Result<DaemonServiceCredential>.Success(new DaemonServiceCredential(@"HOST\me", "pw")));
+
+        CliTestResult result = RunInstall(manager, prompt);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(1, prompt.Reads);
+
+        DaemonInstallRequest request = Assert.Single(manager.InstallRequests);
+
+        Assert.Equal(@"HOST\me", request.ServiceAccount?.AccountName);
+
+        Assert.Equal("pw", request.ServiceAccount?.Password);
+
+        Assert.DoesNotContain("pw", result.Output + result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Install_stops_with_a_configuration_error_and_creates_nothing_when_no_account_can_be_read()
+    {
+        StubDaemonManager manager = new(requiresServiceAccount: true);
+
+        StubServiceAccountPrompt prompt = new(
+            Result<DaemonServiceCredential>.Failure(
+                new Error("DaemonServiceAccountUnavailable", "No route to ask for the account.")));
+
+        CliTestResult result = RunInstall(manager, prompt);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(manager.InstallRequests);
+
+        Assert.Contains("No route to ask for the account.", result.Error + result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Install_does_not_ask_for_an_account_when_the_daemon_runs_as_the_invoking_user()
+    {
+        StubDaemonManager manager = new(requiresServiceAccount: false);
+
+        StubServiceAccountPrompt prompt = new(
+            Result<DaemonServiceCredential>.Failure(new Error("Unexpected", "must not be asked")));
+
+        CliTestResult result = RunInstall(manager, prompt);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(0, prompt.Reads);
+
+        Assert.Null(Assert.Single(manager.InstallRequests).ServiceAccount);
+    }
+
+    private static CliTestResult RunInstall(StubDaemonManager manager, StubServiceAccountPrompt prompt)
+    {
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        services.RemoveAll<IDaemonManager>();
+
+        services.AddSingleton<IDaemonManager>(manager);
+
+        services.RemoveAll<IDaemonServiceAccountPrompt>();
+
+        services.AddSingleton<IDaemonServiceAccountPrompt>(prompt);
+
+        return CliTestHarness.Run(services, "daemon", "install");
+    }
+
+    private sealed class StubServiceAccountPrompt(Result<DaemonServiceCredential> outcome) : IDaemonServiceAccountPrompt
+    {
+        public int Reads { get; private set; }
+
+        public Task<Result<DaemonServiceCredential>> ReadAsync(CancellationToken cancellationToken)
+        {
+            Reads++;
+
+            return Task.FromResult(outcome);
+        }
+    }
+
+    private sealed class StubDaemonManager(bool requiresServiceAccount = false) : IDaemonManager
+    {
+        public bool RequiresServiceAccount => requiresServiceAccount;
+
+        public List<DaemonInstallRequest> InstallRequests { get; } = [];
+
+        public Task<Result> InstallAsync(DaemonInstallRequest request, CancellationToken cancellationToken)
+        {
+            InstallRequests.Add(request);
+
+            return Task.FromResult(Result.Success());
+        }
 
         public Task<Result> UninstallAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());

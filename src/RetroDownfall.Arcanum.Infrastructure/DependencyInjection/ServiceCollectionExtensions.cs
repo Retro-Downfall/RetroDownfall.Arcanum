@@ -222,7 +222,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers <see cref="IDaemonManager"/> for Windows Service (<c>sc.exe</c>), macOS launchd, or Linux systemd user units (narrow registration; does not pull EF Core, Serilog file logging, or Grimoire).
+    /// Registers <see cref="IDaemonManager"/> for a Windows Service under an explicit user account (<c>sc.exe</c>), a macOS launchd user agent, or a Linux systemd user unit (narrow registration; does not pull EF Core, Serilog file logging, or Grimoire).
     /// </summary>
     public static IServiceCollection AddArcanumDaemonManagement(this IServiceCollection services)
     {

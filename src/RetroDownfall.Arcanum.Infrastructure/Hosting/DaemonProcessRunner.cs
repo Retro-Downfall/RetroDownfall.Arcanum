@@ -22,6 +22,15 @@ internal sealed class DaemonProcessRunner(TimeSpan timeout) : IDaemonProcessRunn
     /// </summary>
     internal static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// Most output kept from each of a helper's streams. The service-manager helpers print a few lines, so a
+    /// helper that prints more than this is misbehaving; the rest is read and discarded so it can still finish,
+    /// and the kept text ends with <see cref="TruncationMarker"/>.
+    /// </summary>
+    internal const int MaxCapturedBytes = 16 * 1024;
+
+    internal const string TruncationMarker = " [output truncated]";
+
     internal static DaemonProcessRunner Default { get; } = new(DefaultTimeout);
 
     public async Task<DaemonProcessOutcome> RunAsync(
@@ -65,9 +74,17 @@ internal sealed class DaemonProcessRunner(TimeSpan timeout) : IDaemonProcessRunn
         // The three awaitables are started together and joined by the very first statement of the protected
         // block that follows, which is the shape the hosted-producer inventory accepts for a process boundary
         // reached from a retained admission.
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(linked.Token);
+        using CappedOutputStream stdoutCapped = new(process.StandardOutput.BaseStream, MaxCapturedBytes);
 
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(linked.Token);
+        using CappedOutputStream stderrCapped = new(process.StandardError.BaseStream, MaxCapturedBytes);
+
+        using StreamReader stdoutReader = new(stdoutCapped, process.StandardOutput.CurrentEncoding);
+
+        using StreamReader stderrReader = new(stderrCapped, process.StandardError.CurrentEncoding);
+
+        Task<string> stdoutTask = stdoutReader.ReadToEndAsync(linked.Token);
+
+        Task<string> stderrTask = stderrReader.ReadToEndAsync(linked.Token);
 
         Task exitTask = process.WaitForExitAsync(linked.Token);
 
@@ -102,8 +119,8 @@ internal sealed class DaemonProcessRunner(TimeSpan timeout) : IDaemonProcessRunn
 
         return new DaemonProcessOutcome(
             process.ExitCode,
-            await stdoutTask.ConfigureAwait(false),
-            await stderrTask.ConfigureAwait(false),
+            await stdoutTask.ConfigureAwait(false) + (stdoutCapped.Truncated ? TruncationMarker : string.Empty),
+            await stderrTask.ConfigureAwait(false) + (stderrCapped.Truncated ? TruncationMarker : string.Empty),
             null);
     }
 

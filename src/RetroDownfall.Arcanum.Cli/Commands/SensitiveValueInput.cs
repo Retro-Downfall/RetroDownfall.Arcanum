@@ -16,6 +16,12 @@ internal interface ISensitiveValueConsole
     Task<string?> ReadLineAsync(CancellationToken cancellationToken);
 
     string PromptHidden(string prompt, CliInvocationOptions options);
+
+    /// <summary>
+    /// A prompt whose answer is echoed, for the value that accompanies a hidden credential but is not itself
+    /// secret, such as the account name a password belongs to.
+    /// </summary>
+    string PromptVisible(string prompt, string defaultValue, CliInvocationOptions options);
 }
 
 /// <summary>
@@ -117,4 +123,9 @@ internal sealed class SystemSensitiveValueConsole : ISensitiveValueConsole
         AnsiConsole
             .Create(SensitiveValueInput.CreatePromptSettings(options))
             .Prompt(new TextPrompt<string>(prompt).Secret());
+
+    public string PromptVisible(string prompt, string defaultValue, CliInvocationOptions options) =>
+        AnsiConsole
+            .Create(SensitiveValueInput.CreatePromptSettings(options))
+            .Prompt(new TextPrompt<string>(prompt).DefaultValue(defaultValue));
 }

@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
 /// </summary>
 internal static class CliSurfaceExamples
 {
-
     private const string SampleGuid = "8f14e45f-ceea-467a-9cbd-08c3c4a4c1f5";
 
     private static readonly Dictionary<string, string[]> Examples = new(StringComparer.Ordinal)
@@ -375,7 +374,7 @@ internal static class CliSurfaceExamples
         ["data encryption migrate"] = "Rewrites the Grimoire's key derivation in place.",
         ["backup restore"] = "Overwrites live local state from an archive.",
         ["backup migrate"] = "Rewrites an archive in place.",
-        ["daemon install"] = "Registers an OS service; the correct invocation is platform-specific and privileged.",
+        ["daemon install"] = "Registers a background service with the OS: a per-user launchd agent or systemd unit, or on Windows a service under an account you name and give the password for at a prompt. The invocation is platform-specific and, on Windows, privileged.",
         ["daemon uninstall"] = "Removes an OS service registration.",
     };
 
@@ -392,5 +391,4 @@ internal static class CliSurfaceExamples
     public static IReadOnlyCollection<string> Paths => Examples.Keys;
 
     public static IReadOnlyCollection<string> ExemptPaths => NoSafeExample.Keys;
-
 }
