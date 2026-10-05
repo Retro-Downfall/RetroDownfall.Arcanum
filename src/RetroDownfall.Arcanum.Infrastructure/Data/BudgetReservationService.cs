@@ -24,6 +24,13 @@ internal sealed class BudgetReservationService(
     /// </summary>
     internal Func<CancellationToken, Task>? AfterSumsBeforeReserveInsertForTesting { get; set; }
 
+    /// <summary>
+    /// Runs inside <see cref="ReserveAsync"/> after the connection is open and immediately before its write
+    /// transaction begins, so a test that proves a second connection waits for the first can start its waiting
+    /// window at the moment the second one is about to ask for the lock, not at the moment its task was queued.
+    /// </summary>
+    internal Func<CancellationToken, Task>? BeforeWriteTransactionForTesting { get; set; }
+
     public async Task<Result<BudgetReservation>> ReserveAsync(
         BudgetReservationRequest request,
         CancellationToken cancellationToken = default)
@@ -58,6 +65,11 @@ internal sealed class BudgetReservationService(
                 async () =>
                 {
                     SqliteConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (BeforeWriteTransactionForTesting is not null)
+                    {
+                        await BeforeWriteTransactionForTesting(cancellationToken).ConfigureAwait(false);
+                    }
 
                     // BeginTransaction(deferred: false) is BEGIN IMMEDIATE with a disposal-time rollback, so an
                     // already-cancelled token can never strand an open write transaction on the scoped connection.

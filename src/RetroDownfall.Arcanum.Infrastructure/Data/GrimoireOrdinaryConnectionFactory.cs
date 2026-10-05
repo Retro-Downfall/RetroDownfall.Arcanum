@@ -1,6 +1,7 @@
 using System.Data;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -23,13 +24,16 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
     private readonly IGrimoireOrdinaryConnectionFactoryTestSeam _testSeam;
 
+    private readonly ILogger<GrimoireOrdinaryConnectionFactory> _logger;
+
     public GrimoireOrdinaryConnectionFactory(
         IGrimoireOrdinaryConnectionLifecycle lifecycle,
         ICovenantConnectionDrain drain,
         IGrimoireDbPassphraseSource passphraseSource,
         ICovenantSqliteConnectionInitializer initializer,
         ISqliteNativeRuntime nativeRuntime,
-        IGrimoireOrdinaryConnectionFactoryTestSeam testSeam)
+        IGrimoireOrdinaryConnectionFactoryTestSeam testSeam,
+        ILogger<GrimoireOrdinaryConnectionFactory> logger)
     {
         ArgumentNullException.ThrowIfNull(lifecycle);
 
@@ -43,6 +47,8 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
         ArgumentNullException.ThrowIfNull(testSeam);
 
+        ArgumentNullException.ThrowIfNull(logger);
+
         _lifecycle = lifecycle;
 
         _drain = drain;
@@ -54,6 +60,8 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
         _nativeRuntime = nativeRuntime;
 
         _testSeam = testSeam;
+
+        _logger = logger;
     }
 
     [GrimoireConnectionAcquisitionRoute]
@@ -399,11 +407,12 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
     /// stage-two close is not left waiting out its opening timeout for a callback that will never arrive.
     /// </summary>
     /// <remarks>
-    /// Best effort and never throws, because the failure that brought the caller here is the one it must see.
-    /// Only a connection that is physically closed may have its ticket resolved: a connection that is still
-    /// open holds the Grimoire, and the ticket correctly keeps stage two waiting for it.
+    /// Best effort and never throws, because the failure that brought the caller here is the one it must see; a
+    /// failure to resolve is logged as a warning rather than swallowed. Only a connection that is physically
+    /// closed may have its ticket resolved: a connection that is still open holds the Grimoire, and the ticket
+    /// correctly keeps stage two waiting for it.
     /// </remarks>
-    private static void ResolveTicketAfterFailedRefusal(
+    private void ResolveTicketAfterFailedRefusal(
         SqliteConnection connection,
         IGrimoireOrdinaryConnectionRegistration registration)
     {
@@ -418,9 +427,14 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
             registration.Dispose();
         }
-        catch (Exception)
+        catch (Exception failed)
         {
-            // Resolution is compensating work; it must not replace the failure being propagated.
+            // Resolution is compensating work; it must not replace the failure being propagated. It is not silent
+            // either: an unresolved ticket is what makes a later stage-two close wait out its opening timeout, and
+            // this is the only trace that connects that timeout to this open.
+            _logger.LogWarning(
+                failed,
+                "A refused ordinary Grimoire open could not resolve its admission ticket; a later stage-two close may wait out its opening timeout.");
         }
     }
 

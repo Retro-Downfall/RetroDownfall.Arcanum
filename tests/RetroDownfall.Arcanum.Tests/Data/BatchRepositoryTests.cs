@@ -139,9 +139,7 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-
     public async Task CreateAsync_and_UpdateStatusAsync_store_each_file_role_in_the_canonical_spelling()
-
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 

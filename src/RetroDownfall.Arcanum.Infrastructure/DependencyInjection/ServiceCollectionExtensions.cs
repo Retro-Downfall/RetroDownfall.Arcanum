@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Backup;
@@ -2022,7 +2023,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireOrdinaryConnectionFactoryTestSeam>(static _ =>
             new NoOpGrimoireOrdinaryConnectionFactoryTestSeam());
 
-        services.AddSingleton<IGrimoireOrdinaryConnectionFactory, GrimoireOrdinaryConnectionFactory>();
+        // The logger comes from the factory when the host has logging and from the null factory when it has
+        // not, because a bare provider that only wants a connection must not need a logging stack to get one.
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(static sp =>
+            new GrimoireOrdinaryConnectionFactory(
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ISqliteNativeRuntime>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactoryTestSeam>(),
+                (sp.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance)
+                    .CreateLogger<GrimoireOrdinaryConnectionFactory>()));
 
         services.AddSingleton<IGrimoireMaintenanceConnectionFactory>(static sp =>
             new GrimoireMaintenanceConnectionFactory(

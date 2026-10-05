@@ -289,20 +289,37 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
             DailyLimitUsd = 1m,
         };
         BudgetReservationService first = CreateService(budget);
+
         await using ArcanumDbContext secondDb = _fixture.CreateContext(_dbPath);
+
         BudgetReservationService second = CreateService(budget, secondDb);
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
+
         string period = BudgetReservationService.UtcBudgetPeriod(now);
 
         TaskCompletionSource firstAtDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         TaskCompletionSource releaseFirst = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource secondAboutToBegin = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         TaskCompletionSource secondAtDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         first.AfterSumsBeforeReserveInsertForTesting = async cancellationToken =>
         {
             firstAtDecision.TrySetResult();
+
             await releaseFirst.Task.WaitAsync(cancellationToken);
         };
+
+        second.BeforeWriteTransactionForTesting = _ =>
+        {
+            secondAboutToBegin.TrySetResult();
+
+            return Task.CompletedTask;
+        };
+
         second.AfterSumsBeforeReserveInsertForTesting = _ =>
         {
             secondAtDecision.TrySetResult();
@@ -329,10 +346,26 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Task<Result<BudgetReservation>> secondReserve = Task.Run(
             () => second.ReserveAsync(new BudgetReservationRequest(Guid.NewGuid(), 0.60m, now.AddHours(1), period)));
 
+        try
+        {
+            // The window below is a negative observation, so it starts only once the second reservation is about to
+            // ask for its write lock. Starting it when the task was merely queued would let a starved thread pool
+            // spend the whole window before the second reservation ran, and a deferred transaction would then pass
+            // this test unseen.
+            await secondAboutToBegin.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch
+        {
+            releaseFirst.TrySetResult();
+
+            throw;
+        }
+
         // While the first reservation is parked after its sums and before its insert, the immediate write
         // transaction keeps the second from reading the ledger at all. A second connection that reaches its own
         // decision point inside this window decided on the same ledger the first one did.
         Task windowOutcome = await Task.WhenAny(secondAtDecision.Task, Task.Delay(TimeSpan.FromMilliseconds(500)));
+
         bool secondDecidedWhileFirstWasParked = windowOutcome == secondAtDecision.Task;
 
         releaseFirst.TrySetResult();
@@ -344,12 +377,17 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
             "The second connection read the spend ledger while the first reservation was between its sums and its insert.");
 
         Result<BudgetReservation> firstResult = await firstReserve.WaitAsync(TimeSpan.FromSeconds(30));
+
         Result<BudgetReservation> secondResult = await secondReserve.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.True(firstResult.IsSuccess, firstResult.IsFailure ? firstResult.Error.Message : string.Empty);
+
         Assert.True(secondResult.IsFailure);
+
         Assert.Equal(ErrorCodes.Budget.Exceeded, secondResult.Error.Code);
+
         Assert.Equal(0.60m, await first.GetTodayOutstandingReservationsAsync());
+
         Assert.Equal(1L, await CountReservationsAsync());
     }
 
@@ -363,15 +401,50 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
             Enabled = true,
             DailyLimitUsd = 10m,
         });
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
+
         string period = BudgetReservationService.UtcBudgetPeriod(now);
+
         _ = await ReserveAsync(service, 4m, now.AddHours(1), period);
 
         _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReserveAsync(
             new BudgetReservationRequest(Guid.NewGuid(), ReservedUsd: -3m, now.AddHours(1), period)));
 
         Assert.Equal(4m, await service.GetTodayOutstandingReservationsAsync());
+
         Assert.Equal(1L, await CountReservationsAsync());
+    }
+
+    /// <summary>
+    /// A negative reservation is a caller defect whatever the budget settings are, so it is refused before the
+    /// disabled-budget no-op rather than being answered with a synthetic released record.
+    /// </summary>
+    /// <remarks>
+    /// The argument does not become valid because enforcement is off: a caller that built a negative amount
+    /// would otherwise ship that defect unseen until an operator turned the budget on.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ReserveAsync_WhenReservedUsdIsNegative_ThrowsEvenWhenTheBudgetIsDisabled()
+    {
+        RequireSqlCipher();
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
+        {
+            Enabled = false,
+            DailyLimitUsd = 10m,
+        });
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReserveAsync(
+            new BudgetReservationRequest(
+                Guid.NewGuid(),
+                ReservedUsd: -3m,
+                now.AddHours(1),
+                BudgetReservationService.UtcBudgetPeriod(now))));
+
+        Assert.Equal(0L, await CountReservationsAsync());
     }
 
     [SkippableTheory]
