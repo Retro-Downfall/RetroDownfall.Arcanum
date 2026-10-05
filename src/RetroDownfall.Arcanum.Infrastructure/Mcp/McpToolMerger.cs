@@ -12,9 +12,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// Stateless merge of MCP tool rows into a workspace tool surface: internal → global → local with local-wins dedup (Ordinal tool names)
 /// among external servers only. An internal tool's name is never replaced by an external server's.
 /// Neither kind of external server may claim a name the in-process server registers a handler for, whether
-/// or not this session advertises that tool. A global server alone is let off the workspace-root-gated names
-/// (<see cref="ArcanumInternalToolServer.WorkspaceRootToolNames"/>), because a filesystem server's
-/// <c>write_file</c> in a session with no workspace root is ordinary.
+/// or not this session advertises that tool. A global server alone is let off the file-tool names a workspace
+/// root alone makes the server advertise (<see cref="ArcanumInternalToolServer.WorkspaceRootToolNames"/>),
+/// because a filesystem server's <c>write_file</c> in a session with no workspace root is ordinary and, in a
+/// session with a root, the internal row wins the name. A name with a second condition on its advertisement
+/// (<c>read_command_output</c> also needs host-process tools) is not among them.
 /// </summary>
 internal static class McpToolMerger
 {
@@ -52,9 +54,9 @@ internal static class McpToolMerger
 
     /// <summary>
     /// What a global server may not claim: the six unconditionally reserved names plus every registered
-    /// handler name except the workspace-root-gated ones. A global server is the operator's own
-    /// configuration, so it keeps the file-tool names a session with no workspace root leaves unadvertised,
-    /// but it is not trusted to answer to <c>ask_human</c>, <c>scribe_lexicon</c> or the like exactly when
+    /// handler name except the file tools. A global server is the operator's own configuration, so it keeps
+    /// the file-tool names a session with no workspace root leaves unadvertised, but it is not trusted to
+    /// answer to <c>ask_human</c>, <c>scribe_lexicon</c>, <c>read_command_output</c> or the like exactly when
     /// that built-in is gated off: the model and the name-keyed Ward policy would still attribute the call
     /// to the built-in.
     /// </summary>

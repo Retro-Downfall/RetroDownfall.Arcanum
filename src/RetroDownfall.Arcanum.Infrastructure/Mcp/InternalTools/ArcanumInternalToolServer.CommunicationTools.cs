@@ -649,7 +649,10 @@ internal sealed partial class ArcanumInternalToolServer
                 ApprenticeId = apprenticeId,
                 Timestamp = update.Timestamp,
                 Description = update.AgentUrl,
-                Summary = update.TaskId,
+
+                // The peer chooses its task ids, so a progress frame echoes one only when it is a plain
+                // token, exactly as the dispatched and terminal frames do (BuildSendingToolResult).
+                Summary = PlainRemoteId(update.TaskId),
                 SendingState = update.RemoteState,
                 SendingDirection = update.Direction == A2ASendingDirection.Inbound ? "inbound" : "outbound",
             });

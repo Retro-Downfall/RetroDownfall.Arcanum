@@ -81,13 +81,17 @@ internal sealed partial class ArcanumInternalToolServer
         };
 
     /// <summary>
-    /// The registered names this server advertises only to a session that has a workspace root. A global
-    /// server may offer a same-named tool in a session with no root (a filesystem server's
-    /// <c>write_file</c> or <c>list_directory</c> is then the only file tooling there is), so
-    /// <see cref="McpToolMerger"/> leaves these names open to global servers. Every other registered name
-    /// is reserved against global servers as well as workspace-local ones, whether or not the session
-    /// advertises it. The names <see cref="McpToolMerger"/> reserves unconditionally (the workspace and
-    /// command tools among them) are reserved either way and are not listed here.
+    /// The registered names this server advertises to every session that has a workspace root, and to no
+    /// session that has none: the file tools. A global server may offer a same-named tool in a session with
+    /// no root (a filesystem server's <c>write_file</c> or <c>list_directory</c> is then the only file
+    /// tooling there is), and in a session with a root the internal row is added first and wins the name, so
+    /// <see cref="McpToolMerger"/> leaves these names open to global servers. A name belongs here only if a
+    /// workspace root alone makes the server advertise it: <c>read_command_output</c> also needs host-process
+    /// tools, which production allows only in the Development edition, so it is absent from a production
+    /// session that has a root and stays reserved. Every other registered name is reserved against global
+    /// servers as well as workspace-local ones, whether or not the session advertises it. The names
+    /// <see cref="McpToolMerger"/> reserves unconditionally (the workspace and command tools among them)
+    /// are reserved either way and are not listed here.
     /// </summary>
     internal static IReadOnlySet<string> WorkspaceRootToolNames { get; } =
         new HashSet<string>(StringComparer.Ordinal)
@@ -99,8 +103,6 @@ internal sealed partial class ArcanumInternalToolServer
             "write_file",
 
             "list_directory",
-
-            "read_command_output",
         };
 
     private Dictionary<string, InternalToolHandler> BuildToolHandlerRegistry()

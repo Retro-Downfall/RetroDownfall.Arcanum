@@ -443,6 +443,64 @@ public sealed class McpToolMergerTests
     }
 
     [Fact]
+    public async Task The_workspace_root_gated_names_are_advertised_to_every_session_that_has_a_workspace_root()
+    {
+        // The other half of the same claim: a global server is let off these names only because, in a
+        // session that does have a root, the internal row is added first and wins the name. A name the
+        // server advertises only under a further condition (read_command_output also needs host-process
+        // tools, which production allows only in the Development edition) is absent from a production
+        // session that has a root, so a global server could answer to it there. Probe with host-process
+        // tools off, the shape every non-Development session has.
+        TempWorkspace workspace = new();
+
+        await workspace.InitializeAsync();
+
+        try
+        {
+            string[] advertised = await AdvertisedToolNamesAsync(
+                workspaceRoot: workspace.Root,
+                allowHostProcessTools: false);
+
+            // Guards the probe: the file tools really are advertised with a root, and the host-process
+            // tools really are absent when they are gated off.
+            Assert.Contains("read_file_chunk", advertised);
+
+            Assert.DoesNotContain("execute_command", advertised);
+
+            string[] missing =
+            [
+                .. ArcanumInternalToolServer.WorkspaceRootToolNames
+                    .Where(name => !advertised.Contains(name, StringComparer.Ordinal))
+                    .Order(StringComparer.Ordinal),
+            ];
+
+            Assert.Empty(missing);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public void MergeWorkspaceSurface_a_global_server_cannot_claim_read_command_output_in_a_session_that_does_not_advertise_it()
+    {
+        // read_command_output is advertised only with a workspace root and host-process tools both, so in
+        // a production session with a root the built-in row is absent. A global server answering to it
+        // there would be attributed to the built-in by the model and the name-keyed Ward policy.
+        LoadedMcpToolRow globalRow = Row("read_command_output", "global");
+
+        Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
+        {
+            ["read_command_output"] = globalRow,
+        };
+
+        Assert.Empty(McpToolMerger.MergeWorkspaceSurface([], globalMap, []));
+
+        Assert.Empty(McpToolMerger.DedupeGlobalTaggedTools([Row("read_command_output", "global")]).SurfaceTools);
+    }
+
+    [Fact]
     public void The_static_internal_tool_name_set_is_exactly_the_registered_handler_names()
     {
         // The static set is what keeps a gated-off built-in's name reserved. A handler registered
@@ -568,7 +626,9 @@ public sealed class McpToolMergerTests
         Assert.Same(internalRow.Tool, merged[0]);
     }
 
-    private static async Task<string[]> AdvertisedToolNamesAsync(string? workspaceRoot)
+    private static async Task<string[]> AdvertisedToolNamesAsync(
+        string? workspaceRoot,
+        bool allowHostProcessTools = true)
     {
         IServiceScopeFactory scopeFactory = new ServiceCollection()
             .BuildServiceProvider()
@@ -587,7 +647,8 @@ public sealed class McpToolMergerTests
             a2aClientEnabled: true,
             attachmentsToolEnabled: true,
             maxJsonRpcLineBytes: 1_048_576,
-            logger: NullLogger<ArcanumInternalToolServer>.Instance);
+            logger: NullLogger<ArcanumInternalToolServer>.Instance,
+            allowHostProcessTools: allowHostProcessTools);
 
         using CancellationTokenSource lifetime = new();
 
