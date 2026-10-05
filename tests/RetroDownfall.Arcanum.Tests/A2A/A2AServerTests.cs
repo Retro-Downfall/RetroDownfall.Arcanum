@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 
 public sealed class A2AServerTests
 {
-
     private static ArcanumSettings EnabledSettings() => new()
     {
         Features = new FeatureSettings
@@ -53,12 +52,10 @@ public sealed class A2AServerTests
 
     private static TaskState? LatestState(IReadOnlyList<StreamResponse> responses)
     {
-
         TaskState? latest = null;
 
         foreach (StreamResponse r in responses)
         {
-
             TaskStatus? status = r.PayloadCase switch
             {
                 StreamResponseCase.Task => r.Task?.Status,
@@ -68,15 +65,11 @@ public sealed class A2AServerTests
 
             if (status is not null)
             {
-
                 latest = status.State;
-
             }
-
         }
 
         return latest;
-
     }
 
     private static IEnumerable<string> ArtifactTexts(IReadOnlyList<StreamResponse> responses) =>
@@ -88,26 +81,21 @@ public sealed class A2AServerTests
 
     private static async Task<List<StreamResponse>> DrainAsync(AgentEventQueue queue)
     {
-
         queue.Complete();
 
         List<StreamResponse> items = [];
 
         await foreach (StreamResponse item in queue)
         {
-
             items.Add(item);
-
         }
 
         return items;
-
     }
 
     [Fact]
     public async Task ExecuteAsync_ServerDisabled_RejectsWithoutCreatingApprentice()
     {
-
         FakeConclaveArchmage archmage = new();
 
         FakeApprenticeRuntime runtime = new(Channel.CreateUnbounded<ApprenticeEvent>().Reader);
@@ -125,13 +113,11 @@ public sealed class A2AServerTests
         Assert.Empty(runtime.StartedApprenticeIds);
 
         Assert.Equal(TaskState.Rejected, LatestState(responses));
-
     }
 
     [Fact]
     public async Task ExecuteAsync_EmptyGoal_RejectsWithoutCreatingApprentice()
     {
-
         FakeConclaveArchmage archmage = new();
 
         FakeApprenticeRuntime runtime = new(Channel.CreateUnbounded<ApprenticeEvent>().Reader);
@@ -147,13 +133,11 @@ public sealed class A2AServerTests
         Assert.Null(archmage.LastRequest);
 
         Assert.Equal(TaskState.Rejected, LatestState(responses));
-
     }
 
     [Fact]
     public async Task ExecuteAsync_HappyPath_CreatesStartsAndCompletesWithArtifact()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Guid sessionId = Guid.NewGuid();
@@ -206,13 +190,11 @@ public sealed class A2AServerTests
         Assert.Equal(TaskState.Completed, LatestState(responses));
 
         Assert.Contains("All done!", ArtifactTexts(responses));
-
     }
 
     [Fact]
     public async Task ExecuteAsync_ApprenticeFails_EmitsFailedStatus()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
@@ -236,13 +218,11 @@ public sealed class A2AServerTests
         List<StreamResponse> responses = await DrainAsync(queue);
 
         Assert.Equal(TaskState.Failed, LatestState(responses));
-
     }
 
     [Fact]
     public async Task ExecuteAsync_ApprenticeEscalates_EmitsInputRequiredStatus()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
@@ -266,13 +246,11 @@ public sealed class A2AServerTests
         List<StreamResponse> responses = await DrainAsync(queue);
 
         Assert.Equal(TaskState.InputRequired, LatestState(responses));
-
     }
 
     [Fact]
     public async Task CancelAsync_KnownTask_CancelsUnderlyingApprentice()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
@@ -294,9 +272,7 @@ public sealed class A2AServerTests
         // Give ExecuteAsync a chance to reach the (still-open) chronicle subscription before cancelling.
         for (int i = 0; i < 100 && runtime.StartedApprenticeIds.Count == 0; i++)
         {
-
             await Task.Delay(10);
-
         }
 
         await handler.CancelAsync(context, queue, CancellationToken.None);
@@ -308,13 +284,11 @@ public sealed class A2AServerTests
         chronicle.Writer.Complete();
 
         await executeTask;
-
     }
 
     [Fact]
     public async Task CancelAsync_UnknownTask_CancelsNoApprenticeButStillAnswersThePeer()
     {
-
         FakeConclaveArchmage archmage = new();
 
         FakeApprenticeRuntime runtime = new(Channel.CreateUnbounded<ApprenticeEvent>().Reader);
@@ -332,13 +306,11 @@ public sealed class A2AServerTests
         List<StreamResponse> responses = await DrainAsync(queue);
 
         Assert.Equal(TaskState.Canceled, LatestState(responses));
-
     }
 
     [Fact]
     public async Task ExecuteAsync_TerminalEventRaisedWhileStarting_IsStillObserved()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
@@ -352,7 +324,6 @@ public sealed class A2AServerTests
 
         runtime.OnStart = () =>
         {
-
             runtime.Publish(new ApprenticeEvent
             {
                 Type = ApprenticeEventType.ApprenticeFailed,
@@ -361,7 +332,6 @@ public sealed class A2AServerTests
             });
 
             runtime.CompleteAll();
-
         };
 
         ArcanumA2AAgentHandler handler = CreateHandler(EnabledSettings(), archmage, runtime, new FakeApprenticeRepository { Item = apprentice }, new FakeSessionRepository());
@@ -374,13 +344,11 @@ public sealed class A2AServerTests
         List<StreamResponse> responses = await DrainAsync(queue);
 
         Assert.Equal(TaskState.Failed, LatestState(responses));
-
     }
 
     [Fact]
     public async Task ExecuteAsync_ChronicleEndsWithoutATerminalEvent_StillAnswersThePeer()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
@@ -403,13 +371,11 @@ public sealed class A2AServerTests
         List<StreamResponse> responses = await DrainAsync(queue);
 
         Assert.Equal(TaskState.Failed, LatestState(responses));
-
     }
 
     [Fact]
     public async Task ExecuteAsync_ChainAlreadyContainsThisNode_RejectsWithoutCreatingApprentice()
     {
-
         FakeConclaveArchmage archmage = new();
 
         FakeApprenticeRuntime runtime = new(Channel.CreateUnbounded<ApprenticeEvent>().Reader);
@@ -433,13 +399,11 @@ public sealed class A2AServerTests
         Assert.Empty(runtime.StartedApprenticeIds);
 
         Assert.Equal(TaskState.Rejected, LatestState(responses));
-
     }
 
     [Fact]
     public async Task ExecuteAsync_ChainFromAnotherNode_IsAcceptedAndCarriedOntoTheApprentice()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
@@ -469,13 +433,11 @@ public sealed class A2AServerTests
         // The upstream hops plus this node travel with the spawned Apprentice so its own delegation stays
         // loop-aware instead of restarting the chain from empty.
         Assert.Equal(["upstream-node", ConclaveDelegationChain.NodeId], archmage.LastRequest!.DelegationChain);
-
     }
 
     [Fact]
     public void BuildAgentCard_UsesConfiguredNameAndDescription_AndDerivesInterfaceUrlFromRequest()
     {
-
         ArcanumSettings settings = new()
         {
             Integrations = new IntegrationSettings
@@ -512,13 +474,11 @@ public sealed class A2AServerTests
         Assert.Equal("JSONRPC", supported.ProtocolBinding);
 
         Assert.Contains("arcanumApiKey", card.SecuritySchemes!.Keys);
-
     }
 
     [Fact]
     public void BuildAgentCard_FallsBackToDefaultNameAndDescription_WhenNotConfigured()
     {
-
         DefaultHttpContext httpContext = new();
 
         httpContext.Request.Scheme = "http";
@@ -530,7 +490,6 @@ public sealed class A2AServerTests
         Assert.Equal("Arcanum", card.Name);
 
         Assert.False(string.IsNullOrWhiteSpace(card.Description));
-
     }
 
     private static ArcanumA2AAgentHandler CreateHandler(
@@ -540,7 +499,6 @@ public sealed class A2AServerTests
         FakeApprenticeRepository repo,
         FakeSessionRepository sessionRepo)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<IConclaveArchmage>(archmage);
@@ -557,33 +515,27 @@ public sealed class A2AServerTests
             scopeFactory,
             new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<ArcanumA2AAgentHandler>.Instance);
-
     }
 
     private sealed class FakeConclaveArchmage : IConclaveArchmage
     {
-
         public Func<ConclaveCastRequest, Result<Apprentice>>? OnCast { get; set; }
 
         public ConclaveCastRequest? LastRequest { get; private set; }
 
         public Task<Result<Apprentice>> CastAsync(ConclaveCastRequest request, CancellationToken cancellationToken = default)
         {
-
             LastRequest = request;
 
             Result<Apprentice> result = OnCast?.Invoke(request)
                 ?? Result<Apprentice>.Failure(new Error("Test.NotConfigured", "FakeConclaveArchmage.OnCast was not configured."));
 
             return Task.FromResult(result);
-
         }
-
     }
 
     private sealed class FakeApprenticeRuntime(ChannelReader<ApprenticeEvent> chronicle) : IApprenticeRuntime
     {
-
         public List<Guid> StartedApprenticeIds { get; } = [];
 
         public List<Guid> CancelledApprenticeIds { get; } = [];
@@ -595,13 +547,11 @@ public sealed class A2AServerTests
 
         public Task<Result<string>> StartAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
         {
-
             StartedApprenticeIds.Add(apprenticeId);
 
             OnStart?.Invoke();
 
             return Task.FromResult(StartResult);
-
         }
 
         public Task<Result<string>> PauseAsync(Guid apprenticeId, CancellationToken cancellationToken = default) =>
@@ -612,11 +562,9 @@ public sealed class A2AServerTests
 
         public Task<Result<string>> CancelAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
         {
-
             CancelledApprenticeIds.Add(apprenticeId);
 
             return Task.FromResult(Result<string>.Success(string.Empty));
-
         }
 
         public Task<Result<ApprenticeDetailDto>> ReweaveAsync(Guid apprenticeId, IReadOnlyList<PlanStep> steps, CancellationToken cancellationToken = default) =>
@@ -629,16 +577,11 @@ public sealed class A2AServerTests
             Guid apprenticeId,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-
             await foreach (ApprenticeEvent evt in chronicle.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 yield return evt;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -648,7 +591,6 @@ public sealed class A2AServerTests
     /// </summary>
     private sealed class LiveOnlyApprenticeRuntime : IApprenticeRuntime
     {
-
         private readonly Lock _gate = new();
 
         private readonly List<Channel<ApprenticeEvent>> _subscribers = [];
@@ -661,47 +603,33 @@ public sealed class A2AServerTests
 
         public void Publish(ApprenticeEvent @event)
         {
-
             lock (_gate)
             {
-
                 foreach (Channel<ApprenticeEvent> subscriber in _subscribers)
                 {
-
                     subscriber.Writer.TryWrite(@event);
-
                 }
-
             }
-
         }
 
         public void CompleteAll()
         {
-
             lock (_gate)
             {
-
                 foreach (Channel<ApprenticeEvent> subscriber in _subscribers)
                 {
-
                     subscriber.Writer.TryComplete();
-
                 }
-
             }
-
         }
 
         public Task<Result<string>> StartAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
         {
-
             StartedApprenticeIds.Add(apprenticeId);
 
             OnStart?.Invoke();
 
             return Task.FromResult(Result<string>.Success("started"));
-
         }
 
         public Task<Result<string>> PauseAsync(Guid apprenticeId, CancellationToken cancellationToken = default) =>
@@ -712,11 +640,9 @@ public sealed class A2AServerTests
 
         public Task<Result<string>> CancelAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
         {
-
             CancelledApprenticeIds.Add(apprenticeId);
 
             return Task.FromResult(Result<string>.Success(string.Empty));
-
         }
 
         public Task<Result<ApprenticeDetailDto>> ReweaveAsync(Guid apprenticeId, IReadOnlyList<PlanStep> steps, CancellationToken cancellationToken = default) =>
@@ -729,30 +655,22 @@ public sealed class A2AServerTests
             Guid apprenticeId,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-
             Channel<ApprenticeEvent> channel = Channel.CreateUnbounded<ApprenticeEvent>();
 
             lock (_gate)
             {
-
                 _subscribers.Add(channel);
-
             }
 
             await foreach (ApprenticeEvent evt in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 yield return evt;
-
             }
-
         }
-
     }
 
     private sealed class FakeApprenticeRepository : IApprenticeRepository
     {
-
         public Apprentice? Item { get; set; }
 
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -779,12 +697,10 @@ public sealed class A2AServerTests
 
         public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class FakeSessionRepository : ISessionRepository
     {
-
         public List<Entry> Entries { get; set; } = [];
 
         public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
@@ -834,9 +750,10 @@ public sealed class A2AServerTests
         public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
             throw new NotSupportedException();
 
-        public Task ArchiveAsync(Guid id, CancellationToken ct) =>
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
             throw new NotSupportedException();
 
+        public Task ArchiveAsync(Guid id, CancellationToken ct) =>
+            throw new NotSupportedException();
     }
-
 }

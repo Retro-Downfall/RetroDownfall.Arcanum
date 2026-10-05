@@ -39,6 +39,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Attachment.SourceUnavailable, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Attachment.TooLarge, StatusCodes.Status413PayloadTooLarge)]
     [InlineData(ErrorCodes.Attachment.LimitExceeded, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Session.PinNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Grimoire.LoreNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Apprentice.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Apprentice.Disabled, StatusCodes.Status400BadRequest)]

@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// </summary>
 public sealed class A2AServerCapabilityTests
 {
-
     private static ArcanumSettings EnabledSettings() => new()
     {
         Features = new FeatureSettings { Conclave = true, A2AServer = true },
@@ -37,7 +36,6 @@ public sealed class A2AServerCapabilityTests
     [Fact]
     public void DefaultCard_AdvertisesExactlyTheHistoricalSkillAndModes()
     {
-
         ConclaveA2ASettings a2a = EnabledSettings().ResolveA2A();
 
         AgentSkill[] skills = A2AAgentCardPolicy.ResolveSkills(a2a);
@@ -57,13 +55,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Equal(["text/plain"], A2AAgentCardPolicy.ResolveInputModes(a2a));
 
         Assert.Equal(["text/plain"], A2AAgentCardPolicy.ResolveOutputModes(a2a));
-
     }
 
     [Fact]
     public void DeclaredSkills_ReplaceTheDefaultAndInheritCardModesWhenUnset()
     {
-
         ArcanumSettings settings = EnabledSettings();
 
         settings.Integrations!.A2A!.OutputModes = ["text/plain", "text/markdown"];
@@ -86,13 +82,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Equal("render", skills[1].Name);
 
         Assert.Equal(["image/png"], skills[1].OutputModes);
-
     }
 
     [Fact]
     public void DeclaredSkillsWithoutAnId_AreIgnoredRatherThanAdvertisedBlank()
     {
-
         ArcanumSettings settings = EnabledSettings();
 
         settings.Integrations!.A2A!.Skills = [new A2ASkillSettings { Name = "nameless" }];
@@ -100,7 +94,6 @@ public sealed class A2AServerCapabilityTests
         AgentSkill only = Assert.Single(A2AAgentCardPolicy.ResolveSkills(settings.ResolveA2A()));
 
         Assert.Equal("apprentice-goal-execution", only.Id);
-
     }
 
     public static TheoryData<string[]?> AcceptableRequestedModes => new()
@@ -117,17 +110,14 @@ public sealed class A2AServerCapabilityTests
     [MemberData(nameof(AcceptableRequestedModes))]
     public void RequestedModesArcanumSupports_AreAccepted(string[]? requested)
     {
-
         Result<string> outcome = A2AAgentCardPolicy.ValidateRequestedModes(EnabledSettings(), requested);
 
         Assert.True(outcome.IsSuccess);
-
     }
 
     [Fact]
     public void RequestedModeArcanumDoesNotAdvertise_IsRejectedByNameRatherThanDowngraded()
     {
-
         Result<string> outcome = A2AAgentCardPolicy.ValidateRequestedModes(EnabledSettings(), ["audio/wav"]);
 
         Assert.True(outcome.IsFailure);
@@ -136,13 +126,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Contains("audio/wav", outcome.Error.Message, StringComparison.Ordinal);
 
         Assert.Contains("text/plain", outcome.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task InboundSendingRequestingAnUnsupportedMode_IsRejectedWithoutSpawningAnApprentice()
     {
-
         Harness harness = new();
 
         RequestContext context = harness.Request(
@@ -154,7 +142,6 @@ public sealed class A2AServerCapabilityTests
         Assert.Equal(TaskState.Rejected, state);
 
         Assert.Empty(harness.Archmage.Requests);
-
     }
 
     // ── #64 inbound continuation ───────────────────────────────────────────────────────────────────
@@ -162,7 +149,6 @@ public sealed class A2AServerCapabilityTests
     [Fact]
     public async Task EscalatedInboundSending_ParksTheTaskAtInputRequired()
     {
-
         Harness harness = new();
 
         harness.QueueEscalation("which environment?");
@@ -170,13 +156,11 @@ public sealed class A2AServerCapabilityTests
         (TaskState? state, _) = await harness.RunAsync(harness.Request("deploy the thing"));
 
         Assert.Equal(TaskState.InputRequired, state);
-
     }
 
     [Fact]
     public async Task ContinuingAnEscalatedInboundSending_ResumesTheOriginalApprentice()
     {
-
         Harness harness = new();
 
         harness.QueueEscalation("which environment?");
@@ -204,13 +188,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Equal([original], harness.Runtime.IntervenedApprenticeIds);
 
         Assert.Equal(["staging"], harness.Runtime.InterventionGuidance);
-
     }
 
     [Fact]
     public async Task CancellingATaskParkedAwaitingContinuation_CancelsTheApprentice()
     {
-
         Harness harness = new();
 
         harness.QueueEscalation("which environment?");
@@ -230,7 +212,6 @@ public sealed class A2AServerCapabilityTests
         // ExecuteAsync already returned when the task parked, so no relay survives to drive the terminal
         // transition. Cancelling the Apprentice without it leaves the peer's task at input-required forever.
         Assert.Equal(TaskState.Canceled, await DrainStateAsync(cancelQueue));
-
     }
 
     // ── #62 durable task correspondence ────────────────────────────────────────────────────────────
@@ -238,7 +219,6 @@ public sealed class A2AServerCapabilityTests
     [Fact]
     public async Task InboundSending_RecordsADurableTaskToApprenticeCorrespondence()
     {
-
         Harness harness = new();
 
         harness.QueueCompletion();
@@ -248,13 +228,11 @@ public sealed class A2AServerCapabilityTests
         Guid apprenticeId = Assert.Single(harness.Archmage.Created).Id;
 
         Assert.Equal(apprenticeId, harness.Ledger.RegisteredInbound["task-42"]);
-
     }
 
     [Fact]
     public async Task SettledInboundSending_ClosesItsDurableRecord()
     {
-
         Harness harness = new();
 
         harness.QueueCompletion();
@@ -263,13 +241,11 @@ public sealed class A2AServerCapabilityTests
 
         // A settled Sending must not be reconciled after the next restart.
         Assert.Single(harness.Ledger.Released);
-
     }
 
     [Fact]
     public async Task InboundSendingParkedAwaitingContinuation_KeepsItsDurableRecordOpenUntilItSettles()
     {
-
         Harness harness = new();
 
         harness.QueueEscalation("which environment?");
@@ -284,13 +260,11 @@ public sealed class A2AServerCapabilityTests
         await harness.RunAsync(harness.Request("staging", taskId: "task-1"));
 
         Assert.Single(harness.Ledger.Released);
-
     }
 
     [Fact]
     public async Task PeerCancelAfterARestart_CancelsTheRealApprenticeInsteadOfAnsweringIntoTheVoid()
     {
-
         Harness harness = new();
 
         Guid resumed = Guid.NewGuid();
@@ -306,13 +280,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Equal([resumed], harness.Runtime.CancelledApprenticeIds);
 
         Assert.Equal(TaskState.Canceled, await DrainStateAsync(queue));
-
     }
 
     [Fact]
     public async Task PeerCancelForAnUnknownTask_StillAnswersTerminallyWithoutCancellingAnything()
     {
-
         Harness harness = new();
 
         AgentEventQueue queue = new();
@@ -322,13 +294,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Empty(harness.Runtime.CancelledApprenticeIds);
 
         Assert.Equal(TaskState.Canceled, await DrainStateAsync(queue));
-
     }
 
     [Fact]
     public async Task OutboundReconciliation_CancelsTheOrphanedRemoteTaskAndRecordsThat()
     {
-
         RecordingCancelClient client = new(succeed: true);
 
         A2AOutboundSendingRecoveryHandler handler = new(
@@ -342,13 +312,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Equal(LongRunningOperationState.Completed, outcome.State);
 
         Assert.Equal([("https://peer.example.test/", "remote-1")], client.Cancelled);
-
     }
 
     [Fact]
     public async Task OutboundReconciliation_RecordsAbandonmentWhenTheRemoteCannotBeReached()
     {
-
         RecordingCancelClient client = new(succeed: false);
 
         A2AOutboundSendingRecoveryHandler handler = new(
@@ -363,13 +331,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Equal(LongRunningOperationState.Abandoned, outcome.State);
 
         Assert.Equal(A2ASendingRecoveryOutcomes.OutboundRemoteAbandoned, outcome.ErrorCode);
-
     }
 
     [Fact]
     public async Task InboundReconciliation_ExplicitlyAbandonsWithAReasonRatherThanLeavingTheTaskWorking()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         FakeApprenticeStore apprentices = new()
@@ -388,13 +354,11 @@ public sealed class A2AServerCapabilityTests
         Assert.Equal(LongRunningOperationState.Abandoned, outcome.State);
 
         Assert.Equal(A2ASendingRecoveryOutcomes.InboundRelayAbandoned, outcome.ErrorCode);
-
     }
 
     [Fact]
     public async Task InboundReconciliation_NamesAMissingApprenticeSeparatelyFromALostRelay()
     {
-
         A2AInboundSendingRecoveryHandler handler = new(
             new FakeApprenticeStore(),
             NullLogger<A2AInboundSendingRecoveryHandler>.Instance);
@@ -404,7 +368,6 @@ public sealed class A2AServerCapabilityTests
             CancellationToken.None);
 
         Assert.Equal(A2ASendingRecoveryOutcomes.InboundApprenticeMissing, outcome.ErrorCode);
-
     }
 
     // ── harness ────────────────────────────────────────────────────────────────────────────────────
@@ -470,14 +433,12 @@ public sealed class A2AServerCapabilityTests
 
     private static async Task<TaskState?> DrainStateAsync(AgentEventQueue queue)
     {
-
         queue.Complete();
 
         TaskState? latest = null;
 
         await foreach (StreamResponse response in queue)
         {
-
             TaskStatus? status = response.PayloadCase switch
             {
                 StreamResponseCase.Task => response.Task?.Status,
@@ -487,25 +448,19 @@ public sealed class A2AServerCapabilityTests
 
             if (status is not null)
             {
-
                 latest = status.State;
-
             }
-
         }
 
         return latest;
-
     }
 
     private sealed class Harness
     {
-
         private readonly Channel<ApprenticeEvent> _chronicle = Channel.CreateUnbounded<ApprenticeEvent>();
 
         public Harness()
         {
-
             Runtime = new RecordingRuntime(_chronicle.Reader);
 
             ServiceCollection services = new();
@@ -526,7 +481,6 @@ public sealed class A2AServerCapabilityTests
                 scopeFactory,
                 new TestOptionsMonitor<ArcanumSettings>(EnabledSettings()),
                 NullLogger<ArcanumA2AAgentHandler>.Instance);
-
         }
 
         public RecordingArchmage Archmage { get; } = new();
@@ -566,27 +520,22 @@ public sealed class A2AServerCapabilityTests
 
         public async Task<(TaskState? State, AgentEventQueue Queue)> RunAsync(RequestContext context)
         {
-
             AgentEventQueue queue = new();
 
             await Handler.ExecuteAsync(context, queue, CancellationToken.None);
 
             return (await DrainStateAsync(queue), queue);
-
         }
-
     }
 
     private sealed class RecordingArchmage : IConclaveArchmage
     {
-
         public List<ConclaveCastRequest> Requests { get; } = [];
 
         public List<Apprentice> Created { get; } = [];
 
         public Task<Result<Apprentice>> CastAsync(ConclaveCastRequest request, CancellationToken cancellationToken = default)
         {
-
             Requests.Add(request);
 
             Apprentice apprentice = new()
@@ -600,14 +549,11 @@ public sealed class A2AServerCapabilityTests
             Created.Add(apprentice);
 
             return Task.FromResult(Result<Apprentice>.Success(apprentice));
-
         }
-
     }
 
     private sealed class RecordingRuntime(ChannelReader<ApprenticeEvent> chronicle) : IApprenticeRuntime
     {
-
         public List<Guid> CancelledApprenticeIds { get; } = [];
 
         public List<Guid> IntervenedApprenticeIds { get; } = [];
@@ -625,11 +571,9 @@ public sealed class A2AServerCapabilityTests
 
         public Task<Result<string>> CancelAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
         {
-
             CancelledApprenticeIds.Add(apprenticeId);
 
             return Task.FromResult(Result<string>.Success(string.Empty));
-
         }
 
         public Task<Result<ApprenticeDetailDto>> ReweaveAsync(
@@ -643,39 +587,29 @@ public sealed class A2AServerCapabilityTests
             bool resume,
             CancellationToken cancellationToken = default)
         {
-
             IntervenedApprenticeIds.Add(apprenticeId);
 
             InterventionGuidance.Add(guidance);
 
             return Task.FromResult(Result<string>.Success("resumed"));
-
         }
 
         public async IAsyncEnumerable<ApprenticeEvent> SubscribeChronicleAsync(
             Guid apprenticeId,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-
             while (await chronicle.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 while (chronicle.TryRead(out ApprenticeEvent? @event))
                 {
-
                     yield return @event;
-
                 }
-
             }
-
         }
-
     }
 
     private sealed class RecordingLedger : IA2ASendingLedger
     {
-
         public Dictionary<string, Guid> RegisteredInbound { get; } = [];
 
         public Dictionary<string, Guid> Recovered { get; } = [];
@@ -687,11 +621,9 @@ public sealed class A2AServerCapabilityTests
             Guid apprenticeId,
             CancellationToken cancellationToken = default)
         {
-
             RegisteredInbound[taskId] = apprenticeId;
 
             return Task.FromResult(new A2ASendingLedgerEntry(Guid.NewGuid(), "test"));
-
         }
 
         public Task<A2ASendingLedgerEntry> RegisterOutboundAsync(
@@ -706,11 +638,9 @@ public sealed class A2AServerCapabilityTests
             A2ARemoteCost cost,
             CancellationToken cancellationToken = default)
         {
-
             Settled.Add((entry, cost));
 
             return Task.CompletedTask;
-
         }
 
         public List<(A2ASendingLedgerEntry Entry, A2ARemoteCost Cost)> Settled { get; } = [];
@@ -731,11 +661,9 @@ public sealed class A2AServerCapabilityTests
 
         public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
         {
-
             Released.Add(entry);
 
             return Task.CompletedTask;
-
         }
 
         public Task MarkParkedAsync(
@@ -743,11 +671,9 @@ public sealed class A2AServerCapabilityTests
             string? contextId,
             CancellationToken cancellationToken = default)
         {
-
             Parked.Add((entry, contextId));
 
             return Task.CompletedTask;
-
         }
 
         public List<(A2ASendingLedgerEntry Entry, string? ContextId)> Parked { get; } = [];
@@ -760,12 +686,10 @@ public sealed class A2AServerCapabilityTests
 
         public Task<Guid?> FindInboundApprenticeAsync(string taskId, CancellationToken cancellationToken = default) =>
             Task.FromResult(Recovered.TryGetValue(taskId, out Guid id) ? id : (Guid?)null);
-
     }
 
     private sealed class RecordingCancelClient(bool succeed) : IA2AClientService
     {
-
         public List<(string AgentUrl, string TaskId)> Cancelled { get; } = [];
 
         public Task<Result<A2ADispatchResult>> DispatchSendingAsync(
@@ -793,20 +717,16 @@ public sealed class A2AServerCapabilityTests
             string taskId,
             CancellationToken cancellationToken = default)
         {
-
             Cancelled.Add((agentUrl, taskId));
 
             return Task.FromResult(succeed
                 ? Result.Success()
                 : Result.Failure(new Error(ErrorCodes.Sending.AgentUnreachable, "unreachable")));
-
         }
-
     }
 
     private sealed class FakeApprenticeStore : IApprenticeRepository
     {
-
         public Apprentice? Item { get; set; }
 
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -833,12 +753,10 @@ public sealed class A2AServerCapabilityTests
 
         public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
-
     }
 
     private sealed class StubSessions : ISessionRepository
     {
-
         public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
             throw new NotSupportedException();
 
@@ -879,8 +797,9 @@ public sealed class A2AServerCapabilityTests
 
         public Task UpdateSessionAsync(Session session, CancellationToken ct) => Task.CompletedTask;
 
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
+            Task.FromResult<Session?>(null);
+
         public Task ArchiveAsync(Guid id, CancellationToken ct) => Task.CompletedTask;
-
     }
-
 }

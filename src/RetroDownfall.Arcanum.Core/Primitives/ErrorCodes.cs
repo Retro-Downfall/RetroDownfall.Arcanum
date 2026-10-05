@@ -211,6 +211,9 @@ public static class ErrorCodes
         /// <summary>Pinning an entry would exceed the code-owned per-session limit.</summary>
         public const string TooManyPinned = "Session.TooManyPinned";
 
+        /// <summary>The context pin named by <c>DELETE /api/sessions/{id}/context-pins/{pinId}</c> does not exist in that Session.</summary>
+        public const string PinNotFound = "Session.PinNotFound";
+
         /// <summary>Explicit <c>POST /api/sessions/{id}/rest</c> could not enqueue Campaign Log consolidation.</summary>
         public const string RestQueueFull = "Session.RestQueueFull";
 

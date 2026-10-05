@@ -429,6 +429,9 @@ public sealed class A2ADelegationCycleTests
 
         public Task UpdateSessionAsync(Session session, CancellationToken ct) => Task.CompletedTask;
 
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
+            Task.FromResult<Session?>(null);
+
         public Task ArchiveAsync(Guid id, CancellationToken ct) => Task.CompletedTask;
     }
 

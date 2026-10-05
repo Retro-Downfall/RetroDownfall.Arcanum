@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -19,6 +20,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -1311,6 +1313,218 @@ public sealed class SessionEndpointTests
         return await store.ReadBytesAsync(attachment);
     }
 
+    [SkippableTheory]
+    [InlineData("beforeId")]
+    [InlineData("beforeCreatedAt")]
+    public async Task Entries_with_only_one_keyset_cursor_field_is_400(string supplied)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(3);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Either half alone used to be dropped silently and the request paged by offset, returning the
+        // newest entries as if the cursor had been honoured.
+        string query = supplied == "beforeId"
+            ? $"beforeId={Guid.NewGuid()}"
+            : $"beforeCreatedAt={Uri.EscapeDataString(DateTimeOffset.UtcNow.ToString("O"))}";
+
+        HttpResponseMessage response = await client.GetAsync($"/api/sessions/{sessionId:D}/entries?{query}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<EntryDto[]>? payload = await response.Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
+
+        Assert.NotNull(payload);
+
+        Assert.False(payload.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidQuery, payload.Error?.Code);
+    }
+
+    [SkippableFact]
+    public async Task Entries_with_both_keyset_cursor_fields_still_pages_before_the_cursor()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(3);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        ApiResponse<EntryDto[]>? all = await client
+            .GetFromJsonAsync($"/api/sessions/{sessionId:D}/entries", ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
+
+        EntryDto newest = all!.Data![0];
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/sessions/{sessionId:D}/entries?beforeCreatedAt={Uri.EscapeDataString(newest.CreatedAt.ToString("O"))}&beforeId={newest.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<EntryDto[]>? page = await response.Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
+
+        Assert.Equal(2, page!.Data!.Length);
+
+        Assert.DoesNotContain(page.Data, entry => entry.Id == newest.Id);
+    }
+
+    [SkippableFact]
+    public async Task DeleteContextPin_missing_returns_envelope_404()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(0);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.DeleteAsync($"/api/sessions/{sessionId:D}/context-pins/{Guid.NewGuid():D}");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        // A bare 404 used to leave a client with nothing to read; every other missing resource answers
+        // with the envelope and a code.
+        ApiResponse<bool>? payload = await response.Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(payload);
+
+        Assert.False(payload.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Session.PinNotFound, payload.Error?.Code);
+    }
+
+    [SkippableFact]
+    public async Task Create_with_unknown_campaign_is_404()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using StringContent body = new(
+            "{\"campaignId\":\"" + Guid.NewGuid() + "\",\"title\":\"orphan session\"}",
+            Encoding.UTF8,
+            "application/json");
+
+        HttpResponseMessage response = await client.PostAsync("/api/sessions", body);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        ApiResponse<SessionDetailDto>? payload = await response.Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Assert.NotNull(payload);
+
+        Assert.False(payload.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Campaign.NotFound, payload.Error?.Code);
+    }
+
+    /// <summary>
+    /// A PATCH that supplies only the title must not write back the status it read a moment earlier. The
+    /// repository wrapper archives the session after the route has read it, as a concurrent
+    /// <c>PATCH {"status":"archived"}</c> would, and the title-only PATCH then lands.
+    /// </summary>
+    [SkippableFact]
+    public async Task Patch_with_only_a_title_does_not_overwrite_a_status_changed_after_it_read_the_session()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.RemoveAll<ISessionRepository>();
+
+                services.AddScoped<ISessionRepository>(provider =>
+                {
+                    ISessionRepository proxy = DispatchProxy.Create<ISessionRepository, ArchiveAfterReadRepositoryProxy>();
+
+                    ((ArchiveAfterReadRepositoryProxy)proxy).Inner = ActivatorUtilities.CreateInstance<SessionRepository>(provider);
+
+                    return proxy;
+                });
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using StringContent create = new("{\"title\":\"before\"}", Encoding.UTF8, "application/json");
+
+        HttpResponseMessage created = await client.PostAsync("/api/sessions", create);
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        ApiResponse<SessionDetailDto>? session = await created.Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Guid sessionId = session!.Data!.Id;
+
+        ArchiveAfterReadRepositoryProxy.Arm();
+
+        using StringContent patch = new("{\"title\":\"after\"}", Encoding.UTF8, "application/json");
+
+        HttpResponseMessage patched = await client.PatchAsync($"/api/sessions/{sessionId:D}", patch);
+
+        Assert.Equal(HttpStatusCode.OK, patched.StatusCode);
+
+        ApiResponse<SessionDetailDto>? reloaded = await client
+            .GetFromJsonAsync($"/api/sessions/{sessionId:D}", ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Assert.Equal("after", reloaded!.Data!.Title);
+
+        Assert.Equal("archived", reloaded.Data.Status);
+    }
+
+    /// <summary>
+    /// Delegates every call to the real repository, and the first time the session is read after
+    /// <see cref="Arm"/> it archives that session once the read has completed.
+    /// </summary>
+    public class ArchiveAfterReadRepositoryProxy : DispatchProxy
+    {
+        private static int _armed;
+
+        public ISessionRepository Inner { get; set; } = null!;
+
+        public static void Arm() => Interlocked.Exchange(ref _armed, 1);
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            ArgumentNullException.ThrowIfNull(targetMethod);
+
+            object? result;
+
+            try
+            {
+                result = targetMethod.Invoke(Inner, args);
+            }
+            catch (TargetInvocationException exception) when (exception.InnerException is not null)
+            {
+                throw exception.InnerException;
+            }
+
+            return targetMethod.Name == nameof(ISessionRepository.GetByIdAsync)
+                && result is Task<Session?> read
+                && args is [Guid id, ..]
+                    ? ArchiveOnceAfterAsync(read, id)
+                    : result;
+        }
+
+        private async Task<Session?> ArchiveOnceAfterAsync(Task<Session?> read, Guid id)
+        {
+            Session? session = await read;
+
+            if (Interlocked.Exchange(ref _armed, 0) == 1)
+            {
+                await Inner.ArchiveAsync(id, CancellationToken.None);
+            }
+
+            return session;
+        }
+    }
+
     private async Task<Guid> CreateSessionWithEntriesAsync(int count)
     {
         using IServiceScope scope = _factory.Services.CreateScope();
@@ -1413,6 +1627,9 @@ public sealed class SessionEndpointTests
             throw new NotSupportedException();
 
         public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
             throw new NotSupportedException();
 
         public Task ArchiveAsync(Guid id, CancellationToken ct) =>

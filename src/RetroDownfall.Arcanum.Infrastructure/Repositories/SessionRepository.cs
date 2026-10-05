@@ -818,6 +818,39 @@ internal sealed class SessionRepository(
         session.UpdatedAt = now;
     }
 
+    public async Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(patch);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // Each column is either replaced by what the caller supplied or kept as stored, inside the one
+        // statement. A title is "supplied" by an explicit flag rather than by being non-null because a
+        // supplied null clears it.
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            """
+            UPDATE "Sessions"
+            SET "Title" = CASE WHEN $setTitle = 1 THEN $title ELSE "Title" END,
+                "Status" = COALESCE($status, "Status"),
+                "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id;
+            """,
+            ct).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$setTitle", patch.SetTitle ? 1 : 0);
+        GrimoireEntitySql.AddParameter(command, "$title", patch.Title);
+        GrimoireEntitySql.AddParameter(command, "$status", patch.Status);
+        GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(now));
+        GrimoireEntitySql.AddParameter(command, "$id", Format(id));
+
+        int updated = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        return updated == 0
+            ? null
+            : await ReadSessionAsync(id, ct).ConfigureAwait(false);
+    }
+
     public async Task ArchiveAsync(Guid id, CancellationToken ct)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;

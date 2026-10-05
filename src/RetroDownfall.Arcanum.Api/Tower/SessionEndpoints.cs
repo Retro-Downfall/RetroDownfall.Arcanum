@@ -45,7 +45,7 @@ internal static class SessionEndpoints
     {
         apiGroup.MapPost(
             "/sessions",
-            async (CreateSessionRequest? request, ISessionRepository repo, HttpContext ctx) =>
+            async (CreateSessionRequest? request, ISessionRepository repo, ICampaignRepository campaignRepo, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -56,6 +56,20 @@ internal static class SessionEndpoints
                             Result<SessionDetailDto>.Failure(
                                 new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
+                }
+
+                // The Sessions table carries no foreign key to Campaigns, and a Session's Campaign binding is
+                // immutable once created, so an unverified id would bind the Session to nothing for good.
+                if (request.CampaignId is Guid campaignId
+                    && await campaignRepo.GetByIdAsync(campaignId, ctx.RequestAborted).ConfigureAwait(false) is null)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionDetailDto>.FromResult(
+                            Result<SessionDetailDto>.Failure(
+                                new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
+                        statusCode: StatusCodes.Status404NotFound);
                 }
 
                 Session session = await repo
@@ -173,6 +187,21 @@ internal static class SessionEndpoints
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseEntryDtoArray,
                         statusCode: StatusCodes.Status404NotFound);
+                }
+
+                // The keyset cursor is a (createdAt, id) pair. Either half alone cannot position a page, and
+                // dropping it quietly returned the newest entries as though the cursor had been honoured.
+                if ((beforeCreatedAt is null) != (beforeId is null))
+                {
+                    return Results.Json(
+                        ApiResponse<EntryDto[]>.FromResult(
+                            Result<EntryDto[]>.Failure(
+                                new Error(
+                                    ErrorCodes.Validation.InvalidQuery,
+                                    "beforeCreatedAt and beforeId must be supplied together or not at all.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseEntryDtoArray,
+                        statusCode: StatusCodes.Status400BadRequest);
                 }
 
                 if (countOnly is true)
@@ -1200,7 +1229,13 @@ internal static class SessionEndpoints
             async (Guid id, Guid pinId, ISessionContextPinStore store, HttpContext ctx) =>
                 await store.DeleteAsync(id, pinId, ctx.RequestAborted).ConfigureAwait(false)
                     ? Results.NoContent()
-                    : Results.NotFound())
+                    : Results.Json(
+                        ApiResponse<bool>.FromResult(
+                            Result<bool>.Failure(
+                                new Error(ErrorCodes.Session.PinNotFound, "No context pin with that identifier exists in this session.")),
+                            Activity.Current?.Id ?? ctx.TraceIdentifier),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: StatusCodes.Status404NotFound))
         .WithName("DeleteSessionContextPin");
 
         apiGroup.MapPost(
@@ -1271,7 +1306,49 @@ internal static class SessionEndpoints
                             traceId));
                 }
 
-                Session? session = await GetSessionForUpdateAsync(repo, id, ctx.RequestAborted).ConfigureAwait(false);
+                if (await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false) is null)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionDetailDto>.FromResult(
+                            Result<SessionDetailDto>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                string? status = null;
+
+                if (request.Status is not null)
+                {
+                    string requested = request.Status.Trim();
+
+                    if (!string.Equals(requested, "active", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(requested, "archived", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Results.BadRequest(
+                            ApiResponse<SessionDetailDto>.FromResult(
+                                Result<SessionDetailDto>.Failure(
+                                    new Error(ErrorCodes.Session.InvalidStatus, "Status must be 'active' or 'archived'.")),
+                                traceId));
+                    }
+
+                    status = string.Equals(requested, "archived", StringComparison.OrdinalIgnoreCase)
+                        ? "archived"
+                        : "active";
+                }
+
+                // Only the fields the caller supplied are written, in one statement. Writing back the whole
+                // Session this route read a moment earlier would overwrite a concurrent change to a field it
+                // never named.
+                Session? session = await repo
+                    .PatchSessionAsync(
+                        id,
+                        new SessionHeaderPatch(
+                            SetTitle: request.Title is not null,
+                            Title: string.IsNullOrWhiteSpace(request.Title) ? null : request.Title.Trim(),
+                            Status: status),
+                        ctx.RequestAborted)
+                    .ConfigureAwait(false);
 
                 if (session is null)
                 {
@@ -1282,32 +1359,6 @@ internal static class SessionEndpoints
                         ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
                 }
-
-                if (request.Title is not null)
-                {
-                    session.Title = string.IsNullOrWhiteSpace(request.Title) ? null : request.Title.Trim();
-                }
-
-                if (request.Status is not null)
-                {
-                    string status = request.Status.Trim();
-
-                    if (!string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return Results.BadRequest(
-                            ApiResponse<SessionDetailDto>.FromResult(
-                                Result<SessionDetailDto>.Failure(
-                                    new Error(ErrorCodes.Session.InvalidStatus, "Status must be 'active' or 'archived'.")),
-                                traceId));
-                    }
-
-                    session.Status = string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase)
-                        ? "archived"
-                        : "active";
-                }
-
-                await repo.UpdateSessionAsync(session, ctx.RequestAborted).ConfigureAwait(false);
 
                 int entryCount = await repo.GetEntryCountAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
@@ -2442,12 +2493,5 @@ internal static class SessionEndpoints
         {
             buffer.Complete();
         }
-    }
-
-    private static async Task<Session?> GetSessionForUpdateAsync(ISessionRepository repo, Guid id, CancellationToken ct)
-    {
-        Session? session = await repo.GetByIdAsync(id, ct).ConfigureAwait(false);
-
-        return session?.CloneHeader();
     }
 }
