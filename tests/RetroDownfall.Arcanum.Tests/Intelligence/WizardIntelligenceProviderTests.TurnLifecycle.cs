@@ -747,6 +747,18 @@ public sealed partial class WizardIntelligenceProviderTests
         }
     }
 
+    /// <summary>
+    /// Streams one token, cancels the caller, then blocks on its own token the way a provider's
+    /// HTTP read does, so it throws only once the caller's cancellation has actually reached the
+    /// provider call.
+    /// </summary>
+    /// <remarks>
+    /// Checking the token straight after <c>CancelAsync</c> raced: the turn's tokens are linked
+    /// through the coordinator and the engine, and under load the provider's token occasionally
+    /// still read uncancelled at that instant, so the stream ended normally and the turn finalized
+    /// as Completed. Waiting on the token removes the instant; the bound turns a turn that never
+    /// propagated the cancellation into a failure instead of a hang.
+    /// </remarks>
     private static async IAsyncEnumerable<ChatResponseUpdate> TokenThenCallerCancels(
         string token,
         CancellationTokenSource caller,
@@ -756,6 +768,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await caller.CancelAsync();
 
-        cancellationToken.ThrowIfCancellationRequested();
+        await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+
+        throw new InvalidOperationException("The provider call never observed the caller's cancellation.");
     }
 }
