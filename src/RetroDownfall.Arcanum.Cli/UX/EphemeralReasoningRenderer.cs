@@ -118,7 +118,12 @@ internal static class EphemeralReasoningRenderer
     {
         ArgumentNullException.ThrowIfNull(palette);
 
-        return new Panel(new Markup(palette.MutedMarkup(Markup.Escape(text ?? string.Empty))))
+        // Reasoning is model output and the panel goes to a terminal, which acts on control characters
+        // instead of showing them. The panel is presentation — it renders on stderr, and the raw answer
+        // stream on stdout is never routed through here — so it is stripped wherever it is drawn.
+        string safeText = TerminalTextSanitizer.SanitizeBlock(text);
+
+        return new Panel(new Markup(palette.MutedMarkup(Markup.Escape(safeText))))
         {
             Header = new PanelHeader(palette.MutedMarkup(Markup.Escape(Header))),
             Border = BoxBorder.Rounded,

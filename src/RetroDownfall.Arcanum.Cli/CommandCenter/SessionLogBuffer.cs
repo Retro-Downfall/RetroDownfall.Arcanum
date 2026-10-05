@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
@@ -119,7 +120,7 @@ internal sealed class SessionLogBuffer
 
     public SessionLogEntry Append(SessionLogEntryKind kind, string text, bool streaming = false)
     {
-        string clamped = ClampForKind(kind, text ?? string.Empty);
+        string clamped = SanitizeAndClamp(kind, text ?? string.Empty);
         SessionLogEntry entry = new(kind, clamped, streaming);
 
         lock (_gate)
@@ -138,7 +139,7 @@ internal sealed class SessionLogBuffer
         bool streaming = false)
     {
         ArgumentNullException.ThrowIfNull(before);
-        SessionLogEntry entry = new(kind, ClampForKind(kind, text ?? string.Empty), streaming);
+        SessionLogEntry entry = new(kind, SanitizeAndClamp(kind, text ?? string.Empty), streaming);
 
         lock (_gate)
         {
@@ -161,7 +162,7 @@ internal sealed class SessionLogBuffer
 
         lock (_gate)
         {
-            entry.Text = ClampForKind(entry.Kind, text ?? string.Empty);
+            entry.Text = SanitizeAndClamp(entry.Kind, text ?? string.Empty);
         }
     }
 
@@ -173,7 +174,7 @@ internal sealed class SessionLogBuffer
         {
             if (finalText is not null)
             {
-                entry.Text = ClampForKind(entry.Kind, finalText);
+                entry.Text = SanitizeAndClamp(entry.Kind, finalText);
             }
 
             entry.Streaming = false;
@@ -245,7 +246,7 @@ internal sealed class SessionLogBuffer
                 }
 
                 _entries.Add(new SessionLogEntry(
-                    kind, ClampForKind(kind, text ?? string.Empty), sourceEntryId: sourceEntryId));
+                    kind, SanitizeAndClamp(kind, text ?? string.Empty), sourceEntryId: sourceEntryId));
                 addedHistory = true;
             }
 
@@ -520,8 +521,17 @@ internal sealed class SessionLogBuffer
         return prefix + entry.Text;
     }
 
-    private string ClampForKind(SessionLogEntryKind kind, string text)
+    /// <summary>
+    /// The one place text enters an entry. Control characters and escape sequences are stripped here —
+    /// not when a line is formatted — because model and tool text is attacker-influenced and the
+    /// transcript hands its lines to the terminal, and because stripping at the boundary leaves the
+    /// wrap cache's reference check on <see cref="SessionLogEntry.Text"/> effective: clean text keeps
+    /// its string instance. The cap is applied after the strip so a tab expansion cannot overshoot it.
+    /// </summary>
+    private string SanitizeAndClamp(SessionLogEntryKind kind, string text)
     {
+        text = TerminalTextSanitizer.SanitizeBlock(text);
+
         int max = kind switch
         {
             SessionLogEntryKind.Command => MaxCommandChars,

@@ -156,6 +156,92 @@ public sealed class CommandCenterTranscriptRenderingTests
         Assert.Equal("Mage: fresh", after[0]);
     }
 
+    /// <summary>
+    /// Model output is attacker-influenced (a fetched page can carry an OSC 52 clipboard write or a
+    /// title change), and the transcript hands its lines to the terminal. Streamed text must be
+    /// control-stripped where it enters the buffer.
+    /// </summary>
+    [Fact]
+    public void Escape_sequences_in_streamed_assistant_text_never_reach_the_transcript_lines()
+    {
+        SessionLogBuffer log = new();
+        _ = log.Append(SessionLogEntryKind.Assistant, "hi\u001b]52;c;AAAA\u0007\u001b[31mred");
+
+        ObservableCollection<string> lines = [];
+        log.CopyLinesTo(lines);
+
+        Assert.NotEmpty(lines);
+        Assert.All(
+            lines,
+            line =>
+            {
+                Assert.DoesNotContain('\u001b', line);
+                Assert.DoesNotContain('\u0007', line);
+            });
+        Assert.Contains("hi", string.Concat(lines), StringComparison.Ordinal);
+        Assert.Contains("red", string.Concat(lines), StringComparison.Ordinal);
+    }
+
+    public static TheoryData<string> EveryTextIngressPath() =>
+        ["append", "insert-before", "update-streaming", "complete-streaming", "history"];
+
+    [Theory]
+    [MemberData(nameof(EveryTextIngressPath))]
+    public void Every_path_that_stores_text_strips_control_characters(string path)
+    {
+        const string hostile = "a\u001b]0;pwned\u0007b\rc\u007fd\u009be\u0085f";
+        SessionLogBuffer log = new();
+        SessionLogEntry anchor = log.Append(SessionLogEntryKind.Assistant, "anchor", streaming: true);
+
+        switch (path)
+        {
+            case "append":
+                _ = log.Append(SessionLogEntryKind.Status, hostile);
+                break;
+            case "insert-before":
+                _ = log.InsertBefore(anchor, SessionLogEntryKind.Reasoning, hostile);
+                break;
+            case "update-streaming":
+                log.UpdateStreaming(anchor, hostile);
+                break;
+            case "complete-streaming":
+                log.CompleteStreaming(anchor, hostile);
+                break;
+            case "history":
+                log.ReplaceWithApiHistory([(SessionLogEntryKind.Assistant, hostile, null)], showOlderMessagesMarker: false);
+                break;
+            default:
+                throw new InvalidOperationException(path);
+        }
+
+        string stored = string.Concat(log.Snapshot().Select(static entry => entry.Text));
+        Assert.DoesNotContain(stored, static c => c < ' ' && c != '\n' || c is '\u007f' or (>= '\u0080' and <= '\u009f'));
+        Assert.Equal("abcdef", log.Snapshot().Select(static entry => entry.Text).First(static text => text.Contains("abcdef", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void Newlines_survive_and_tabs_expand_to_the_next_tab_stop()
+    {
+        SessionLogBuffer log = new();
+        SessionLogEntry entry = log.Append(SessionLogEntryKind.Assistant, "a\tb\nc\r\nd");
+
+        Assert.Equal("a" + new string(' ', ComposerLayout.TabStop - 1) + "b\nc\nd", entry.Text);
+    }
+
+    [Fact]
+    public void Text_without_control_characters_keeps_its_instance_so_the_wrap_cache_stays_effective()
+    {
+        SessionLogBuffer log = new();
+        string clean = "plain streamed answer\nwith two lines and glyphs 你好 🜁";
+
+        SessionLogEntry entry = log.Append(SessionLogEntryKind.Assistant, clean, streaming: true);
+        Assert.Same(clean, entry.Text);
+
+        string update = "plain streamed answer\nwith two lines and more";
+        log.UpdateStreaming(entry, update);
+        Assert.Same(update, entry.Text);
+    }
+
     [Fact]
     public void WrapLine_measures_display_cells_for_cjk()
     {

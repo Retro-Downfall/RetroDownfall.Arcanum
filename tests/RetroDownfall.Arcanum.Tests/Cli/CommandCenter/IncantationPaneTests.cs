@@ -375,6 +375,26 @@ public sealed class IncantationFormatterTests
         Assert.Equal(17, ComposerLayout.MeasureCellWidth(sanitized));
     }
 
+    /// <summary>
+    /// Only U+009B used to be stripped although the comment promised every C1 control, and a trailing
+    /// regex deleted any <c>[digits;m</c> text, which is legitimate content (a bracketed SGR example in
+    /// a tool result), not an escape sequence.
+    /// </summary>
+    [Fact]
+    public void Sanitize_strips_8bit_C1_controls_and_keeps_bracketed_digits()
+    {
+        string sanitized = IncantationFormatter.Sanitize("a\u009d0;t\u0007b [1m] c");
+
+        Assert.Equal("a0;tb [1m] c", sanitized);
+    }
+
+    [Fact]
+    public void Sanitize_drops_a_complete_escape_sequence_but_not_the_text_around_it()
+    {
+        Assert.Equal("red text", IncantationFormatter.Sanitize("\u001b[31mred\u001b[0m text"));
+        Assert.Equal("a[0m]b", IncantationFormatter.Sanitize("a[0m]b"));
+    }
+
     [Fact]
     public void Sanitize_of_a_tab_indented_payload_is_not_quadratic()
     {

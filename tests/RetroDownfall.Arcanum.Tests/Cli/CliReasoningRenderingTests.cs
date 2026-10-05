@@ -42,6 +42,27 @@ public sealed class CliReasoningRenderingTests
         Assert.Contains("client-safe summary", console.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Reasoning text is model output, and the panel is written to a terminal: an escape sequence in it
+    /// would be executed rather than shown. The panel is presentation (it renders on stderr; the answer
+    /// stream on stdout stays byte-exact), so it is stripped wherever it is drawn.
+    /// </summary>
+    [Fact]
+    public void Reasoning_panel_strips_control_characters()
+    {
+        TestConsole console = new TestConsole().Width(100);
+
+        console.Write(EphemeralReasoningRenderer.Build(
+            "see\u001b]52;c;AAAA\u0007 and\u001b[31m red\u009b\u007f\rdone",
+            CreateTheme()));
+
+        Assert.DoesNotContain('\u001b', console.Output);
+        Assert.DoesNotContain('\u0007', console.Output);
+        Assert.DoesNotContain('\u009b', console.Output);
+        Assert.DoesNotContain('\u007f', console.Output);
+        Assert.Contains("see and reddone", console.Output, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Reasoning_renderer_escapes_spectre_markup()
     {
