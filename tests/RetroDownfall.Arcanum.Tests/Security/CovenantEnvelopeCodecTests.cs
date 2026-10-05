@@ -697,26 +697,25 @@ public sealed class CovenantEnvelopeCodecTests
 
         checkpoint.WaitUntilReached();
 
-        TaskCompletionSource publicationStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        CovenantEnvelopeKeyGeneration predecessor = harness.Keys.Current!;
+
+        Thread? publisher = null;
 
         Task publication = RunLongRunning(
             () =>
             {
-                publicationStarted.SetResult();
+                publisher = Thread.CurrentThread;
 
                 harness.PublishOwned(owned, transition);
             });
 
         try
         {
-            await publicationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // The publisher is parked on the holder lock the encoder still holds, which is the state this
+            // test claims, not a wall-clock guess that it has not finished yet.
+            AssertBlockedOnALock(publication, () => publisher);
 
-            Task completed = await Task.WhenAny(
-                publication,
-                Task.Delay(TimeSpan.FromMilliseconds(100)));
-
-            Assert.NotSame(publication, completed);
+            Assert.Same(predecessor, harness.Keys.Current);
         }
         finally
         {
@@ -761,26 +760,22 @@ public sealed class CovenantEnvelopeCodecTests
 
         checkpoint.WaitUntilReached();
 
-        TaskCompletionSource retirementStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        Thread? retiree = null;
 
         Task retirement = RunLongRunning(
             () =>
             {
-                retirementStarted.SetResult();
+                retiree = Thread.CurrentThread;
 
                 harness.Retire();
             });
 
         try
         {
-            await retirementStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            AssertBlockedOnALock(retirement, () => retiree);
 
-            Task completed = await Task.WhenAny(
-                retirement,
-                Task.Delay(TimeSpan.FromMilliseconds(100)));
-
-            Assert.NotSame(retirement, completed);
+            // Retirement has not taken effect: the keys the decoder is mid-way through using are intact.
+            Assert.NotNull(harness.Keys.Current);
         }
         finally
         {
@@ -1007,6 +1002,28 @@ public sealed class CovenantEnvelopeCodecTests
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
+
+    /// <summary>
+    /// Proves <paramref name="task"/> is parked waiting on a lock rather than merely not finished yet:
+    /// waits until its dedicated thread reports a wait state, failing if the task completes first.
+    /// </summary>
+    /// <remarks>
+    /// A negative proof built on <c>Task.Delay</c> can only ever be false-green: on a slow machine the
+    /// operation under test has not started when the delay ends, so "it has not completed" is true for
+    /// the wrong reason. The wait state is the positive evidence that the operation reached the lock and
+    /// is held there. A thread reports it only while blocked, so a pass cannot be an accident of timing.
+    /// </remarks>
+    private static void AssertBlockedOnALock(Task task, Func<Thread?> thread)
+    {
+        bool blocked = SpinWait.SpinUntil(
+            () => task.IsCompleted
+                || (thread() is { } candidate && (candidate.ThreadState & ThreadState.WaitSleepJoin) != 0),
+            TimeSpan.FromSeconds(30));
+
+        Assert.True(blocked, "The operation neither blocked on the lock nor completed.");
+
+        Assert.False(task.IsCompleted, "The operation completed while the lock was still held.");
+    }
 
     /// <summary>
     /// Frames one cursor token the way the codec would, with header and body times stated separately.
