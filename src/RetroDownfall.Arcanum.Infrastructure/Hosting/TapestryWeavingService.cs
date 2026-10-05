@@ -219,6 +219,10 @@ internal sealed class TapestryWeavingService(
                 orphaned);
         }
 
+        // The failed-build record is process memory, so it has the same blind spot the stored trees had: a
+        // scope that vanished is never swept again, and nothing but a later success clears its record.
+        weaver.ForgetScopesNotIn(scopes);
+
         return new(TapestrySweepStatus.Completed, outcomes);
     }
 }

@@ -39,6 +39,8 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 using RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -999,8 +1001,8 @@ internal static class MemoryEndpoints
                   SELECT COUNT(*) FROM tapestry_nodes n
                   INNER JOIN tapestry_generations g ON g.GenerationId = n.GenerationId
                   WHERE g.Status = 'Complete'
-                    AND ((g.ScopeKind = 'Session' AND g.ScopeId = @canonicalSessionId)
-                      OR (g.ScopeKind = 'SessionAttachment' AND g.ScopeId = @sessionId))
+                    AND ((g.ScopeKind = 'Session' AND g.ScopeId = @tapestrySessionScopeId)
+                      OR (g.ScopeKind = 'SessionAttachment' AND g.ScopeId = @tapestryAttachmentScopeId))
                   """,
             sessionId,
             cancellationToken).ConfigureAwait(false);
@@ -1647,7 +1649,10 @@ internal static class MemoryEndpoints
     /// <para><c>tapestry_generations.ScopeId</c> belongs to neither group, because it is filled from the
     /// corpus each scope kind was woven from: a <c>Session</c> tree reads <c>Entries.SessionId</c>, so its
     /// scope id is canonical, and a <c>SessionAttachment</c> tree reads the chunk column, so its scope id
-    /// is lowercase. Its predicate therefore binds each kind to its own parameter.</para>
+    /// is lowercase. Its predicate therefore binds each kind to its own parameter,
+    /// <c>@tapestrySessionScopeId</c> and <c>@tapestryAttachmentScopeId</c>, and takes the value from
+    /// <see cref="TapestryScope.ForSession"/> and <see cref="TapestryScope.ForSessionAttachment"/>, the one
+    /// place each spelling is written, rather than spelling it a third time here.</para>
     ///
     /// <para>Every predicate that reads a canonical column now binds <c>@canonicalSessionId</c>: the
     /// entry, pinned-entry and campaign-summary counts, and both session-scoped search predicates, join
@@ -1669,6 +1674,13 @@ internal static class MemoryEndpoints
                 command,
                 "@canonicalSessionId",
                 sessionId.Value.ToString("D").ToUpperInvariant());
+
+            AddParameter(command, "@tapestrySessionScopeId", TapestryScope.ForSession(sessionId.Value).Id);
+
+            AddParameter(
+                command,
+                "@tapestryAttachmentScopeId",
+                TapestryScope.ForSessionAttachment(sessionId.Value).Id);
         }
     }
 

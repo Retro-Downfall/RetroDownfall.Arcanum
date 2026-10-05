@@ -18,8 +18,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 ///
 /// <para>A different identity starts over: an edited corpus, a changed setting, or another summary model
 /// is a different build, and the failure of the old one says nothing about it. A published or up-to-date
-/// scope forgets its record. Only a build that paid for something counts — an unavailable embedding
-/// provider or an unconfigured summary model fails before any call is made, so neither is recorded here.</para>
+/// scope forgets its record, a completed sweep forgets the records of scopes that no longer exist, and a
+/// reset that drops the trees forgets them all. Only a build that paid for something counts — an
+/// unavailable embedding provider or an unconfigured summary model fails before any call is made, and a
+/// failure that arrives while the sweep is being cancelled is the host stopping, so none of those is
+/// recorded here.</para>
 ///
 /// <para>State is in memory and registered as a singleton, because the weaver is created per sweep. It
 /// is lost on restart, which at worst costs one repeated build.</para>
@@ -75,6 +78,39 @@ internal sealed class TapestryBuildBackoff
         lock (_gate)
         {
             _ = _records.Remove(scope);
+        }
+    }
+
+    /// <summary>
+    /// Forgets every record. A reset that drops the trees is how an operator asks for them to be rebuilt,
+    /// and the corpus, settings and model are unchanged, so without this the rebuild would still be told
+    /// to back off for up to a day.
+    /// </summary>
+    internal void Clear()
+    {
+        lock (_gate)
+        {
+            _records.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Forgets the record of every scope that is not in <paramref name="live"/>. A scope that has gone — a
+    /// deleted Session, a workspace no longer indexed — is never swept again, so nothing else would ever
+    /// clear its record.
+    /// </summary>
+    internal void RetainOnly(IReadOnlyCollection<TapestryScope> live)
+    {
+        ArgumentNullException.ThrowIfNull(live);
+
+        HashSet<TapestryScope> keep = [.. live];
+
+        lock (_gate)
+        {
+            foreach (TapestryScope scope in _records.Keys.Where(scope => !keep.Contains(scope)).ToList())
+            {
+                _ = _records.Remove(scope);
+            }
         }
     }
 

@@ -96,7 +96,8 @@ internal sealed class SagaExtractionAttemptContext
 /// <c>WizardIntelligenceProvider</c> after a successful turn (see <see cref="EnqueueExtraction"/>); the
 /// service otherwise idles, blocked on the channel reader — no polling. Follows the same headless
 /// extraction pattern as <c>Loremaster</c> (Campaign Logger): <c>SkipSpellRouting</c>,
-/// <c>DisableMcpTools</c>, and <c>UnattendedMode</c> are all <c>true</c> for the extraction LLM call.
+/// <c>DisableMcpTools</c>, <c>DisableAllTools</c> and <c>UnattendedMode</c> are all <c>true</c> for the
+/// extraction LLM call, so the model reading the transcript has no tool to be talked into calling.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: BackgroundService Saga memory extraction
 public sealed class SagaExtractionService : BackgroundService
@@ -1200,6 +1201,10 @@ public sealed class SagaExtractionService : BackgroundService
                 new CoreChatMessage("user", prompt),
             ];
 
+            // The Entries being reviewed can carry hostile text (a fetched page, a tool result), and this
+            // call runs unattended, so the model has nothing it could be talked into calling: with web
+            // browsing on, a hub-native read_url would carry the transcript out of the installation.
+            // DisableMcpTools stops only the MCP block of the tool set; DisableAllTools advertises none.
             PingRequest ping = new(
                 Prompt: string.Empty,
                 Model: model,
@@ -1207,7 +1212,8 @@ public sealed class SagaExtractionService : BackgroundService
                 UnattendedMode: true,
                 DisableMcpTools: true,
                 StatelessMessages: statelessMessages,
-                SkipSpellRouting: true);
+                SkipSpellRouting: true,
+                DisableAllTools: true);
 
             Result<PromptTurnResult> result;
 

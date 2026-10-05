@@ -47,6 +47,21 @@ internal sealed class TapestryWeaver(
     /// </summary>
     private const char StableKeyFieldSeparator = (char)0x1F;
 
+    /// <summary>
+    /// The similarity the undersized-cluster merge ranks siblings by: the cosine of two unit vectors, and
+    /// by default the scalar, double-accumulated one the clustering contract is stated in
+    /// (<see cref="SphericalKMeans.DirectionCosine"/>). It is a seam only so a test can prove the merge
+    /// asks <i>this</i> function, over unit vectors, rather than a lane-width cosine whose low bits depend
+    /// on the machine (DESIGN §21.11). Production never replaces it.
+    /// </summary>
+    internal Func<float[], float[], double> MergeSimilarity { get; init; } = SphericalKMeans.DirectionCosine;
+
+    /// <summary>
+    /// Drops the failed-build record of every scope a completed sweep did not find. The sweep calls it with
+    /// the scopes it discovered, once the pass is over, because only the sweep knows which scopes exist.
+    /// </summary>
+    public void ForgetScopesNotIn(IReadOnlyCollection<TapestryScope> live) => backoff.RetainOnly(live);
+
     public async Task<TapestryWeaveOutcome> WeaveAsync(
         TapestryScope scope,
         EmbeddingSettings embeddings,
@@ -199,6 +214,29 @@ internal sealed class TapestryWeaver(
 
         try
         {
+            // The leaves were read before this generation existed, so the corpus can have moved in between
+            // — and an erase that landed there deleted no Building generation, because there was none yet.
+            // Anything it removed would be summarized and published here. The identity pass is cheap (ids
+            // and stored hashes), and from this point an erase does reach the staging row: it deletes every
+            // generation of the Session whatever its status, and the publish below refuses to promote a row
+            // that is gone.
+            TapestryCorpusIdentity started = await store
+                .GetCorpusIdentityAsync(scope, TapestryLimits.MaxLeavesPerScope, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (started.ExceedsCeiling
+                || !string.Equals(started.Fingerprint, corpusFingerprint, StringComparison.Ordinal))
+            {
+                logger.LogInformation(
+                    "Tapestry weave abandoned for {ScopeKind} {ScopeId}: the corpus changed while the build was starting, so the next sweep reads it again.",
+                    scope.Kind,
+                    scope.Id);
+
+                await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
+
+                return new TapestryWeaveOutcome(TapestryWeaveStatus.CorpusChanged);
+            }
+
             TapestryWeaveOutcome outcome = await BuildAsync(
                 scope,
                 generationId,
@@ -207,8 +245,8 @@ internal sealed class TapestryWeaver(
                 cancellationToken).ConfigureAwait(false);
 
             // Recorded before the cancellation check: a build that published must be forgotten, and one
-            // that failed must be remembered, whether or not the host is stopping as it returns.
-            RecordOutcome(scope, buildIdentity, outcome.Status, sweepInterval);
+            // that failed must be remembered, unless the host is stopping as it returns.
+            RecordOutcome(scope, buildIdentity, outcome.Status, sweepInterval, cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -237,7 +275,7 @@ internal sealed class TapestryWeaver(
 
             await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
-            RecordOutcome(scope, buildIdentity, TapestryWeaveStatus.Failed, sweepInterval);
+            RecordOutcome(scope, buildIdentity, TapestryWeaveStatus.Failed, sweepInterval, cancellationToken);
 
             return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed);
         }
@@ -261,7 +299,8 @@ internal sealed class TapestryWeaver(
         TapestryScope scope,
         string buildIdentity,
         TapestryWeaveStatus status,
-        TimeSpan sweepInterval)
+        TimeSpan sweepInterval,
+        CancellationToken cancellationToken)
     {
         switch (status)
         {
@@ -270,7 +309,11 @@ internal sealed class TapestryWeaver(
 
                 break;
 
-            case TapestryWeaveStatus.Failed:
+            // A failure that arrives while the sweep is being cancelled is the host stopping, not a build
+            // that failed on its corpus: a provider whose call the token cut short can answer with a
+            // failure instead of throwing, and remembering that would hold the next sweep off a build
+            // that never had a fair attempt.
+            case TapestryWeaveStatus.Failed when !cancellationToken.IsCancellationRequested:
                 DateTimeOffset retryAfter = backoff.RecordFailure(scope, buildIdentity, clock.GetUtcNow(), sweepInterval);
 
                 logger.LogInformation(
@@ -823,6 +866,24 @@ internal sealed class TapestryWeaver(
             return;
         }
 
+        // Unit vectors for the merge's comparisons, made only for the nodes it actually compares and
+        // dropped with this call. A node that is never compared (every layer with no singleton, and every
+        // member no singleton reaches) never pays for a second copy of its vector, so the rebuild's
+        // working set stays one vector per node rather than two.
+        Dictionary<string, float[]> directions = new(StringComparer.Ordinal);
+
+        float[] DirectionOf(WorkingNode node)
+        {
+            if (!directions.TryGetValue(node.StableKey, out float[]? direction))
+            {
+                direction = SphericalKMeans.NormalizedDirection(node.Embedding);
+
+                directions[node.StableKey] = direction;
+            }
+
+            return direction;
+        }
+
         for (int index = candidates.Count - 1; index >= 0; index--)
         {
             if (candidates[index].Members.Count > 1)
@@ -831,6 +892,8 @@ internal sealed class TapestryWeaver(
             }
 
             WorkingNode orphan = candidates[index].Members[0];
+
+            float[] orphanDirection = DirectionOf(orphan);
 
             int best = -1;
 
@@ -854,7 +917,7 @@ internal sealed class TapestryWeaver(
                 // near-tie between siblings could resolve differently on another machine and the same
                 // persisted vectors would stop producing the same memberships.
                 double similarity = candidates[other].Members.Max(
-                    member => SphericalKMeans.DirectionCosine(orphan.Direction, member.Direction));
+                    member => MergeSimilarity(orphanDirection, DirectionOf(member)));
 
                 // Stable-id tie-break keeps the merge target reproducible when two siblings are
                 // equally close.
@@ -1098,11 +1161,7 @@ internal sealed class TapestryWeaver(
         float[] Embedding,
         string Content,
         string ContentHash,
-        int DescendantLeafCount)
-    {
-        /// <summary>The unit vector of <see cref="Embedding"/>, computed once for the merge's comparisons.</summary>
-        public float[] Direction { get; } = SphericalKMeans.NormalizedDirection(Embedding);
-    }
+        int DescendantLeafCount);
 
     private sealed record PlanCandidate(List<WorkingNode> Members, TapestryPartitionReason Reason);
 

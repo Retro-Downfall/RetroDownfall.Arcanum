@@ -603,31 +603,31 @@ public sealed class SphericalKMeansTests
     }
 
     /// <summary>
-    /// The weaver's merge similarity is the scalar, double-accumulated dot product of unit vectors, bit
-    /// for bit, and not the lane-width cosine Divination ranks with.
+    /// The weaver's merge similarity is the scalar, double-accumulated dot product of unit vectors,
+    /// summed in index order, bit for bit.
     /// </summary>
     /// <remarks>
-    /// Seventy-one components is not a multiple of any vector width, so the lane routine also takes its
-    /// scalar remainder path, and the sample is large enough that its float lane sums differ from the
-    /// double accumulation in at least one pair. If none did, this case would say nothing, so it
-    /// requires one.
+    /// What makes the answer machine-independent is the order the products are added in, because that is
+    /// what a different vector width changes. So the case also proves the sample can tell orders apart:
+    /// the same products added through four and through eight interleaved partial sums, the shape of a
+    /// 128- and a 256-bit routine, must give a different double than the sequential sum for at least one
+    /// pair. Without that the equality below would hold for any order and pin nothing. Seventy-one
+    /// components is not a multiple of either width, so the remainder path is exercised as well.
     /// </remarks>
     [Fact]
-    public void DirectionCosine_is_the_scalar_double_accumulated_dot_of_the_unit_vectors()
+    public void DirectionCosine_is_the_sequential_double_accumulated_dot_of_the_unit_vectors()
     {
         Random random = new(20261005);
 
-        int laneRoutineDisagreed = 0;
+        int fourLaneDisagreed = 0;
+
+        int eightLaneDisagreed = 0;
 
         for (int pair = 0; pair < 200; pair++)
         {
-            float[] left = RandomVector(random, 71);
+            float[] leftUnit = SphericalKMeans.NormalizedDirection(RandomVector(random, 71));
 
-            float[] right = RandomVector(random, 71);
-
-            float[] leftUnit = SphericalKMeans.NormalizedDirection(left);
-
-            float[] rightUnit = SphericalKMeans.NormalizedDirection(right);
+            float[] rightUnit = SphericalKMeans.NormalizedDirection(RandomVector(random, 71));
 
             double expected = 0;
 
@@ -638,13 +638,40 @@ public sealed class SphericalKMeansTests
 
             Assert.Equal(expected, SphericalKMeans.DirectionCosine(leftUnit, rightUnit));
 
-            if ((double)RetroDownfall.Arcanum.Core.Primitives.EmbeddingBlobCodec.CosineSimilarity(left, right) != expected)
+            if (InterleavedDot(leftUnit, rightUnit, 4) != expected)
             {
-                laneRoutineDisagreed++;
+                fourLaneDisagreed++;
+            }
+
+            if (InterleavedDot(leftUnit, rightUnit, 8) != expected)
+            {
+                eightLaneDisagreed++;
             }
         }
 
-        Assert.True(laneRoutineDisagreed > 0, "the sample never separated the lane routine from the scalar one");
+        Assert.True(fourLaneDisagreed > 0, "the sample never separated a four-lane summation order from the sequential one");
+
+        Assert.True(eightLaneDisagreed > 0, "the sample never separated an eight-lane summation order from the sequential one");
+    }
+
+    /// <summary>The same products as a sequential dot, added through <paramref name="lanes"/> interleaved partial sums.</summary>
+    private static double InterleavedDot(float[] left, float[] right, int lanes)
+    {
+        double[] partial = new double[lanes];
+
+        for (int index = 0; index < left.Length; index++)
+        {
+            partial[index % lanes] += (double)left[index] * right[index];
+        }
+
+        double total = 0;
+
+        foreach (double lane in partial)
+        {
+            total += lane;
+        }
+
+        return total;
     }
 
     [Fact]

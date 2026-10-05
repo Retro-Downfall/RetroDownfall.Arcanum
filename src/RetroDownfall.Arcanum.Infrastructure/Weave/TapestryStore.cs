@@ -29,16 +29,23 @@ internal sealed class TapestryStore(
     /// <see cref="PruneRemovedScopesAsync"/> read from here, so "which scopes exist" has exactly one
     /// definition: a tree can never be pruned on a rule the sweep would not also have rebuilt it on.
     /// </summary>
-    private static string LiveScopeIdQuery(TapestryScopeKind kind) => kind switch
+    internal static string LiveScopeIdQuery(TapestryScopeKind kind) => kind switch
     {
         TapestryScopeKind.Workspace =>
             """SELECT DISTINCT "WorkspacePath" FROM "workspace_file_chunks" """,
         TapestryScopeKind.SessionAttachment =>
             """SELECT DISTINCT "SessionId" FROM "session_attachment_chunks" """,
+        // The Sessions come from an index that holds no text, and each is then probed for one non-blank
+        // Entry, which stops at the first it finds. The one-pass form this replaced — SELECT DISTINCT over
+        // Entries filtered by trim(Content) — fetched every Entry row in the installation to test its text,
+        // on every tick of every sweep, only to throw the text away.
         TapestryScopeKind.Session =>
             """
-            SELECT DISTINCT "SessionId" FROM "Entries"
-            WHERE "Content" IS NOT NULL AND trim("Content") <> ''
+            SELECT "SessionId" FROM (SELECT DISTINCT "SessionId" FROM "Entries") AS "Sessions"
+            WHERE EXISTS (
+                SELECT 1 FROM "Entries" AS "e"
+                WHERE "e"."SessionId" = "Sessions"."SessionId"
+                  AND "e"."Content" IS NOT NULL AND trim("e"."Content") <> '')
             """,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown Tapestry scope kind."),
     };

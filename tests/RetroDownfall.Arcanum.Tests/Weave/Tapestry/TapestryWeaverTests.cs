@@ -165,6 +165,46 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.Equal(1, await CountGenerationsWithStatusAsync("Complete"));
     }
 
+    /// <summary>
+    /// A scope that has gone — a deleted Session, a workspace no longer indexed — is never swept again, so
+    /// the record of its failed build could never be cleared by a later success. A completed sweep forgets
+    /// every record for a scope it did not find.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunSweepAsync_ForgetsTheFailedBuildRecordOfAScopeThatNoLongerExists()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedChunksAsync(
+            ("c00", "a.cs", "alpha body"),
+            ("c01", "b.cs", "bravo body"),
+            ("c02", "c.cs", "charlie body"));
+
+        TapestryScope deleted = new(TapestryScopeKind.Session, "DELETED-SESSION");
+
+        _ = _backoff.RecordFailure(deleted, "build-1", DateTimeOffset.UtcNow, TimeSpan.FromHours(1));
+
+        ServiceCollection services = new();
+
+        _ = services.AddSingleton<ITapestryStore>(_store!);
+
+        _ = services.AddSingleton(CreateWeaver());
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        TapestryWeavingService sweeper = new(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
+            NullLogger<TapestryWeavingService>.Instance);
+
+        TapestrySweepOutcome outcome = await sweeper.RunSweepAsync(Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestrySweepStatus.Completed, outcome.Status);
+
+        Assert.False(_backoff.IsBackingOff(deleted, "build-1", DateTimeOffset.UtcNow));
+    }
+
     private async Task<int> CountGenerationsWithStatusAsync(string status)
     {
         System.Data.Common.DbConnection connection =
@@ -1210,6 +1250,319 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A summary call that the sweep's own cancellation cuts short can come back as a failure rather than
+    /// an exception. That is the host stopping, not a build that failed on its corpus, so it must not be
+    /// remembered as one: the same corpus, settings and model are tried again as soon as a sweep can run.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_ACancelledBuildThatAnswersWithAFailureIsNotRememberedAsAFailedBuild()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        using CancellationTokenSource stopping = new();
+
+        _summarizer!.CancelThenFail = stopping;
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => CreateWeaver().WeaveAsync(Scope, Settings(), stopping.Token));
+
+        _summarizer.CancelThenFail = null;
+
+        TapestryWeaveOutcome next = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.True(next.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {next.Status}. Log:\n{_logger}");
+    }
+
+    /// <summary>
+    /// The leaves are read before the staging generation exists, so an erase that commits in between would
+    /// otherwise be published as part of the tree. The weaver re-reads the corpus identity once the
+    /// generation exists and gives up if it moved.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_ACorpusThatChangesWhileTheBuildIsStartingIsNotPublished()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedChunksAsync(
+            ("c00", "a.cs", "alpha body"),
+            ("c01", "b.cs", "bravo body"),
+            ("c02", "c.cs", "charlie body"),
+            ("c03", "d.cs", "erased body"));
+
+        BeginHookTapestryStore store = new(
+            _store!,
+            () => DeleteChunkAsync("c03"));
+
+        TapestryWeaver weaver = new(store, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
+
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.CorpusChanged, outcome.Status);
+
+        Assert.Equal(0, _summarizer!.CallCount);
+
+        Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM tapestry_generations"));
+
+        // The next sweep builds from what is left, and nothing about the abandoned start is remembered.
+        TapestryWeaveOutcome next = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.True(next.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {next.Status}. Log:\n{_logger}");
+
+        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        Assert.Equal(3, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
+    }
+
+    private async Task DeleteChunkAsync(string chunkId)
+    {
+        System.Data.Common.DbConnection connection =
+            Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(_db!.Database);
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "DELETE FROM workspace_file_chunks WHERE ChunkId = @chunkId";
+
+        AddParameter(command, "@chunkId", chunkId);
+
+        _ = await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Runs a step just before the generation is begun, then delegates everything to the real store.</summary>
+    private sealed class BeginHookTapestryStore(ITapestryStore inner, Func<Task> beforeBegin) : ITapestryStore
+    {
+        public Task<IReadOnlyList<TapestryScope>> DiscoverScopesAsync(
+            bool includeWorkspace,
+            bool includeSessionAttachments,
+            bool includeSessions,
+            CancellationToken cancellationToken) =>
+            inner.DiscoverScopesAsync(includeWorkspace, includeSessionAttachments, includeSessions, cancellationToken);
+
+        public Task<TapestryCorpusIdentity> GetCorpusIdentityAsync(
+            TapestryScope scope,
+            int maxLeaves,
+            CancellationToken cancellationToken) =>
+            inner.GetCorpusIdentityAsync(scope, maxLeaves, cancellationToken);
+
+        public IAsyncEnumerable<IReadOnlyList<TapestryLeafSource>> EnumerateLeafPagesAsync(
+            TapestryScope scope,
+            int expectedDimensions,
+            CancellationToken cancellationToken) =>
+            inner.EnumerateLeafPagesAsync(scope, expectedDimensions, cancellationToken);
+
+        public Task<TapestryGeneration?> GetCurrentGenerationAsync(
+            TapestryScope scope,
+            CancellationToken cancellationToken) =>
+            inner.GetCurrentGenerationAsync(scope, cancellationToken);
+
+        public async Task<string> BeginGenerationAsync(
+            TapestryScope scope,
+            string algorithmVersion,
+            string settingsFingerprint,
+            string? summaryModel,
+            string summaryRecipeVersion,
+            int embeddingDimension,
+            string corpusFingerprint,
+            DateTimeOffset startedAt,
+            CancellationToken cancellationToken)
+        {
+            await beforeBegin();
+
+            return await inner.BeginGenerationAsync(
+                scope,
+                algorithmVersion,
+                settingsFingerprint,
+                summaryModel,
+                summaryRecipeVersion,
+                embeddingDimension,
+                corpusFingerprint,
+                startedAt,
+                cancellationToken);
+        }
+
+        public Task AppendNodesAsync(IReadOnlyList<TapestryNodeWrite> nodes, CancellationToken cancellationToken) =>
+            inner.AppendNodesAsync(nodes, cancellationToken);
+
+        public Task SetParentAsync(
+            string generationId,
+            string parentNodeId,
+            IReadOnlyList<string> childNodeIds,
+            CancellationToken cancellationToken) =>
+            inner.SetParentAsync(generationId, parentNodeId, childNodeIds, cancellationToken);
+
+        public Task PublishGenerationAsync(
+            string generationId,
+            int layerCount,
+            int nodeCount,
+            int rootNodeCount,
+            TapestryTerminalReason terminalReason,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken) =>
+            inner.PublishGenerationAsync(
+                generationId,
+                layerCount,
+                nodeCount,
+                rootNodeCount,
+                terminalReason,
+                completedAt,
+                cancellationToken);
+
+        public Task AbandonGenerationAsync(string generationId, CancellationToken cancellationToken) =>
+            inner.AbandonGenerationAsync(generationId, cancellationToken);
+
+        public Task<int> ReconcileGenerationsAsync(CancellationToken cancellationToken) =>
+            inner.ReconcileGenerationsAsync(cancellationToken);
+
+        public Task<int> PruneRemovedScopesAsync(
+            bool includeWorkspace,
+            bool includeSessionAttachments,
+            bool includeSessions,
+            CancellationToken cancellationToken) =>
+            inner.PruneRemovedScopesAsync(includeWorkspace, includeSessionAttachments, includeSessions, cancellationToken);
+
+        public Task<IReadOnlyList<TapestryNode>> GetLayerNodesAsync(
+            string generationId,
+            int layer,
+            CancellationToken cancellationToken) =>
+            inner.GetLayerNodesAsync(generationId, layer, cancellationToken);
+
+        public Task<IReadOnlyDictionary<string, float[]>> GetNodeEmbeddingsAsync(
+            IReadOnlyList<string> nodeIds,
+            CancellationToken cancellationToken) =>
+            inner.GetNodeEmbeddingsAsync(nodeIds, cancellationToken);
+
+        public Task<TapestrySummaryReuseCandidate?> TryGetReusableSummaryAsync(
+            TapestryScope scope,
+            string childMembershipHash,
+            CancellationToken cancellationToken) =>
+            inner.TryGetReusableSummaryAsync(scope, childMembershipHash, cancellationToken);
+
+        public Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(
+            TapestryGeneration generation,
+            IReadOnlyList<(string NodeId, float Similarity)> hits,
+            TapestryRetrievalMode mode,
+            CancellationToken cancellationToken) =>
+            inner.HydrateRetrievedNodesAsync(generation, hits, mode, cancellationToken);
+
+        public Task<int> GetTerminalLayerAsync(string generationId, CancellationToken cancellationToken) =>
+            inner.GetTerminalLayerAsync(generationId, cancellationToken);
+
+        public Task<IReadOnlyList<TapestryScopeStatus>> GetScopeStatusesAsync(
+            Guid? sessionId,
+            CancellationToken cancellationToken) =>
+            inner.GetScopeStatusesAsync(sessionId, cancellationToken);
+
+        public Task<int> CountPublishedNodesAsync(Guid? sessionId, CancellationToken cancellationToken) =>
+            inner.CountPublishedNodesAsync(sessionId, cancellationToken);
+    }
+
+    /// <summary>
+    /// The undersized-cluster merge ranks siblings by <see cref="TapestryWeaver.MergeSimilarity"/> over
+    /// unit vectors (DESIGN §21.11), so which sibling a singleton joins is decided by that function alone.
+    /// </summary>
+    /// <remarks>
+    /// The orphan sits exactly between two clusters under the real cosine (orthogonal to both), so the
+    /// only thing that can send it to the second cluster is the injected similarity. Every vector is three
+    /// times its direction, so a similarity handed raw embeddings instead of unit vectors is caught too.
+    /// A merge that went back to a lane-width cosine would never call the injected function and would
+    /// break the tie by stable id instead, into the first cluster.
+    /// </remarks>
+    [SkippableFact]
+    public async Task WeaveAsync_MergesAnUndersizedClusterByTheUnitVectorSimilarityItIsGiven()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _weave!.VectorsByText["a1 body"] = Scaled(3f, Direction(0, (5, 0.01f)));
+
+        _weave.VectorsByText["a2 body"] = Scaled(3f, Direction(0, (6, 0.01f)));
+
+        _weave.VectorsByText["b1 body"] = Scaled(3f, Direction(1, (5, 0.01f)));
+
+        _weave.VectorsByText["b2 body"] = Scaled(3f, Direction(1, (6, 0.01f)));
+
+        _weave.VectorsByText["orphan body"] = Scaled(3f, Direction(2));
+
+        await SeedChunksAsync(
+            ("a1", "a1.cs", "a1 body"),
+            ("a2", "a2.cs", "a2 body"),
+            ("b1", "b1.cs", "b1 body"),
+            ("b2", "b2.cs", "b2 body"),
+            ("orphan", "o.cs", "orphan body"));
+
+        List<(double LeftNorm, double RightNorm)> norms = [];
+
+        TapestryWeaver weaver = new(_store!, _weave, _summarizer!, _backoff, TimeProvider.System, _logger)
+        {
+            MergeSimilarity = (left, right) =>
+            {
+                norms.Add((Norm(left), Norm(right)));
+
+                // Prefers the cluster on axis 1, which the real cosine cannot tell from the one on axis 0.
+                return right[1] > 0.5f ? 0.9d : 0.1d;
+            },
+        };
+
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(
+            Scope,
+            Settings(target: 2, maxChildren: 3),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        Assert.NotEmpty(norms);
+
+        Assert.All(norms, pair =>
+        {
+            Assert.Equal(1d, pair.LeftNorm, 5);
+
+            Assert.Equal(1d, pair.RightNorm, 5);
+        });
+
+        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None);
+
+        string? ParentOf(string chunkId) => leaves.Single(leaf => leaf.SourceId == chunkId).ParentNodeId;
+
+        Assert.Equal(ParentOf("b1"), ParentOf("orphan"));
+
+        Assert.Equal(ParentOf("b1"), ParentOf("b2"));
+
+        Assert.NotEqual(ParentOf("a1"), ParentOf("orphan"));
+    }
+
+    /// <summary>Unless a test replaces it, the merge compares siblings with the scalar cosine clustering uses.</summary>
+    [SkippableFact]
+    public void MergeSimilarity_defaults_to_the_scalar_double_accumulated_direction_cosine()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.Equal<Func<float[], float[], double>>(
+            SphericalKMeans.DirectionCosine,
+            CreateWeaver().MergeSimilarity);
+    }
+
+    private static float[] Scaled(float factor, float[] vector) => [.. vector.Select(component => component * factor)];
+
+    private static double Norm(float[] vector)
+    {
+        double sum = 0;
+
+        foreach (float component in vector)
+        {
+            sum += (double)component * component;
+        }
+
+        return Math.Sqrt(sum);
+    }
+
+    /// <summary>
     /// A deterministic stand-in for The Weave: content-derived vectors so the same corpus always
     /// yields the same directions, with switches for the degradation paths.
     /// </summary>
@@ -1334,6 +1687,12 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public Action? OnSummarize { get; set; }
 
+        /// <summary>
+        /// When set, the next summary call cancels this source and then answers with a failure instead of
+        /// throwing, as a provider can when its own call is cut short by the token.
+        /// </summary>
+        public CancellationTokenSource? CancelThenFail { get; set; }
+
         /// <summary>Fit estimates asked for — the whole-cluster tokenization the plan phase pays for.</summary>
         public int FitEstimateCalls { get; private set; }
 
@@ -1364,6 +1723,15 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             CancellationToken cancellationToken)
         {
             OnSummarize?.Invoke();
+
+            if (CancelThenFail is { } cancelling)
+            {
+                cancelling.Cancel();
+
+                return Task.FromResult(Result<string>.Failure(new Error(
+                    ErrorCodes.Embeddings.ProviderUnavailable,
+                    "summary call cut short by cancellation")));
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
 
