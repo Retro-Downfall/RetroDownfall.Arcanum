@@ -2303,7 +2303,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantAvailability>(),
                 sp.GetRequiredService<ICovenantProtectedArtifactErasureKernel>(),
                 sp.GetRequiredService<ICovenantManagedFileErasureKernel>(),
-                sp.GetRequiredService<CovenantSensitivePurgeAuthorityScope>()));
+                sp.GetRequiredService<CovenantSensitivePurgeAuthorityScope>(),
+                sp.GetRequiredService<ILogger<CovenantSensitiveRetentionPurgeCoordinator>>()));
 
         services.AddScoped<ICovenantProtectedArtifactErasureKernel>(
             static sp => new CovenantProtectedArtifactErasureKernel(

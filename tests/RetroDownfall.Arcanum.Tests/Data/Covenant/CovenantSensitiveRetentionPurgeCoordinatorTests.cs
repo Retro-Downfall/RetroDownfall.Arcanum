@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -8,6 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -411,11 +413,13 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
 
         kernel.Script(A, Erased);
 
-        kernel.ScriptFailure(B, new Error(ErrorCodes.Covenant.RevisionConflict, "injected"));
+        kernel.ScriptFailure(B, new Error(ErrorCodes.Covenant.Unavailable, "injected"));
 
         kernel.Script(C, Erased);
 
-        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeAsync(ledger, kernel, order));
+        TestCapturingLogger<CovenantSensitiveRetentionPurgeCoordinator> log = new();
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeLoggedAsync(ledger, kernel, log, order));
 
         Assert.True(outcome.WasPurged(A));
 
@@ -438,6 +442,153 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
         Assert.Equal(
             ErrorCodes.Covenant.Unavailable,
             RetroDownfall.Arcanum.Api.Security.CovenantSensitiveDeletion.BlockedError(outcome).Code);
+
+        // The failure the outcome replaces is logged by its code, and its message is not.
+        TestLogEntry logged = Assert.Single(log.Entries);
+
+        Assert.Equal(LogLevel.Warning, logged.Level);
+
+        Assert.Contains(ErrorCodes.Covenant.Unavailable, logged.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("injected", logged.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A failure after an earlier item was erased blocks the failing item and the rest under the blocker
+    /// the failure's own code names, so a route still answers that failure's status.
+    /// </summary>
+    /// <remarks>
+    /// Recording every interruption as <see cref="CovenantErasureBlocker.StorageUnavailable"/> turned a
+    /// stale label's <c>409</c> into a <c>503</c> once anything had been erased. The mapping is the one the
+    /// routes already apply to a blocked item: a code with no blocker of its own is still unavailable.
+    /// </remarks>
+    [Theory]
+    [InlineData(ErrorCodes.Covenant.StaleSnapshot, CovenantErasureBlocker.AuthorityStale, ErrorCodes.Covenant.StaleSnapshot)]
+    [InlineData(ErrorCodes.Covenant.RevisionConflict, CovenantErasureBlocker.AuthorityStale, ErrorCodes.Covenant.StaleSnapshot)]
+    [InlineData(ErrorCodes.Covenant.IntegrityFailure, CovenantErasureBlocker.IntegrityFailure, ErrorCodes.Covenant.ManualArtifactErasureRequired)]
+    [InlineData(ErrorCodes.Covenant.ManualArtifactErasureRequired, CovenantErasureBlocker.ManualOwnershipMismatch, ErrorCodes.Covenant.ManualArtifactErasureRequired)]
+    [InlineData(ErrorCodes.Covenant.ForbiddenAuthority, CovenantErasureBlocker.ManualOwnershipMismatch, ErrorCodes.Covenant.ManualArtifactErasureRequired)]
+    [InlineData(ErrorCodes.Covenant.MaintenanceFailed, CovenantErasureBlocker.StorageUnavailable, ErrorCodes.Covenant.Unavailable)]
+    public async Task A_failure_after_an_item_was_purged_blocks_the_rest_under_its_own_codes_blocker(
+        string failureCode,
+        CovenantErasureBlocker expectedBlocker,
+        string expectedRouteCode)
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())));
+
+        ledger.Script(B, LabelRead.Of(Label(B, Guid.NewGuid())));
+
+        ledger.Script(C, LabelRead.Of(Label(C, Guid.NewGuid())));
+
+        ScriptedErasureKernel kernel = new();
+
+        kernel.Script(A, Erased);
+
+        kernel.ScriptFailure(B, new Error(failureCode, "injected"));
+
+        kernel.Script(C, Erased);
+
+        TestCapturingLogger<CovenantSensitiveRetentionPurgeCoordinator> log = new();
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeLoggedAsync(ledger, kernel, log, A, B, C));
+
+        Assert.True(outcome.WasPurged(A));
+
+        Assert.All(
+            outcome.Results.Where(static result => result.ArtifactId != A),
+            result =>
+            {
+                Assert.Equal(CovenantSensitivePurgeDisposition.Blocked, result.Disposition);
+
+                Assert.Equal(expectedBlocker, result.Blocker);
+            });
+
+        Assert.Equal(expectedBlocker, outcome.Progress.Blocker);
+
+        Assert.Equal([[A], [B]], kernel.Pages);
+
+        Assert.Equal(
+            expectedRouteCode,
+            RetroDownfall.Arcanum.Api.Security.CovenantSensitiveDeletion.BlockedError(outcome).Code);
+
+        Assert.Contains(failureCode, Assert.Single(log.Entries).Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An unexpected exception after an earlier item was erased still reports that item purged, and the
+    /// exception is logged rather than lost.
+    /// </summary>
+    /// <remarks>
+    /// Only a cancellation used to be caught once an item had been erased, so any other exception from a
+    /// kernel discarded the dispositions the caller cannot rediscover. The failing item and the rest are
+    /// blocked as unavailable and never dispatched.
+    /// </remarks>
+    [Fact]
+    public async Task An_exception_after_an_item_was_purged_still_reports_that_item_purged()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())));
+
+        ledger.Script(B, LabelRead.Of(Label(B, Guid.NewGuid())));
+
+        ledger.Script(C, LabelRead.Of(Label(C, Guid.NewGuid())));
+
+        ScriptedErasureKernel kernel = new();
+
+        kernel.Script(A, Erased);
+
+        InvalidOperationException thrown = new("injected");
+
+        kernel.ScriptException(B, thrown);
+
+        kernel.Script(C, Erased);
+
+        TestCapturingLogger<CovenantSensitiveRetentionPurgeCoordinator> log = new();
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeLoggedAsync(ledger, kernel, log, A, B, C));
+
+        Assert.True(outcome.WasPurged(A));
+
+        Assert.All(
+            outcome.Results.Where(static result => result.ArtifactId != A),
+            static result =>
+            {
+                Assert.Equal(CovenantSensitivePurgeDisposition.Blocked, result.Disposition);
+
+                Assert.Equal(CovenantErasureBlocker.StorageUnavailable, result.Blocker);
+            });
+
+        Assert.Equal([[A], [B]], kernel.Pages);
+
+        TestLogEntry logged = Assert.Single(log.Entries);
+
+        Assert.Equal(LogLevel.Warning, logged.Level);
+
+        Assert.Contains(nameof(InvalidOperationException), logged.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An unexpected exception before anything was erased still propagates: there is nothing to keep.
+    /// </summary>
+    [Fact]
+    public async Task An_exception_before_any_item_was_purged_still_propagates()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(A, Guid.NewGuid())));
+
+        ScriptedErasureKernel kernel = new();
+
+        InvalidOperationException thrown = new("injected");
+
+        kernel.ScriptException(A, thrown);
+
+        Assert.Same(
+            thrown,
+            await Assert.ThrowsAsync<InvalidOperationException>(() => PurgeAsync(ledger, kernel, A)));
     }
 
     /// <summary>
@@ -458,7 +609,9 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
 
         kernel.ScriptCancellation(B);
 
-        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeAsync(ledger, kernel, A, B));
+        TestCapturingLogger<CovenantSensitiveRetentionPurgeCoordinator> log = new();
+
+        CovenantSensitivePurgeOutcome outcome = Succeeded(await PurgeLoggedAsync(ledger, kernel, log, A, B));
 
         Assert.True(outcome.WasPurged(A));
 
@@ -467,6 +620,9 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
         Assert.Equal(CovenantSensitivePurgeDisposition.Blocked, b.Disposition);
 
         Assert.Equal(CovenantErasureBlocker.StorageUnavailable, b.Blocker);
+
+        // A cancellation is the caller's choice rather than a fault, so it is recorded below a warning.
+        Assert.Equal(LogLevel.Information, Assert.Single(log.Entries).Level);
     }
 
     /// <summary>
@@ -529,10 +685,31 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
         params CovenantSensitivePurgeTarget[] targets) =>
         PurgeTargetsAsync(ledger, kernel, executorOf: null, targets);
 
+    /// <summary>One purge of Saga targets whose coordinator logs into <paramref name="log"/>.</summary>
+    private static Task<Result<CovenantSensitivePurgeOutcome>> PurgeLoggedAsync(
+        ScriptedLabelLedger ledger,
+        ScriptedErasureKernel kernel,
+        TestCapturingLogger<CovenantSensitiveRetentionPurgeCoordinator> log,
+        params Guid[] targets) =>
+        PurgeTargetsAsync(
+            ledger,
+            kernel,
+            executorOf: null,
+            log,
+            [.. targets.Select(static id => new CovenantSensitivePurgeTarget(SensitiveArtifactKind.Saga, id))]);
+
+    private static Task<Result<CovenantSensitivePurgeOutcome>> PurgeTargetsAsync(
+        ScriptedLabelLedger ledger,
+        ScriptedErasureKernel kernel,
+        Func<SensitiveArtifactKind, CovenantArtifactPurgeExecutor>? executorOf,
+        params CovenantSensitivePurgeTarget[] targets) =>
+        PurgeTargetsAsync(ledger, kernel, executorOf, new TestCapturingLogger<CovenantSensitiveRetentionPurgeCoordinator>(), targets);
+
     private static async Task<Result<CovenantSensitivePurgeOutcome>> PurgeTargetsAsync(
         ScriptedLabelLedger ledger,
         ScriptedErasureKernel kernel,
         Func<SensitiveArtifactKind, CovenantArtifactPurgeExecutor>? executorOf,
+        TestCapturingLogger<CovenantSensitiveRetentionPurgeCoordinator> log,
         params CovenantSensitivePurgeTarget[] targets)
     {
         FakeCovenantAvailability availability = new();
@@ -554,7 +731,8 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
             availability,
             kernel,
             new UnreachableManagedFileKernel(),
-            scope)
+            scope,
+            log)
         {
             ExecutorForTesting = executorOf,
         };
@@ -650,7 +828,12 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
 
         private readonly HashSet<Guid> _cancellations = [];
 
+        private readonly Dictionary<Guid, Exception> _exceptions = [];
+
         internal void Script(Guid artifactId, CovenantArtifactErasureProgress progress) => _answers[artifactId] = progress;
+
+        /// <summary>The page naming this item throws this exception instead of answering.</summary>
+        internal void ScriptException(Guid artifactId, Exception exception) => _exceptions[artifactId] = exception;
 
         /// <summary>The page naming this item fails with this error instead of answering.</summary>
         internal void ScriptFailure(Guid artifactId, Error error) => _failures[artifactId] = error;
@@ -672,6 +855,11 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
                 if (_cancellations.Contains(item.ArtifactId))
                 {
                     throw new OperationCanceledException("injected");
+                }
+
+                if (_exceptions.TryGetValue(item.ArtifactId, out Exception? exception))
+                {
+                    throw exception;
                 }
 
                 if (_failures.TryGetValue(item.ArtifactId, out Error failure))
