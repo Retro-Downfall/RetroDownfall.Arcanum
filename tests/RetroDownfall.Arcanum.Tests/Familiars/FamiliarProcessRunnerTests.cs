@@ -368,6 +368,65 @@ public sealed class FamiliarProcessRunnerTests
         Assert.Contains("TAIL-MARKER", failure.StandardError, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The excerpt is cut by characters, and a character outside the Basic Multilingual Plane is two
+    /// UTF-16 code units. A cut between the halves leaves a lone high surrogate in a message that is
+    /// forwarded to the caller and later serialized as JSON, where it is invalid text. The cut moves to
+    /// the code point boundary instead, wherever in the limit the astral character falls.
+    /// </summary>
+    [Theory]
+    [InlineData(509)]
+    [InlineData(510)]
+    [InlineData(511)]
+    [InlineData(512)]
+    public void BoundedExcerpt_never_cuts_a_surrogate_pair(int prefixLength)
+    {
+        const int Limit = 512;
+
+        string text = new string('a', prefixLength) + "\U0001F600\U0001F600 tail";
+
+        string excerpt = FamiliarProcessRunner.BoundedExcerpt(text, Limit);
+
+        AssertWellFormedUtf16(excerpt);
+
+        Assert.EndsWith("...", excerpt, StringComparison.Ordinal);
+
+        Assert.True(
+            excerpt.Length <= Limit + 3,
+            $"The excerpt was {excerpt.Length} characters.");
+
+        Assert.DoesNotContain("tail", excerpt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BoundedExcerpt_keeps_a_pair_that_fits_whole()
+    {
+        string excerpt = FamiliarProcessRunner.BoundedExcerpt(
+            "refused \U0001F600 twice\n\nand again",
+            limit: 512);
+
+        Assert.Equal("refused \U0001F600 twice and again", excerpt);
+    }
+
+    [Fact]
+    public void BoundedExcerpt_replaces_a_lone_surrogate_instead_of_forwarding_it()
+    {
+        string excerpt = FamiliarProcessRunner.BoundedExcerpt("bad \uD83D end", limit: 512);
+
+        AssertWellFormedUtf16(excerpt);
+
+        Assert.StartsWith("bad ", excerpt, StringComparison.Ordinal);
+
+        Assert.EndsWith(" end", excerpt, StringComparison.Ordinal);
+    }
+
+    private static void AssertWellFormedUtf16(string text)
+    {
+        // The strict encoder refuses an unpaired surrogate, which is exactly what a JSON writer would hit.
+        _ = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
+            .GetBytes(text);
+    }
+
     [Fact]
     public async Task A_wedged_familiar_is_torn_down_by_its_deadline()
     {

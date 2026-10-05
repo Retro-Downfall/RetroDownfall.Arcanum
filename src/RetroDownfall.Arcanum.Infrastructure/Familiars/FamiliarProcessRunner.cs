@@ -458,24 +458,28 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
     /// <summary>
     /// Collapses every whitespace or control run in the head of <paramref name="text"/> to one space and
-    /// stops at <paramref name="limit"/> characters, appending an ellipsis when something was cut.
+    /// stops at <paramref name="limit"/> UTF-16 characters without ever cutting a surrogate pair,
+    /// appending an ellipsis when something was cut.
     /// </summary>
-    private static string BoundedExcerpt(string text, int limit)
+    internal static string BoundedExcerpt(string text, int limit)
     {
         StringBuilder excerpt = new(Math.Min(text.Length, limit));
 
         bool pendingSpace = false;
 
-        foreach (char c in text)
+        // Runes, not UTF-16 code units: a cut between the halves of a surrogate pair would leave a lone
+        // surrogate in a message that is forwarded and later serialized as JSON. An unpaired surrogate in
+        // the input itself comes back as U+FFFD, so none can be forwarded either.
+        foreach (Rune rune in text.EnumerateRunes())
         {
-            if (char.IsWhiteSpace(c) || char.IsControl(c))
+            if (Rune.IsWhiteSpace(rune) || Rune.IsControl(rune))
             {
                 pendingSpace = excerpt.Length > 0;
 
                 continue;
             }
 
-            if (excerpt.Length + (pendingSpace ? 1 : 0) >= limit)
+            if (excerpt.Length + (pendingSpace ? 1 : 0) + rune.Utf16SequenceLength > limit)
             {
                 _ = excerpt.Append("...");
 
@@ -489,7 +493,7 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 pendingSpace = false;
             }
 
-            _ = excerpt.Append(c);
+            _ = excerpt.Append(rune.ToString());
         }
 
         return excerpt.ToString();
