@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -707,6 +708,88 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                 _dbPath,
                 "another-passphrase",
                 CancellationToken.None));
+    }
+
+    /// <summary>
+    /// A database the probe cannot open at all is no verdict on the key, so it must not be reported as tampering. A
+    /// file this account cannot read is the real failure the unit-level predicate test only simulates: SQLite answers
+    /// it with "unable to open" (14), which is neither a wrong key (26) nor corruption (11).
+    /// </summary>
+    [SkippableFact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task A_database_that_cannot_be_read_is_reported_as_unreadable_not_as_a_key_mismatch()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Uses Unix file permissions.");
+
+        _secretStore.SetApiKey("test-api-key");
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        SqliteConnection.ClearAllPools();
+
+        UnixFileMode original = File.GetUnixFileMode(_dbPath);
+
+        File.SetUnixFileMode(_dbPath, UnixFileMode.None);
+
+        try
+        {
+            GrimoireDatabaseUnavailableException refusal =
+                await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                    GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
+                        _secretStore,
+                        new GrimoireDbPassphraseSource(),
+                        _scopeFactory,
+                        _dbPath,
+                        _tempDir,
+                        CancellationToken.None));
+
+            Assert.DoesNotContain("key verification failed", refusal.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("could not read the Grimoire database", refusal.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.IsType<SqliteException>(refusal.InnerException);
+        }
+        finally
+        {
+            File.SetUnixFileMode(_dbPath, original);
+        }
+    }
+
+    [SkippableFact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task The_legacy_key_probe_reports_an_unreadable_database_as_unavailable_not_as_a_wrong_key()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Uses Unix file permissions.");
+
+        await CreateLegacyDatabaseAsync("probe-passphrase");
+
+        SqliteConnection.ClearAllPools();
+
+        UnixFileMode original = File.GetUnixFileMode(_dbPath);
+
+        File.SetUnixFileMode(_dbPath, UnixFileMode.None);
+
+        try
+        {
+            GrimoireDatabaseUnavailableException refusal =
+                await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                    GrimoireDatabaseBootstrapper.CanOpenDatabaseAsync(
+                        _dbPath,
+                        "probe-passphrase",
+                        CancellationToken.None));
+
+            Assert.IsType<SqliteException>(refusal.InnerException);
+        }
+        finally
+        {
+            File.SetUnixFileMode(_dbPath, original);
+        }
     }
 
     [Theory]
