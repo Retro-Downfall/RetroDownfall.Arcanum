@@ -17,7 +17,9 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
+using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -316,11 +318,272 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
                 cancellationToken: cts.Token));
     }
 
+    /// <summary>
+    /// The Windows lane. Windows has no FIFO, so the gate that matters there is the opposite one: an
+    /// ordinary file must not be refused.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_an_ordinary_file_stages_by_at_token_and_by_attach()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The Windows lane runs this.");
+
+        string path = Path.Combine(_root, "ordinary.txt");
+        File.WriteAllText(path, "ordinary content", Encoding.UTF8);
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
+            "read @ordinary.txt",
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
+
+        Assert.Equal("ordinary content", Assert.Single(result.AttachedFiles!).Content);
+        Assert.True(
+            CommandCenterTurnAttachmentBuilder.TryStagePathForNextTurn(
+                _root,
+                "ordinary.txt",
+                DefaultSettings(),
+                out _,
+                out string statusLine),
+            statusLine);
+    }
+
+    [SkippableFact]
+    public async Task Windows_a_symbolic_link_to_a_regular_file_stages()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The Windows lane runs this.");
+
+        string target = Path.Combine(_root, "target.txt");
+        string link = Path.Combine(_root, "link.txt");
+        File.WriteAllText(target, "through the link", Encoding.UTF8);
+
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Skip.If(true, "This account may not create symbolic links: " + ex.Message);
+        }
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
+            "read @link.txt",
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
+
+        Assert.Equal("through the link", Assert.Single(result.AttachedFiles!).Content);
+    }
+
+    /// <summary>
+    /// A reparse point that names no other location (a cloud placeholder, deduplicated or compressed data)
+    /// is served by the operating system as an ordinary file, and Windows reports it as something other
+    /// than a regular file. The test makes the closest thing a user account can make on demand, a file
+    /// whose data the system compresses in place, and skips when the volume will not.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_a_reparse_point_that_names_no_other_location_stages()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The Windows lane runs this.");
+
+        string path = Path.Combine(_root, "compressed.txt");
+        string content = string.Concat(Enumerable.Repeat("arcanum attachment ", 8192));
+        File.WriteAllText(path, content, Encoding.UTF8);
+
+        Skip.IfNot(
+            TryMakeCompressedReparsePoint(path),
+            "The volume did not turn the file into a reparse point that names no other location.");
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
+            "read @compressed.txt",
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
+
+        Assert.Equal(content, Assert.Single(result.AttachedFiles!).Content);
+        Assert.True(
+            CommandCenterTurnAttachmentBuilder.TryStagePathForNextTurn(
+                _root,
+                "compressed.txt",
+                DefaultSettings(),
+                out _,
+                out string statusLine),
+            statusLine);
+    }
+
+    private static bool TryMakeCompressedReparsePoint(string path)
+    {
+        using System.Diagnostics.Process? compact = System.Diagnostics.Process.Start(
+            new ProcessStartInfo("compact.exe", ["/c", "/exe:xpress4k", path]) { UseShellExecute = false });
+
+        if (compact is null)
+        {
+            return false;
+        }
+
+        if (!compact.WaitForExit(30_000))
+        {
+            compact.Kill(entireProcessTree: true);
+            return false;
+        }
+
+        FileAttributes attributes = File.GetAttributes(path);
+        return (attributes & FileAttributes.ReparsePoint) != 0 && new FileInfo(path).LinkTarget is null;
+    }
+
     private static ArcanumSettings DefaultSettings() =>
         new()
         {
             Features = new FeatureSettings { Scrying = true },
         };
+}
+
+/// <summary>
+/// The kind gate that sits in front of every attachment read, driven through the same seams the path
+/// policy tests use so its decisions are pinned on every platform. Windows reports every reparse point as
+/// <see cref="FileSystemObjectKind.Other"/>, including the ones that name no other location (a cloud
+/// placeholder, deduplicated data), which the repository's path policy treats as ordinary files; the
+/// Windows-only branch is pinned through its parameters because it cannot be reached by a real file
+/// here.
+/// </summary>
+[Collection("WorkspacePathPolicy")]
+public sealed class CommandCenterAttachmentFileKindTests : IDisposable
+{
+    private static readonly FileHandleIdentity AnIdentity = new(VolumeId: 1, FileId: 2);
+
+    private readonly string _root;
+
+    private readonly Func<string, FileHandleMetadata?>? _previousPathMetadataHook;
+
+    private readonly Func<SafeFileHandle, FileHandleMetadata?>? _previousHandleMetadataHook;
+
+    public CommandCenterAttachmentFileKindTests()
+    {
+        _root = Path.Combine(Path.GetTempPath(), "arcanum-cc-kind-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_root);
+        _previousPathMetadataHook = FileHandleIdentityInterop.TryGetPathMetadataForTests;
+        _previousHandleMetadataHook = FileHandleIdentityInterop.TryGetHandleMetadataForTests;
+    }
+
+    public void Dispose()
+    {
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _previousPathMetadataHook;
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = _previousHandleMetadataHook;
+        _ = TestDirectoryCleanup.TryDelete(_root, nameof(CommandCenterAttachmentFileKindTests));
+    }
+
+    [Theory]
+    [InlineData("RegularFile", false, false, true, false)]
+    [InlineData("RegularFile", true, false, true, false)]
+    [InlineData("Directory", false, true, false, false)]
+    [InlineData("Directory", true, true, false, false)]
+    [InlineData("Other", false, true, false, false)]
+    [InlineData("Other", true, true, true, true)]
+    [InlineData("Other", true, false, false, true)]
+    public void The_kind_gate_decides_from_the_kind_the_platform_and_only_then_the_reparse_point(
+        string kindName,
+        bool onWindows,
+        bool isReparsePointWithoutTarget,
+        bool expectedAttachable,
+        bool expectedProbeAsked)
+    {
+        FileSystemObjectKind kind = Enum.Parse<FileSystemObjectKind>(kindName);
+        int asked = 0;
+
+        bool attachable = CommandCenterTurnAttachmentBuilder.IsAttachableFileKind(
+            kind,
+            onWindows,
+            () =>
+            {
+                asked++;
+                return isReparsePointWithoutTarget;
+            });
+
+        Assert.Equal(expectedAttachable, attachable);
+        Assert.Equal(expectedProbeAsked ? 1 : 0, asked);
+    }
+
+    [SkippableFact]
+    public async Task A_path_the_stat_reports_as_neither_file_nor_directory_is_refused_off_windows()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Windows serves such an entry as a file when it is a reparse point.");
+
+        string path = WriteNotes();
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _ =>
+            new FileHandleMetadata(AnIdentity, 1, FileSystemObjectKind.Other);
+
+        TurnAttachmentBuildResult result = await BuildAsync("read @notes.txt");
+
+        Assert.Null(result.AttachedFiles);
+        Assert.Contains("@notes.txt", result.Prompt, StringComparison.Ordinal);
+        Assert.Contains(
+            result.StatusLines,
+            line => line.Contains("not a regular file", StringComparison.Ordinal)
+                && line.Contains("literal token kept in the prompt", StringComparison.Ordinal));
+        Assert.True(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task A_path_the_stat_reports_as_a_directory_is_refused_on_every_platform()
+    {
+        _ = WriteNotes();
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _ =>
+            new FileHandleMetadata(AnIdentity, 1, FileSystemObjectKind.Directory);
+
+        TurnAttachmentBuildResult result = await BuildAsync("read @notes.txt");
+
+        Assert.Null(result.AttachedFiles);
+        Assert.Contains(
+            result.StatusLines,
+            static line => line.Contains("not a regular file", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_path_the_stat_reports_as_a_regular_file_is_staged_on_every_platform()
+    {
+        _ = WriteNotes();
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _ =>
+            new FileHandleMetadata(AnIdentity, 1, FileSystemObjectKind.RegularFile);
+
+        TurnAttachmentBuildResult result = await BuildAsync("read @notes.txt");
+
+        Assert.Equal("notes", Assert.Single(result.AttachedFiles!).Content);
+    }
+
+    [SkippableFact]
+    public async Task A_handle_that_is_not_a_regular_file_once_opened_is_refused_off_windows()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Windows serves such a handle as a file when it is a reparse point.");
+
+        _ = WriteNotes();
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = _ =>
+            new FileHandleMetadata(AnIdentity, 1, FileSystemObjectKind.Other);
+
+        TurnAttachmentBuildResult result = await BuildAsync("read @notes.txt");
+
+        Assert.Null(result.AttachedFiles);
+        Assert.Contains(
+            result.StatusLines,
+            static line => line.Contains("Cannot stage notes.txt", StringComparison.Ordinal)
+                && line.Contains("not a regular file", StringComparison.Ordinal));
+    }
+
+    private string WriteNotes()
+    {
+        string path = Path.Combine(_root, "notes.txt");
+        File.WriteAllText(path, "notes", Encoding.UTF8);
+        return path;
+    }
+
+    private Task<TurnAttachmentBuildResult> BuildAsync(string prompt) =>
+        CommandCenterTurnAttachmentBuilder.BuildAsync(
+            prompt,
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: new ArcanumSettings { Features = new FeatureSettings { Scrying = true } },
+            cancellationToken: CancellationToken.None);
 }
 
 internal static class PosixFifo
