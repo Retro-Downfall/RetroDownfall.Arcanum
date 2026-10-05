@@ -18,6 +18,8 @@ using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using Serilog;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 /// <summary>
@@ -843,9 +845,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         // point until BackupRestoreRecovery resolves them at the next start.
         bool retainStagingForReconciliation = false;
 
-        // Set only once the journal has advanced to Cleanup. Until then a displaced installation keeps
-        // staging by default (see the finally below), so an exit no catch here anticipated can never
-        // delete previous/ while the new generation is live.
+        // Set only once the restore has finished, at its Cleanup advance. Until then a displaced
+        // installation keeps staging by default (see the finally below), so an exit no catch here
+        // anticipated can never delete previous/ while the new generation is live.
         bool reachedCleanup = false;
 
         BackupRestorePlan effectivePlan = plan;
@@ -1267,10 +1269,35 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 }
             }
 
-            journal = BackupRestoreJournal.Advance(staging.Path, journal, BackupRestorePhase.Cleanup);
+            _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Cleanup);
+
+            // Bookkeeping after the point of no return. Everything durable has committed, and on the
+            // Covenant arm admission has already reopened for the restored generation, so a failed
+            // journal write here must not reach the catch below, which would reverse the commit. A
+            // journal left at Reconcile already reads to startup recovery as "only cleanup remained".
+            try
+            {
+                journal = BackupRestoreJournal.Advance(staging.Path, journal, BackupRestorePhase.Cleanup);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                Log.Warning(
+                    "The restore {OperationId} completed, but its journal could not record the Cleanup phase: {Diagnostics}",
+                    operationId,
+                    exception.GetType().Name);
+
+                Record(
+                    phases,
+                    BackupRestorePhase.Cleanup,
+                    "The restore journal could not record the Cleanup phase ("
+                    + exception.GetType().Name
+                    + "); the restore itself is complete.");
+            }
 
             // After the advance, never before it: the inverted default below would otherwise retain
-            // staging on every successful restore.
+            // staging on every successful restore. Set whether or not the bookkeeping write landed,
+            // because the restore it records is finished either way.
             reachedCleanup = true;
 
             Record(phases, BackupRestorePhase.Cleanup, "Removed protected restore staging.");

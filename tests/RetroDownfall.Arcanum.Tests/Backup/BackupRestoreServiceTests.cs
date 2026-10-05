@@ -841,6 +841,104 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 SearchOption.TopDirectoryOnly));
     }
 
+    /// <summary>
+    /// A restore whose Covenant admission already committed and reopened stays committed when the
+    /// bookkeeping write that follows it fails.
+    /// </summary>
+    /// <remarks>
+    /// The <c>Cleanup</c> journal advance is the one write after <c>CommitAndReopen</c>. It is
+    /// bookkeeping — the restore is finished — but it sat inside the try whose catch reverses the
+    /// commit, so an unwritable staging root rolled the directories back under an admission the gate
+    /// had already reopened for the restored generation. The staging root is sealed to read-and-list
+    /// at exactly that moment, which is what makes the real journal write fail.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_cleanup_journal_write_failure_after_covenant_commit_does_not_reverse_the_restore()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what seal the staging root.");
+
+        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
+        // recognizes the guard clause protecting the Unix-only calls below.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("cleanup-fault.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        InMemoryOsCredentialStore credentials = new();
+
+        CovenantRestoreStagingTests.RecordingExclusiveGate gate = new();
+
+        string? sealedStaging = null;
+
+        BackupRestoreServiceOptions options = new()
+        {
+            RestoreStaging = new CovenantRestoreStagingServices(
+                gate,
+                new CovenantRestoreStagingTests.RecordingRestoreMarkerLifecycle(),
+                new BackupRestoreJournalAnchorStore(
+                    credentials,
+                    new BackupRestoreJournalKeyProvider(credentials),
+                    new BackupRestoreJournalInstallationIdentityProvider(credentials)),
+                new BackupRestoreJournalInstallationIdentityProvider(credentials),
+                new BackupRestoreJournalKeyProvider(credentials),
+                new BackupRestoreEffectDigestCalculator()),
+            BeforePhaseForTests = phase =>
+            {
+                if (phase == BackupRestorePhase.Cleanup && !OperatingSystem.IsWindows())
+                {
+                    sealedStaging = Assert.Single(
+                        Directory.GetDirectories(
+                            Path.GetDirectoryName(_installation)!,
+                            ".arcanum-restore-*",
+                            SearchOption.TopDirectoryOnly));
+
+                    File.SetUnixFileMode(sealedStaging, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                }
+            },
+        };
+
+        try
+        {
+            BackupRestoreResult result = await Restore(
+                    new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret },
+                    options)
+                .RestoreAsync(
+                    new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                    Passphrase.AsMemory(),
+                    CancellationToken.None);
+
+            Assert.NotNull(sealedStaging);
+
+            Assert.Equal(
+                [CovenantExclusiveLeaseDisposition.CommitAndReopen],
+                gate.Dispositions);
+
+            Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+            // The restored generation is still the live one: nothing was reversed.
+            Assert.Equal(
+                "# the archived codex",
+                await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+        }
+        finally
+        {
+            if (sealedStaging is not null && Directory.Exists(sealedStaging))
+            {
+                File.SetUnixFileMode(
+                    sealedStaging,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+    }
+
     [Fact]
     public async Task A_fault_before_commit_leaves_the_installation_unchanged()
     {
