@@ -208,6 +208,162 @@ public sealed partial class InstallationResetServiceTests
         Assert.Empty(active.RetiredOperationIds);
     }
 
+    [Fact]
+    public async Task Full_arm_cancelled_after_credential_deletion_checkpoints_and_returns_resumable()
+    {
+        // The accepted credentials are deleted and the caller's own token trips with them. Every
+        // checkpoint from here on used that token, so the caller got a raw exception from an
+        // installation that was already past its point of no return and whose record had stopped
+        // at the previous phase.
+        Guid operationId = Guid.Parse("5d5d5d5d-5d5d-4d5d-8d5d-5d5d5d5d5d5d");
+
+        using CancellationTokenSource cancellation = new();
+
+        FakeActiveStore active = new();
+
+        FakeOfflineCleanup cleanup = new();
+
+        FakeCredentialInventory credentials = new(
+            [
+                new InstallationResetCredentialSummary(
+                    "accepted-account",
+                    InstallationResetItemStatus.Pending),
+            ])
+        {
+            CancelAfterDelete = cancellation,
+        };
+
+        RecordingTerminalContinuation terminal = new() { Store = active };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            credentials,
+            active,
+            cleanup,
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: new FakePairReader(JoinResult(
+                HostProcessToolsMarkerPairDisposition.TaintedMatched)),
+            remediationVerifier: new FakeRemediationVerifier(Authorization(operationId)),
+            markerPairReset: () => PassThroughMarkerPairResetCoordinator.Instance,
+            terminalContinuation: () => terminal);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        active.OnWrite = record => active.Record = record with
+        {
+            HostToolsMarkerPairReset = record.HostToolsMarkerPairReset
+                ?? TerminalMarkerCheckpoint(record),
+        };
+
+        Result<InstallationResetResult> applied = await ApplyFullUnderTestLockAsync(
+            service,
+            FullRequest(operationId, plan.PlanId, planRequest),
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        Assert.True(applied.Value.ResumeRequired);
+
+        Assert.True(applied.Value.PointOfNoReturn);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Value.ErrorCode);
+
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(applied.Value.Verification.RemainingIssues).Code);
+
+        Assert.Empty(active.RetiredOperationIds);
+
+        // What was done is what the durable record says was done: the credential removal and the
+        // terminal step's own evidence both survived the checkpoint written after the cancellation.
+        Assert.NotNull(active.Record);
+
+        Assert.True(active.Record.PointOfNoReturn);
+
+        Assert.Equal(
+            InstallationResetItemStatus.Deleted,
+            Assert.Single(active.Record.CredentialResults).Status);
+
+        Assert.Equal(
+            InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
+            active.Record.HostToolsMarkerPairReset?.RestoreCredentialCleanup);
+    }
+
+    [Fact]
+    public async Task Full_arm_cancelled_inside_the_terminal_step_adopts_what_the_step_published()
+    {
+        // The step publishes straight through the store, so a cancellation that reaches it after one
+        // of those publications leaves the service holding a record the store has moved past. The
+        // checkpoint written for the cancellation has to build on what is durable, not on what the
+        // service last wrote itself, or it writes the step's evidence out of existence.
+        Guid operationId = Guid.Parse("5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e");
+
+        FakeActiveStore active = new();
+
+        RecordingTerminalContinuation terminal = new()
+        {
+            Store = active,
+            CancelAfterPublishing = true,
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: FullWorkspaceResolver(),
+            stateRoots: new FixedStateRoots(["/state"]),
+            pairReader: new FakePairReader(JoinResult(
+                HostProcessToolsMarkerPairDisposition.TaintedMatched)),
+            remediationVerifier: new FakeRemediationVerifier(Authorization(operationId)),
+            markerPairReset: () => PassThroughMarkerPairResetCoordinator.Instance,
+            terminalContinuation: () => terminal);
+
+        InstallationResetPlanRequest planRequest = new(
+            InstallationResetScope.All,
+            "/invocation/child");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            planRequest,
+            CancellationToken.None)).Value;
+
+        active.OnWrite = record => active.Record = record with
+        {
+            HostToolsMarkerPairReset = record.HostToolsMarkerPairReset
+                ?? TerminalMarkerCheckpoint(record),
+        };
+
+        Result<InstallationResetResult> applied = await ApplyFullUnderTestLockAsync(
+            service,
+            FullRequest(operationId, plan.PlanId, planRequest),
+            CancellationToken.None);
+
+        Assert.Equal(1, terminal.Calls);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        Assert.True(applied.Value.ResumeRequired);
+
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(applied.Value.Verification.RemainingIssues).Code);
+
+        Assert.Empty(active.RetiredOperationIds);
+
+        Assert.Equal(
+            InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
+            active.Record?.HostToolsMarkerPairReset?.RestoreCredentialCleanup);
+    }
+
     /// <summary>
     /// The marker-pair checkpoint an attested reset carries once its managed files are accounted for.
     /// </summary>
@@ -322,6 +478,12 @@ public sealed partial class InstallationResetServiceTests
 
         internal Result<FullInstallationResetTerminalOutcome>? Outcome { get; init; }
 
+        /// <summary>
+        /// Publishes its evidence and then reports a cancellation instead of an outcome, which is what
+        /// the real step does when a cancellation lands between its publication and its return.
+        /// </summary>
+        internal bool CancelAfterPublishing { get; init; }
+
         public Task<Result<FullInstallationResetTerminalOutcome>> CompleteAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             InstallationResetActivePublication publication,
@@ -354,6 +516,11 @@ public sealed partial class InstallationResetServiceTests
                 };
 
             Store?.Publish(published);
+
+            if (CancelAfterPublishing)
+            {
+                throw new OperationCanceledException();
+            }
 
             return Task.FromResult(
                 Result<FullInstallationResetTerminalOutcome>.Success(

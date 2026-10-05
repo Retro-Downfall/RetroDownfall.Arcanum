@@ -80,7 +80,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
                 ArcanumCredentialIdentity.Service,
                 Account(profileNamespace));
         }
-        catch (Exception exception) when (IsCredentialStoreFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return PresenceUnavailable();
         }
@@ -212,7 +212,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         {
             removed = _credentials.Delete(ArcanumCredentialIdentity.Service, account);
         }
-        catch (Exception exception) when (IsCredentialStoreFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
@@ -233,7 +233,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         {
             verified = _credentials.TryGet(ArcanumCredentialIdentity.Service, account);
         }
-        catch (Exception exception) when (IsCredentialStoreFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
@@ -253,22 +253,6 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
     private static string Account(BackupRestoreProfileNamespace profileNamespace) =>
         ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(profileNamespace.AccountSuffix);
 
-    /// <summary>
-    /// The one filter every credential-store call in this provider shares: an ordinary backend
-    /// failure, or a native backend that is missing or cannot be loaded, is a content-free
-    /// unavailable result rather than an escaping exception.
-    /// </summary>
-    private static bool IsCredentialStoreFailure(Exception exception) =>
-        exception is IOException
-            or UnauthorizedAccessException
-            or InvalidOperationException
-            or NotSupportedException
-            or DllNotFoundException
-            or EntryPointNotFoundException
-            or BadImageFormatException
-            or System.Runtime.InteropServices.MarshalDirectiveException
-            or TypeLoadException;
-
     private static Error PresenceUnavailable() =>
         new(
             ErrorCodes.Data.ControlPathUnavailable,
@@ -280,7 +264,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         {
             return _credentials.Set(ArcanumCredentialIdentity.Service, account, value);
         }
-        catch (Exception exception) when (IsCredentialStoreFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return OsCredentialStoreResult.Failed(exception.Message);
         }
@@ -294,7 +278,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         {
             result = _credentials.TryGet(ArcanumCredentialIdentity.Service, account);
         }
-        catch (Exception exception) when (IsCredentialStoreFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return new Error(
                 ErrorCodes.Covenant.Unavailable,

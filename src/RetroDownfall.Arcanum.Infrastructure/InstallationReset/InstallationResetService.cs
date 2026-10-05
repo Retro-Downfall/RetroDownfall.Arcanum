@@ -195,7 +195,7 @@ internal sealed class InstallationResetStateRoots : IInstallationResetStateRoots
         ];
     }
 
-    private static StringComparer PathComparer { get; } =
+    internal static StringComparer PathComparer { get; } =
         OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
@@ -1006,31 +1006,80 @@ internal sealed class InstallationResetService(
         IFullInstallationResetTerminalContinuation terminal =
             deferredServices.ResolveTerminalContinuation();
 
-        return await ContinueApplyAsync(
-            writer,
-            new InstallationResetApplyProgress(active),
-            ReproduceAcceptedPlan(active),
-            cancellationToken,
-            async token =>
-            {
-                Result<FullInstallationResetTerminalOutcome> completed =
-                    await terminal.CompleteAsync(
-                        heldInstallationLock,
-                        writer.Publication ?? publication,
-                        token).ConfigureAwait(false);
+        InstallationResetApplyProgress progress = new(active);
 
-                if (completed.IsFailure)
+        try
+        {
+            return await ContinueApplyAsync(
+                writer,
+                progress,
+                ReproduceAcceptedPlan(active),
+                cancellationToken,
+                async token =>
                 {
-                    return Result<InstallationResetActiveRecord>.Failure(completed.Error);
-                }
+                    Result<FullInstallationResetTerminalOutcome> completed =
+                        await terminal.CompleteAsync(
+                            heldInstallationLock,
+                            writer.Publication ?? publication,
+                            token).ConfigureAwait(false);
 
-                // Whatever it published is now the current record, and the next thing this writer does
-                // is publish verification on top of it.
-                writer.Adopt(completed.Value.Publication);
+                    if (completed.IsFailure)
+                    {
+                        return Result<InstallationResetActiveRecord>.Failure(completed.Error);
+                    }
 
-                return Result<InstallationResetActiveRecord>.Success(
-                    completed.Value.Publication.Payload.ToRecord());
-            }).ConfigureAwait(false);
+                    // Whatever it published is now the current record, and the next thing this writer does
+                    // is publish verification on top of it.
+                    writer.Adopt(completed.Value.Publication);
+
+                    return Result<InstallationResetActiveRecord>.Success(
+                        completed.Value.Publication.Payload.ToRecord());
+                }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The same answer the ordinary arms give: this arm reaches the credential sweep and the
+            // terminal step, so a cancellation here is routinely past the point of no return, and the
+            // operator is owed a resumable result rather than a raw exception.
+            InstallationResetActiveRecord current = progress.Active;
+
+            // The terminal step publishes straight through the store, so a cancellation that reached it
+            // after one of those publications leaves this writer holding an envelope the store has moved
+            // past, and progress holding a record without the step's evidence. Reread what is durable and
+            // carry only the fields this method owns onto it - the same overlay the step's own outcome
+            // gets - because checkpointing the older record would write that evidence out of existence.
+            Result<InstallationResetActiveRecord?> durable = await writer
+                .RereadAsync(CancellationToken.None).ConfigureAwait(false);
+
+            if (durable.IsSuccess && durable.Value is { } published)
+            {
+                current = published with
+                {
+                    Phase = current.Phase,
+                    PointOfNoReturn = current.PointOfNoReturn,
+                    RowsDeleted = current.RowsDeleted,
+                    FilesDeleted = current.FilesDeleted,
+                    EstimatedBytesDeleted = current.EstimatedBytesDeleted,
+                    CredentialResults = current.CredentialResults,
+                    LastErrorCode = current.LastErrorCode,
+                };
+            }
+
+            InstallationResetActiveRecord cancelled = current with
+            {
+                PointOfNoReturn = current.PointOfNoReturn
+                    || current.Phase is not InstallationResetPhase.Prepared,
+                LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            };
+
+            Result checkpoint = await writer.WriteAsync(
+                cancelled,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return checkpoint.IsFailure
+                ? Resumable(cancelled, checkpoint.Error)
+                : ResumableAfterCancellation(cancelled);
+        }
     }
 
     /// <summary>
@@ -1345,6 +1394,18 @@ internal sealed class InstallationResetService(
             && recovered.Value.LegacyRecord is { } legacy
             && recovered.Value.LegacyFileIdentity is { } legacyIdentity)
         {
+            // A legacy V1 file is the one active record nothing seals, so it is checked against this
+            // installation before it is migrated: once migrated it is sealed, and every later arm
+            // trusts the roots and accounts it names.
+            Result legacyValidation = InstallationResetLegacyRecordValidator.Validate(
+                legacy,
+                _stateRoots);
+
+            if (legacyValidation.IsFailure)
+            {
+                return Result<InstallationResetResult>.Failure(legacyValidation.Error);
+            }
+
             Result<InstallationResetActivePublication> migrated = await activeStore
                 .MigrateLegacyV1Async(
                     heldInstallationLock,
@@ -1458,11 +1519,16 @@ internal sealed class InstallationResetService(
 
         try
         {
+            // The same stopped-host authority the fresh arm uses: the issuer-free data service is the
+            // one the composition root registers and it always answers InventoryUnavailable, so a
+            // resumed record that reached it was retired as a failure after its point of no return
+            // had already been recorded.
             return await ContinueApplyAsync(
                 writer,
                 progress,
                 plan,
-                cancellationToken)
+                cancellationToken,
+                stoppedHostIssuer: issuer)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -1485,6 +1551,26 @@ internal sealed class InstallationResetService(
                 : ResumableAfterCancellation(cancelled);
         }
     }
+
+    /// <summary>
+    /// The closed set of data-service refusals that are made before the service has changed anything.
+    /// </summary>
+    /// <remarks>
+    /// Closed on purpose: an unrecognised code is treated as possibly having committed, because the
+    /// two mistakes are not symmetric. Keeping a record that could have been retired costs the operator
+    /// one resume; retiring one whose reset had begun deletes the evidence that it did.
+    ///
+    /// <para>Inventory unavailable is in the set on a promise the stopped-host data service keeps: it
+    /// answers that code only for failures before its canonical action has started. A failure raised by
+    /// the action, or by releasing the lease after it, reports recovery required, which is not in the
+    /// set.</para>
+    /// </remarks>
+    private static bool IsProvenPreEffectRefusal(Error error) =>
+        error.Code is ErrorCodes.Data.InvalidRequest
+            or ErrorCodes.Data.PlanChanged
+            or ErrorCodes.Data.Blocked
+            or ErrorCodes.Data.ConfirmationRequired
+            or ErrorCodes.Data.InventoryUnavailable;
 
     private StoppedHostGrimoireAuthorityIssuer
         CreateInstallationResetStoppedHostIssuer(
@@ -1545,14 +1631,30 @@ internal sealed class InstallationResetService(
                 }
             }
 
-            Result preData = active.Scope is InstallationResetScope.Workspace
-                ? Result.Success()
-                : await _preDataMutation
+            Result preData;
+
+            if (active.Scope is InstallationResetScope.Workspace)
+            {
+                preData = Result.Success();
+            }
+            else
+            {
+                // The daemon uninstall cannot be taken back, and a cancellation can land after it has
+                // happened but before anything records that it did. So the in-memory record is marked
+                // past the point of no return before the call, and a cancellation from here on
+                // checkpoints it that way. Nothing durable says so yet: a mutation that reports failure
+                // may have done nothing, and the operator can simply retry it.
+                progress.Active = active with { PointOfNoReturn = true };
+
+                preData = await _preDataMutation
                     .ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             if (preData.IsFailure)
             {
                 active = active with { LastErrorCode = preData.Error.Code };
+
+                progress.Active = active;
 
                 Result preDataCheckpoint = await writer.WriteAsync(
                     active,
@@ -1561,6 +1663,15 @@ internal sealed class InstallationResetService(
                 return preDataCheckpoint.IsFailure
                     ? Resumable(active, preDataCheckpoint.Error)
                     : Resumable(active, preData.Error);
+            }
+
+            if (active.Scope is not InstallationResetScope.Workspace)
+            {
+                // Reported success, so the uninstall happened and every checkpoint from here carries it,
+                // including the ones written when there is no canonical data plan to apply.
+                active = active with { PointOfNoReturn = true };
+
+                progress.Active = active;
             }
 
             if (active.AcceptedBinding.DataPlanIds.Length > 0)
@@ -1664,8 +1775,12 @@ internal sealed class InstallationResetService(
                         // record, and retiring it would delete the one piece of evidence that journal
                         // needs to be resumed or retired - leaving a parked transition nothing can ever
                         // finish, and a slot no future transition can open.
-                        if (applied.Error.Code is ErrorCodes.Data.RecoveryRequired
-                                or ErrorCodes.Data.ReconciliationFailed
+                        //
+                        // The point of no return is already durable by here, so only a refusal the
+                        // data service proved it made before touching anything lets the record go. Any
+                        // other ending - including a committed-but-unfinished one - may have changed
+                        // state, and retiring the record would delete the only evidence of that.
+                        if (!IsProvenPreEffectRefusal(applied.Error)
                             || active.NestedTransitionReceipt is
                             {
                                 Phase: InstallationResetNestedTransitionPhase.Claimed,
@@ -2147,6 +2262,8 @@ internal sealed class InstallationResetService(
                     resumeRequired: true));
         }
 
+        InstallationResetActiveRecord beforeCleanup = active;
+
         InstallationResetCredentialResult[] credentialResults =
             credentialService.DeleteAndVerify(
                 active.AcceptedBinding.CredentialAccounts);
@@ -2161,6 +2278,24 @@ internal sealed class InstallationResetService(
                 credentialResults,
                 active.AcceptedBinding.CredentialAccounts),
         };
+
+        // What was just deleted is recorded before anything else is decided about it. The deletion is
+        // not undoable, so the durable record has to say it happened before verification can refuse
+        // and before retirement can remove the record, or a crash in between leaves credentials gone
+        // under a record that says they were never touched. It is written only when something changed,
+        // so a replay that finds nothing left to do does not spend an envelope revision, and on an
+        // uncancelled token because the effect it records is already done.
+        if (RecordsProgress(beforeCleanup, active))
+        {
+            Result recorded = await writer.WriteAsync(
+                active,
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (recorded.IsFailure)
+            {
+                return Resumable(active, recorded.Error);
+            }
+        }
 
         InstallationResetVerification verification = VerifyCompleted(active);
 
@@ -2325,6 +2460,14 @@ internal sealed class InstallationResetService(
             false,
             [.. credentialVerification.RemainingIssues, lastError]);
     }
+
+    private static bool RecordsProgress(
+        InstallationResetActiveRecord before,
+        InstallationResetActiveRecord after) =>
+        before.PointOfNoReturn != after.PointOfNoReturn
+        || before.FilesDeleted != after.FilesDeleted
+        || before.EstimatedBytesDeleted != after.EstimatedBytesDeleted
+        || !before.CredentialResults.SequenceEqual(after.CredentialResults);
 
     private static bool CredentialIsRemoved(
         InstallationResetCredentialResult result) =>
@@ -2563,12 +2706,36 @@ internal sealed class InstallationResetService(
 
     private static string ComputeBindingId(
         InstallationResetPlanRequest request,
+        InstallationResetAcceptedBinding binding) =>
+        ComputeBindingId(request.Scope, binding);
+
+    /// <summary>
+    /// The binding id as records written before the injective preimage computed it: joined text.
+    /// </summary>
+    /// <remarks>
+    /// Kept only to recognise a legacy V1 file's own id. Nothing new is ever issued under it.
+    /// </remarks>
+    internal static string ComputeDelimiterEraBindingId(
+        InstallationResetScope scope,
+        InstallationResetAcceptedBinding binding) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(
+            '|',
+            scope,
+            string.Join(',', binding.SelectedRoots),
+            string.Join(',', binding.ExcludedRoots),
+            string.Join(',', binding.PreservedBackups.Select(
+                static backup => $"{backup.CanonicalPath}:{backup.Identity.Value}:{backup.Identity.Length}:{backup.Identity.HardLinkCount}")),
+            string.Join(',', binding.CredentialAccounts),
+            string.Join(',', binding.DataPlanIds)))));
+
+    internal static string ComputeBindingId(
+        InstallationResetScope scope,
         InstallationResetAcceptedBinding binding)
     {
         using IncrementalHash hash = BeginCanonicalHash(
             "Arcanum.InstallationReset.AcceptedBinding.v2");
 
-        AppendByte(hash, checked((byte)request.Scope));
+        AppendByte(hash, checked((byte)scope));
 
         AppendStrings(hash, binding.SelectedRoots);
 

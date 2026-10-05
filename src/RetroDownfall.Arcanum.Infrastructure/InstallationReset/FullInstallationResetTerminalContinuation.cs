@@ -28,12 +28,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 /// </remarks>
 internal interface IFullInstallationResetTerminalContinuation
 {
-
     Task<Result<FullInstallationResetTerminalOutcome>> CompleteAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         InstallationResetActivePublication publication,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -84,7 +82,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
     string grimoireDatabaseFile)
     : IFullInstallationResetTerminalContinuation
 {
-
     private readonly GrimoireOfflineTransitionJournalAnchorStore _transitionAnchors =
         transitionAnchors ?? throw new ArgumentNullException(nameof(transitionAnchors));
 
@@ -112,7 +109,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
         InstallationResetActivePublication publication,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(publication);
@@ -128,9 +124,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (state.IsFailure)
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(state.Error);
-
         }
 
         AuthenticatedTerminalState current = state.Value;
@@ -138,7 +132,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
         if (current.Marker.RestoreCredentialCleanup
             is InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent)
         {
-
             // Already finished. A resumed operation reads this rather than removing anything again.
             // The guard is the terminal phase of the whole cleanup rather than of its first half: a
             // record resting at the restore trio's own verification still owes the transition pair.
@@ -147,7 +140,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
                     InstallationResetRestoreCredentialCleanupPhase
                         .TransitionCredentialsVerifiedAbsent,
                     current.Publication));
-
         }
 
         Result<ProvenTerminalState> proven = await ProveOrAdoptAsync(
@@ -157,9 +149,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (proven.IsFailure)
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(proven.Error);
-
         }
 
         // The proof may itself have published, so the state travels back with it rather than being
@@ -178,9 +168,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (rotated.IsFailure)
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(rotated.Error);
-
         }
 
         Result<ImmutableArray<InstallationResetRestoreCredentialStep>> steps =
@@ -188,58 +176,54 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (steps.IsFailure)
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(steps.Error);
-
         }
+
+        // The token every publication from here on observes. It is the caller's until a credential has
+        // actually been removed, and nothing after that: a removal cannot be undone, so the phase that
+        // records it is bookkeeping for an effect that already happened, and a cancellation that threw
+        // before writing it would leave credentials gone and a record that says they never were.
+        CancellationToken publishToken = cancellationToken;
 
         foreach (InstallationResetRestoreCredentialStep step in steps.Value)
         {
-
             // Steps already recorded as done are skipped rather than re-issued. The removal itself is
             // idempotent, but re-issuing one would publish a phase the record has already passed.
             if (current.Marker.RestoreCredentialCleanup is { } reached
                 && reached >= step.CompletedPhase)
             {
-
                 continue;
-
             }
 
             Result removed = _credentials.RemoveStep(step);
 
             if (removed.IsFailure)
             {
-
                 return Result<FullInstallationResetTerminalOutcome>.Failure(removed.Error);
-
             }
+
+            publishToken = CancellationToken.None;
 
             Result<AuthenticatedTerminalState> advanced = await PublishAsync(
                 heldInstallationLock,
                 current,
                 terminal,
                 step.CompletedPhase,
-                cancellationToken).ConfigureAwait(false);
+                publishToken).ConfigureAwait(false);
 
             if (advanced.IsFailure)
             {
-
                 return Result<FullInstallationResetTerminalOutcome>.Failure(advanced.Error);
-
             }
 
             current = advanced.Value;
-
         }
 
         Result verified = _credentials.VerifyAllAbsent(terminal);
 
         if (verified.IsFailure)
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(verified.Error);
-
         }
 
         if (current.Marker.RestoreCredentialCleanup
@@ -247,31 +231,26 @@ internal sealed class FullInstallationResetTerminalContinuation(
                 and not InstallationResetRestoreCredentialCleanupPhase.TransitionAnchorRemoved
                 and not InstallationResetRestoreCredentialCleanupPhase.TransitionKeyRemoved)
         {
-
             Result<AuthenticatedTerminalState> restoreVerified = await PublishAsync(
                 heldInstallationLock,
                 current,
                 terminal,
                 InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent,
-                cancellationToken).ConfigureAwait(false);
+                publishToken).ConfigureAwait(false);
 
             if (restoreVerified.IsFailure)
             {
-
                 return Result<FullInstallationResetTerminalOutcome>.Failure(restoreVerified.Error);
-
             }
 
             current = restoreVerified.Value;
-
         }
 
         return await CompleteTransitionPairAsync(
             heldInstallationLock,
             current,
             terminal,
-            cancellationToken).ConfigureAwait(false);
-
+            publishToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -294,16 +273,18 @@ internal sealed class FullInstallationResetTerminalContinuation(
         BackupRestoreFullResetTerminalProjectionV1 terminal,
         CancellationToken cancellationToken)
     {
+        // Starts as whatever the caller handed down: the caller's own token when no removal has run
+        // yet, and none once one has. The first transition removal switches it for the same reason the
+        // restore trio's first removal does.
+        CancellationToken publishToken = cancellationToken;
 
         if (current.Publication.Payload.NestedTransitionReceipt is
             { Phase: not InstallationResetNestedTransitionPhase.Completed })
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(
                 new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "A nested database transition this reset claimed has not reported its completion."));
-
         }
 
         Result<GrimoireOfflineTransitionJournalLocation> location =
@@ -312,9 +293,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (location.IsFailure)
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(location.Error);
-
         }
 
         // Adopted rather than reproved when one is already persisted. Once the first account is gone
@@ -325,7 +304,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (adopted is null)
         {
-
             Result<GrimoireOfflineTransitionFullResetTerminalProjectionV1> proven =
                 _transitionAnchors.ProveFullResetTerminal(
                     heldInstallationLock,
@@ -334,9 +312,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
             if (proven.IsFailure)
             {
-
                 return Result<FullInstallationResetTerminalOutcome>.Failure(proven.Error);
-
             }
 
             adopted = proven.Value;
@@ -347,7 +323,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
             // authorities bound to the one it replaced.
             if (adopted.Arm is GrimoireOfflineTransitionFullResetTerminalArm.ClosedAnchor)
             {
-
                 Result<AuthenticatedTerminalState> persisted = await PublishAsync(
                     heldInstallationLock,
                     current,
@@ -358,15 +333,11 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
                 if (persisted.IsFailure)
                 {
-
                     return Result<FullInstallationResetTerminalOutcome>.Failure(persisted.Error);
-
                 }
 
                 current = persisted.Value;
-
             }
-
         }
 
         Result<ImmutableArray<InstallationResetRestoreCredentialStep>> steps =
@@ -379,9 +350,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (steps.IsFailure)
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(steps.Error);
-
         }
 
         foreach (InstallationResetRestoreCredentialStep step in
@@ -389,13 +358,10 @@ internal sealed class FullInstallationResetTerminalContinuation(
                      ? steps.Value
                      : [])
         {
-
             if (current.Marker.RestoreCredentialCleanup is { } reached
                 && reached >= step.CompletedPhase)
             {
-
                 continue;
-
             }
 
             Result removed = step.CompletedPhase
@@ -411,28 +377,25 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
             if (removed.IsFailure)
             {
-
                 return Result<FullInstallationResetTerminalOutcome>.Failure(removed.Error);
-
             }
+
+            publishToken = CancellationToken.None;
 
             Result<AuthenticatedTerminalState> advanced = await PublishAsync(
                 heldInstallationLock,
                 current,
                 terminal,
                 step.CompletedPhase,
-                cancellationToken,
+                publishToken,
                 adopted).ConfigureAwait(false);
 
             if (advanced.IsFailure)
             {
-
                 return Result<FullInstallationResetTerminalOutcome>.Failure(advanced.Error);
-
             }
 
             current = advanced.Value;
-
         }
 
         Result absent = _transitionAnchors.VerifyTerminalPairAbsent(
@@ -441,9 +404,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (absent.IsFailure)
         {
-
             return Result<FullInstallationResetTerminalOutcome>.Failure(absent.Error);
-
         }
 
         Result<AuthenticatedTerminalState> published = await PublishAsync(
@@ -451,7 +412,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
             current,
             terminal,
             InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
-            cancellationToken,
+            publishToken,
             adopted).ConfigureAwait(false);
 
         return published.IsFailure
@@ -461,7 +422,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
                     InstallationResetRestoreCredentialCleanupPhase
                         .TransitionCredentialsVerifiedAbsent,
                     published.Value.Publication));
-
     }
 
     /// <summary>
@@ -484,12 +444,9 @@ internal sealed class FullInstallationResetTerminalContinuation(
         AuthenticatedTerminalState state,
         CancellationToken cancellationToken)
     {
-
         if (state.Marker.RestoreTerminal is { } adopted)
         {
-
             return Result<ProvenTerminalState>.Success(new ProvenTerminalState(adopted, state));
-
         }
 
         // Observed, not inferred. A cleanup result saying the database was deleted is a claim by
@@ -497,9 +454,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
         // on the strength of the file genuinely not being there.
         if (File.Exists(_grimoireDatabaseFile))
         {
-
             return Inert<ProvenTerminalState>();
-
         }
 
         Result<BackupRestoreProfileNamespace> profile =
@@ -507,9 +462,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (profile.IsFailure)
         {
-
             return Result<ProvenTerminalState>.Failure(profile.Error);
-
         }
 
         Result<BackupRestoreFullResetTerminalProjectionV1> proven =
@@ -522,9 +475,7 @@ internal sealed class FullInstallationResetTerminalContinuation(
 
         if (proven.IsFailure)
         {
-
             return Result<ProvenTerminalState>.Failure(proven.Error);
-
         }
 
         // Persisted before the first removal, so the operation can still finish from any point after
@@ -540,7 +491,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
             ? Result<ProvenTerminalState>.Failure(published.Error)
             : Result<ProvenTerminalState>.Success(
                 new ProvenTerminalState(proven.Value, published.Value));
-
     }
 
     private sealed record ProvenTerminalState(
@@ -558,7 +508,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
         CancellationToken cancellationToken,
         GrimoireOfflineTransitionFullResetTerminalProjectionV1? transitionTerminal = null)
     {
-
         Result<InstallationResetActivePublication> published = await _activeStore.AdvanceAsync(
             heldInstallationLock,
             state.Publication,
@@ -573,13 +522,16 @@ internal sealed class FullInstallationResetTerminalContinuation(
             },
             cancellationToken).ConfigureAwait(false);
 
+        // The reread that follows is not given the caller's token. The publication above is already
+        // durable by here, so a cancellation that stopped the reread would hand the caller an
+        // exception in place of a publication it can no longer name, and its writer would go on
+        // holding the envelope this one superseded.
         return published.IsFailure
             ? Result<AuthenticatedTerminalState>.Failure(published.Error)
             : await RevalidateAsync(
                 heldInstallationLock,
                 published.Value,
-                cancellationToken).ConfigureAwait(false);
-
+                CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -590,7 +542,6 @@ internal sealed class FullInstallationResetTerminalContinuation(
         InstallationResetActivePublication expected,
         CancellationToken cancellationToken)
     {
-
         Result<InstallationResetActiveRecoveryState> recovered = await _activeStore
             .RecoverAsync(heldInstallationLock, cancellationToken)
             .ConfigureAwait(false);
@@ -607,14 +558,11 @@ internal sealed class FullInstallationResetTerminalContinuation(
                 Phase: FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified,
             })
         {
-
             return Inert<AuthenticatedTerminalState>();
-
         }
 
         return Result<AuthenticatedTerminalState>.Success(
             new AuthenticatedTerminalState(current, marker, claim.InstallationId));
-
     }
 
     private sealed record AuthenticatedTerminalState(
@@ -638,30 +586,24 @@ internal sealed class FullInstallationResetTerminalContinuation(
     /// </remarks>
     private Result VerifyIdentitiesRotated()
     {
-
         foreach (string account in (string[])
                  [
                      ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount,
                      ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount,
                  ])
         {
-
             try
             {
-
                 OsCredentialStoreResult identity = _credentialStore.TryGet(
                     ArcanumCredentialIdentity.Service,
                     account);
 
                 if (identity.Status is not OsCredentialStoreStatus.NotFound)
                 {
-
                     return Result.Failure(new Error(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
                         "An identity a full installation reset must rotate is still present."));
-
                 }
-
             }
             catch (Exception exception) when (
                 exception is IOException
@@ -669,17 +611,13 @@ internal sealed class FullInstallationResetTerminalContinuation(
                     or InvalidOperationException
                     or NotSupportedException)
             {
-
                 return Result.Failure(new Error(
                     ErrorCodes.Covenant.Unavailable,
                     "An identity a full installation reset must rotate could not be read."));
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     /// <summary>
@@ -693,10 +631,8 @@ internal sealed class FullInstallationResetTerminalContinuation(
     /// </remarks>
     private IReadOnlyList<string> CandidateStagingRoots()
     {
-
         try
         {
-
             string? parent = Path.GetDirectoryName(
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(_activeStore.GuardedRoot)));
 
@@ -706,18 +642,14 @@ internal sealed class FullInstallationResetTerminalContinuation(
                     parent,
                     BackupRestoreJournal.StagingPrefix + "*",
                     SearchOption.TopDirectoryOnly)];
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or NotSupportedException)
         {
-
             return [];
-
         }
-
     }
 
     /// <summary>
@@ -728,5 +660,4 @@ internal sealed class FullInstallationResetTerminalContinuation(
             new Error(
                 ErrorCodes.Data.RecoveryRequired,
                 "The full installation reset requires recovery."));
-
 }

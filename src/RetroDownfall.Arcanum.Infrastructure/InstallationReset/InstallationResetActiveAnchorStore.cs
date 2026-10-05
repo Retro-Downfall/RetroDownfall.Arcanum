@@ -60,7 +60,7 @@ internal sealed class InstallationResetActiveAnchorStore(IOsCredentialStore cred
                 ArcanumCredentialIdentity.Service,
                 Account(profileNamespace));
         }
-        catch (Exception exception) when (IsPresenceProbeFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return PresenceUnavailable();
         }
@@ -79,7 +79,7 @@ internal sealed class InstallationResetActiveAnchorStore(IOsCredentialStore cred
                 ArcanumCredentialIdentity.Service,
                 Account(profileNamespace));
         }
-        catch (Exception exception) when (IsCredentialFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return Unavailable<InstallationResetActiveAnchorV1?>();
         }
@@ -176,7 +176,7 @@ internal sealed class InstallationResetActiveAnchorStore(IOsCredentialStore cred
                 ArcanumCredentialIdentity.Service,
                 Account(profileNamespace));
         }
-        catch (Exception exception) when (IsCredentialFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return Unavailable();
         }
@@ -216,7 +216,7 @@ internal sealed class InstallationResetActiveAnchorStore(IOsCredentialStore cred
                 Account(profileNamespace),
                 encoded.Value);
         }
-        catch (Exception exception) when (IsCredentialFailure(exception))
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return Unavailable();
         }
@@ -249,20 +249,6 @@ internal sealed class InstallationResetActiveAnchorStore(IOsCredentialStore cred
     private static string Account(BackupRestoreProfileNamespace profileNamespace) =>
         ArcanumCredentialIdentity.InstallationResetActiveAnchorAccount(
             profileNamespace.AccountSuffix);
-
-    private static bool IsCredentialFailure(Exception exception) =>
-        exception is IOException
-            or UnauthorizedAccessException
-            or InvalidOperationException
-            or NotSupportedException;
-
-    private static bool IsPresenceProbeFailure(Exception exception) =>
-        IsCredentialFailure(exception)
-        || exception is DllNotFoundException
-            or EntryPointNotFoundException
-            or BadImageFormatException
-            or System.Runtime.InteropServices.MarshalDirectiveException
-            or TypeLoadException;
 
     private static Error PresenceUnavailable() =>
         new(

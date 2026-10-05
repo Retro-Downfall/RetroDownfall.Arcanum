@@ -15,7 +15,6 @@ internal sealed partial class InstallationResetCredentialCatalog(
     ArcanumSettings? settings = null,
     string? secretStoreRoot = null) : IInstallationResetCredentialService
 {
-
     private const string MirrorPrefix = "provider-";
 
     private const string MirrorSuffix = "-key.dat";
@@ -24,7 +23,6 @@ internal sealed partial class InstallationResetCredentialCatalog(
         ArcanumSettings settings,
         string secretStoreRoot)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
 
         // The Campaign root-identity key and the memory-erasure fingerprint key are deleted here and
@@ -45,84 +43,77 @@ internal sealed partial class InstallationResetCredentialCatalog(
 
         foreach (ProviderSettings provider in settings.Providers ?? [])
         {
-
             if (!FamiliarProviders.IsFamiliar(provider))
             {
-
                 accounts.Add(
                     ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(
                         provider.Name));
-
             }
-
         }
 
         try
         {
-
             if (Directory.Exists(secretStoreRoot))
             {
-
                 foreach (string path in Directory.EnumerateFiles(
                              secretStoreRoot,
                              MirrorPrefix + "*" + MirrorSuffix,
                              SearchOption.TopDirectoryOnly))
                 {
-
                     string name = Path.GetFileName(path);
 
                     Match match = ProviderMirrorName().Match(name);
 
                     if (match.Success)
                     {
-
                         accounts.Add(
                             ArcanumCredentialIdentity.InferenceProviderAccountPrefix
                             + match.Groups["provider"].Value
                             + ArcanumCredentialIdentity.InferenceProviderAccountSuffix);
-
                     }
-
                 }
-
             }
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or NotSupportedException)
         {
-
             // Configuration and fixed identities remain a bounded, valid inventory.
-
         }
 
         return CollectOrdinaryAccounts(accounts);
-
     }
 
     internal static string[] CollectOrdinaryAccounts(IEnumerable<string> accounts)
     {
-
         ArgumentNullException.ThrowIfNull(accounts);
 
         return [.. accounts
-            .Where(static account =>
-                !ArcanumCredentialIdentity.IsBackupRestoreJournalAccount(account)
-                && !ArcanumCredentialIdentity.IsInstallationResetActiveAccount(account)
-                && !ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(account)
-                && !string.Equals(
-                    account,
-                    ArcanumCredentialIdentity.HostProcessToolsTaintAccount,
-                    StringComparison.Ordinal))
+            .Where(static account => !IsRetainedEvidenceAccount(account))
             .Order(StringComparer.Ordinal)];
-
     }
+
+    /// <summary>
+    /// Whether an account holds evidence an ordinary installation reset must never remove.
+    /// </summary>
+    /// <remarks>
+    /// The one predicate behind both the inventory and the delete. Applying it only when the inventory
+    /// is built left the delete trusting whatever names it was handed, so anything that reached it
+    /// without going through the inventory (an unsealed legacy record, a future caller) could remove
+    /// the restore journal, the reset record's own key, or the host-tools taint marker.
+    /// </remarks>
+    internal static bool IsRetainedEvidenceAccount(string account) =>
+        ArcanumCredentialIdentity.IsBackupRestoreJournalAccount(account)
+        || ArcanumCredentialIdentity.IsInstallationResetActiveAccount(account)
+        || ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(account)
+        || string.Equals(
+            account,
+            ArcanumCredentialIdentity.HostProcessToolsTaintAccount,
+            StringComparison.Ordinal);
 
     public InstallationResetCredentialSummary[] Probe(string[] accounts)
     {
-
         ArgumentNullException.ThrowIfNull(accounts);
 
         return [.. accounts
@@ -130,7 +121,6 @@ internal sealed partial class InstallationResetCredentialCatalog(
             .Order(StringComparer.Ordinal)
             .Select(account =>
             {
-
                 OsCredentialStoreResult result = credentialStore.TryGet(
                     ArcanumCredentialIdentity.Service,
                     account);
@@ -139,9 +129,7 @@ internal sealed partial class InstallationResetCredentialCatalog(
                     account,
                     MapProbeStatus(result.Status),
                     MapErrorCode(result.Status));
-
             })];
-
     }
 
     public InstallationResetCredentialSummary[] Probe() =>
@@ -151,7 +139,6 @@ internal sealed partial class InstallationResetCredentialCatalog(
 
     public InstallationResetCredentialResult[] DeleteAndVerify(string[] accounts)
     {
-
         ArgumentNullException.ThrowIfNull(accounts);
 
         List<InstallationResetCredentialResult> results = [];
@@ -160,6 +147,18 @@ internal sealed partial class InstallationResetCredentialCatalog(
                      .Distinct(StringComparer.Ordinal)
                      .Order(StringComparer.Ordinal))
         {
+            // Refused before the store is touched at all, per account, so one retained name never costs
+            // the ordinary accounts beside it. Planning still reports these accounts when asked about
+            // them; only the path that removes something refuses.
+            if (IsRetainedEvidenceAccount(account))
+            {
+                results.Add(new InstallationResetCredentialResult(
+                    account,
+                    InstallationResetItemStatus.Failed,
+                    Core.Primitives.ErrorCodes.Data.Blocked));
+
+                continue;
+            }
 
             OsCredentialStoreResult before = credentialStore.TryGet(
                 ArcanumCredentialIdentity.Service,
@@ -167,25 +166,21 @@ internal sealed partial class InstallationResetCredentialCatalog(
 
             if (before.Status is OsCredentialStoreStatus.NotFound)
             {
-
                 results.Add(new InstallationResetCredentialResult(
                     account,
                     InstallationResetItemStatus.Absent));
 
                 continue;
-
             }
 
             if (before.Status is not OsCredentialStoreStatus.Ok)
             {
-
                 results.Add(new InstallationResetCredentialResult(
                     account,
                     MapProbeStatus(before.Status),
                     MapErrorCode(before.Status)));
 
                 continue;
-
             }
 
             OsCredentialStoreResult deleted = credentialStore.Delete(
@@ -195,14 +190,12 @@ internal sealed partial class InstallationResetCredentialCatalog(
             if (deleted.Status is not OsCredentialStoreStatus.Ok
                 and not OsCredentialStoreStatus.NotFound)
             {
-
                 results.Add(new InstallationResetCredentialResult(
                     account,
                     MapDeleteFailure(deleted.Status),
                     MapErrorCode(deleted.Status)));
 
                 continue;
-
             }
 
             OsCredentialStoreResult after = credentialStore.TryGet(
@@ -217,11 +210,9 @@ internal sealed partial class InstallationResetCredentialCatalog(
                 after.Status is OsCredentialStoreStatus.NotFound
                     ? null
                     : MapErrorCode(after.Status)));
-
         }
 
         return [.. results];
-
     }
 
     public InstallationResetCredentialResult[] DeleteAndVerify() =>
@@ -259,5 +250,4 @@ internal sealed partial class InstallationResetCredentialCatalog(
         "^provider-(?<provider>[A-Z0-9]+(?:_[A-Z0-9]+)*)-key\\.dat$",
         RegexOptions.CultureInvariant)]
     private static partial Regex ProviderMirrorName();
-
 }

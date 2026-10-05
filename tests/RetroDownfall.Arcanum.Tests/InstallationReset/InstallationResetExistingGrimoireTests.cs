@@ -59,7 +59,6 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 [Collection("ProcessEnvironment")]
 public sealed class InstallationResetExistingGrimoireTests : IDisposable
 {
-
     private readonly GrimoireFixture _fixture;
 
     private readonly string _testHome = Path.Combine(
@@ -71,7 +70,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
     public InstallationResetExistingGrimoireTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
 
         SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
@@ -79,37 +77,26 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
 
         SetEnvironment("ARCANUM_TEST_HOME", _testHome);
-
     }
 
     public void Dispose()
     {
-
         foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
         {
-
             global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-
         }
 
         try
         {
-
             if (Directory.Exists(_testHome))
             {
-
                 Directory.Delete(_testHome, recursive: true);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup of an isolated test root.
-
         }
-
     }
 
     [Fact]
@@ -126,7 +113,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
     [Fact]
     public void Restricted_registration_resolves_without_host_data_services_or_state_creation()
     {
-
         using ServiceProvider provider = CreateProvider();
 
         using IServiceScope scope = provider.CreateScope();
@@ -137,13 +123,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.NotNull(service);
 
         Assert.False(Directory.Exists(_testHome));
-
     }
 
     [Fact]
     public async Task Missing_global_grimoire_reports_unavailable_without_creating_any_path()
     {
-
         using ServiceProvider provider = CreateProvider();
 
         using IServiceScope scope = provider.CreateScope();
@@ -164,13 +148,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Null(result.Value.Rows);
 
         Assert.False(Directory.Exists(_testHome));
-
     }
 
     [SkippableFact]
     public async Task Full_reset_marker_evidence_uses_only_the_narrow_six_column_projection()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -182,7 +164,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         await using (ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile))
         {
-
             _ = await context.Database.ExecuteSqlRawAsync(
                 "PRAGMA ignore_check_constraints = ON;");
 
@@ -196,7 +177,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                 """);
 
             await context.Database.CloseConnectionAsync();
-
         }
 
         using IServiceScope scope = provider.CreateScope();
@@ -218,13 +198,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Null(evidence.Value.TaintMasterKeyVersion);
 
         Assert.Null(evidence.Value.TaintFingerprint);
-
     }
 
     [SkippableFact]
     public async Task Public_existing_global_grimoire_plan_is_conservative_and_creates_no_sqlite_sidecars()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -257,13 +235,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile + "-wal"));
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile + "-shm"));
-
     }
 
     [SkippableFact]
     public async Task Workspace_plan_uses_most_specific_campaign_from_read_only_catalog()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -297,13 +273,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(nestedId, result.Value.Workspace.CampaignId);
 
         Assert.Equal(Path.GetFullPath(nested), result.Value.Workspace.WorkspaceRoot);
-
     }
 
     [Fact]
     public async Task Missing_global_grimoire_lockless_apply_is_refused_without_creating_a_database()
     {
-
         using ServiceProvider provider = CreateProvider();
 
         using IServiceScope scope = provider.CreateScope();
@@ -339,13 +313,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.False(File.Exists(activeStore.ActivePath));
 
         Assert.False(Directory.Exists(_testHome));
-
     }
 
     [SkippableFact]
     public async Task Workspace_apply_recovers_precommit_mutation_then_applies_accepted_plan()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -398,13 +370,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             await ReadOperationAsync(interruptedOperationId));
 
         Assert.Equal(LongRunningOperationState.Failed, interrupted.State);
-
     }
 
     [SkippableFact]
     public async Task Workspace_apply_rejects_malformed_mutation_without_changing_it()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -462,13 +432,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             await ReadOperationAsync(interruptedOperationId));
 
         AssertOperationUnchanged(before, after);
-
     }
 
     [SkippableFact]
     public async Task Workspace_apply_returns_success_when_recovery_proves_commit()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -524,7 +492,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             await ReadOperationAsync(interruptedOperationId));
 
         Assert.Equal(LongRunningOperationState.Completed, interrupted.State);
-
     }
 
     [SkippableTheory]
@@ -534,7 +501,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         string subtype,
         bool useMismatchedWorkspaceTarget)
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -595,13 +561,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             await ReadOperationAsync(interruptedOperationId));
 
         AssertOperationUnchanged(before, after);
-
     }
 
     [SkippableFact]
     public async Task Workspace_apply_rejects_ambiguous_mutations_without_changing_them()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -668,13 +632,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         AssertOperationUnchanged(
             secondBefore,
             Assert.IsType<LongRunningOperation>(await ReadOperationAsync(secondId)));
-
     }
 
     [SkippableFact]
     public async Task Global_apply_recognizes_the_exact_completed_factory_reset_plan()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -707,13 +669,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(completedOperationId, applied.Value.OperationId);
 
         Assert.True(applied.Value.Reconciled);
-
     }
 
     [SkippableFact]
     public async Task Workspace_apply_recognizes_the_exact_completed_workspace_reset_plan()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -760,12 +720,88 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(completedOperationId, applied.Value.OperationId);
 
         Assert.True(applied.Value.Reconciled);
-
     }
 
-    private ServiceProvider CreateProvider()
+    [SkippableFact]
+    public async Task Workspace_apply_that_fails_after_the_reset_ran_reports_recovery_required_not_inventory_unavailable()
     {
+        // The service retires a record whose data apply failed with a code from its closed set of
+        // refusals made before anything changed, and inventory unavailable is in that set. A failure
+        // after the canonical action has started is the opposite case: the reset may have committed, so
+        // reporting it as inventory unavailable would get the record - the only evidence of that -
+        // retired. The lease release is a failure the action cannot see, which is what makes it a
+        // faithful stand-in for the I/O and SQLite failures the recovery and apply steps can raise.
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
 
+        using ServiceProvider provider = CreateProvider(FailApplyLeaseDisposal);
+
+        await InstallExistingGrimoireAsync(provider);
+
+        Guid campaignId = Guid.NewGuid();
+
+        string workspaceRoot = Path.GetFullPath(
+            Path.Combine(_testHome, "workspace-fails-after-reset"));
+
+        await AddWorkspaceDataAsync(campaignId, workspaceRoot);
+
+        DataRetentionWorkspaceBinding binding = new(
+            campaignId,
+            workspaceRoot);
+
+        using IServiceScope scope = provider.CreateScope();
+
+        IInstallationResetDataService dataService = StoppedHostDataService(scope);
+
+        Result<DataRetentionPlan> plan = await dataService.PlanAsync(
+            new InstallationResetDataPlanRequest(
+                InstallationResetDataScope.Workspace,
+                binding),
+            CancellationToken.None);
+
+        Assert.True(plan.IsSuccess, plan.Error.Message);
+
+        Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
+            new DataRetentionApplyRequest(
+                new DataRetentionRequest(
+                    DataRetentionOperation.ResetWorkspace,
+                    Workspace: binding),
+                plan.Value.PlanId),
+            CancellationToken.None);
+
+        Assert.Equal(0, await CountWorkspaceContextsAsync(workspaceRoot));
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Error.Code);
+    }
+
+    [Fact]
+    public async Task Apply_without_a_database_reports_inventory_unavailable_because_nothing_ran()
+    {
+        // The other half of the split: a failure before the canonical action starts has changed
+        // nothing, so it keeps the code the service's closed set of pre-effect refusals names.
+        using ServiceProvider provider = CreateProvider();
+
+        using IServiceScope scope = provider.CreateScope();
+
+        IInstallationResetDataService dataService = StoppedHostDataService(scope);
+
+        Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
+            new DataRetentionApplyRequest(
+                new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+                "plan"),
+            CancellationToken.None);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.InventoryUnavailable, applied.Error.Code);
+    }
+
+    private ServiceProvider CreateProvider(
+        Action<IServiceCollection>? configure = null)
+    {
         ServiceCollection services = new();
 
         services.AddLogging();
@@ -779,12 +815,30 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         services.AddArcanumInstallationReset(new ArcanumSettings());
 
+        configure?.Invoke(services);
+
         return services.BuildServiceProvider(new ServiceProviderOptions
         {
             ValidateOnBuild = true,
             ValidateScopes = true,
         });
+    }
 
+    /// <summary>
+    /// Wraps the registered stopped-host connection factory so the lease it hands the apply path throws
+    /// when it is released, after the apply action has run.
+    /// </summary>
+    private static void FailApplyLeaseDisposal(IServiceCollection services)
+    {
+        ServiceDescriptor original = services.Single(
+            static descriptor => descriptor.ServiceType
+                == typeof(IStoppedHostGrimoireConnectionFactory));
+
+        services.Remove(original);
+
+        services.AddSingleton<IStoppedHostGrimoireConnectionFactory>(sp =>
+            new ApplyLeaseDisposalFailingConnectionFactory(
+                (IStoppedHostGrimoireConnectionFactory)original.ImplementationFactory!(sp)));
     }
 
     private static IInstallationResetDataService StoppedHostDataService(
@@ -800,7 +854,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             Task<Result<T>>> operation,
         CancellationToken cancellationToken)
     {
-
         ArcanumMaintenanceLockAcquisitionResult acquired =
             ArcanumMaintenanceLock.AcquireDetailed(
                 ArcanumPaths.GrimoireDirectory);
@@ -814,14 +867,79 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                 ArcanumPaths.GrimoireDatabaseFile);
 
         return await operation(issuer, cancellationToken).ConfigureAwait(false);
+    }
 
+    private sealed class ApplyLeaseDisposalFailingConnectionFactory(
+        IStoppedHostGrimoireConnectionFactory inner)
+        : IStoppedHostGrimoireConnectionFactory
+    {
+        public Task<Result<IStoppedHostGrimoireConnectionLease>>
+            OpenStoppedHostInstallationResetPlanReadAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+            inner.OpenStoppedHostInstallationResetPlanReadAsync(authority, cancellationToken);
+
+        public Task<Result<IStoppedHostGrimoireConnectionLease>>
+            OpenStoppedHostInstallationResetWorkspaceResolutionAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+            inner.OpenStoppedHostInstallationResetWorkspaceResolutionAsync(
+                authority,
+                cancellationToken);
+
+        public Task<Result<IStoppedHostGrimoireConnectionLease>>
+            OpenStoppedHostInstallationResetIdentityReadAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+            inner.OpenStoppedHostInstallationResetIdentityReadAsync(authority, cancellationToken);
+
+        public Task<Result<IStoppedHostGrimoireConnectionLease>>
+            OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+            inner.OpenStoppedHostInstallationResetHostToolsEvidenceReadAsync(
+                authority,
+                cancellationToken);
+
+        public async Task<Result<IStoppedHostGrimoireConnectionLease>>
+            OpenStoppedHostInstallationResetApplyAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken)
+        {
+            Result<IStoppedHostGrimoireConnectionLease> opened = await inner
+                .OpenStoppedHostInstallationResetApplyAsync(authority, cancellationToken)
+                .ConfigureAwait(false);
+
+            return opened.IsFailure
+                ? opened
+                : Result<IStoppedHostGrimoireConnectionLease>.Success(
+                    new DisposalFailingLease(opened.Value));
+        }
+
+        public Task<Result<IStoppedHostGrimoireConnectionLease>>
+            OpenStoppedHostMarkerPairResetAsync(
+                IStoppedHostGrimoireConnectionAuthority authority,
+                CancellationToken cancellationToken) =>
+            inner.OpenStoppedHostMarkerPairResetAsync(authority, cancellationToken);
+    }
+
+    private sealed class DisposalFailingLease(IStoppedHostGrimoireConnectionLease inner)
+        : IStoppedHostGrimoireConnectionLease
+    {
+        public Microsoft.Data.Sqlite.SqliteConnection Connection => inner.Connection;
+
+        public async ValueTask DisposeAsync()
+        {
+            await inner.DisposeAsync().ConfigureAwait(false);
+
+            throw new IOException("The stopped-host lease could not be released.");
+        }
     }
 
     private sealed class StoppedHostDataServiceAdapter(
         IInstallationResetStoppedHostDataService inner)
         : IInstallationResetDataService
     {
-
         public Task<Result<DataRetentionPlan>> PlanAsync(
             InstallationResetDataPlanRequest request,
             CancellationToken cancellationToken = default) =>
@@ -841,14 +959,12 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                     issuer,
                     token),
                 cancellationToken);
-
     }
 
     private sealed class StoppedHostWorkspaceResolver(
         IInstallationResetStoppedHostDataService inner)
         : IInstallationResetWorkspaceResolver
     {
-
         public Task<Result<InstallationResetWorkspaceResolution>> ResolveAsync(
             string invocationDirectory,
             CancellationToken cancellationToken) =>
@@ -859,14 +975,12 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                         issuer,
                         token),
                 cancellationToken);
-
     }
 
     private sealed class StoppedHostEvidenceReader(
         IInstallationResetStoppedHostDataService inner)
         : IInstallationResetHostProcessToolsDatabaseEvidenceReader
     {
-
         public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
             ReadMarkerEvidenceAsync(CancellationToken cancellationToken) =>
             UnderStoppedHostAuthorityAsync(
@@ -876,7 +990,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                         token),
                 cancellationToken,
                 inner);
-
     }
 
     private static Task<Result<T>> UnderStoppedHostAuthorityAsync<T, TState>(
@@ -893,7 +1006,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
     private async Task InstallExistingGrimoireAsync(ServiceProvider provider)
     {
-
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
         string fixtureCopy = _fixture.CopyDatabase();
@@ -914,12 +1026,10 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         await secrets.SaveGrimoireEncryptionSecretAsync(
             GrimoireFixture.TestGrimoireSecret);
-
     }
 
     private async Task<Guid> AddCampaignsAsync(string parent, string nested)
     {
-
         Guid parentId = Guid.NewGuid();
 
         Guid nestedId = Guid.NewGuid();
@@ -927,7 +1037,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         await using (ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile))
         {
-
             DateTimeOffset now = DateTimeOffset.UtcNow;
 
             context.Campaigns.AddRange(
@@ -937,7 +1046,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             await context.SaveChangesAsync();
 
             await context.Database.CloseConnectionAsync();
-
         }
 
         File.Delete(ArcanumPaths.GrimoireDatabaseFile + "-wal");
@@ -945,7 +1053,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         File.Delete(ArcanumPaths.GrimoireDatabaseFile + "-shm");
 
         return nestedId;
-
     }
 
     /// <summary>
@@ -964,7 +1071,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
     [SkippableFact]
     public async Task Labeled_saga_memory_refuses_the_untargeted_reset_under_stopped_host_authority()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -998,12 +1104,10 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(1, await CountRowsAsync("saga_memories", "Id", memoryId));
 
         Assert.Equal(1, await CountRowsAsync("artifact_sensitivity", "ArtifactId", memoryId));
-
     }
 
     private async Task SeedLabeledSagaMemoryAsync(Guid memoryId)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
@@ -1011,14 +1115,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         if (connection.State is not System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(CancellationToken.None);
-
         }
 
         await using (SqliteCommand memory = connection.CreateCommand())
         {
-
             memory.CommandText = """
                 INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode)
                 VALUES ($id, 'labelled saga fact', $created, 1);
@@ -1029,7 +1130,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             _ = memory.Parameters.AddWithValue("$created", "2026-01-01T00:00:00.0000000Z");
 
             _ = await memory.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         // Written through the ledger the serving host writes labels with, so the row this test
@@ -1040,7 +1140,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         try
         {
-
             ArtifactSensitivityLedger ledger = new(connections);
 
             Result<LabeledArtifactWriteReceipt> receipt = await ledger.LabelAsync(
@@ -1057,20 +1156,15 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                 CancellationToken.None);
 
             Assert.True(receipt.IsSuccess, receipt.IsFailure ? receipt.Error.Message : string.Empty);
-
         }
         finally
         {
-
             connections.Dispose();
-
         }
-
     }
 
     private async Task<int> CountRowsAsync(string table, string column, Guid id)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
@@ -1078,9 +1172,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         if (connection.State is not System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(CancellationToken.None);
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -1092,12 +1184,10 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(CancellationToken.None),
             global::System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private async Task AddWorkspaceDataAsync(Guid campaignId, string workspaceRoot)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
@@ -1119,7 +1209,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         });
 
         await context.SaveChangesAsync();
-
     }
 
     private async Task<Guid> SeedInterruptedMutationAsync(
@@ -1128,7 +1217,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         byte[]? checkpointPayload = null,
         LongRunningOperationState state = LongRunningOperationState.Running)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
@@ -1167,7 +1255,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         if (state is LongRunningOperationState.ReconciliationRequired)
         {
-
             LongRunningOperation latest = Assert.IsType<LongRunningOperation>(
                 await operations.GetAsync(
                     operation.Id,
@@ -1183,16 +1270,13 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                 CancellationToken.None);
 
             Assert.True(transitioned);
-
         }
 
         return operation.Id;
-
     }
 
     private async Task<LongRunningOperation?> ReadOperationAsync(Guid operationId)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
@@ -1201,12 +1285,10 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             TestOrdinaryConnectionFactory.For(context)).GetAsync(
             operationId,
             CancellationToken.None);
-
     }
 
     private async Task<Guid> InsertInterruptedMutationAsync(string target)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
@@ -1236,12 +1318,10 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             """);
 
         return operationId;
-
     }
 
     private async Task<Guid> InsertCompletedFactoryResetAsync(string planId)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
@@ -1265,14 +1345,12 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             """);
 
         return operationId;
-
     }
 
     private async Task<Guid> InsertCompletedWorkspaceResetAsync(
         DataRetentionWorkspaceBinding binding,
         string planId)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
@@ -1306,38 +1384,32 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             """);
 
         return operationId;
-
     }
 
     private async Task<int> CountWorkspaceContextsAsync(string workspaceRoot)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
         return await context.WorkspaceContexts
             .AsNoTracking()
             .CountAsync(item => item.WorkspacePath == workspaceRoot);
-
     }
 
     private async Task DeleteWorkspaceContextsAsync(string workspaceRoot)
     {
-
         await using ArcanumDbContext context = _fixture.CreateContext(
             ArcanumPaths.GrimoireDatabaseFile);
 
         _ = await context.WorkspaceContexts
             .Where(item => item.WorkspacePath == workspaceRoot)
             .ExecuteDeleteAsync();
-
     }
 
     private static void AssertOperationUnchanged(
         LongRunningOperation before,
         LongRunningOperation after)
     {
-
         Assert.Equal(before.State, after.State);
 
         Assert.Equal(before.Revision, after.Revision);
@@ -1349,12 +1421,10 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(before.AttemptCount, after.AttemptCount);
 
         Assert.Equal(before.CheckpointPayload, after.CheckpointPayload);
-
     }
 
     private static byte[] BuildMutationJournal(string subtype, string target)
     {
-
         string body = "ARCAMUT2\n"
             + subtype
             + "\n"
@@ -1365,7 +1435,6 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             SHA256.HashData(Encoding.UTF8.GetBytes(body)));
 
         return Encoding.UTF8.GetBytes(body + "H:" + digest + "\n");
-
     }
 
     private static Campaign CreateCampaign(
@@ -1401,17 +1470,14 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
     private void SetEnvironment(string name, string value)
     {
-
         _originalEnvironment[name] =
             global::System.Environment.GetEnvironmentVariable(name);
 
         global::System.Environment.SetEnvironmentVariable(name, value);
-
     }
 
     private sealed record FileSnapshot(
         DateTime LastWriteTimeUtc,
         long Length,
         string Sha256);
-
 }

@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// </remarks>
 public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     private static readonly Guid InstallationId =
@@ -42,7 +41,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
     private static string CreateOwnerOnlyRoot()
     {
-
         string path = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-terminal-cont-{Guid.NewGuid():N}");
@@ -50,7 +48,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(path);
 
         return path;
-
     }
 
     private string GuardedRoot => Path.Combine(_root, "arcanum");
@@ -60,7 +57,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
     [Fact]
     public void A_never_restored_installation_with_the_database_gone_verifies_absence_and_publishes_it()
     {
-
         Harness harness = Create();
 
         Result<FullInstallationResetTerminalOutcome> completed = harness.Complete();
@@ -74,13 +70,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         Assert.Equal(
             InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
             harness.Store.Current.Payload.HostToolsMarkerPairReset!.RestoreCredentialCleanup);
-
     }
 
     [Fact]
     public void A_closed_anchor_removes_the_three_restore_credentials_in_order()
     {
-
         Harness harness = Create();
 
         harness.SeedClosedRestore();
@@ -107,13 +101,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
             account => Assert.Equal(
                 OsCredentialStoreStatus.NotFound,
                 _credentials.TryGet(ArcanumCredentialIdentity.Service, account).Status));
-
     }
 
     [Fact]
     public void A_database_that_still_exists_refuses_before_any_credential_is_read()
     {
-
         Harness harness = Create();
 
         harness.SeedClosedRestore();
@@ -131,23 +123,18 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         Assert.Empty(harness.Deleted);
 
         Assert.Null(harness.Store.Current.Payload.HostToolsMarkerPairReset!.RestoreCredentialCleanup);
-
     }
 
     [Fact]
     public void A_managed_file_inventory_short_of_terminal_verification_refuses()
     {
-
         foreach (FullInstallationResetManagedFileReconciliationPhase phase in
                  Enum.GetValues<FullInstallationResetManagedFileReconciliationPhase>())
         {
-
             if (phase is FullInstallationResetManagedFileReconciliationPhase
                 .TerminalInventoryVerified)
             {
-
                 continue;
-
             }
 
             Harness harness = Create(managedFilePhase: phase);
@@ -157,15 +144,12 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
             Assert.True(harness.Complete().IsFailure);
 
             Assert.Empty(harness.Deleted);
-
         }
-
     }
 
     [Fact]
     public void A_record_with_no_managed_file_reconciliation_at_all_refuses()
     {
-
         Harness harness = Create(managedFilePhase: null);
 
         harness.SeedClosedRestore();
@@ -173,7 +157,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         Assert.True(harness.Complete().IsFailure);
 
         Assert.Empty(harness.Deleted);
-
     }
 
     /// <summary>
@@ -189,7 +172,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
     [InlineData(ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount)]
     public void An_identity_a_full_reset_must_rotate_that_is_still_present_refuses(string account)
     {
-
         Harness harness = Create();
 
         harness.SeedClosedRestore();
@@ -204,13 +186,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         Assert.Empty(harness.Deleted);
 
         Assert.Null(harness.Store.Current.Payload.HostToolsMarkerPairReset!.RestoreCredentialCleanup);
-
     }
 
     [Fact]
     public void A_stale_publication_refuses()
     {
-
         Harness harness = Create();
 
         InstallationResetActivePublication stale = harness.Store.Current;
@@ -220,13 +200,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         Assert.True(harness.Complete(stale).IsFailure);
 
         Assert.Empty(harness.Deleted);
-
     }
 
     [Fact]
     public void A_crash_mid_trio_resumes_from_the_persisted_projection_rather_than_wedging()
     {
-
         Harness harness = Create();
 
         harness.SeedClosedRestore();
@@ -259,13 +237,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         // would advance the authenticated envelope revision for no reason, and every proof bound to
         // the one it replaced would go stale with it.
         Assert.Equal(4, harness.Store.Advances);
-
     }
 
     [Fact]
     public void A_resume_still_compares_each_surviving_account_against_the_persisted_projection()
     {
-
         Harness harness = Create();
 
         harness.SeedClosedRestore();
@@ -283,13 +259,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         Assert.True(completed.IsFailure);
 
         Assert.Empty(harness.Deleted);
-
     }
 
     [Fact]
     public void A_record_already_verified_absent_is_idempotent_and_removes_nothing_twice()
     {
-
         Harness harness = Create();
 
         harness.SeedClosedRestore();
@@ -307,13 +281,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
             second.Value.Phase);
 
         Assert.Equal(deletesAfterFirst, harness.Deleted.Count);
-
     }
 
     [Fact]
     public void A_closed_transition_slot_is_compare_removed_anchor_then_key_after_the_restore_trio()
     {
-
         // The last thing a full reset takes. Both accounts survive every other cleanup in the product
         // precisely because they are the only evidence that could finish an interrupted transition, so
         // the ordering matters twice: after the trio, and anchor before key within the pair.
@@ -342,13 +314,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                 harness.TransitionAccounts.KeyAccount,
             ],
             harness.Deleted);
-
     }
 
     [Fact]
     public void A_nested_transition_that_never_reported_blocks_the_removal_it_could_still_need()
     {
-
         // A claim with no completion is a reset that started a database transition and never heard
         // how it ended. Taking the pair here would destroy the only credentials that could finish it,
         // so the reset stops with everything still recoverable.
@@ -367,7 +337,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         Assert.DoesNotContain(harness.TransitionAccounts.AnchorAccount, harness.Deleted);
 
         Assert.DoesNotContain(harness.TransitionAccounts.KeyAccount, harness.Deleted);
-
     }
 
     [Theory]
@@ -377,7 +346,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
     public void A_crash_inside_the_transition_pair_resumes_from_the_persisted_projection(
         byte reachedCode)
     {
-
         InstallationResetRestoreCredentialCleanupPhase reached =
             (InstallationResetRestoreCredentialCleanupPhase)reachedCode;
 
@@ -397,16 +365,12 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
         if (reached >= InstallationResetRestoreCredentialCleanupPhase.TransitionAnchorRemoved)
         {
-
             harness.RemoveTransitionAnchorOutOfBand();
-
         }
 
         if (reached >= InstallationResetRestoreCredentialCleanupPhase.TransitionKeyRemoved)
         {
-
             harness.RemoveTransitionKeyOutOfBand();
-
         }
 
         harness.SeedTransitionResumeAt(reached);
@@ -439,24 +403,111 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                     account,
                     harness.TransitionAccounts.KeyAccount,
                     StringComparison.Ordinal)));
+    }
 
+    [Fact]
+    public void A_cancellation_after_the_first_removal_still_publishes_every_phase_it_removed()
+    {
+        // The caller's token trips the instant the anchor is gone. A removal that already happened is
+        // recorded by the phase published for it; publishing on the cancelled token threw before
+        // writing, which left credentials removed and a record that said they never were.
+        Harness harness = Create();
+
+        harness.SeedClosedRestore();
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.CancelAfterFirstDeletion(cancellation);
+
+        Result<FullInstallationResetTerminalOutcome> completed =
+            harness.Complete(cancellationToken: cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(completed.IsSuccess, completed.IsFailure ? completed.Error.Message : null);
+
+        Assert.Equal(
+            [
+                harness.Trio.AnchorAccount,
+                harness.Trio.JournalKeyAccount,
+                harness.Trio.InstallationAccount,
+            ],
+            harness.Deleted);
+
+        Assert.Equal(
+            InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
+            harness.Store.Current.Payload.HostToolsMarkerPairReset!.RestoreCredentialCleanup);
+    }
+
+    [Fact]
+    public void A_cancellation_after_the_first_transition_removal_still_publishes_every_phase_it_removed()
+    {
+        Harness harness = Create();
+
+        harness.SeedClosedRestore();
+
+        harness.SeedClosedTransitionSlot();
+
+        harness.SeedNestedReceipt(InstallationResetNestedTransitionPhase.Completed);
+
+        // Past the trio, so the first removal of this pass is the transition anchor.
+        harness.RemoveTrioOutOfBand();
+
+        harness.SeedTransitionResumeAt(
+            InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent);
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.CancelAfterFirstDeletion(cancellation);
+
+        Result<FullInstallationResetTerminalOutcome> completed =
+            harness.Complete(cancellationToken: cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(completed.IsSuccess, completed.IsFailure ? completed.Error.Message : null);
+
+        Assert.Equal(
+            [
+                harness.TransitionAccounts.AnchorAccount,
+                harness.TransitionAccounts.KeyAccount,
+            ],
+            harness.Deleted);
+
+        Assert.Equal(
+            InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
+            harness.Store.Current.Payload.HostToolsMarkerPairReset!.RestoreCredentialCleanup);
+    }
+
+    [Fact]
+    public void A_cancellation_before_any_removal_stops_without_removing_or_publishing_anything()
+    {
+        Harness harness = Create();
+
+        harness.SeedClosedRestore();
+
+        using CancellationTokenSource cancellation = new();
+
+        cancellation.Cancel();
+
+        _ = Assert.ThrowsAny<OperationCanceledException>(
+            () => harness.Complete(cancellationToken: cancellation.Token));
+
+        Assert.Empty(harness.Deleted);
+
+        Assert.Equal(0, harness.Advances);
     }
 
     public void Dispose()
     {
-
         try
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
         catch (IOException)
         {
-
             // A scratch directory under the OS temp root; a failure to remove it is not an outcome.
         }
-
     }
 
     private Harness Create(
@@ -470,8 +521,10 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
     private sealed class OrderRecordingCredentialStore(InMemoryOsCredentialStore inner)
         : IOsCredentialStore
     {
-
         internal List<string> Deleted { get; } = [];
+
+        /// <summary>Runs once the deletion has happened, so a test can cancel at that exact point.</summary>
+        internal Action? AfterDelete { get; set; }
 
         public bool IsAvailable => inner.IsAvailable;
 
@@ -483,18 +536,18 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account)
         {
-
             Deleted.Add(account);
 
-            return inner.Delete(service, account);
+            OsCredentialStoreResult deleted = inner.Delete(service, account);
 
+            AfterDelete?.Invoke();
+
+            return deleted;
         }
-
     }
 
     private sealed class Harness
     {
-
         private readonly FullInstallationResetTerminalContinuationTests _owner;
 
         private readonly OrderRecordingCredentialStore _recording;
@@ -503,7 +556,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
             FullInstallationResetTerminalContinuationTests owner,
             FullInstallationResetManagedFileReconciliationPhase? managedFilePhase)
         {
-
             _owner = owner;
 
             _recording = new OrderRecordingCredentialStore(owner._credentials);
@@ -531,7 +583,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                 _recording,
                 new GrimoireOfflineTransitionJournalAnchorStore(_recording),
                 owner.DatabaseFile);
-
         }
 
         internal TerminalActiveStore Store { get; }
@@ -555,7 +606,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         /// <summary>Writes the credential pair a closed offline-transition slot leaves behind.</summary>
         internal void SeedClosedTransitionSlot()
         {
-
             GrimoireOfflineTransitionAnchorV1 anchor = new(
                 Version: 1,
                 TransitionLocation.ProfileNamespace.Digest,
@@ -583,7 +633,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                 ArcanumCredentialIdentity.Service,
                 TransitionAccounts.KeyAccount,
                 Convert.ToBase64String([.. Enumerable.Repeat((byte)0x77, 32)]));
-
         }
 
         /// <summary>
@@ -597,7 +646,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         internal void SeedTransitionResumeAt(
             InstallationResetRestoreCredentialCleanupPhase phase)
         {
-
             (string anchorAccount, string keyAccount) = TransitionAccounts;
 
             GrimoireOfflineTransitionFullResetTerminalProjectionV1 projection = new(
@@ -623,13 +671,11 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                 TransitionTerminal = projection,
                 RestoreCredentialCleanup = phase,
             });
-
         }
 
         /// <summary>Clears the trio exactly as the steps that already ran would have left it.</summary>
         internal void RemoveTrioOutOfBand()
         {
-
             _ = _owner._credentials.Delete(ArcanumCredentialIdentity.Service, Trio.AnchorAccount);
 
             _ = _owner._credentials.Delete(
@@ -639,7 +685,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
             _ = _owner._credentials.Delete(
                 ArcanumCredentialIdentity.Service,
                 Trio.InstallationAccount);
-
         }
 
         internal void RemoveTransitionAnchorOutOfBand() =>
@@ -654,7 +699,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
         private string AnchorValue()
         {
-
             GrimoireOfflineTransitionAnchorV1 anchor = new(
                 Version: 1,
                 TransitionLocation.ProfileNamespace.Digest,
@@ -674,7 +718,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
             Assert.True(encoded.IsSuccess, encoded.IsFailure ? encoded.Error.Message : null);
 
             return encoded.Value;
-
         }
 
         /// <summary>Records a nested transition the reset launched and how far it reported.</summary>
@@ -711,7 +754,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         /// </summary>
         internal void SeedResumeAt(InstallationResetRestoreCredentialCleanupPhase phase)
         {
-
             BackupRestoreFullResetTerminalProjectionV1 terminal = RestoreProjection();
 
             Store.Seed(marker => marker with
@@ -719,7 +761,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                 RestoreTerminal = terminal,
                 RestoreCredentialCleanup = phase,
             });
-
         }
 
         private BackupRestoreFullResetTerminalProjectionV1 RestoreProjection() =>
@@ -742,25 +783,30 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                 new CovenantDigest([.. Enumerable.Repeat((byte)0x55, 32)]));
 
         internal Result<FullInstallationResetTerminalOutcome> Complete(
-            InstallationResetActivePublication? publication = null)
+            InstallationResetActivePublication? publication = null,
+            CancellationToken? cancellationToken = null)
         {
-
             using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(_owner.GuardedRoot));
 
             return Subject
-                .CompleteAsync(held, publication ?? Store.Current, Token)
+                .CompleteAsync(held, publication ?? Store.Current, cancellationToken ?? Token)
                 .GetAwaiter()
                 .GetResult();
-
         }
+
+        /// <summary>
+        /// Cancels the caller's token the instant the first credential is gone, which is the one
+        /// moment the removal is irreversible and its phase is not yet recorded.
+        /// </summary>
+        internal void CancelAfterFirstDeletion(CancellationTokenSource cancellation) =>
+            _recording.AfterDelete = () => cancellation.Cancel();
 
         /// <summary>
         /// Writes the credential set an installation whose last restore closed leaves behind.
         /// </summary>
         internal void SeedClosedRestore()
         {
-
             BackupRestoreJournalAnchorV1 anchor = new(
                 Version: 1,
                 Profile().Digest,
@@ -789,7 +835,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                 ArcanumCredentialIdentity.Service,
                 Trio.InstallationAccount,
                 InstallationId.ToString("D"));
-
         }
 
         private BackupRestoreProfileNamespace Profile() =>
@@ -801,7 +846,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         private static InstallationResetActivePublication Publication(
             FullInstallationResetManagedFileReconciliationPhase? managedFilePhase)
         {
-
             DateTimeOffset acceptedAtUtc = new(2026, 8, 24, 12, 0, 0, TimeSpan.Zero);
 
             FullInstallationResetExternalRemediationAttestation attestation = new(
@@ -933,9 +977,7 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                     1,
                     envelopeDigest,
                     location.Digest));
-
         }
-
     }
 
     /// <summary>
@@ -945,7 +987,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         string guardedRoot,
         InstallationResetActivePublication initial) : IInstallationResetActiveStore
     {
-
         public string GuardedRoot { get; } = guardedRoot;
 
         internal InstallationResetActivePublication Current { get; private set; } = initial;
@@ -967,7 +1008,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
         internal void Seed(
             Func<HostToolsMarkerPairResetCheckpointV1, HostToolsMarkerPairResetCheckpointV1> rewrite)
         {
-
             Current = Current with
             {
                 Payload = InstallationResetActivePayloadV3.FromRecord(
@@ -977,17 +1017,19 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                             rewrite(Current.Payload.HostToolsMarkerPairReset!),
                     }),
             };
-
         }
 
         public Task<Result<InstallationResetActiveRecoveryState>> RecoverAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
             heldInstallationLock.AssertHeldFor(GuardedRoot);
+
+            // The real store observes the token here, and a double that did not would let a step that
+            // reread on a cancelled token look as though it could.
+            cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(
                 Result<InstallationResetActiveRecoveryState>.Success(
@@ -995,7 +1037,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                         InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
                         Current,
                         LegacyRecord: null)));
-
         }
 
         public Task<Result<InstallationResetActivePublication>> AdvanceAsync(
@@ -1004,22 +1045,21 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
             InstallationResetActiveRecord next,
             CancellationToken cancellationToken = default)
         {
-
             ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
             ArgumentNullException.ThrowIfNull(next);
 
             heldInstallationLock.AssertHeldFor(GuardedRoot);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (current.EnvelopeDigest != Current.EnvelopeDigest)
             {
-
                 return Task.FromResult(
                     Result<InstallationResetActivePublication>.Failure(
                         new Error(
                             ErrorCodes.Data.RecoveryRequired,
                             "The publication is not the current one.")));
-
             }
 
             Advances++;
@@ -1028,7 +1068,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
             return Task.FromResult(
                 Result<InstallationResetActivePublication>.Success(Current));
-
         }
 
         public Task<Result<InstallationResetActivePublication>> BeginAsync(
@@ -1065,7 +1104,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
             InstallationResetActivePublication current,
             InstallationResetActivePayloadV3 payload)
         {
-
             CovenantDigest envelopeDigest = new(
                 [.. Enumerable.Repeat(
                     checked((byte)(0x20 + current.Envelope.Revision)),
@@ -1086,9 +1124,6 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
                     EnvelopeDigest = envelopeDigest,
                 },
             };
-
         }
-
     }
-
 }

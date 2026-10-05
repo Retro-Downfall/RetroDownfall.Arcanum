@@ -6,6 +6,8 @@ using System.Reflection;
 
 using Microsoft.Data.Sqlite;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -1404,7 +1406,8 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                 new HostProcessToolsMarkerPairJoiner(),
                 new AcceptingVerifier(() => Store.Current),
                 new InertLifecycle(),
-                new InertOsPort());
+                new InertOsPort(),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
         }
 
         internal string GuardedRoot { get; }
