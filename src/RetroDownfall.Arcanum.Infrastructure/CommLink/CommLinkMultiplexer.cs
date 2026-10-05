@@ -32,6 +32,15 @@ internal sealed class CommLinkMultiplexer(
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                // Nothing delivered yet: the cancellation is the caller's to receive. Something delivered
+                // already: an earlier sink carried the alert and a cancellation cannot recall it, so the
+                // true verdict is Delivered, and reporting a cancellation instead would invite a retry
+                // that sends the alert to that sink twice. Either way no later sink is tried.
+                if (anyDelivered)
+                {
+                    break;
+                }
+
                 throw;
             }
             catch (Exception ex)
@@ -44,7 +53,7 @@ internal sealed class CommLinkMultiplexer(
                     ex.GetType().Name);
 
                 lastFailure = new Error(
-                    "CommLink.DispatcherException",
+                    ErrorCodes.CommLink.DispatcherException,
                     "A Comm Link dispatcher failed unexpectedly. See server logs for details.");
 
                 continue;

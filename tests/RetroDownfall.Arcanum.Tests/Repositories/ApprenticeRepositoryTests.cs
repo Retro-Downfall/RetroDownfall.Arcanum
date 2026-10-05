@@ -599,6 +599,94 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A page that is entirely one timestamp widens to the whole tie group, because the bare-timestamp
+    /// cursor cannot express a position inside it. The bound is "more than" the ceiling: a group of
+    /// exactly <see cref="ApprenticeRepository.MaxTieGroupWidening"/> is returned whole, and the probe
+    /// for older rows still says another page exists.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_widens_a_whole_page_tie_group_that_is_exactly_the_bound()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset tied = new(2026, 2, 1, 9, 0, 0, TimeSpan.Zero);
+
+        AddTiedApprentices(tied, ApprenticeRepository.MaxTieGroupWidening);
+
+        _db!.Apprentices.Add(TiedApprentice("older", tied.AddMinutes(-5)));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        ApprenticeRepository repository = new(_db, NullLogger<ApprenticeRepository>.Instance);
+
+        ListPageResult<Apprentice> page = await repository.ListAsync(
+            campaignId: null,
+            status: null,
+            limit: 1,
+            beforeUpdatedAt: null,
+            CancellationToken.None);
+
+        Assert.Equal(ApprenticeRepository.MaxTieGroupWidening, page.Items.Count());
+
+        Assert.All(page.Items, apprentice => Assert.Equal(tied, apprentice.UpdatedAt));
+
+        Assert.True(page.HasMore);
+
+        Assert.Equal(tied, page.NextBeforeUpdatedAt);
+    }
+
+    /// <summary>
+    /// Past the bound the group is unservable through a bare-timestamp cursor. Clipping it would leave
+    /// the cursor on the boundary timestamp and strand the rest of the group behind the strict
+    /// <c>&lt;</c>, so the list fails loudly instead, naming the condition and how to narrow the query.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_refuses_to_widen_past_the_tie_group_bound()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset tied = new(2026, 2, 2, 9, 0, 0, TimeSpan.Zero);
+
+        AddTiedApprentices(tied, ApprenticeRepository.MaxTieGroupWidening + 1);
+
+        await _db!.SaveChangesAsync(CancellationToken.None);
+
+        ApprenticeRepository repository = new(_db, NullLogger<ApprenticeRepository>.Instance);
+
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.ListAsync(
+                campaignId: null,
+                status: null,
+                limit: 1,
+                beforeUpdatedAt: null,
+                CancellationToken.None));
+
+        Assert.Contains("share the timestamp", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("campaign or status filter", error.Message, StringComparison.Ordinal);
+    }
+
+    private void AddTiedApprentices(DateTimeOffset timestamp, int count)
+    {
+        for (int index = 0; index < count; index++)
+        {
+            _db!.Apprentices.Add(TiedApprentice("tied-" + index, timestamp));
+        }
+    }
+
+    private static Apprentice TiedApprentice(string name, DateTimeOffset timestamp) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            Goal = "Share one timestamp",
+            Status = ApprenticeStatus.Idle.ToString(),
+            WorkspacePath = "/tmp/workspace",
+            CreatedAt = timestamp,
+            UpdatedAt = timestamp,
+        };
+
+    /// <summary>
     /// Ordering must be a total order, not merely "descending by UpdatedAt". With no identity
     /// tie-breaker the relative order of tied rows is undefined, so two identical queries can disagree
     /// and the keyset cursor cannot reason about the boundary at all.

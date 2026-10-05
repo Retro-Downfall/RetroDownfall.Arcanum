@@ -1,11 +1,17 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Tests.Operations;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Infrastructure;
 
@@ -104,6 +110,44 @@ public sealed class ServiceCollectionExtensionsTests
             services,
             static descriptor =>
                 descriptor.ServiceType == typeof(ILongRunningOperationClassifiedRecoveryLeaseAcquisition));
+    }
+
+    /// <summary>
+    /// The descriptor test above reads the shape; this runs the registration. The reconciler the CLI
+    /// container builds has no discovery port, so a generic pass from it throws instead of scanning an
+    /// installation the CLI does not own. That its exact-settlement path still works without the ports is
+    /// shown where it is consumed, by <c>GrimoireOfflineTransitionHandlerDispatchTests</c>, which runs
+    /// stopped-host recovery through this same registration.
+    /// </summary>
+    [Fact]
+    public async Task CliStack_reconciler_refuses_a_generic_pass_instead_of_scanning_the_installation()
+    {
+        FakeTimeProvider time = new();
+
+        ServiceCollection supplied = [];
+
+        supplied.AddSingleton<ILongRunningOperationStore>(new FakeLongRunningOperationStore(time));
+
+        supplied.AddSingleton<TimeProvider>(time);
+
+        supplied.AddSingleton(new LongRunningOperationOwnership());
+
+        supplied.AddSingleton<ILogger<LongRunningOperationReconciler>>(
+            NullLogger<LongRunningOperationReconciler>.Instance);
+
+        supplied.Add(CliComposedReconciler.Descriptor());
+
+        await using ServiceProvider provider = supplied.BuildServiceProvider();
+
+        using IServiceScope scope = provider.CreateScope();
+
+        LongRunningOperationReconciler reconciler =
+            scope.ServiceProvider.GetRequiredService<LongRunningOperationReconciler>();
+
+        InvalidOperationException refusal = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => reconciler.ReconcileNowAsync("cli-owner"));
+
+        Assert.Contains("generic-discovery", refusal.Message, StringComparison.Ordinal);
     }
 
     /// <summary>

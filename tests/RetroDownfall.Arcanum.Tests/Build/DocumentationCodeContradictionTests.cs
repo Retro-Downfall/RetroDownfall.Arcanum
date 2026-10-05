@@ -506,6 +506,12 @@ public sealed class DocumentationCodeContradictionTests
     /// coordinator; the day a turn path consumes it this fails, and the section has to be rewritten
     /// with the wiring rather than left saying "unconsumed".
     /// </summary>
+    /// <remarks>
+    /// Two other documents read as if the claim were in use and are held to the same fact: the OATH
+    /// issue table must not list durable turn claims as landed behaviour without saying nothing consumes
+    /// them, and the buffered-finalization step takes its exclusive pre-request revision from the begin
+    /// preflight, which is what <c>GrimoireTurnWriter</c> reads, not from a durable claim.
+    /// </remarks>
     [Fact]
     public void The_session_turn_claim_coordinator_is_documented_as_installed_but_unconsumed()
     {
@@ -518,29 +524,86 @@ public sealed class DocumentationCodeContradictionTests
 
         Assert.DoesNotContain("| Durable Session turn claims |", section, StringComparison.Ordinal);
 
+        // Comment-free text, so a doc comment that merely mentions the coordinator is not a consumer, and
+        // repository-relative paths, so two files that share a name cannot alias one another.
         string[] namingFiles =
         [
-            .. Directory
-                .EnumerateFiles(
-                    Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src"),
-                    "*.cs",
-                    SearchOption.AllDirectories)
-                .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-                    && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-                .Where(static path => File
-                    .ReadAllText(path)
-                    .Contains("ISessionTurnClaimCoordinator", StringComparison.Ordinal))
-                .Select(static path => Path.GetFileName(path))
+            .. ProductionSourceInventory
+                .Sources()
+                .Where(static source => source.Text.Contains("ISessionTurnClaimCoordinator", StringComparison.Ordinal))
+                .Select(static source => source.RelativePath)
                 .Order(StringComparer.Ordinal),
         ];
 
         Assert.Equal(
             [
-                "ISessionTurnClaimCoordinator.cs",
-                "ServiceCollectionExtensions.cs",
-                "SessionTurnClaimStore.cs",
+                "src/RetroDownfall.Arcanum.Core/Storage/ISessionTurnClaimCoordinator.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionTurnClaimStore.cs",
             ],
             namingFiles);
+
+        string oathRow = Assert.Single(
+            ReadDocument("Arcanum.OATH.md").Split('\n'),
+            static line => line.StartsWith("| **#89** |", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("durable Session turn claims,", oathRow, StringComparison.Ordinal);
+
+        Assert.Contains("no turn path consumes them yet", oathRow, StringComparison.Ordinal);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.DoesNotContain("the turn claim's exclusive pre-request history revision", design, StringComparison.Ordinal);
+
+        Assert.Contains("the begin preflight's exclusive pre-request history revision", design, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The headers-first, capped-reader guarantee is stated on the bullet of the type that makes the request,
+    /// not on the multiplexer's, which neither sends nor drains anything.
+    /// </summary>
+    /// <remarks>
+    /// Inserting the multiplexer's bullet into the error-sanitization list once carried the sentence away from
+    /// the dispatcher's bullet and onto its own, so the dispatcher stopped stating a guarantee only it
+    /// provides and the multiplexer claimed one it cannot. The source side of the pair is the claim's anchor:
+    /// <c>ResponseHeadersRead</c> and the capped drain live in the dispatcher and nowhere in the multiplexer.
+    /// </remarks>
+    [Fact]
+    public void The_commlink_capped_reader_guarantee_is_stated_on_the_dispatcher_bullet_not_the_multiplexer_bullet()
+    {
+        string dispatcherSource = ReadSource("Infrastructure", "CommLink", "WebhookCommLinkDispatcher.cs");
+
+        string multiplexerSource = ReadSource("Infrastructure", "CommLink", "CommLinkMultiplexer.cs");
+
+        Assert.Contains("HttpCompletionOption.ResponseHeadersRead", dispatcherSource, StringComparison.Ordinal);
+
+        Assert.Contains("HttpResponseBodyDrainer.DrainAsync", dispatcherSource, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ResponseHeadersRead", multiplexerSource, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("HttpResponseBodyDrainer", multiplexerSource, StringComparison.Ordinal);
+
+        string[] lines = ReadDocument("Arcanum.DESIGN.md").Split('\n');
+
+        string dispatcherBullet = Assert.Single(
+            lines,
+            static line => line.StartsWith("- **`WebhookCommLinkDispatcher`** — outbound webhook exceptions", StringComparison.Ordinal));
+
+        string multiplexerBullet = Assert.Single(
+            lines,
+            static line => line.StartsWith("- **`CommLinkMultiplexer`** — a sink that throws", StringComparison.Ordinal));
+
+        Assert.Contains("`ResponseHeadersRead`", dispatcherBullet, StringComparison.Ordinal);
+
+        Assert.Contains("existing capped reader", dispatcherBullet, StringComparison.Ordinal);
+
+        Assert.Contains("cannot force full-body buffering", dispatcherBullet, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ResponseHeadersRead", multiplexerBullet, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("capped reader", multiplexerBullet, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("full-body buffering", multiplexerBullet, StringComparison.Ordinal);
     }
 
     /// <summary>

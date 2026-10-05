@@ -326,6 +326,66 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
         Assert.Equal("CommLink.WebhookHttpError", result.Error.Code);
     }
 
+    /// <summary>
+    /// The receiver answered 2xx, so the alert is out. A caller that cancels while the response body is
+    /// being drained is cancelling bookkeeping, not the delivery: reporting a cancellation here would
+    /// hand the caller a delivered alert it believes was never sent, and a retry would send it twice.
+    /// </summary>
+    [Fact]
+    public async Task DispatchAsync_caller_cancelling_while_the_accepted_response_drains_is_still_delivered()
+    {
+        using CancellationTokenSource caller = new();
+
+        RecordingHttpHandler handler = new(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new CancelCallerThenReadStream(caller)),
+            }));
+
+        RecordingLogger logger = new();
+
+        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(
+            handler,
+            SettingsWithWebhook(PublicWebhookUrl),
+            logger);
+
+        Result<CommLinkDeliveryResult> result = await dispatcher.DispatchAsync(
+            new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"),
+            caller.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(CommLinkDeliveryStatus.Delivered, result.Value.Status);
+
+        Assert.True(caller.IsCancellationRequested);
+    }
+
+    /// <summary>
+    /// Cancelling before the request has been accepted is still the caller's to cancel: nothing has been
+    /// delivered yet, so the cancellation propagates rather than becoming a failure verdict.
+    /// </summary>
+    [Fact]
+    public async Task DispatchAsync_caller_cancelling_before_the_request_is_accepted_propagates()
+    {
+        using CancellationTokenSource caller = new();
+
+        RecordingHttpHandler handler = new(request =>
+        {
+            caller.Cancel();
+
+            return Task.FromCanceled<HttpResponseMessage>(caller.Token);
+        });
+
+        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(
+            handler,
+            SettingsWithWebhook(PublicWebhookUrl));
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => dispatcher.DispatchAsync(
+                new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"),
+                caller.Token));
+    }
+
     [Fact]
     public async Task DispatchAsync_handler_exception_returns_failure()
     {
@@ -452,6 +512,51 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
             CancellationToken cancellationToken = default) =>
             ValueTask.FromException<int>(
                 new IOException($"connection reset while reading {PublicWebhookUrl}"));
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// A body whose first read is the moment the caller cancels, and which honours whatever token the
+    /// drain hands it: a drain still bound to the caller's token faults, one bound to its own does not.
+    /// </summary>
+    private sealed class CancelCallerThenReadStream(CancellationTokenSource caller) : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            caller.Cancel();
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(0);
+        }
 
         public override void Flush()
         {

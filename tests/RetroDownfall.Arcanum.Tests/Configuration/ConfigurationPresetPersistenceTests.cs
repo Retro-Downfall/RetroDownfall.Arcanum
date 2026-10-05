@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Configuration.Presets;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
@@ -416,6 +418,52 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.True(reset.IsSuccess, reset.IsFailure ? reset.Error.Message : null);
 
         Assert.Null(reset.Value.Snapshot.Provenance);
+    }
+
+    /// <summary>
+    /// The two <c>.invalid</c> tests above pass for the wrong reason if a resolver on the machine answers
+    /// for names that cannot exist (a captive portal or a search-suffix hijack). This holds the same
+    /// property without asking the network: the persistence layer has no way to reach a resolver or the
+    /// outbound-URL pass at all, neither through a constructor parameter, a field, nor its source text.
+    /// </summary>
+    [Fact]
+
+    public void The_persistence_layer_has_no_route_to_the_dns_resolver_or_the_outbound_url_pass()
+    {
+        Type persistence = typeof(FileConfigurationPresetPersistence);
+
+        Type[] forbidden = [typeof(IDnsResolver), typeof(IConfigurationPresetCandidateValidator)];
+
+        Type[] reachable =
+        [
+            .. persistence
+                .GetConstructors(System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic)
+                .SelectMany(static constructor => constructor.GetParameters())
+                .Select(static parameter => parameter.ParameterType),
+            .. persistence
+                .GetFields(System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic)
+                .Select(static field => field.FieldType),
+        ];
+
+        Assert.NotEmpty(reachable);
+
+        Assert.DoesNotContain(reachable, type => forbidden.Contains(type));
+
+        ProductionSource source = Assert.Single(
+            ProductionSourceInventory.Sources(),
+            static candidate => candidate.RelativePath.Equals(
+                "src/RetroDownfall.Arcanum.Infrastructure/Configuration/FileConfigurationPresetPersistence.cs",
+                StringComparison.Ordinal));
+
+        Assert.DoesNotContain("IDnsResolver", source.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("OutboundUrlGuard", source.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("IConfigurationPresetCandidateValidator", source.Text, StringComparison.Ordinal);
     }
 
     [Fact]

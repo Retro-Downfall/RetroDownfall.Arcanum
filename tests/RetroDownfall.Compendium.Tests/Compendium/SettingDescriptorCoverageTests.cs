@@ -31,6 +31,23 @@ public sealed class SettingDescriptorCoverageTests
         Assert.Equal(163, SettingDescriptors.All.Count);
     }
 
+    /// <summary>
+    /// The configuration validator refuses an empty webhook-scheme list, because an empty list used to
+    /// suppress every alert without saying so. The editor is where an operator clears the field, so its
+    /// help has to say at least one entry is required rather than leave the refusal to be discovered.
+    /// </summary>
+    [Fact]
+    public void Webhook_scheme_help_says_at_least_one_entry_is_required()
+    {
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static item => item.Key == "integrations.commLink.allowedSchemes");
+
+        Assert.Contains("At least one is required", descriptor.Description, StringComparison.Ordinal);
+
+        Assert.Contains("empty list is a validation error", descriptor.Description, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Complete_configuration_reference_names_every_descriptor_exactly_once()
     {

@@ -92,6 +92,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/EmbeddingGeneratorFactory.cs:EmbeddingGeneratorFactory:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Familiars/CodexCliChatClient.cs:CodexCliChatClient:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
         ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:GrimoireTurnWriter:turnCommitter"] = "every use of the IGrimoireTurnCommitter is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ModelCallExecutor.cs:ModelCallExecutor:logger"] = "diagnostic sink; absence degrades logging, not a guard",
@@ -114,6 +116,10 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumWebSearchTool.cs:ArcanumWebSearchTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/BuiltInToolRegistry.cs:BuiltInToolRegistry:browseWebLogger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/TurnEngine/TurnEngine.cs:TurnEngine:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:attachmentMemoryProvenanceStore"] = "every use of the IAttachmentMemoryProvenanceStore is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:budgetReservationService"] = "owner is container-activated and IBudgetReservationService is registered; the container supplies it in a composed host",
@@ -134,21 +140,33 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:webResearchProviderCatalog"] = "every use of the IWebResearchProviderCatalog is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.Arcanum.Api/Mcp/DiagnosticMcpInvocationService.cs:DiagnosticMcpInvocationService:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
         ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:CliSessionManager:contextStore"] = "every use of the ICliContextStore is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:CliSessionManager:mutationBoundary"] = "every use of the IArcanumClientMutationBoundary is null-safe; absence disables an observation, not a refusal",
+
+        ["src/RetroDownfall.Arcanum.Cli/Services/CliSessionManager.cs:CliSessionManager:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Cli/Services/ConsoleAskHumanCoordinator.cs:ConsoleAskHumanCoordinator:diagnosticConsole"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Cli/Services/Setup/SetupPrompt.cs:ConsoleSetupPrompt:secretPrompt"] = "the null coalesces to a constructed default at the use site, so no host runs without a IBackupPassphrasePrompt",
 
+        ["src/RetroDownfall.Arcanum.Core/Configuration/ConfigurationValidator.cs:ConfigurationValidator:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AClientService.cs:A2AClientService:scopeFactory"] = "every use of the IServiceScopeFactory is null-safe; absence disables an observation, not a refusal",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Caching/KeyedLock.cs:KeyedLock:comparer"] = "the null coalesces to a constructed default at the use site (`comparer ?? EqualityComparer<TKey>.Default`), so no instance runs without an IEqualityComparer",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/CommLink/CommLinkMultiplexer.cs:CommLinkMultiplexer:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Configuration/ConfigurationPresetService.cs:ConfigurationPresetService:credentialStore"] = "every use of the IWebResearchCredentialStore is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CampaignPathMarkerLifecycle.cs:CampaignPathMarkerLifecycle:recoveryKeys"] = "the only construction in src is the ICampaignPathMarkerLifecycle factory in ServiceCollectionExtensions, which passes the registered ICampaignRootIdentityRecoveryKeyProvider",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantManagementService.cs:CovenantManagementService:searchIndex"] = "the ICovenantManagementService factory in ServiceCollectionExtensions passes the required ICovenantSearchIndex and compiler; omission is a restricted list/status test seam, and QueryAsync fails closed with Covenant.Unavailable when either search dependency is absent",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/GrimoireSchemaTransitionCoordinator.cs:GrimoireSchemaTransitionCoordinator:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:attachmentStore"] = "every use of the ISessionAttachmentStore is null-safe; absence disables an observation, not a refusal",
 
@@ -167,6 +185,12 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:policyStore"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDataRetentionPolicyStore",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:sameOwnerLeaseResumption"] = "owner is container-activated and ILongRunningOperationSameOwnerLeaseResumption is registered from the same scoped LongRunningOperationStore; an omitted test seam fails closed into reconciliation instead of resuming without proof",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaInstaller.cs:GrimoireSchemaInstaller:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Familiars/FamiliarProcessRunner.cs:FamiliarProcessRunner:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/ApprenticeService.cs:ApprenticeService:executionCapacity"] = "the null coalesces to a process-owned DefaultApprenticeExecutionCapacity, so every host has the atomic concurrency gate while focused reliability tests can inject a controlled implementation",
 
@@ -209,11 +233,17 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellCatalogService.cs:SpellCatalogService:progressObserver"] = "every use of the ISpellCatalogProgressObserver is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/LocalHttpWebProvider.cs:LocalHttpWebProvider:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/PerplexityWebProvider.cs:PerplexityWebProvider:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:LexiconService:labeledArtifactGuard"] = "the owner is registered by `AddScoped<LexiconService>()` and ICovenantLabeledArtifactGuard by the scoped forwarder to the one transaction guard, which CovenantLabeledArtifactGuardCompositionTests resolves from the real container; a null skips the label guard in the delete's `_labeledArtifactGuard is { } guard` branch, so the container supplying it is what keeps that refusal reachable",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:LexiconService:reviewTokenCodec"] = "the null coalesces to a MemoryReviewTokenCodec using TimeProvider.System at the field initializer, while the composed host supplies the registered IMemoryReviewTokenCodec; no instance runs without an authenticated review-token codec",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs:ArcanumInternalToolServer:workspaceCheckRuntime"] = "the null coalesces to a constructed default at the use site, so no host runs without a IWorkspaceCheckRuntime",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs:ArcanumInternalToolServer:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/InProcessMcpTransport.cs:InProcessMcpTransport:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
@@ -225,9 +255,17 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationReconciler.cs:LongRunningOperationReconciler:scopeFactory"] = "every use of the IServiceScopeFactory is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Platform/ProcessResourceLimiter.cs:ProcessResourceLimiter:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRepository.cs:SessionRepository:attachmentIndexQueue"] = "every use of the ISessionAttachmentIndexQueue is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs:OsKeychainSecretStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/ProviderCredentialStore.cs:ProviderCredentialStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/Security/SanctumGuard.cs:SanctumGuard:dnsResolver"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDnsResolver",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Security/WebResearchCredentialStore.cs:WebResearchCredentialStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs:EmbeddingsResetService:purger"] = "the only construction in src is the EmbeddingsResetService factory in ServiceCollectionExtensions, which passes the registered ICovenantSensitiveArtifactPurger; a null would make PurgeLabeledScopeAsync return an empty purge outcome, so the factory passing it is what keeps the purge reachable",
 
@@ -247,11 +285,27 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Compendium.Ux/ViewModels/ProvidersSectionViewModel.cs:ProvidersSectionViewModel:probeClient"] = "every use of the IFamiliarProbeClient is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.TheForge.Core/Services/ComparisonRunStore.cs:ComparisonRunStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/DiagnosticMcpFixtureStore.cs:DiagnosticMcpFixtureStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/InferenceTraceStore.cs:InferenceTraceStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/TheForgeSettingsStore.cs:TheForgeSettingsStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Core/Services/TrialSuiteStore.cs:TrialSuiteStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
         ["src/RetroDownfall.TheForge.Ux/Markdown/MarkdigAstAvaloniaRenderer.cs:MarkdigAstAvaloniaRenderer:highlighter"] = "the null coalesces to a constructed default at the use site, so no host runs without a IMarkdownCodeHighlighter",
 
         ["src/RetroDownfall.TheForge.Ux/Markdown/MarkdigAstAvaloniaRenderer.cs:MarkdigAstAvaloniaRenderer:images"] = "the null coalesces to a constructed default at the use site, so no host runs without a IMarkdownImageResolver",
 
         ["src/RetroDownfall.TheForge.Ux/ViewModels/Docking/DockLayoutViewModel.cs:DockLayoutViewModel:settingsStore"] = "every use of the ITheForgeSettingsStore is null-safe; absence disables an observation, not a refusal",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/Docking/DockLayoutViewModel.cs:DockLayoutViewModel:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/FoundryFloor/FoundryFloorViewModel.cs:FoundryFloorViewModel:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.TheForge.Ux/ViewModels/MainViewModel.cs:MainViewModel:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/ComparisonWorkbenchViewModel.cs:ComparisonWorkbenchViewModel:traceStore"] = "IInferenceTraceStore is registered, and the owner is hand-constructed only by WorkbenchDocumentFactory (the Comparison branch of its document creation, container-activated), which always passes the registered store",
 
@@ -262,10 +316,80 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/MarkdownDocumentViewModel.cs:MarkdownDocumentViewModel:contentStore"] = "every use of the IMarkdownDocumentContentStore is null-safe; absence disables an observation, not a refusal",
     };
 
+    /// <summary>
+    /// A nullable interface parameter that defaults to <c>null</c>, generic or not.
+    /// </summary>
+    /// <remarks>
+    /// The type name takes an optional generic argument list, one nesting level deep, so
+    /// <c>IOptionsMonitor&lt;ArcanumSettings&gt;? settings = null</c> and
+    /// <c>ILogger&lt;Owner&gt;? logger = null</c> are read as the interface defaults they are. The
+    /// pattern used to need an identifier directly before the question mark, which let exactly the
+    /// settings dependency whose absence turns a denylist into an empty one slip past. The collection
+    /// interfaces are excluded, by whole name: an optional <c>IReadOnlyList&lt;T&gt;?</c> is a data value
+    /// the owner reads, not a collaborator whose omission disables a guard. The exclusion is anchored to
+    /// the end of the name (a <c>&lt;</c> or the <c>?</c> must follow it), because a prefix test also hides
+    /// every first-party interface that merely begins with one of those words (<c>ISetupPrompt</c>,
+    /// <c>ISettingsStore</c>, <c>IListener</c>), and a collaborator hidden here defaults to null unseen.
+    /// </remarks>
     private static readonly Regex NullableInterfaceDefault = new(
-        @"\b(I[A-Z]\w+)\?\s+(\w+)\s*=\s*null\b",
+        @"\b(I(?!(?:ReadOnlyList|ReadOnlyCollection|ReadOnlyDictionary|ReadOnlySet|Enumerable|AsyncEnumerable|List|Collection|Dictionary|Set)[<?])[A-Z]\w*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\?\s+(\w+)\s*=\s*null\b",
         RegexOptions.Compiled,
         TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// The inventory is only as good as its pattern, and the pattern used to be blind to every generic
+    /// interface — including <c>IOptionsMonitor&lt;ArcanumSettings&gt;? settings = null</c>, the exact
+    /// shape that turns a secret denylist into an empty one. Pin the spellings it must read.
+    /// </summary>
+    [Theory]
+    [InlineData("IFoo? foo = null", "IFoo", "foo")]
+    [InlineData("IOptionsMonitor<ArcanumSettings>? settings = null", "IOptionsMonitor<ArcanumSettings>", "settings")]
+    [InlineData("IOptions<ArcanumSettings>? settings=null", "IOptions<ArcanumSettings>", "settings")]
+    [InlineData("ILogger<Owner>? logger = null", "ILogger<Owner>", "logger")]
+    [InlineData("IEqualityComparer<Dictionary<string, int>>? comparer = null", "IEqualityComparer<Dictionary<string, int>>", "comparer")]
+    // Collaborators whose names merely begin with a collection word. The exclusions are whole names, so
+    // none of these may be hidden: ISetupPrompt is a first-party interface, and so is every ISetup* sibling.
+    [InlineData("ISetupPrompt? prompt = null", "ISetupPrompt", "prompt")]
+    [InlineData("ISetupCommitter? committer = null", "ISetupCommitter", "committer")]
+    [InlineData("ISettingsStore? settings = null", "ISettingsStore", "settings")]
+    [InlineData("IListener? listener = null", "IListener", "listener")]
+    [InlineData("ICollectionSource? source = null", "ICollectionSource", "source")]
+    [InlineData("IDictionaryProvider<Owner>? provider = null", "IDictionaryProvider<Owner>", "provider")]
+    [InlineData("IReadOnlyStore? store = null", "IReadOnlyStore", "store")]
+    [InlineData("IEnumerableSource? source = null", "IEnumerableSource", "source")]
+    public void The_pattern_reads_every_spelling_of_a_nullable_interface_default(
+        string parameter,
+        string expectedType,
+        string expectedName)
+    {
+        Match match = NullableInterfaceDefault.Match($"({parameter})");
+
+        Assert.True(match.Success, $"'{parameter}' was not read as a nullable interface default.");
+
+        Assert.Equal(expectedType, match.Groups[1].Value);
+
+        Assert.Equal(expectedName, match.Groups[2].Value);
+    }
+
+    [Theory]
+    [InlineData("IReadOnlyList<string>? values = null")]
+    [InlineData("IReadOnlySet<Guid>? ids = null")]
+    [InlineData("IEnumerable<string>? names = null")]
+    [InlineData("IEnumerable? names = null")]
+    [InlineData("IAsyncEnumerable<string>? names = null")]
+    [InlineData("IReadOnlyCollection<string>? values = null")]
+    [InlineData("IReadOnlyDictionary<string, int>? values = null")]
+    [InlineData("IList<string>? values = null")]
+    [InlineData("ICollection<string>? values = null")]
+    [InlineData("IDictionary<string, int>? values = null")]
+    [InlineData("ISet<string>? values = null")]
+    [InlineData("Func<IFoo>? factory = null")]
+    [InlineData("IFoo foo")]
+    [InlineData("IOptionsMonitor<ArcanumSettings> settings")]
+    public void The_pattern_ignores_collection_data_and_parameters_that_are_not_nullable_defaults(string parameter) =>
+        Assert.False(
+            NullableInterfaceDefault.IsMatch($"({parameter})"),
+            $"'{parameter}' should not be read as a nullable interface default.");
 
     [Fact]
     public void Every_nullable_interface_constructor_default_is_removed_or_allowed_with_a_reason()
@@ -303,8 +427,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// <remarks>
     /// The source inventory above reads text, so it can only see the shape it was written to match.
     /// This reads the compiled type, and it is the assertion that survives a rewrite of the parameter
-    /// list into any spelling the regex would miss — a generic interface, a differently-spaced default,
-    /// a second constructor added beside the first. Both of the dependencies named here were supplied
+    /// list into any spelling the regex would miss — a default written with a cast, a second
+    /// constructor added beside the first. Both of the dependencies named here were supplied
     /// by nobody at some point in this repository's history: the ordinary-connection factory reached
     /// production as a stand-in that refused every acquisition, and the labelled-artifact guard reached
     /// it as a null that made an entire refusal path unreachable.
@@ -394,10 +518,11 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// </summary>
     /// <remarks>
     /// Closed on purpose, and read from the compiled constructors because the source inventory above
-    /// cannot see a generic interface: its pattern needs an identifier directly before the question
-    /// mark, which <c>ILogger&lt;T&gt;?</c> never has. An owner built without its logger drops the one
-    /// line that says a Saga or Covenant review write failed, which is every hand-built instance in a
-    /// test and any factory that leaves the argument out.
+    /// accepts an optional <c>ILogger&lt;T&gt;?</c> with the reason "diagnostic sink", which is true of
+    /// most loggers and false of these: an owner built without its logger drops the one line that says a
+    /// Saga or Covenant review write failed, which is every hand-built instance in a test and any
+    /// factory that leaves the argument out. Listing one of these owners in the allow-list above would
+    /// not make it optional here.
     /// </remarks>
     public static TheoryData<Type> FaultLoggingOwners => new()
     {

@@ -1,5 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
+using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -331,12 +335,13 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
             }
         }
 
-        services.AddScoped(sp => new LongRunningOperationReconciler(
-            sp.GetRequiredService<ILongRunningOperationStore>(),
-            sp.GetServices<ILongRunningOperationRecoveryHandler>(),
-            sp.GetRequiredService<TimeProvider>(),
-            NullLogger<LongRunningOperationReconciler>.Instance,
-            sp.GetRequiredService<LongRunningOperationOwnership>()));
+        // The reconciler is the one the CLI container composes, not a copy built here: stopped-host
+        // bootstrap resolves exactly that registration, so this is what proves the exact-settlement path
+        // works from it without the discovery and classified-lease ports the CLI container leaves out.
+        services.AddSingleton<ILogger<LongRunningOperationReconciler>>(
+            NullLogger<LongRunningOperationReconciler>.Instance);
+
+        services.Add(CliComposedReconciler.Descriptor());
 
         ServiceProvider provider = services.BuildServiceProvider();
 

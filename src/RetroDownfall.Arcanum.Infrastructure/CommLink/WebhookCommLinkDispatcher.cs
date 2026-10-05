@@ -18,6 +18,12 @@ internal sealed class WebhookCommLinkDispatcher(
 {
     internal const string HttpClientName = "CommLinkWebhook";
 
+    /// <summary>
+    /// How long the response body may be drained after the receiver has accepted the alert. The drainer
+    /// already bounds each read and the total bytes; this bounds the whole drain in wall-clock time.
+    /// </summary>
+    internal static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(10);
+
     public async Task<Result<CommLinkDeliveryResult>> DispatchAsync(
         CommLinkMessage message,
         CancellationToken cancellationToken = default)
@@ -132,11 +138,16 @@ internal sealed class WebhookCommLinkDispatcher(
 
             int statusCode = (int)response.StatusCode;
 
+            // The receiver has the alert now, so the drain is bookkeeping after an external effect: it runs
+            // on a token of its own, bounded in time, and not on the caller's. A caller that cancels here
+            // is cancelling the connection reuse, not the delivery, and must still be told it was delivered.
+            using CancellationTokenSource drainBound = new(DrainTimeout);
+
             try
             {
-                await HttpResponseBodyDrainer.DrainAsync(response.Content, cancellationToken).ConfigureAwait(false);
+                await HttpResponseBodyDrainer.DrainAsync(response.Content, drainBound.Token).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            catch (Exception ex)
             {
                 // Draining only lets the connection be reused. Log the type, never the message: a
                 // transport message can name the secret-bearing URL.
@@ -150,7 +161,7 @@ internal sealed class WebhookCommLinkDispatcher(
             {
                 return Result<CommLinkDeliveryResult>.Failure(
                     new Error(
-                        "CommLink.WebhookHttpError",
+                        ErrorCodes.CommLink.WebhookHttpError,
                         $"Webhook returned HTTP {statusCode}."));
             }
         }
@@ -168,7 +179,7 @@ internal sealed class WebhookCommLinkDispatcher(
 
             return Result<CommLinkDeliveryResult>.Failure(
                 new Error(
-                    "CommLink.WebhookException",
+                    ErrorCodes.CommLink.WebhookException,
                     "Comm Link webhook POST failed. See server logs for details."));
         }
 
