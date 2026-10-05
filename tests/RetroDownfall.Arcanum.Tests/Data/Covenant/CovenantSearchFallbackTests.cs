@@ -76,13 +76,21 @@ public sealed class CovenantSearchFallbackTests
     }
 
     [Theory]
-    [InlineData("sport", 1)]
-    [InlineData("spor", 1)]
-    [InlineData("ort", 0)]
-    [InlineData("port", 0)]
-    [InlineData("athletics", 1)]
-    [InlineData("letic", 0)]
-    public async Task Fts_and_fallback_return_the_same_hits_for_a_mid_word_term(string term, int expectedHits)
+    [InlineData("A sport for everyone.", "sport", 1)]
+    [InlineData("A sport for everyone.", "spor", 1)]
+    [InlineData("A sport for everyone.", "ort", 0)]
+    [InlineData("A sport for everyone.", "port", 0)]
+    [InlineData("A sport for everyone.", "athletics", 1)]
+    [InlineData("A sport for everyone.", "letic", 0)]
+    [InlineData("A book: किताब", "ताब", 1)]
+    [InlineData("A book: किताब", "ब", 1)]
+    [InlineData("A book: किताब", "किताब", 1)]
+    [InlineData("A book: हिंदी", "दी", 1)]
+    [InlineData("abc\u20DDdef", "def", 1)]
+    [InlineData("ab\u0903sport", "sport", 1)]
+    [InlineData("ab\u0308sport", "sport", 0)]
+    [InlineData("naive \u0301sport", "sport", 1)]
+    public async Task Fts_and_fallback_return_the_same_hits_for_a_mid_word_term(string text, string term, int expectedHits)
     {
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
@@ -92,7 +100,7 @@ public sealed class CovenantSearchFallbackTests
             "athletics",
             CovenantLane.Confirmed,
             CovenantOperation.Set,
-            "A sport for everyone.",
+            text,
             Token);
 
         CovenantSearchPage fallback = await SearchAsync(fixture, term);

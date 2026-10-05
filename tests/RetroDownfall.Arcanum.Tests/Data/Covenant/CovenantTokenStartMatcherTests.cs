@@ -41,6 +41,33 @@ public sealed class CovenantTokenStartMatcherTests
     public void Non_ASCII_letters_belong_to_a_word_and_symbols_do_not(string value, string term, bool expected) =>
         Assert.Equal(expected, CovenantTokenStartMatcher.Contains(value, term));
 
+    [Theory]
+    [InlineData("किताब", "ताब", true)]
+    [InlineData("किताब", "ब", true)]
+    [InlineData("किताब", "किताब", true)]
+    [InlineData("हिंदी", "दी", true)]
+    [InlineData("ab\u0903sport", "sport", true)]
+    [InlineData("abc\u20DDdef", "def", true)]
+    [InlineData("ab\u0332sport", "sport", true)]
+    public void Spacing_enclosing_and_other_marks_the_index_does_not_keep_inside_a_word_separate_words(
+        string value,
+        string term,
+        bool expected) =>
+        Assert.Equal(expected, CovenantTokenStartMatcher.Contains(value, term));
+
+    [Theory]
+    [InlineData("ab\u0308sport", "sport", false)]
+    [InlineData("nai\u0308vesport", "sport", false)]
+    [InlineData("x\u0301\u0308sport", "sport", false)]
+    [InlineData("ab\u0323sport", "sport", false)]
+    [InlineData(" \u0301sport", "sport", true)]
+    [InlineData("a \u0301\u0308sport", "sport", true)]
+    public void A_combining_diacritic_the_index_keeps_continues_the_word_it_rides_on_and_never_starts_one(
+        string value,
+        string term,
+        bool expected) =>
+        Assert.Equal(expected, CovenantTokenStartMatcher.Contains(value, term));
+
     [Fact]
     public void A_later_occurrence_at_a_word_start_is_found_after_an_earlier_mid_word_one()
     {
@@ -57,6 +84,9 @@ public sealed class CovenantTokenStartMatcherTests
         Assert.True(CovenantTokenStartMatcher.Contains("a*e", "*e"));
 
         Assert.False(CovenantTokenStartMatcher.Contains("everything", "*e"));
+
+        // A combining mark the index does not keep inside a word is a separator in front of a term too.
+        Assert.True(CovenantTokenStartMatcher.Contains("किताब", "\u093Eब"));
     }
 
     [Theory]

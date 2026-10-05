@@ -14,20 +14,32 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// accepts an occurrence of a term only where a token can begin: at the start of the text, or after a
 /// character that is not part of a token.
 ///
-/// <para>Token characters follow <c>unicode61</c>: letters, numbers and private-use characters, the
-/// combining marks that ride on them, and the <c>._-</c> characters the index declares as token
-/// characters. Everything else separates tokens. A term that itself opens with a separator has no
-/// token boundary to honour and is matched as written, which is what the substring match it refines
-/// already did.</para>
+/// <para>Token characters follow <c>unicode61</c>, whose default categories are <c>L* N* Co</c>: letters,
+/// numbers and private-use characters, plus the <c>._-</c> characters the index declares as token
+/// characters. Every combining mark category (<c>Mn</c>, <c>Mc</c>, <c>Me</c>) separates tokens, so the
+/// vowel signs and viramas of Indic scripts split a word the way the index splits it. The one exception
+/// is the block of Latin combining diacritics (U+0300 to U+0331, the set the tokenizer's diacritic
+/// removal covers): those continue the token they ride on, but never begin one, so a diacritic that
+/// follows a separator does not make the word after it a mid-word position.</para>
+///
+/// <para>A term that itself opens with a separator has no token boundary to honour and is matched as
+/// written, which is what the substring match it refines already did.</para>
 ///
 /// <para>This is deliberately not a second tokenizer. Folding is ordinal and case-insensitive, with
-/// no diacritic removal and no phrase splitting of a term that contains a separator: those remain
-/// differences of the full-text index, which the API contract names.</para>
+/// no diacritic removal and no phrase splitting of a term that contains a separator, and characters are
+/// classified by .NET's Unicode tables where the index uses SQLite's. Those remain differences of the
+/// full-text index, which the API contract names.</para>
 /// </remarks>
 internal static class CovenantTokenStartMatcher
 {
     /// <summary>The SQL function name the Covenant connection registers this rule under.</summary>
     internal const string FunctionName = "arcanum_token_start_contains";
+
+    /// <summary>The kept diacritics among U+0300 to U+031F, one bit per scalar, as the tokenizer's table has them.</summary>
+    private const uint KeptDiacriticsLow = 0x08029FDF;
+
+    /// <summary>The kept diacritics among U+0320 to U+0331, one bit per scalar, as the tokenizer's table has them.</summary>
+    private const uint KeptDiacriticsHigh = 0x000361F8;
 
     /// <summary>Whether <paramref name="term"/> occurs in <paramref name="value"/> where a token can begin.</summary>
     internal static bool Contains(string? value, string? term)
@@ -61,7 +73,7 @@ internal static class CovenantTokenStartMatcher
         return false;
     }
 
-    /// <summary>Whether this scalar belongs to a token under the index's tokenizer settings.</summary>
+    /// <summary>Whether this scalar can begin a token under the index's tokenizer settings.</summary>
     internal static bool IsTokenCharacter(Rune rune) =>
         rune.Value is '.' or '_' or '-'
         || Rune.GetUnicodeCategory(rune) is
@@ -73,28 +85,88 @@ internal static class CovenantTokenStartMatcher
             or UnicodeCategory.DecimalDigitNumber
             or UnicodeCategory.LetterNumber
             or UnicodeCategory.OtherNumber
-            or UnicodeCategory.PrivateUse
-            or UnicodeCategory.NonSpacingMark
-            or UnicodeCategory.SpacingCombiningMark
-            or UnicodeCategory.EnclosingMark;
+            or UnicodeCategory.PrivateUse;
+
+    /// <summary>
+    /// Whether this scalar is one of the combining diacritics the index's tokenizer keeps inside a token:
+    /// the same 50-character window (U+0300 to U+0331) and bit set its diacritic removal uses.
+    /// </summary>
+    internal static bool IsKeptDiacritic(Rune rune)
+    {
+        int offset = rune.Value - 0x0300;
+
+        if (offset < 0 || offset > 0x31)
+        {
+            return false;
+        }
+
+        return offset < 32
+            ? (KeptDiacriticsLow & (1u << offset)) != 0
+            : (KeptDiacriticsHigh & (1u << (offset - 32))) != 0;
+    }
 
     private static bool OpensWithTokenCharacter(string term) =>
         Rune.DecodeFromUtf16(term, out Rune first, out _) == System.Buffers.OperationStatus.Done
         && IsTokenCharacter(first);
 
-    /// <summary>Whether the scalar that ends immediately before <paramref name="index"/> is a token character.</summary>
+    /// <summary>
+    /// Whether the text that ends immediately before <paramref name="index"/> belongs to a token that
+    /// reaches the index: the scalar there is a token character, or it is a run of kept diacritics that
+    /// rides on one.
+    /// </summary>
     private static bool EndsWithTokenCharacter(string value, int index)
     {
-        char previous = value[index - 1];
+        int end = index;
 
-        if (char.IsLowSurrogate(previous))
+        while (end > 0)
         {
-            return index >= 2
-                && char.IsHighSurrogate(value[index - 2])
-                && IsTokenCharacter(new Rune(value[index - 2], previous));
+            if (!TryReadScalarBefore(value, end, out Rune rune, out int width))
+            {
+                return false;
+            }
+
+            if (IsTokenCharacter(rune))
+            {
+                return true;
+            }
+
+            if (!IsKeptDiacritic(rune))
+            {
+                return false;
+            }
+
+            end -= width;
         }
 
-        // A lone high surrogate is not a scalar at all, so it separates like any other non-token.
-        return Rune.TryCreate(previous, out Rune rune) && IsTokenCharacter(rune);
+        // Only diacritics lie in front, and a diacritic does not begin a token.
+        return false;
+    }
+
+    /// <summary>Reads the scalar that ends at <paramref name="end"/>; a lone surrogate is not one.</summary>
+    private static bool TryReadScalarBefore(string value, int end, out Rune rune, out int width)
+    {
+        char last = value[end - 1];
+
+        if (char.IsLowSurrogate(last))
+        {
+            if (end >= 2 && char.IsHighSurrogate(value[end - 2]))
+            {
+                rune = new Rune(value[end - 2], last);
+
+                width = 2;
+
+                return true;
+            }
+
+            rune = default;
+
+            width = 0;
+
+            return false;
+        }
+
+        width = 1;
+
+        return Rune.TryCreate(last, out rune);
     }
 }
