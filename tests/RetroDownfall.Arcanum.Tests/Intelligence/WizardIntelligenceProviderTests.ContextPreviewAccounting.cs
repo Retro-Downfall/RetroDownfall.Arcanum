@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -86,6 +87,51 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.All(writer.Operations, static operation => Assert.Equal(BillableOperationType.Embedding, operation.OperationType));
 
         Assert.Equal(writer.Runs.Count, writer.Completions.Count);
+    }
+
+    /// <summary>
+    /// The other half of the preview's billing boundary (DESIGN, billable boundary): the model-backed
+    /// routing call is invoked and reported in <c>auxiliaryCalls</c>, but the preview publishes no turn
+    /// accounting, so it has no handle to record into and writes no run and no ledger row. A run or a row
+    /// appearing here would mean the documented boundary had moved.
+    /// </summary>
+    [Fact]
+    public async Task ContextPreview_ModelBackedRoutingCall_IsReportedButWritesNoRunOrLedgerRow()
+    {
+        await CreateSpellWithDeclaredToolsAsync("preview-llm-routed", []);
+
+        PreviewLedgerWriter writer = new();
+
+        ScriptingChatClient chat = new()
+        {
+            UsageTotalTokens = 30,
+        };
+
+        chat.EnqueueText("""{"spellName":"preview-llm-routed","entities":[]}""");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, turnRunWriter: writer);
+
+        Result<ContextPreviewResult> preview = await wizard.PreviewContextAsync(
+            new ContextPreviewRequest(
+                Prompt: "inspect model routing",
+                Model: ModelName,
+                WorkingDirectory: _workspace.Root),
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(preview.IsSuccess);
+
+        Assert.Equal(1, chat.BufferedCallCount);
+
+        ContextPreviewAuxiliaryCall routing = Assert.Single(
+            preview.Value.AuxiliaryCalls,
+            static call => call.Purpose == "routing");
+
+        Assert.Equal(TokenEstimateClassification.ProviderReported, routing.Classification);
+
+        Assert.Empty(writer.Runs);
+
+        Assert.Empty(writer.Operations);
     }
 
     private sealed class PreviewLedgerWriter : ITurnRunWriter

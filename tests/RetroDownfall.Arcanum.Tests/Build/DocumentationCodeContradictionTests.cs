@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -663,6 +664,88 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("`lexicon`", bullet, StringComparison.Ordinal);
 
         Assert.Contains("`TryRecordAuxiliaryUsageAsync`", bullet, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The design's closed non-billable set is the set <see cref="NonBillableSurfaces"/> declares, and the
+    /// context preview, which makes real auxiliary calls with retrieval enabled, is not in it. A route
+    /// added to the list without a word in the design would let a reader conclude it is billable, and one
+    /// that reached a provider for tokens would be an unledgered spend.
+    /// </summary>
+    [Fact]
+    public void The_design_billable_boundary_names_every_POST_surface_in_the_closed_non_billable_list()
+    {
+        string[] surfaces =
+        [
+            .. typeof(NonBillableSurfaces)
+                .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                .Where(static field => field is { IsLiteral: true } && field.FieldType == typeof(string))
+                .Select(static field => (string)field.GetRawConstantValue()!)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.NotEmpty(surfaces);
+
+        Assert.DoesNotContain(surfaces, static surface => surface.Contains("context/inspect", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(surfaces, static surface => surface.Contains("/ping", StringComparison.Ordinal));
+
+        string bullet = DocumentSection(
+            ReadDocument("Arcanum.DESIGN.md"),
+            "- **Billable boundary.**",
+            "- **Usage authority.**");
+
+        foreach (string surface in surfaces.Where(static surface => surface.StartsWith("POST ", StringComparison.Ordinal)))
+        {
+            Assert.Contains($"`{surface}`", bullet, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("`POST /api/intelligence/context/inspect` is not in it", bullet, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The no-progress paragraph in the chat-loop document names the window the detector compares a
+    /// completed round against. The behavior half runs the detector: a round recurs inside the window and
+    /// not after it has been pushed out.
+    /// </summary>
+    [Fact]
+    public void The_chat_loop_document_states_the_window_the_progress_detector_compares_against()
+    {
+        static IReadOnlyList<ToolLoopProgressEntry> Round(int index) =>
+            [new ToolLoopProgressEntry("read_file_chunk", $"{{\"relativePath\":\"f{index}.txt\"}}", $"result {index}")];
+
+        ToolLoopProgressDetector withinWindow = new();
+
+        Assert.False(withinWindow.ObserveCompletedRound(Round(0)));
+
+        for (int index = 1; index <= 7; index++)
+        {
+            Assert.False(withinWindow.ObserveCompletedRound(Round(index)));
+        }
+
+        // Seven other rounds later it is still one of the last eight.
+        Assert.True(withinWindow.ObserveCompletedRound(Round(0)));
+
+        ToolLoopProgressDetector beyondWindow = new();
+
+        Assert.False(beyondWindow.ObserveCompletedRound(Round(0)));
+
+        for (int index = 1; index <= 8; index++)
+        {
+            Assert.False(beyondWindow.ObserveCompletedRound(Round(index)));
+        }
+
+        // Eight other rounds later it has left the window.
+        Assert.False(beyondWindow.ObserveCompletedRound(Round(0)));
+
+        string paragraph = DocumentSection(
+            ReadDocument("Arcanum.CHAT-LOOP.md"),
+            "Progress is state, not elapsed time.",
+            "Buffered and streaming paths use the same semantic loop");
+
+        Assert.Contains("the last eight rounds", paragraph, StringComparison.Ordinal);
+
+        Assert.Contains("`ToolLoopProgressDetector`", paragraph, StringComparison.Ordinal);
     }
 
     private static string Compact(string source) =>
