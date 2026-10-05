@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Cli.UX;
 /// </summary>
 internal enum CliLineReadOutcome
 {
-
     /// <summary>The operator submitted a line with Enter.</summary>
     Submitted,
 
@@ -21,7 +20,6 @@ internal enum CliLineReadOutcome
 
     /// <summary>The caller's token fired while the read was waiting for a keystroke.</summary>
     Cancelled,
-
 }
 
 /// <summary>
@@ -41,7 +39,6 @@ internal readonly record struct CliLineReadResult(
 /// </summary>
 internal interface ICliLineTerminal
 {
-
     /// <summary>Width in columns, or 0 when the console cannot report one.</summary>
     int Width { get; }
 
@@ -59,7 +56,6 @@ internal interface ICliLineTerminal
     void Write(string text);
 
     void WriteLine();
-
 }
 
 /// <summary>
@@ -69,7 +65,6 @@ internal interface ICliLineTerminal
 /// </summary>
 internal sealed class SystemCliLineTerminal : ICliLineTerminal
 {
-
     public static readonly SystemCliLineTerminal Instance = new();
 
     private SystemCliLineTerminal()
@@ -97,23 +92,16 @@ internal sealed class SystemCliLineTerminal : ICliLineTerminal
 
     private static T TryRead<T>(Func<T> read, T fallback)
     {
-
         try
         {
-
             return read();
-
         }
         catch (Exception exception) when (
             exception is IOException or PlatformNotSupportedException or InvalidOperationException)
         {
-
             return fallback;
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -122,7 +110,6 @@ internal sealed class SystemCliLineTerminal : ICliLineTerminal
 /// </summary>
 internal static class CliLineReader
 {
-
     private const char Escape = '\u001b';
 
     /// <summary>
@@ -142,11 +129,9 @@ internal static class CliLineReader
         bool allowEmpty,
         CancellationToken cancellationToken = default)
     {
-
         CliLineReadResult result = Read(promptMarkup, allowEmpty, cancellationToken);
 
         return TranslateToLine(result, cancellationToken);
-
     }
 
     /// <summary>
@@ -157,7 +142,6 @@ internal static class CliLineReader
     /// </summary>
     internal static string? TranslateToLine(CliLineReadResult result, CancellationToken cancellationToken)
     {
-
         return result.Outcome switch
         {
             CliLineReadOutcome.Submitted => result.Line,
@@ -165,7 +149,6 @@ internal static class CliLineReader
             CliLineReadOutcome.Cancelled => throw new OperationCanceledException(cancellationToken),
             _ => throw new OperationCanceledException("The console read was interrupted by the operator."),
         };
-
     }
 
     public static CliLineReadResult Read(
@@ -173,7 +156,6 @@ internal static class CliLineReader
         bool allowEmpty,
         CancellationToken cancellationToken = default)
     {
-
         AnsiConsole.Markup(promptMarkup);
 
         if (Console.IsInputRedirected)
@@ -212,7 +194,6 @@ internal static class CliLineReader
                 _ = TryTreatControlCAsInput(false);
             }
         }
-
     }
 
     internal static CliLineReadResult ReadInteractive(
@@ -221,26 +202,21 @@ internal static class CliLineReader
         int originColumn,
         CancellationToken cancellationToken)
     {
-
         StringBuilder sb = new();
 
         while (true)
         {
-
             if (!TryWaitForKey(terminal, cancellationToken))
             {
-
                 terminal.WriteLine();
 
                 return new CliLineReadResult(CliLineReadOutcome.Cancelled, null, sb.Length > 0);
-
             }
 
             ConsoleKeyInfo key = terminal.ReadKey();
 
             if (key.Key == ConsoleKey.C && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
-
                 bool hadPendingText = sb.Length > 0;
 
                 _ = ClearLine(sb, terminal, originColumn);
@@ -248,83 +224,66 @@ internal static class CliLineReader
                 terminal.WriteLine();
 
                 return new CliLineReadResult(CliLineReadOutcome.Interrupted, null, hadPendingText);
-
             }
 
             if (key.Key == ConsoleKey.D && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
-
                 if (sb.Length > 0)
                 {
-
                     continue;
-
                 }
 
                 terminal.WriteLine();
 
                 return new CliLineReadResult(CliLineReadOutcome.EndOfInput, null, false);
-
             }
 
             if (key.Key == ConsoleKey.Enter)
             {
-
-                terminal.WriteLine();
-
                 string line = sb.ToString();
 
                 if (!allowEmpty && string.IsNullOrWhiteSpace(line))
                 {
-
+                    // Rejected before anything is echoed: the caret stays on the prompt's row, so the
+                    // origin column every later erase is measured from is still right.
                     continue;
-
                 }
 
-                return new CliLineReadResult(CliLineReadOutcome.Submitted, line, false);
+                terminal.WriteLine();
 
+                return new CliLineReadResult(CliLineReadOutcome.Submitted, line, false);
             }
 
             if (key.Key == ConsoleKey.Backspace)
             {
-
                 _ = EraseLastCharacter(sb, terminal, originColumn);
 
                 continue;
-
             }
 
             if (key.Key == ConsoleKey.U && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
-
                 _ = ClearLine(sb, terminal, originColumn);
 
                 continue;
-
             }
 
             if (key.Key == ConsoleKey.W && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
-
                 _ = DeleteLastWord(sb, terminal, originColumn);
 
                 continue;
-
             }
 
             if (char.IsControl(key.KeyChar))
             {
-
                 continue;
-
             }
 
             _ = sb.Append(key.KeyChar);
 
             terminal.Write(key.KeyChar.ToString());
-
         }
-
     }
 
     /// <summary>
@@ -335,28 +294,20 @@ internal static class CliLineReader
     /// </summary>
     private static bool TryWaitForKey(ICliLineTerminal terminal, CancellationToken cancellationToken)
     {
-
         while (true)
         {
-
             if (cancellationToken.IsCancellationRequested)
             {
-
                 return false;
-
             }
 
             if (terminal.KeyAvailable)
             {
-
                 return true;
-
             }
 
             Thread.Sleep(KeyPollInterval);
-
         }
-
     }
 
     /// <summary>
@@ -366,12 +317,9 @@ internal static class CliLineReader
     /// </summary>
     internal static int RemoveLastCharacter(StringBuilder sb)
     {
-
         if (sb.Length == 0)
         {
-
             return 0;
-
         }
 
         int removed = sb.Length >= 2
@@ -383,28 +331,21 @@ internal static class CliLineReader
         sb.Length -= removed;
 
         return removed;
-
     }
 
     private static bool TryTreatControlCAsInput(bool value)
     {
-
         try
         {
-
             Console.TreatControlCAsInput = value;
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is IOException or PlatformNotSupportedException or InvalidOperationException)
         {
-
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -413,12 +354,9 @@ internal static class CliLineReader
     /// </summary>
     internal static int EraseLastCharacter(StringBuilder sb, ICliLineTerminal terminal, int originColumn)
     {
-
         if (sb.Length == 0)
         {
-
             return 0;
-
         }
 
         int peek = Math.Min(2, sb.Length);
@@ -434,7 +372,6 @@ internal static class CliLineReader
             originColumn,
             keptCells,
             TerminalCellMetrics.MeasureWidth(tail[^removed..]));
-
     }
 
     /// <summary>Erases the whole composed line. Returns the number of terminal columns erased.</summary>
@@ -444,27 +381,21 @@ internal static class CliLineReader
     /// <summary>Erases the trailing word. Returns the number of terminal columns erased.</summary>
     internal static int DeleteLastWord(StringBuilder sb, ICliLineTerminal terminal, int originColumn)
     {
-
         int end = sb.Length - 1;
 
         while (end >= 0 && char.IsWhiteSpace(sb[end]))
         {
-
             end--;
-
         }
 
         int start = end;
 
         while (start >= 0 && !char.IsWhiteSpace(sb[start]))
         {
-
             start--;
-
         }
 
         return EraseTrailing(sb, start + 1, terminal, originColumn);
-
     }
 
     /// <summary>
@@ -477,14 +408,11 @@ internal static class CliLineReader
         ICliLineTerminal terminal,
         int originColumn)
     {
-
         int from = Math.Clamp(start, 0, sb.Length);
 
         if (from >= sb.Length)
         {
-
             return 0;
-
         }
 
         string removed = sb.ToString(from, sb.Length - from);
@@ -498,7 +426,6 @@ internal static class CliLineReader
             originColumn,
             keptCells,
             TerminalCellMetrics.MeasureWidth(removed));
-
     }
 
     /// <summary>
@@ -522,21 +449,16 @@ internal static class CliLineReader
         int keptCells,
         int erasedCells)
     {
-
         if (erasedCells <= 0)
         {
-
             return 0;
-
         }
 
         int width = terminal.Width;
 
         if (originColumn < 0 || width <= 0)
         {
-
             return EraseWithBackspaces(terminal, erasedCells);
-
         }
 
         int startCell = originColumn + keptCells;
@@ -553,23 +475,17 @@ internal static class CliLineReader
 
         if (caretRow == targetRow && !deferredWrap)
         {
-
             return EraseWithBackspaces(terminal, erasedCells);
-
         }
 
         if (!terminal.SupportsAnsi)
         {
-
             return EraseWithBackspaces(terminal, Math.Min(erasedCells, endCell - (caretRow * width)));
-
         }
 
         if (caretRow > targetRow)
         {
-
             terminal.Write($"{Escape}[{caretRow - targetRow}A");
-
         }
 
         terminal.Write($"{Escape}[{(startCell % width) + 1}G");
@@ -577,17 +493,13 @@ internal static class CliLineReader
         terminal.Write($"{Escape}[0J");
 
         return erasedCells;
-
     }
 
     private static int EraseWithBackspaces(ICliLineTerminal terminal, int cells)
     {
-
         if (cells <= 0)
         {
-
             return 0;
-
         }
 
         terminal.Write(new string('\b', cells));
@@ -597,7 +509,5 @@ internal static class CliLineReader
         terminal.Write(new string('\b', cells));
 
         return cells;
-
     }
-
 }
