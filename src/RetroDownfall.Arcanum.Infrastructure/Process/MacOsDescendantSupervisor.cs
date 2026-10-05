@@ -21,9 +21,21 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
 
     private readonly long? _memoryLimitBytes;
 
+    private readonly Func<int, long?> _footprintReader;
+
+    private readonly DescendantScanSchedule _scanSchedule;
+
+    private readonly HashSet<ProcessIdentity> _unreadableFootprints = [];
+
     private readonly Task _monitorTask;
 
     private volatile bool _memoryLimitExceeded;
+
+    private volatile bool _watcherGap;
+
+    private volatile bool _monitorFaulted;
+
+    private Exception? _monitorFault;
 
     private long _fullScanCount;
 
@@ -37,7 +49,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         int kernelQueue,
         IntPtr eventBuffer,
         Func<Task>? monitorTickHold,
-        long? memoryLimitBytes)
+        long? memoryLimitBytes,
+        Func<int, long?>? footprintReader)
     {
         _rootPid = rootPid;
         _rootIdentity = rootIdentity;
@@ -45,6 +58,11 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         _eventBuffer = eventBuffer;
         _monitorTickHold = monitorTickHold;
         _memoryLimitBytes = memoryLimitBytes;
+        _footprintReader = footprintReader ?? ReadPhysicalFootprintOrNull;
+
+        // Without a working kqueue nothing announces a fork, so the scan is the only detector and the
+        // schedule must never back off.
+        _scanSchedule = new DescendantScanSchedule(eventDriven: kernelQueue >= 0 && eventBuffer != IntPtr.Zero);
         _tracked.Add(rootIdentity);
         _monitorTask = MonitorAsync();
     }
@@ -62,15 +80,22 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     /// root and the tracked tree. The supervisor is not returned when the root's footprint cannot be
     /// read, so the caller fails closed rather than running an unmonitored child.
     /// </param>
+    /// <param name="footprintReader">
+    /// Always <c>null</c> in production (the real <c>proc_pid_rusage</c> read). A test supplies it to make
+    /// a descendant's footprint unreadable, which no real process does on demand.
+    /// </param>
     internal static MacOsDescendantSupervisor? TryStart(
         int rootPid,
         Func<Task>? monitorTickHold = null,
-        long? memoryLimitBytes = null)
+        long? memoryLimitBytes = null,
+        Func<int, long?>? footprintReader = null)
     {
+        Func<int, long?> readFootprint = footprintReader ?? ReadPhysicalFootprintOrNull;
+
         if (!OperatingSystem.IsMacOS()
             || !TryReadProcess(rootPid, out ProcessSnapshot root)
             || (memoryLimitBytes is not null
-                && !TryReadPhysicalFootprint(rootPid, out _)))
+                && readFootprint(rootPid) is null))
         {
             return null;
         }
@@ -124,7 +149,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 queue,
                 events,
                 monitorTickHold,
-                memoryLimitBytes);
+                memoryLimitBytes,
+                footprintReader);
         }
         catch
         {
@@ -188,10 +214,11 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                     TimeSpan.FromSeconds(1))
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (
-            ex is OperationCanceledException
-                or TimeoutException)
+        catch (Exception)
         {
+            // A cancelled or slow loop is the expected outcome, and a faulted one has already recorded
+            // itself (MonitorFault). None of them is the caller's problem: this method exists to stop and
+            // verify the tree, and an exception here skipped the rest of the runner's teardown.
         }
 
         long deadline = Environment.TickCount64
@@ -279,17 +306,25 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
             {
                 _ = Interlocked.Increment(ref _monitorTickCount);
 
-                TrackKernelEvents();
+                bool kernelEventObserved = TrackKernelEvents();
 
-                // The full reconciliation runs on every tick, and the cadence cannot be relaxed.
-                // macOS delivers NOTE_FORK without the child's pid, so the kqueue watcher can tell us
-                // that a tracked process forked but never which pid to track. The scan is the only
-                // way to learn a descendant's identity, and it has to do so before that descendant
-                // escapes its process group and its parent exits — after reparenting to launchd, no
-                // ancestry walk can attribute it to this root and containment is lost permanently.
-                // Scan cost is therefore load-bearing for the containment boundary, not a safety net;
-                // reduce it by making the scan itself cheaper, never by scanning less often.
-                DiscoverDescendants();
+                if (_watcherGap)
+                {
+                    _scanSchedule.RequireContinuousScanning();
+                }
+
+                // The full reconciliation is the only way to learn a descendant's identity: macOS
+                // delivers NOTE_FORK without the child's pid, so the kqueue watcher can tell us that a
+                // tracked process forked but never which pid to track, and the identity has to be learned
+                // before that descendant escapes its process group and its parent exits (after
+                // reparenting to launchd no ancestry walk can attribute it to this root). That is why the
+                // scan is not throttled by time: it runs on every tick while anything could have changed —
+                // a kernel event, or a scan that just found a new process — and backs off only once a full
+                // window of scans has found nothing and every tracked process has a working watcher.
+                if (_scanSchedule.ShouldScan(kernelEventObserved))
+                {
+                    _scanSchedule.RecordScan(DiscoverDescendants());
+                }
 
                 EnforceMemoryLimit();
 
@@ -304,17 +339,52 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                     .ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_monitorCts.IsCancellationRequested)
         {
+        }
+        catch (Exception ex)
+        {
+            FailClosedAfterMonitorFault(ex);
         }
     }
 
-    private void TrackKernelEvents()
+    /// <summary>
+    /// The monitor loop stopped for a reason other than cancellation. Nothing awaits it until disposal, so
+    /// an exception left on the task would surface there and skip the runner's teardown; it is recorded
+    /// instead. When a memory ceiling is set this loop is the only thing enforcing it, so the tree is
+    /// ended rather than left running unmonitored — the runner then reports the run as a resource-limit
+    /// apply failure.
+    /// </summary>
+    private void FailClosedAfterMonitorFault(Exception fault)
+    {
+        _monitorFault = fault;
+
+        _monitorFaulted = true;
+
+        if (_memoryLimitBytes is null)
+        {
+            return;
+        }
+
+        try
+        {
+            KillIfIdentityMatches(_rootIdentity);
+
+            KillTracked();
+        }
+        catch (Exception)
+        {
+            // Best effort by definition: the loop that would have enforced the ceiling is already down.
+        }
+    }
+
+    /// <returns>Whether the kernel reported a fork or exit of any watched process this tick.</returns>
+    private bool TrackKernelEvents()
     {
         if (_kernelQueue < 0
             || _eventBuffer == IntPtr.Zero)
         {
-            return;
+            return false;
         }
 
         Timespec timeout = new()
@@ -361,6 +431,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                     }
                 }
             }
+
+            return count > 0;
         }
         finally
         {
@@ -388,6 +460,32 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     internal bool MemoryLimitExceeded => _memoryLimitExceeded;
 
     /// <summary>
+    /// True once the monitor loop stopped on an exception rather than on cancellation. With a memory
+    /// ceiling configured the tree was killed when that happened, because nothing was enforcing the
+    /// ceiling any more; the runner reports such a run as a resource-limit apply failure.
+    /// </summary>
+    internal bool MonitorFaulted => _monitorFaulted;
+
+    /// <summary>The exception that stopped the monitor loop, when <see cref="MonitorFaulted"/>.</summary>
+    internal Exception? MonitorFault => _monitorFault;
+
+    /// <summary>
+    /// How many distinct tracked processes could not have their physical footprint read while a memory
+    /// ceiling was being enforced. Each is left out of the summed footprint, so a non-zero count means the
+    /// ceiling was enforced over less than the whole tree.
+    /// </summary>
+    internal long UnreadableFootprintCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _unreadableFootprints.Count;
+            }
+        }
+    }
+
+    /// <summary>
     /// Sums the physical footprint (private resident plus compressed memory, the figure macOS itself
     /// uses for per-process memory limits) of the root and every tracked descendant whose identity
     /// still matches, and kills the whole tree once it exceeds the ceiling. Sampling runs on every
@@ -412,15 +510,26 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
 
         foreach (ProcessIdentity identity in tracked)
         {
-            if (TryReadProcess(
+            if (!TryReadProcess(
                     identity.Pid,
                     out ProcessSnapshot current)
-                && current.Identity == identity
-                && TryReadPhysicalFootprint(
-                    identity.Pid,
-                    out long footprint))
+                || current.Identity != identity)
+            {
+                continue;
+            }
+
+            if (_footprintReader(identity.Pid) is long footprint)
             {
                 total += footprint;
+
+                continue;
+            }
+
+            // Still the same live process, but its footprint is unreadable: it is excluded from the sum.
+            // Counted so the gap is visible instead of silently shrinking the ceiling's coverage.
+            lock (_gate)
+            {
+                _ = _unreadableFootprints.Add(identity);
             }
         }
 
@@ -433,6 +542,11 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         KillIfIdentityMatches(_rootIdentity);
         KillTracked();
     }
+
+    private static long? ReadPhysicalFootprintOrNull(int pid) =>
+        TryReadPhysicalFootprint(pid, out long footprint)
+            ? footprint
+            : null;
 
     private static bool TryReadPhysicalFootprint(
         int pid,
@@ -457,7 +571,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         return true;
     }
 
-    private void DiscoverDescendants()
+    /// <returns>Whether the scan added a process to the tracked set.</returns>
+    private bool DiscoverDescendants()
     {
         _ = Interlocked.Increment(ref _fullScanCount);
 
@@ -466,7 +581,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
 
         if (processes.Count == 0)
         {
-            return;
+            return false;
         }
 
         Dictionary<int, ProcessSnapshot> byPid =
@@ -488,6 +603,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
 
         ancestorUniqueIds.Add(_rootIdentity.UniqueId);
         bool changed;
+        bool anyAdded = false;
 
         do
         {
@@ -506,10 +622,15 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 ancestorUniqueIds.Add(
                     process.Identity.UniqueId);
 
+                bool added;
+
                 lock (_gate)
                 {
-                    changed |= _tracked.Add(process.Identity);
+                    added = _tracked.Add(process.Identity);
                 }
+
+                changed |= added;
+                anyAdded |= added;
 
                 RegisterProcessWatcher(
                     process.Identity.Pid);
@@ -517,6 +638,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         }
 
         while (changed);
+
+        return anyAdded;
     }
 
     private bool VerifyTrackedExited()
@@ -671,13 +794,20 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 registration,
                 change,
                 fDeleteOld: false);
-            _ = Kevent(
-                _kernelQueue,
-                change,
-                1,
-                IntPtr.Zero,
-                0,
-                IntPtr.Zero);
+
+            if (Kevent(
+                    _kernelQueue,
+                    change,
+                    1,
+                    IntPtr.Zero,
+                    0,
+                    IntPtr.Zero) < 0
+                && Marshal.GetLastPInvokeError() != NoSuchProcess)
+            {
+                // A live process whose forks cannot be heard: only the scan can see what it creates, so
+                // the scan must stop backing off. (A process that already exited needs no watcher.)
+                _watcherGap = true;
+            }
         }
         finally
         {
@@ -731,7 +861,10 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     [LibraryImport("libc", EntryPoint = "kqueue")]
     private static partial int Kqueue();
 
-    [LibraryImport("libc", EntryPoint = "kevent")]
+    /// <summary><c>ESRCH</c>: the process to watch is already gone, which needs no watcher.</summary>
+    private const int NoSuchProcess = 3;
+
+    [LibraryImport("libc", EntryPoint = "kevent", SetLastError = true)]
     private static partial int Kevent(
         int queue,
         IntPtr changes,
