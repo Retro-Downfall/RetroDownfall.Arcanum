@@ -14,11 +14,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 internal enum ClientMutationBlockerKind : byte
 {
-
     InstallationReset,
 
     ReplacementRestore,
-
 }
 
 internal sealed record ClientMutationBlockerRecord(
@@ -35,13 +33,11 @@ internal sealed record ClientMutationBlockerPublication(
 
 internal sealed class ClientMutationBlockerStoreOptions
 {
-
     internal Action? BeforePublishForTests { get; init; }
 
     internal Action? BeforeAtomicPublishForTests { get; init; }
 
     internal Action? AfterPublishMoveBeforeVerifyForTests { get; init; }
-
 }
 
 [JsonSourceGenerationOptions(
@@ -53,7 +49,6 @@ internal sealed partial class ClientMutationBlockerJsonContext : JsonSerializerC
 
 internal sealed class ClientMutationBlockerStore
 {
-
     internal const int CurrentVersion = 1;
 
     internal const int MaxBytes = 16 * 1024;
@@ -66,7 +61,6 @@ internal sealed class ClientMutationBlockerStore
         string guardedRoot,
         ClientMutationBlockerStoreOptions? options = null)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedRoot);
 
         _guardedRoot = Path.TrimEndingDirectorySeparator(
@@ -81,7 +75,6 @@ internal sealed class ClientMutationBlockerStore
         string name = Path.GetFileNameWithoutExtension(lockPath);
 
         BlockerPath = Path.Combine(parent, name + ".blocked.json");
-
     }
 
     internal string BlockerPath { get; }
@@ -89,7 +82,6 @@ internal sealed class ClientMutationBlockerStore
     internal async Task<Result<ClientMutationBlockerPublication?>> InspectAsync(
         CancellationToken cancellationToken = default)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         Result<NoFollowPathTopologyKind> topology =
@@ -97,17 +89,13 @@ internal sealed class ClientMutationBlockerStore
 
         if (topology.IsFailure)
         {
-
             return Failure<ClientMutationBlockerPublication?>(
                 "The client-mutation blocker topology could not be classified safely.");
-
         }
 
         if (topology.Value is NoFollowPathTopologyKind.Absent)
         {
-
             return Result<ClientMutationBlockerPublication?>.Success(null);
-
         }
 
         if (topology.Value is not NoFollowPathTopologyKind.RegularFile
@@ -120,15 +108,12 @@ internal sealed class ClientMutationBlockerStore
                 BlockerPath,
                 isDirectory: false))
         {
-
             return Failure<ClientMutationBlockerPublication?>(
                 "The client-mutation blocker identity or owner-only permissions are unsafe.");
-
         }
 
         try
         {
-
             using SecureFileReadResult read = await SecureFileReader
                 .ReadBytesAsync(
                     BlockerPath,
@@ -139,10 +124,8 @@ internal sealed class ClientMutationBlockerStore
 
             if (read.Status is not SecureFileReadStatus.Success)
             {
-
                 return Failure<ClientMutationBlockerPublication?>(
                     "The client-mutation blocker could not be read safely.");
-
             }
 
             ClientMutationBlockerRecord? record = JsonSerializer.Deserialize(
@@ -151,17 +134,14 @@ internal sealed class ClientMutationBlockerStore
 
             if (!IsValid(record))
             {
-
                 return Failure<ClientMutationBlockerPublication?>(
                     "The client-mutation blocker is invalid.");
-
             }
 
             return Result<ClientMutationBlockerPublication?>.Success(
                 new ClientMutationBlockerPublication(
                     record!,
                     read.Metadata.Identity));
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -169,12 +149,9 @@ internal sealed class ClientMutationBlockerStore
                 or JsonException
                 or NotSupportedException)
         {
-
             return Failure<ClientMutationBlockerPublication?>(
                 "The client-mutation blocker could not be read safely.");
-
         }
-
     }
 
     internal async Task<Result<ClientMutationBlockerPublication>> PublishAsync(
@@ -182,7 +159,6 @@ internal sealed class ClientMutationBlockerStore
         ClientMutationBlockerRecord record,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldClientMutationLock);
 
         ArgumentNullException.ThrowIfNull(record);
@@ -191,10 +167,8 @@ internal sealed class ClientMutationBlockerStore
 
         if (!IsValid(record))
         {
-
             return Failure<ClientMutationBlockerPublication>(
                 "The client-mutation blocker is invalid.");
-
         }
 
         Result<ClientMutationBlockerPublication?> current = await InspectAsync(
@@ -202,20 +176,16 @@ internal sealed class ClientMutationBlockerStore
 
         if (current.IsFailure)
         {
-
             return Result<ClientMutationBlockerPublication>.Failure(current.Error);
-
         }
 
         if (current.Value is { } existing)
         {
-
             return existing.Record == record
                 ? Result<ClientMutationBlockerPublication>.Success(existing)
                 : Failure<ClientMutationBlockerPublication>(
                     "A different maintenance operation owns the client-mutation blocker.",
                     ErrorCodes.Data.ResetInProgress);
-
         }
 
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
@@ -224,17 +194,14 @@ internal sealed class ClientMutationBlockerStore
 
         if (payload.Length > MaxBytes)
         {
-
             return Failure<ClientMutationBlockerPublication>(
                 "The client-mutation blocker exceeds its byte limit.");
-
         }
 
         string temporaryPath = BlockerPath + ".tmp." + Guid.NewGuid().ToString("N");
 
         try
         {
-
             _options.BeforeAtomicPublishForTests?.Invoke();
 
             AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
@@ -242,21 +209,16 @@ internal sealed class ClientMutationBlockerStore
                     temporaryPath,
                     async (stream, token) =>
                     {
-
                         await stream.WriteAsync(payload, token).ConfigureAwait(false);
-
                     },
                     cancellationToken,
                     beforeReplace: () =>
                     {
-
                         if (!SecureFilePermissions.TryApplyOwnerOnlyFileStrict(
                                 temporaryPath,
                                 logFailure: false))
                         {
-
                             return false;
-
                         }
 
                         _options.BeforePublishForTests?.Invoke();
@@ -268,7 +230,6 @@ internal sealed class ClientMutationBlockerStore
 
                         return destination.IsSuccess
                             && destination.Value is NoFollowPathTopologyKind.Absent;
-
                     },
                     afterReplace: () =>
                         SecureFilePermissions.TryApplyOwnerOnlyFileStrict(
@@ -280,7 +241,6 @@ internal sealed class ClientMutationBlockerStore
 
             if (status is not AtomicReplaceStatus.Succeeded)
             {
-
                 return Failure<ClientMutationBlockerPublication>(
                     status is AtomicReplaceStatus.ReplacedButUnverified
                         ? "The client-mutation blocker publication requires recovery."
@@ -288,20 +248,20 @@ internal sealed class ClientMutationBlockerStore
                     status is AtomicReplaceStatus.ReplacedButUnverified
                         ? ErrorCodes.Data.RecoveryRequired
                         : ErrorCodes.Data.ControlPathUnavailable);
-
             }
 
+            // The blocker is durable from the move on. Cancelling now would throw away the publication the
+            // caller must own (and later remove), so the flush and the verification read run to completion
+            // on a token the caller cannot cancel.
             Result flushed = FlushParent();
 
             if (flushed.IsFailure)
             {
-
                 return Result<ClientMutationBlockerPublication>.Failure(flushed.Error);
-
             }
 
             Result<ClientMutationBlockerPublication?> inspected = await InspectAsync(
-                cancellationToken).ConfigureAwait(false);
+                CancellationToken.None).ConfigureAwait(false);
 
             return inspected.IsSuccess
                 && inspected.Value is { } published
@@ -310,17 +270,13 @@ internal sealed class ClientMutationBlockerStore
                 : Failure<ClientMutationBlockerPublication>(
                     "The client-mutation blocker could not be verified after publication.",
                     ErrorCodes.Data.RecoveryRequired);
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
             return Failure<ClientMutationBlockerPublication>(
                 "The client-mutation blocker could not be published.");
-
         }
-
     }
 
     internal async Task<Result> RemoveAsync(
@@ -328,7 +284,6 @@ internal sealed class ClientMutationBlockerStore
         ClientMutationBlockerPublication expected,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldClientMutationLock);
 
         ArgumentNullException.ThrowIfNull(expected);
@@ -340,16 +295,12 @@ internal sealed class ClientMutationBlockerStore
 
         if (inspected.IsFailure)
         {
-
             return Result.Failure(inspected.Error);
-
         }
 
         if (inspected.Value is null)
         {
-
             return Result.Success();
-
         }
 
         ClientMutationBlockerPublication actual = inspected.Value;
@@ -367,11 +318,9 @@ internal sealed class ClientMutationBlockerStore
                 expected.Identity)
             || !IdentityOwnedFileSystemCleanup.TryDelete(artifact))
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Data.RecoveryRequired,
                 "The client-mutation blocker could not be removed from the exact publication."));
-
         }
 
         Result<NoFollowPathTopologyKind> after =
@@ -380,20 +329,16 @@ internal sealed class ClientMutationBlockerStore
         if (after.IsFailure
             || after.Value is not NoFollowPathTopologyKind.Absent)
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Data.RecoveryRequired,
                 "The client-mutation blocker removal could not be verified."));
-
         }
 
         return FlushParent();
-
     }
 
     private Result FlushParent()
     {
-
         string parent = Path.GetDirectoryName(BlockerPath)!;
 
         if (!FileHandleIdentityInterop.TryOpenDirectoryMetadata(
@@ -401,24 +346,19 @@ internal sealed class ClientMutationBlockerStore
                 out Microsoft.Win32.SafeHandles.SafeFileHandle handle,
                 out _))
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The client-mutation control directory could not be opened durably."));
-
         }
 
         using (handle)
         {
-
             return Backup.BackupRestoreJournalNativeMethods.TryFlushDirectory(handle)
                 ? Result.Success()
                 : Result.Failure(new Error(
                     ErrorCodes.Data.ControlPathUnavailable,
                     "The client-mutation control directory could not be flushed durably."));
-
         }
-
     }
 
     private static bool IsValid(ClientMutationBlockerRecord? record) =>
@@ -436,5 +376,4 @@ internal sealed class ClientMutationBlockerStore
         string message,
         string code = ErrorCodes.Data.ControlPathUnavailable) =>
         Result<T>.Failure(new Error(code, message));
-
 }
