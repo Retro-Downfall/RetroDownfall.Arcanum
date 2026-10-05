@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -111,6 +112,64 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             "shutdown callback failed",
             failure.ToString(),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StopAsync_returns_after_the_drain_ceiling_when_a_handler_ignores_cancellation()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        TestCapturingLogger<LongRunningOperationStartupHostedService> logger = new();
+        LongRunningOperationStartupHostedService host = Host(
+            scopes,
+            time,
+            gate,
+            TimeSpan.FromMilliseconds(100),
+            logger);
+        TaskCompletionSource neverReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SetBackgroundTask(host, neverReleased.Task);
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Contains(
+            logger.Entries,
+            static entry => entry.Level == LogLevel.Warning
+                && entry.Message.Contains("drain ceiling", StringComparison.Ordinal));
+
+        neverReleased.TrySetResult();
+    }
+
+    [Fact]
+    public async Task StopAsync_disposes_the_shutdown_source_once_the_background_owner_has_joined()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        SetBackgroundTask(host, Task.CompletedTask);
+
+        CancellationTokenSource shutdown = ShutdownSource(host);
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(shutdown.IsCancellationRequested);
+
+        Assert.Throws<ObjectDisposedException>(() => shutdown.Token.WaitHandle);
     }
 
     [Fact]
@@ -493,13 +552,19 @@ public sealed class LongRunningOperationStartupHostedServiceTests
     private static LongRunningOperationStartupHostedService Host(
         IServiceScopeFactory scopes,
         TimeProvider time,
-        IGrimoireConnectionAdmissionGate gate) =>
+        IGrimoireConnectionAdmissionGate gate,
+        TimeSpan? drainCeiling = null,
+        ILogger<LongRunningOperationStartupHostedService>? logger = null) =>
         new(
             scopes,
             time,
             new LongRunningOperationReconciliationStatus(),
             gate,
-            NullLogger<LongRunningOperationStartupHostedService>.Instance);
+            logger ?? NullLogger<LongRunningOperationStartupHostedService>.Instance)
+        {
+            ShutdownDrainCeiling = drainCeiling
+                ?? LongRunningOperationStartupHostedService.DefaultShutdownDrainCeiling,
+        };
 
     private static void SetBackgroundTask(
         LongRunningOperationStartupHostedService host,

@@ -30,6 +30,14 @@ internal sealed class LongRunningOperationStartupHostedService(
 
     internal static readonly TimeSpan BackgroundInterval = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// Longest <see cref="StopAsync"/> waits for the background reconciliation owner to unwind after shutdown
+    /// is signalled. A handler that ignores cancellation is logged and detached once it elapses.
+    /// </summary>
+    internal static readonly TimeSpan DefaultShutdownDrainCeiling = TimeSpan.FromSeconds(30);
+
+    internal TimeSpan ShutdownDrainCeiling { get; init; } = DefaultShutdownDrainCeiling;
+
     private readonly CancellationTokenSource _shutdown = new();
 
     private Task? _backgroundTask;
@@ -101,6 +109,8 @@ internal sealed class LongRunningOperationStartupHostedService(
 
         if (_backgroundTask is null)
         {
+            _shutdown.Dispose();
+
             Rethrow(cancellationFailure);
 
             return;
@@ -108,17 +118,41 @@ internal sealed class LongRunningOperationStartupHostedService(
 
         Exception? backgroundFailure = null;
 
+        bool joined = true;
+
         try
         {
-            await _backgroundTask.ConfigureAwait(false);
+            // The join ignores the host's own shutdown token on purpose: the background owner may be
+            // inside a durable recovery step that must not be abandoned early. It is still bounded, because
+            // a handler that ignores cancellation would otherwise hold host shutdown until the process is
+            // killed.
+            await _backgroundTask
+                .WaitAsync(ShutdownDrainCeiling, timeProvider)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
             _shutdown.IsCancellationRequested)
         {
         }
+        catch (TimeoutException)
+        {
+            joined = false;
+
+            logger.LogWarning(
+                "Durable-operation reconciliation did not stop within the {Ceiling} drain ceiling after shutdown was requested; detaching it so host shutdown can finish.",
+                ShutdownDrainCeiling);
+
+            ObserveDetached(_backgroundTask);
+        }
         catch (Exception exception)
         {
             backgroundFailure = exception;
+        }
+
+        if (joined)
+        {
+            // Only a joined owner can no longer read the token; a detached one keeps the source alive.
+            _shutdown.Dispose();
         }
 
         if (cancellationFailure is not null
@@ -129,6 +163,13 @@ internal sealed class LongRunningOperationStartupHostedService(
 
         Rethrow(cancellationFailure ?? backgroundFailure);
     }
+
+    private static void ObserveDetached(Task detached) =>
+        _ = detached.ContinueWith(
+            static task => _ = task.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     private static void Rethrow(Exception? exception)
     {
