@@ -392,7 +392,8 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         {
             await unlocked.Value.DisposeAsync().ConfigureAwait(false);
 
-            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
+            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
+                RefusalUnlessOutage(marker.Error));
         }
 
         Result<IHostProcessToolsRuntimePolicy> provisionalHostTools;

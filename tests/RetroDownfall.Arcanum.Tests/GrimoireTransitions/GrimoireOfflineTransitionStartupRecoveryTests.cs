@@ -416,6 +416,32 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
     }
 
     /// <summary>
+    /// A marker sample whose credential store could not be read is an outage once the finisher says the
+    /// transition is not terminal: the pass keeps <c>Covenant.Unavailable</c> rather than reporting the
+    /// installation as needing repair, and still closes the probe it opened.
+    /// </summary>
+    [Fact]
+    public async Task An_unavailable_marker_sample_is_reported_unavailable_not_manual_recovery()
+    {
+        using Harness harness = Create("marker-unavailable", failAt: "marker-unavailable");
+
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
+            .RecoverBeforeBootstrapAsync(
+                harness.Lock,
+                harness.Root,
+                harness.DatabasePath,
+                InstallationResetNestedTransitionEvidenceOutcome.NestedBound,
+                harness.Journal,
+                Token);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, recovered.Error.Code);
+
+        Assert.Equal(["marker", "unlock", "terminal", "close"], harness.Steps);
+    }
+
+    /// <summary>
     /// The host-tools arm, driven through the production classifier. A recovery connection whose
     /// installation-identity read meets SQLITE_BUSY is an outage, as the terminal finisher already
     /// reports the same read on the same connection; it is not durable evidence that disagrees.

@@ -144,24 +144,14 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
                 : Refusal();
         }
 
-        try
+        Result identity = await VerifyInstallationIdentityAsync(
+            recoveryConnection,
+            evidence.InstallationId,
+            cancellationToken).ConfigureAwait(false);
+
+        if (identity.IsFailure)
         {
-            await GrimoireDatabaseBootstrapper.VerifyExpectedInstallationIdentityAsync(
-                recoveryConnection,
-                evidence.InstallationId,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception) when (IsOutage(exception))
-        {
-            return Outage<GrimoireOfflineTransitionTerminalSuffixOutcome>();
-        }
-        catch
-        {
-            return Refusal();
+            return Result<GrimoireOfflineTransitionTerminalSuffixOutcome>.Failure(identity.Error);
         }
 
         if (!ExactTerminal(row.Value, publication.Payload)
@@ -642,6 +632,38 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
     private static Result<GrimoireOfflineTransitionTerminalSuffixOutcome> Refusal() =>
         Refusal<GrimoireOfflineTransitionTerminalSuffixOutcome>();
 
+    /// <summary>
+    /// The terminal arm's installation-identity check on the recovery connection: an I/O failure or a
+    /// busy or locked catalog is the outage, and every other failure the refusal.
+    /// </summary>
+    internal static async Task<Result> VerifyInstallationIdentityAsync(
+        SqliteConnection recoveryConnection,
+        Guid installationId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await GrimoireDatabaseBootstrapper.VerifyExpectedInstallationIdentityAsync(
+                recoveryConnection,
+                installationId,
+                cancellationToken).ConfigureAwait(false);
+
+            return Result.Success();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsOutage(exception))
+        {
+            return Outage<GrimoireOfflineTransitionTerminalSuffixOutcome>().Error;
+        }
+        catch
+        {
+            return Refusal().Error;
+        }
+    }
+
     /// <summary>An unreachable credential store, or a busy, locked, or unreadable catalog.</summary>
     internal static bool IsOutage(Error error) => error.Code == ErrorCodes.Covenant.Unavailable;
 
@@ -667,7 +689,7 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
         Task.FromResult(Result.Success());
 
     /// <summary>Every persisted operation column, parsed only from its canonical SQLite encoding.</summary>
-    private sealed record TerminalOperationSnapshot(LongRunningOperation Operation)
+    internal sealed record TerminalOperationSnapshot(LongRunningOperation Operation)
     {
         internal Guid Id => Operation.Id;
 

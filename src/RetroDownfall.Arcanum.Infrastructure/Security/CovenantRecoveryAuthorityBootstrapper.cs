@@ -348,6 +348,12 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         {
             throw;
         }
+        catch (Exception exception) when (GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
+        {
+            // The same answer the terminal finisher and the host-tools arm give this read on this
+            // connection: a catalog that cannot be read right now is retryable, not disagreement.
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(Outage());
+        }
         catch (Exception)
         {
             return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
@@ -393,13 +399,13 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
             return Result<ICovenantClosedRecoveryHandoff>.Failure(agreement.Error);
         }
 
-        Result<CovenantOfflineTransitionSourceState> observed = await CovenantErasureInventorySource
-            .ReadOfflineTransitionObservedStateAsync(recoveryConnection, transaction: null, cancellationToken)
-            .ConfigureAwait(false);
+        Result<CovenantOfflineTransitionSourceState> observed = await ReadObservedStateAsync(
+            recoveryConnection,
+            cancellationToken).ConfigureAwait(false);
 
         if (observed.IsFailure)
         {
-            return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(observed.Error);
         }
 
         // The load-bearing check, and the reason these facts are verified rather than merely read. A
@@ -479,7 +485,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
             : Result.Success();
     }
 
-    private static async Task<Result<LaunchRow>> ReadLaunchRowAsync(
+    internal static async Task<Result<LaunchRow>> ReadLaunchRowAsync(
         SqliteConnection connection,
         Guid operationId,
         CancellationToken cancellationToken)
@@ -567,10 +573,41 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         {
             throw;
         }
+        catch (Exception exception) when (GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
+        {
+            return Result<LaunchRow>.Failure(Outage());
+        }
         catch (Exception)
         {
             return Result<LaunchRow>.Failure(Refusal().Error);
         }
+    }
+
+    /// <summary>
+    /// The catalog's canonical generation and epoch tuple, or the refusal when it is not one.
+    /// </summary>
+    internal static async Task<Result<CovenantOfflineTransitionSourceState>> ReadObservedStateAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        Result<CovenantOfflineTransitionSourceState> observed;
+
+        try
+        {
+            observed = await CovenantErasureInventorySource
+                .ReadOfflineTransitionObservedStateAsync(connection, transaction: null, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            !cancellationToken.IsCancellationRequested
+            && GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
+        {
+            return Result<CovenantOfflineTransitionSourceState>.Failure(Outage());
+        }
+
+        return observed.IsSuccess
+            ? observed
+            : Result<CovenantOfflineTransitionSourceState>.Failure(Refusal().Error);
     }
 
     private static void Add(SqliteCommand command, string name, object value)
@@ -597,7 +634,16 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "The persisted Covenant authority does not agree with the authenticated offline-transition journal.");
 
-    private sealed record LaunchRow(
+    /// <summary>
+    /// A catalog read that met an I/O failure or a busy or locked catalog, which is retryable rather
+    /// than the refusal above.
+    /// </summary>
+    internal static Error Outage() =>
+        new(
+            ErrorCodes.Covenant.Unavailable,
+            "The persisted Covenant authority could not be read right now.");
+
+    internal sealed record LaunchRow(
         string Kind,
         LongRunningOperationState State,
         LongRunningOperationRecoveryPolicy RecoveryPolicy,

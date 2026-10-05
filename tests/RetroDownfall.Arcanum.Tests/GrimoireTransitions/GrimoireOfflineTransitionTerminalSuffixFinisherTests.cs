@@ -1,6 +1,9 @@
+using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 
@@ -70,6 +73,111 @@ public sealed class GrimoireOfflineTransitionTerminalSuffixFinisherTests
         Assert.Equal(1, parent.VerifyCalls);
 
         Assert.Equal(0, parent.PublishCalls);
+    }
+
+    /// <summary>
+    /// The terminal arm's operation-row read on a catalog another connection holds exclusively meets
+    /// SQLITE_BUSY: that is an outage the start can retry, not a row that failed to verify.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_catalog_during_the_operation_row_read_is_an_outage_not_manual_recovery()
+    {
+        await using ExclusivelyLockedCatalog locked = await ExclusivelyLockedCatalog.CreateAsync(
+            Guid.NewGuid(),
+            CancellationToken.None);
+
+        Result<GrimoireOfflineTransitionTerminalSuffixFinisher.TerminalOperationSnapshot> row =
+            await GrimoireOfflineTransitionTerminalSuffixFinisher.TerminalOperationSnapshot.ReadAsync(
+                locked.RecoveryConnection,
+                Guid.NewGuid(),
+                CancellationToken.None);
+
+        Assert.True(row.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, row.Error.Code);
+    }
+
+    /// <summary>
+    /// The terminal arm's installation-identity read: a busy catalog is the outage, while an identity
+    /// that names another installation is durable disagreement and stays the manual-recovery refusal.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_identity_read_is_an_outage_and_a_foreign_identity_is_a_refusal()
+    {
+        Guid installationId = Guid.NewGuid();
+
+        await using (ExclusivelyLockedCatalog locked = await ExclusivelyLockedCatalog.CreateAsync(
+                         installationId,
+                         CancellationToken.None))
+        {
+            Result busy = await GrimoireOfflineTransitionTerminalSuffixFinisher
+                .VerifyInstallationIdentityAsync(
+                    locked.RecoveryConnection,
+                    installationId,
+                    CancellationToken.None);
+
+            Assert.True(busy.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.Unavailable, busy.Error.Code);
+        }
+
+        SqliteNativeRuntime.Instance.Initialize();
+
+        string directory = Directory.CreateTempSubdirectory("arcanum-finisher-identity-").FullName;
+
+        try
+        {
+            await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(directory, "identity.db"),
+                Pooling = false,
+            }.ToString());
+
+            await connection.OpenAsync();
+
+            await using (SqliteCommand create = connection.CreateCommand())
+            {
+                create.CommandText = """
+                    CREATE TABLE covenant_authority_state(
+                        StateKey INTEGER PRIMARY KEY,
+                        InstallationIdentity TEXT NOT NULL);
+                    INSERT INTO covenant_authority_state(StateKey, InstallationIdentity)
+                    VALUES (1, $identity);
+                    """;
+
+                create.Parameters.AddWithValue(
+                    "$identity",
+                    Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+                await create.ExecuteNonQueryAsync();
+            }
+
+            Result foreign = await GrimoireOfflineTransitionTerminalSuffixFinisher
+                .VerifyInstallationIdentityAsync(connection, installationId, CancellationToken.None);
+
+            Assert.True(foreign.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, foreign.Error.Code);
+
+            Assert.True((await GrimoireOfflineTransitionTerminalSuffixFinisher
+                .VerifyInstallationIdentityAsync(
+                    connection,
+                    Guid.Parse(await IdentityAsync(connection)),
+                    CancellationToken.None)).IsSuccess);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static async Task<string> IdentityAsync(SqliteConnection connection)
+    {
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.CommandText = "SELECT InstallationIdentity FROM covenant_authority_state WHERE StateKey = 1;";
+
+        return (string)(await read.ExecuteScalarAsync())!;
     }
 
     private static CovenantDigest Digest(byte value) =>
