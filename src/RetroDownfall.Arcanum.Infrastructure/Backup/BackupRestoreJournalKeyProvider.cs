@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// </remarks>
 internal abstract class StableJournalKeyLease : IDisposable
 {
-
     private byte[]? _key;
 
     protected StableJournalKeyLease(byte[] key) => _key = key;
@@ -30,25 +29,18 @@ internal abstract class StableJournalKeyLease : IDisposable
     /// <summary>Takes the key exactly once. The caller owns zeroing what it receives.</summary>
     internal bool TryTakeKey([NotNullWhen(true)] out byte[]? key)
     {
-
         key = Interlocked.Exchange(ref _key, null);
 
         return key is not null;
-
     }
 
     public void Dispose()
     {
-
         if (Interlocked.Exchange(ref _key, null) is { } key)
         {
-
             CryptographicOperations.ZeroMemory(key);
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -64,10 +56,8 @@ internal abstract class StableJournalKeyLease : IDisposable
 /// </remarks>
 internal sealed class BackupRestoreJournalKeyLease : StableJournalKeyLease
 {
-
     private BackupRestoreJournalKeyLease(byte[] key) : base(key)
     {
-
     }
 
     /// <summary>
@@ -79,7 +69,6 @@ internal sealed class BackupRestoreJournalKeyLease : StableJournalKeyLease
     /// </remarks>
     internal static BackupRestoreJournalKeyLease Mint(byte[] key)
     {
-
         ArgumentNullException.ThrowIfNull(key);
 
         return key.Length == BackupRestoreJournalAuthenticator.KeyBytes
@@ -89,9 +78,7 @@ internal sealed class BackupRestoreJournalKeyLease : StableJournalKeyLease
                 + BackupRestoreJournalAuthenticator.KeyBytes
                 + " bytes.",
                 nameof(key));
-
     }
-
 }
 
 /// <summary>
@@ -108,7 +95,6 @@ internal sealed class BackupRestoreJournalKeyLease : StableJournalKeyLease
 /// </remarks>
 internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credentials)
 {
-
     internal const int KeyBytes = BackupRestoreJournalAuthenticator.KeyBytes;
 
     /// <summary>Thirty-two bytes of unpadded base64url is exactly forty-three characters.</summary>
@@ -125,7 +111,6 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
         string guardedDirectory,
         BackupRestoreProfileNamespace profileNamespace)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
@@ -142,16 +127,12 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
 
         if (existing.IsFailure)
         {
-
             return Result<BackupRestoreJournalKeyLease>.Failure(existing.Error);
-
         }
 
         if (existing.Value is { } stored)
         {
-
             return BackupRestoreJournalKeyLease.Mint(stored);
-
         }
 
         byte[] created = RandomNumberGenerator.GetBytes(KeyBytes);
@@ -160,13 +141,11 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
 
         if (written.Status is not OsCredentialStoreStatus.Ok)
         {
-
             CryptographicOperations.ZeroMemory(created);
 
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "This profile's restore journal key could not be written to the credential store.");
-
         }
 
         // An echo of what was handed in is not proof of persistence, so the key is read back and
@@ -176,26 +155,21 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
         if (readback.IsFailure || readback.Value is not { } confirmed
             || !CryptographicOperations.FixedTimeEquals(confirmed, created))
         {
-
             CryptographicOperations.ZeroMemory(created);
 
             if (readback.IsSuccess && readback.Value is { } mismatched)
             {
-
                 CryptographicOperations.ZeroMemory(mismatched);
-
             }
 
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "This profile's restore journal key did not read back as written.");
-
         }
 
         CryptographicOperations.ZeroMemory(created);
 
         return BackupRestoreJournalKeyLease.Mint(confirmed);
-
     }
 
     /// <summary>
@@ -204,16 +178,13 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
     internal Result<BackupRestoreJournalKeyLease> OpenExisting(
         BackupRestoreProfileNamespace profileNamespace)
     {
-
         ArgumentNullException.ThrowIfNull(profileNamespace);
 
         Result<byte[]?> existing = ReadExact(Account(profileNamespace));
 
         if (existing.IsFailure)
         {
-
             return Result<BackupRestoreJournalKeyLease>.Failure(existing.Error);
-
         }
 
         return existing.Value is { } stored
@@ -221,41 +192,6 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
             : new Error(
                 ErrorCodes.Covenant.NotFound,
                 "This profile has no restore journal key.");
-
-    }
-
-    /// <summary>
-    /// Whether this profile's key account holds usable material, without taking a lease.
-    /// </summary>
-    /// <remarks>
-    /// An unreadable store is a failure rather than an absence. Reporting "no key" for a backend that
-    /// merely could not be reached is what would let recovery conclude that nothing is in flight.
-    /// </remarks>
-    internal Result<bool> IsPresent(BackupRestoreProfileNamespace profileNamespace)
-    {
-
-        ArgumentNullException.ThrowIfNull(profileNamespace);
-
-        Result<byte[]?> existing = ReadExact(Account(profileNamespace));
-
-        if (existing.IsFailure)
-        {
-
-            return Result<bool>.Failure(existing.Error);
-
-        }
-
-        if (existing.Value is { } stored)
-        {
-
-            CryptographicOperations.ZeroMemory(stored);
-
-            return true;
-
-        }
-
-        return false;
-
     }
 
     private static string Account(BackupRestoreProfileNamespace profileNamespace) =>
@@ -263,12 +199,9 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
 
     private OsCredentialStoreResult Set(string account, string value)
     {
-
         try
         {
-
             return _credentials.Set(ArcanumCredentialIdentity.Service, account, value);
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -276,11 +209,8 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
                 or InvalidOperationException
                 or NotSupportedException)
         {
-
             return OsCredentialStoreResult.Failed(exception.Message);
-
         }
-
     }
 
     /// <summary>
@@ -288,14 +218,11 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
     /// </summary>
     private Result<byte[]?> ReadExact(string account)
     {
-
         OsCredentialStoreResult result;
 
         try
         {
-
             result = _credentials.TryGet(ArcanumCredentialIdentity.Service, account);
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -303,44 +230,34 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
                 or InvalidOperationException
                 or NotSupportedException)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "This profile's restore journal key could not be read.");
-
         }
 
         if (result.Status is OsCredentialStoreStatus.NotFound)
         {
-
             return Result<byte[]?>.Success(null);
-
         }
 
         if (result.Status is not OsCredentialStoreStatus.Ok)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "This profile's restore journal key could not be read.");
-
         }
 
         // An Ok with an empty value is malformed, not absent: an absent slot reports NotFound.
         if (result.Value is not { Length: EncodedKeyCharacters } encoded
             || !CanonicalBase64Url.TryDecodeExact(encoded, KeyBytes, out byte[] decoded))
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "This profile's restore journal key is not canonical unpadded base64url of "
                 + KeyBytes
                 + " bytes.");
-
         }
 
         return decoded;
-
     }
-
 }
