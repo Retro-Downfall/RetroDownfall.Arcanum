@@ -1,5 +1,6 @@
 using System.Net;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
 
 namespace RetroDownfall.Arcanum.Tests.Resilience;
@@ -205,7 +206,8 @@ public sealed class ProviderHealthProbeTests : IDisposable
     private static ProviderHealthProbe CreateProbe(HttpMessageHandler handler)
     {
         return new ProviderHealthProbe(
-            new FakeHttpClientFactory(handler));
+            new FakeHttpClientFactory(handler),
+            EnvironmentOnlyProviderApiKeyResolver.Instance);
     }
 
     public void Dispose()

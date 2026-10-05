@@ -102,6 +102,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:ToolExecutionPipeline:toolResultMaterializer"] = "every use of the IToolResultMaterializer is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumBrowseWebTool.cs:ArcanumBrowseWebTool:dnsResolver"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDnsResolver",
+
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumReadUrlTool.cs:ArcanumReadUrlTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
@@ -244,8 +246,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRunningOperationReconciler.cs:LongRunningOperationReconciler:scopeFactory"] = "every use of the IServiceScopeFactory is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRepository.cs:SessionRepository:attachmentIndexQueue"] = "every use of the ISessionAttachmentIndexQueue is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.Arcanum.Infrastructure/Resilience/ProviderHealthProbe.cs:ProviderHealthProbe:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Security/SanctumGuard.cs:SanctumGuard:dnsResolver"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDnsResolver",
 

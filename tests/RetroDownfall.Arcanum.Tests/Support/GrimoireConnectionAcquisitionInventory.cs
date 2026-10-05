@@ -1097,7 +1097,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Api/Tower/SessionDivinationEndpoints.cs", "SessionDivinationEndpoints", "JoinSessionMetadataAsync(7)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "connections.AcquireScopedAsync(scopedConnection,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Api/Tower/SessionDivinationEndpoints.cs", "SessionDivinationEndpoints", "JoinSessionMetadataAsync(6)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "connections.AcquireScopedAsync(scopedConnection,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -3678,6 +3678,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.NonGrimoireCandidate,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.NegativeNonDatabaseProof, "GrimoireOfflineTransitionJournalFileStore.ResumeWorkingPublicationAsync(7)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs", "GrimoireOfflineTransitionJournalFileStore", "RestorePreviousAsCanonicalAsync(6)", AcquisitionConstructKind.ProviderOpen, "Open", 1, "Open(location)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "GrimoireOfflineTransitionJournalFileStore.RestorePreviousAsCanonicalAsync(6)", 0)),
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs", "GrimoireOfflineTransitionJournalFileStore", "OpenProductionPrimitives(1)", AcquisitionConstructKind.ProviderOpen, "GrimoireOfflineTransitionJournalFilePrimitives.Open", 2, "GrimoireOfflineTransitionJournalFilePrimitives.Open(parent,location.GuardedParentPhysicalIdentityDigest)"),

@@ -34,7 +34,7 @@ public sealed class McpCommands(
     IThemePalette themePalette,
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     public async Task<int> List(
         string? workingDirectory,
@@ -741,7 +741,7 @@ public sealed class McpCommands(
 
         string trimmed = selector.Trim();
 
-        if (resourceCatalog is null || LooksLikePath(trimmed))
+        if (LooksLikePath(trimmed))
         {
             return new WorkspaceScope(trimmed, null);
         }

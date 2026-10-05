@@ -58,7 +58,7 @@ public interface IDaemonExecutionRepository
     bool HasRunningExecution(string daemonId);
 
     /// <summary>
-    /// <see langword=true/> while a cancelled execution still holds its daemon's in-flight slot because the
+    /// <see langword="true"/> while a cancelled execution still holds its daemon's in-flight slot because the
     /// runner has not yet reported that <c>job.RunAsync</c> returned. Such a record must not be deleted: its
     /// drain report is the only thing that frees the slot, and a missing record turns that report into a no-op.
     /// </summary>
