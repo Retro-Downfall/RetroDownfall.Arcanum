@@ -89,9 +89,15 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
     public ValueTask FlushFinalAsync(CancellationToken cancellationToken = default) =>
         FlushPendingAsync(cancellationToken);
 
-    /// <summary>Flushes any pending tokens on cancellation.</summary>
-    public ValueTask FlushCancelledAsync(CancellationToken cancellationToken = default) =>
-        FlushPendingAsync(cancellationToken);
+    /// <summary>
+    /// Flushes any pending tokens after a cancellation. This flush is what puts the cut-off text on the
+    /// screen, and it runs because <paramref name="cancelledToken"/> was cancelled, so that token must
+    /// never be allowed to abandon it: the write is made on <see cref="CancellationToken.None"/> (the UI
+    /// channel is unbounded, so it completes at once). The parameter exists so a caller can pass the
+    /// token it is unwinding from without having to know that.
+    /// </summary>
+    public ValueTask FlushCancelledAsync(CancellationToken cancelledToken = default) =>
+        FlushPendingAsync(CancellationToken.None);
 
     public async ValueTask DisposeAsync()
     {

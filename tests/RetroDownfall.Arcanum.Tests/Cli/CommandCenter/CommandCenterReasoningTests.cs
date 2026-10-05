@@ -379,6 +379,35 @@ public sealed class CommandCenterReasoningTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// A cancel keeps what the model had already said and says it was cut off. The earlier cancellation
+    /// test only streamed reasoning, so nothing pinned the assistant text or the exact marker.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_after_assistant_text_keeps_it_and_appends_the_cancelled_marker()
+    {
+        BlockingAfterPayloadStream stream = new(
+            Encoding.UTF8.GetBytes(SerializeFrames(new IntelligenceEvent(IntelligenceEventType.Token, "partial", "partial"))));
+        CommandCenterChatRunner runner = CreateRunner(new StreamingHandler(stream));
+        CommandCenterState state = new(new SessionLogBuffer());
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        using CancellationTokenSource cancellation = new();
+
+        Task run = runner.RunTurnAsync("question", state, updates.Writer, cancellation.Token);
+
+        // The first token stops the spinner, so the runner has consumed it before the cancel lands.
+        await WaitUntilAsync(() => !state.ThinkingActive, AsyncTestTimeout);
+
+        cancellation.Cancel();
+        await run.WaitAsync(AsyncTestTimeout);
+
+        IReadOnlyList<SessionLogEntry> entries = state.Log.Snapshot();
+        Assert.All(entries, static entry => Assert.False(entry.Streaming));
+        Assert.Equal(
+            "partial\n… [cancelled]",
+            Assert.Single(entries, static entry => entry.Kind == SessionLogEntryKind.Assistant).Text);
+    }
+
     [Fact]
     public async Task Error_after_reasoning_cleans_up_without_leaking_reasoning_into_answer()
     {

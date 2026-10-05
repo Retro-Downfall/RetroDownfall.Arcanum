@@ -478,11 +478,43 @@ public sealed class StreamingUiCoalescerTests
         Assert.Equal(2, coalescer.FlushCount);
     }
 
+    /// <summary>
+    /// The flush that follows a cancellation is the one that gets the cut-off text onto the screen, so it
+    /// cannot be abandoned because the turn's token is already cancelled: that is exactly when it runs.
+    /// </summary>
+    [Fact]
+    public async Task FlushCancelled_with_a_cancelled_token_still_writes_the_refresh()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        await using StreamingUiCoalescer coalescer = new(
+            channel.Writer,
+            flushInterval: TimeSpan.FromMilliseconds(50),
+            utcNow: () => now);
+
+        await coalescer.NoteTokenAsync();
+        Assert.True(coalescer.HasPending);
+
+        await coalescer.FlushCancelledAsync(new CancellationToken(canceled: true));
+
+        Assert.Equal(1, coalescer.FlushCount);
+        Assert.False(coalescer.HasPending);
+        Assert.True(channel.Reader.TryRead(out CommandCenterUiUpdate? update));
+        Assert.Equal(CommandCenterUiUpdateKind.RefreshLog, update!.Kind);
+    }
+
     [Fact]
     public async Task FlushCancelled_and_Dispose_never_drop_final_partial()
     {
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
-        StreamingUiCoalescer coalescer = new(channel.Writer);
+
+        // A frozen clock: with the real one, a slow machine could cross the 50 ms interval between the two
+        // chunks and flush early, which changes the counts this test pins.
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        StreamingUiCoalescer coalescer = new(
+            channel.Writer,
+            flushInterval: TimeSpan.FromMilliseconds(50),
+            utcNow: () => now);
 
         await coalescer.NoteTokenAsync();
         await coalescer.FlushCancelledAsync();

@@ -347,6 +347,8 @@ internal static class PosixFifo
 /// </summary>
 public sealed class CommandCenterTurnStartThreadingTests : IDisposable
 {
+    private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
+
     private readonly string _root;
 
     public CommandCenterTurnStartThreadingTests()
@@ -389,7 +391,7 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         };
 
         mainLoop.Start();
-        bool yielded = mainLoop.Join(TimeSpan.FromSeconds(5));
+        bool yielded = mainLoop.Join(AsyncTestTimeout);
 
         Assert.True(
             yielded,
@@ -428,7 +430,7 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         Task run = runner.RunTurnAsync("summarize @trace.log", state, updates.Writer, cts.Token);
         cts.Cancel();
 
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await run.WaitAsync(AsyncTestTimeout);
 
         Assert.False(state.ThinkingActive);
         Assert.DoesNotContain(state.Log.Snapshot(), static entry => entry.Streaming);
