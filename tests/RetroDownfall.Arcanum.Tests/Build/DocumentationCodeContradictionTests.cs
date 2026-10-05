@@ -646,6 +646,69 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("`Arcanum:Features:ScalarUi`", scalarRoute, StringComparison.Ordinal);
 
         Assert.Contains("default false", scalarRoute, StringComparison.Ordinal);
+
+        // The paragraph that says both are registered on the keyed group states the gate too, so it does
+        // not read as if Scalar were mapped unconditionally beside the always-mapped OpenAPI document.
+        string keyedGroup = Assert.Single(
+            lines,
+            static line => line.Contains("`MapScalarApiReference`", StringComparison.Ordinal));
+
+        Assert.Contains("`MapOpenApi`", keyedGroup, StringComparison.Ordinal);
+
+        Assert.Contains("`Arcanum:Features:ScalarUi`", keyedGroup, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("are registered on the same keyed group", keyedGroup, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The A2A server routes are mapped when <c>Arcanum:Features:A2AServer</c> is true, and the documents
+    /// say that flag alone gates them. The Conclave flag is derived from it, so a document that lists
+    /// both as conditions sends an operator to set a flag the host sets for them.
+    /// </summary>
+    [Fact]
+    public void The_a2a_server_routes_are_documented_as_gated_by_the_A2AServer_flag_alone()
+    {
+        // The three source facts the sentences below rest on.
+        string defaults = ReadSource("Core", "Configuration", "ArcanumRuntimeDefaults.cs");
+
+        Assert.Contains("Enabled = features.Conclave || a2a.Enabled,", defaults, StringComparison.Ordinal);
+
+        Assert.Contains("Enabled = serverEnabled || clientEnabled,", defaults, StringComparison.Ordinal);
+
+        string mapping = ReadSource("Api", "A2A", "A2AServerEndpoints.cs");
+
+        Assert.Contains("!startupSettings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ServerEnabled", mapping, StringComparison.Ordinal);
+
+        string[] apiLines = ReadDocument("Arcanum.API.md").Split('\n');
+
+        string[] routeRows =
+        [
+            .. apiLines.Where(static line =>
+                line.StartsWith("| — | `/api/conclave/a2a/*`", StringComparison.Ordinal)
+                || line.StartsWith("| `GET /api/conclave/a2a/agent-card`", StringComparison.Ordinal)
+                || line.StartsWith("| `POST /api/conclave/a2a`", StringComparison.Ordinal)),
+        ];
+
+        Assert.Equal(3, routeRows.Length);
+
+        foreach (string row in routeRows)
+        {
+            Assert.DoesNotContain("`Arcanum:Features:Conclave` and `Arcanum:Features:A2AServer` are true", row, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("`Arcanum:Features:Conclave && Arcanum:Features:A2AServer`", row, StringComparison.Ordinal);
+
+            Assert.Contains("`Arcanum:Features:A2AServer`", row, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("which derives `Arcanum:Features:Conclave`", routeRows[0], StringComparison.Ordinal);
+
+        Assert.Contains("which derives `Arcanum:Features:Conclave`", routeRows[1], StringComparison.Ordinal);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.DoesNotContain("The **only** gates are `Arcanum:Features:Conclave` plus", design, StringComparison.Ordinal);
+
+        Assert.Contains("either of which derives `Arcanum:Features:Conclave`", design, StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -94,6 +94,8 @@ Command-specific refinements:
 
 Every direct command answers `--json` with exactly one JSON document, but only a verb with a typed payload (for example `session show`, `memory covenant list`, `budget`, `conclave status`, and `doctor`) puts fields in it. A verb with no typed payload prints its normal text, which the CLI captures at the process boundary, strips of ANSI sequences, and returns as `{ "output": "<text>", "exitCode": <n> }`. That document is valid and stable, but `output` is the table or sentence a person would read, not a listing a script can index. For typed data from those verbs, call the HTTP API instead ([Arcanum.API.md](Arcanum.API.md)).
 
+A typed verb falls back to the same envelope on any path that returns before it writes its payload. A failure (an unreachable host, a refused request) prints its diagnostic on stderr and leaves `{ "output": "", "exitCode": <n> }` on stdout, so a script that indexes the fields of a typed verb's document must check `exitCode` (or the process status) first.
+
 The families below emit the text envelope for every verb except the typed ones named beside them. The table is not exhaustive: verbs outside it may emit the envelope too, so rely on a typed shape only where a verb documents one.
 
 | Command family | Typed `--json` verbs |

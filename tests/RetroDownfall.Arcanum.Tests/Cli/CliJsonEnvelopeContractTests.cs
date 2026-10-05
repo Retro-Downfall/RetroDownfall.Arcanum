@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -6,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
@@ -196,6 +198,85 @@ public sealed class CliJsonEnvelopeContractTests
         Assert.Contains("ward-1", document.RootElement.GetProperty("output").GetString(), StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A verb with a typed payload falls back to the same envelope on any path that returns before it
+    /// writes the payload. The diagnostic of a failure goes to stderr, so stdout carries an empty
+    /// <c>output</c> and the non-zero <c>exitCode</c>, and a script that indexes fields of a typed verb's
+    /// document has to check the exit code first.
+    /// </summary>
+    [Fact]
+    public void A_typed_verb_that_fails_under_json_emits_the_text_envelope_with_an_empty_output()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<BudgetSummaryDto>(null, false, new Error(ErrorCodes.Validation.InvalidBody, "The budget could not be read.")),
+            ArcanumJsonContext.Default.ApiResponseBudgetSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["--json", "budget"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(
+            ["exitCode", "output"],
+            document.RootElement.EnumerateObject().Select(static property => property.Name).Order(StringComparer.Ordinal));
+
+        Assert.Equal(result.ExitCode, document.RootElement.GetProperty("exitCode").GetInt32());
+
+        Assert.Equal(string.Empty, document.RootElement.GetProperty("output").GetString());
+
+        Assert.Contains("The budget could not be read.", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_reference_says_a_typed_verb_falls_back_to_the_text_envelope_when_it_fails()
+    {
+        string section = ReferenceSection(File.ReadAllText(CommandReferencePath()).Replace("\r\n", "\n", StringComparison.Ordinal));
+
+        Assert.Contains("A typed verb falls back to the same envelope on any path that returns before it writes its payload", section, StringComparison.Ordinal);
+
+        Assert.Contains("`{ \"output\": \"\", \"exitCode\": <n> }`", section, StringComparison.Ordinal);
+
+        Assert.Contains("check `exitCode`", section, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The handler reading ignores comments and string literals: a comment that mentions the typed call
+    /// does not make a verb typed, and a brace inside a string does not make one handler swallow the next.
+    /// </summary>
+    [Fact]
+    public void The_handler_reading_ignores_comments_and_string_literals()
+    {
+        const string source = """"
+            internal sealed class Handlers(IConsoleDispatcher console)
+            {
+                // A typed payload would be written with console.WriteJson(payload) here.
+                public async Task<int> Commented(CancellationToken cancellationToken)
+                {
+                    /* console.WriteJson(payload); */
+                    console.WriteDiagnostic("an unbalanced { brace and WriteJson( in text");
+
+                    char open = '{';
+
+                    string verbatim = @"{ ""WriteJson("" ";
+
+                    string raw = """{ WriteJson( }""";
+
+                    return 0;
+                }
+
+                public async Task<int> Typed(CancellationToken cancellationToken)
+                {
+                    console.WriteJson(payload, info);
+
+                    return 0;
+                }
+            }
+            """";
+
+        Assert.Equal(["Typed"], TypedHandlerMethods(source).Order(StringComparer.Ordinal));
+    }
+
     private static IEnumerable<(string[] Families, string[] TypedVerbs)> ReferenceRows()
     {
         string section = ReferenceSection(File.ReadAllText(CommandReferencePath()).Replace("\r\n", "\n", StringComparison.Ordinal));
@@ -241,8 +322,10 @@ public sealed class CliJsonEnvelopeContractTests
     /// The public command-handler methods whose body reaches a typed <c>WriteJson</c> call, directly or
     /// through another method in the same file.
     /// </summary>
-    private static HashSet<string> TypedHandlerMethods(string source)
+    private static HashSet<string> TypedHandlerMethods(string rawSource)
     {
+        string source = WithoutCommentsAndStrings(rawSource);
+
         Dictionary<string, List<string>> bodies = new(StringComparer.Ordinal);
 
         foreach (Match match in MethodDeclaration.Matches(source))
@@ -298,6 +381,216 @@ public sealed class CliJsonEnvelopeContractTests
                 .Select(static match => match.Groups["name"].Value)
                 .Where(name => IsTyped(name, new HashSet<string>(StringComparer.Ordinal))),
             StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The source with comments removed and every string or character literal reduced to an empty one, so
+    /// a call named in a comment or a message does not count and a brace inside a literal does not
+    /// unbalance the body reading. Handles line and block comments, regular, verbatim, interpolated
+    /// (holes included) and raw string literals, and character literals.
+    /// </summary>
+    private static string WithoutCommentsAndStrings(string source)
+    {
+        StringBuilder result = new(source.Length);
+
+        int index = 0;
+
+        while (index < source.Length)
+        {
+            char current = source[index];
+
+            char next = index + 1 < source.Length ? source[index + 1] : '\0';
+
+            if (current == '/' && next == '/')
+            {
+                while (index < source.Length && source[index] != '\n')
+                {
+                    index++;
+                }
+
+                continue;
+            }
+
+            if (current == '/' && next == '*')
+            {
+                int end = source.IndexOf("*/", index + 2, StringComparison.Ordinal);
+
+                index = end < 0 ? source.Length : end + 2;
+
+                result.Append(' ');
+
+                continue;
+            }
+
+            if (current == '\'')
+            {
+                index = SkipCharacterLiteral(source, index);
+
+                result.Append("''");
+
+                continue;
+            }
+
+            int prefix = 0;
+
+            bool verbatim = false;
+
+            bool interpolated = false;
+
+            while (index + prefix < source.Length && source[index + prefix] is '$' or '@' && prefix < 3)
+            {
+                verbatim |= source[index + prefix] == '@';
+
+                interpolated |= source[index + prefix] == '$';
+
+                prefix++;
+            }
+
+            if (index + prefix < source.Length && source[index + prefix] == '"')
+            {
+                index = SkipStringLiteral(source, index + prefix, verbatim, interpolated);
+
+                result.Append("\"\"");
+
+                continue;
+            }
+
+            result.Append(current);
+
+            index++;
+        }
+
+        return result.ToString();
+    }
+
+    private static int SkipCharacterLiteral(
+        string source,
+        int start)
+    {
+        int index = start + 1;
+
+        while (index < source.Length && source[index] != '\'' && source[index] != '\n')
+        {
+            index += source[index] == '\\' ? 2 : 1;
+        }
+
+        return Math.Min(index + 1, source.Length);
+    }
+
+    /// <summary>The index after the string literal whose opening quote is at <paramref name="quote"/>.</summary>
+    private static int SkipStringLiteral(
+        string source,
+        int quote,
+        bool verbatim,
+        bool interpolated)
+    {
+        int quotes = 0;
+
+        while (quote + quotes < source.Length && source[quote + quotes] == '"')
+        {
+            quotes++;
+        }
+
+        if (quotes >= 3)
+        {
+            int end = source.IndexOf(new string('"', quotes), quote + quotes, StringComparison.Ordinal);
+
+            return end < 0 ? source.Length : end + quotes;
+        }
+
+        int index = quote + 1;
+
+        while (index < source.Length)
+        {
+            char current = source[index];
+
+            if (verbatim)
+            {
+                if (current == '"')
+                {
+                    if (index + 1 < source.Length && source[index + 1] == '"')
+                    {
+                        index += 2;
+
+                        continue;
+                    }
+
+                    return index + 1;
+                }
+            }
+            else if (current == '\\')
+            {
+                index += 2;
+
+                continue;
+            }
+            else if (current == '"')
+            {
+                return index + 1;
+            }
+            else if (current == '\n')
+            {
+                return index;
+            }
+
+            if (interpolated && current == '{')
+            {
+                if (index + 1 < source.Length && source[index + 1] == '{')
+                {
+                    index += 2;
+
+                    continue;
+                }
+
+                index = SkipInterpolationHole(source, index);
+
+                continue;
+            }
+
+            index++;
+        }
+
+        return source.Length;
+    }
+
+    /// <summary>The index after the interpolation hole that opens at <paramref name="open"/>, nested literals included.</summary>
+    private static int SkipInterpolationHole(
+        string source,
+        int open)
+    {
+        int depth = 0;
+
+        int index = open;
+
+        while (index < source.Length)
+        {
+            char current = source[index];
+
+            if (current == '"')
+            {
+                index = SkipStringLiteral(source, index, verbatim: false, interpolated: false);
+
+                continue;
+            }
+
+            if (current == '\'')
+            {
+                index = SkipCharacterLiteral(source, index);
+
+                continue;
+            }
+
+            depth += current == '{' ? 1 : current == '}' ? -1 : 0;
+
+            index++;
+
+            if (depth == 0)
+            {
+                return index;
+            }
+        }
+
+        return source.Length;
     }
 
     /// <summary>
