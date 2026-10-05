@@ -500,6 +500,68 @@ public sealed class BackupRestoreServiceTests : IDisposable
             ArcanumClientMutationLock.AcquireDetailed(_installation).Lock);
     }
 
+    /// <summary>
+    /// A replacement restore the operator cancels before anything is displaced retires the client
+    /// blocker it published, rather than leaving every client refused until the next host start.
+    /// </summary>
+    /// <remarks>
+    /// The cancellation lands while the staged tree is being composed: the installation is provably
+    /// untouched and the staging root is removed as the cancellation unwinds, so the blocker's own
+    /// restore-evidence check finds nothing that still needs it. The retirement has to run on a token
+    /// of its own, because the caller's is the one that was just cancelled.
+    /// </remarks>
+    [Fact]
+    public async Task A_cancelled_replacement_restore_retires_its_client_blocker()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("cancelled-coordinated.arcbackup");
+
+        ClientMutationBlockerStore blocker = new(_installation);
+
+        InstallationMaintenanceCoordination coordination = new(
+            _installation,
+            blocker,
+            new ClearResetEvidenceProbe(),
+            new BackupRestoreClientMutationEvidenceProbe(
+                _installation,
+                new InMemoryOsCredentialStore()));
+
+        using CancellationTokenSource cancellation = new();
+
+        bool published = false;
+
+        BackupRestoreServiceOptions options = new()
+        {
+            BeforeStagedEntryComposeForTests = _ =>
+            {
+                published = File.Exists(blocker.BlockerPath);
+
+                cancellation.Cancel();
+            },
+        };
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Restore(
+                    new RecordingSecretStore(),
+                    options,
+                    coordination: coordination)
+                .RestoreAsync(
+                    new BackupRestoreRequest(
+                        archive,
+                        Confirmed: true,
+                        CreateSafetyBackup: false),
+                    Passphrase.AsMemory(),
+                    cancellation.Token));
+
+        Assert.True(published);
+
+        Assert.Null((await blocker.InspectAsync()).Value);
+
+        using ArcanumClientMutationLock released = Assert.IsType<ArcanumClientMutationLock>(
+            ArcanumClientMutationLock.AcquireDetailed(_installation).Lock);
+    }
+
     [Fact]
     public async Task A_destructive_replacement_without_confirmation_is_refused()
     {

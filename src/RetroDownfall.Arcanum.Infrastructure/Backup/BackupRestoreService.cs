@@ -270,20 +270,42 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 coordinationLease = coordinated.BorrowAcquiredLease();
             }
 
-            BackupRestoreResult restored = await ExecuteAsync(
-                request,
-                recoveryPassphrase,
-                operationId,
-                plan,
-                phases,
-                maintenance,
-                cancellationToken).ConfigureAwait(false);
+            RestoreExitEvidence exit = new();
+
+            BackupRestoreResult restored;
+
+            try
+            {
+                restored = await ExecuteAsync(
+                    request,
+                    recoveryPassphrase,
+                    operationId,
+                    plan,
+                    phases,
+                    maintenance,
+                    exit,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                coordinationLease is not null && exit.PriorInstallationIntact)
+            {
+                // The installation is provably back in its prior state, so the blocker this restore
+                // published has nothing left to guard. Retired on a token of its own, since the caller's
+                // is the one just cancelled; the lease's restore-evidence check still decides.
+                _ = await coordinationLease
+                    .RemoveBlockerIfSafeAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                throw;
+            }
 
             if (coordinationLease is not null
                 && restored.Status is not BackupRestoreStatus.ReconciliationRequired)
             {
+                // Bookkeeping after the restore has finished, so a cancellation landing now must not
+                // leave the blocker behind for the next host start to retire.
                 Result removed = await coordinationLease
-                    .RemoveBlockerIfSafeAsync(cancellationToken)
+                    .RemoveBlockerIfSafeAsync(CancellationToken.None)
                     .ConfigureAwait(false);
 
                 if (removed.IsFailure)
@@ -720,6 +742,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         BackupRestorePlan plan,
         List<BackupRestorePhaseRecord> phases,
         ArcanumMaintenanceLock? maintenance,
+        RestoreExitEvidence exit,
         CancellationToken cancellationToken)
     {
         string liveRoot = Path.GetFullPath(_paths.GrimoireDirectory);
@@ -1422,6 +1445,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 BackupRestoreStagingIndex.Remove(liveRoot, staging.Path);
             }
+
+            exit.PriorInstallationIntact = !durablyDisplaced && !retainStagingForReconciliation;
         }
     }
 
@@ -2751,6 +2776,22 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             Reconciliation: null,
             [.. phases],
             [issue]);
+
+    /// <summary>
+    /// What <see cref="ExecuteAsync"/> proved about the installation when it exited, however it exited.
+    /// </summary>
+    /// <remarks>
+    /// A cancellation leaves no result to read this from, so the caller hands the execution a holder
+    /// and reads it in its own cancellation catch.
+    /// </remarks>
+    private sealed class RestoreExitEvidence
+    {
+        /// <summary>
+        /// True while nothing durable remains: nothing was displaced, or a reversal was verified with
+        /// its secrets reinstated, and no staging was retained for reconciliation.
+        /// </summary>
+        public bool PriorInstallationIntact { get; set; } = true;
+    }
 
     private sealed record CommitOutcome(
         bool Succeeded,
