@@ -251,6 +251,108 @@ public sealed partial class WizardIntelligenceProviderTests
     }
 
     /// <summary>
+    /// R-273: the run status follows how the turn ended, not the token state the iterator finds on
+    /// its way out. Here the provider refused the call and the turn was already reporting that
+    /// failure — resolving its assistant entry, which is where the caller cancels — so the run stays
+    /// <c>Failed</c>; only a turn the cancellation itself ended is <c>Abandoned</c>.
+    /// </summary>
+    [Fact]
+    public async Task ExecutePromptAsync_ProviderFailureThenCallerCancels_CompletesRunAsFailed()
+    {
+        using CancellationTokenSource caller = new();
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueException(new InvalidOperationException("the provider refused the request"));
+
+        FakeGrimoireRepository grimoire = new() { OnDiscard = caller.Cancel };
+
+        RecordingTurnRunWriter runs = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            grimoire: grimoire,
+            turnRunWriter: runs,
+            budgetReservationService: new RecordingBudgetReservationService());
+
+        try
+        {
+            _ = await wizard.ExecutePromptAsync(
+                BaseRequest() with { Prompt = "fail", SkipSpellRouting = true, DisableMcpTools = true },
+                InvocationContexts.AttendedSession(),
+                caller.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Whether the caller sees the failure or its own cancellation is not the point; the run is.
+        }
+
+        Assert.True(caller.IsCancellationRequested);
+
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Failed, status);
+    }
+
+    /// <summary>
+    /// R-052 follow-up: a provider timeout (a cancellation the caller did not ask for) takes the
+    /// generic failure path so the turn can fall back, but the round had already streamed real
+    /// provider usage. That spend is recorded and reconciled, exactly as when the caller cancels,
+    /// rather than released as though the call had cost nothing.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_ProviderTimeoutAfterUsage_RecordsThePartialUsage()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueUpdatesThenStreamFailure(
+            [
+                new ChatResponseUpdate
+                {
+                    Role = ChatRole.Assistant,
+                    Contents =
+                    [
+                        new UsageContent(new UsageDetails
+                        {
+                            InputTokenCount = 100,
+                            OutputTokenCount = 20,
+                        }),
+                    ],
+                },
+            ],
+            new TaskCanceledException("the provider timed out", new TimeoutException()));
+
+        RecordingTurnRunWriter runs = new();
+
+        RecordingBudgetReservationService reservations = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: runs,
+            budgetReservationService: reservations);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "timeout", SkipSpellRouting = true, DisableMcpTools = true });
+
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Error);
+
+        BillableOperationRecord operation = Assert.Single(runs.Operations);
+
+        Assert.Equal(100, operation.InputTokens);
+
+        Assert.Equal(20, operation.OutputTokens);
+
+        Assert.Equal(1, reservations.ReconcileCount);
+
+        Assert.False(reservations.WasReleased);
+
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Failed, status);
+    }
+
+    /// <summary>
     /// R-273: a turn that answers records its run as <c>Completed</c>.
     /// </summary>
     [Fact]

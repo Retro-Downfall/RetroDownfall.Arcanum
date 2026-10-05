@@ -332,6 +332,52 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// R-052 belt-and-braces: a connectivity-class failure that escapes the attempt itself (here the
+    /// MCP tool discovery behind candidate A, after the turn began) is not classified inside it, so
+    /// A's exit cleanup resolves the seeded turn — discards the empty assistant row and releases the
+    /// Session — before the wrapper moves on. Candidate B must begin its own turn rather than adopt
+    /// that dead handle, whose finalize would write B's answer against a discarded row.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_never_adopts_a_turn_an_earlier_candidate_already_finalized()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        ProviderSettings providerB = MakeProvider("provider-b");
+        ScriptingChatClient chatA = new();
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueStreamTokens("answer ", "from B");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        FakeGrimoireRepository grimoire = new();
+        FakeMcpConnectionManager mcp = new()
+        {
+            NextDiscoveryFailure = new HttpRequestException("the MCP server is unreachable"),
+        };
+        WizardIntelligenceProvider wizard = CreateWizardWithMcp(
+            factory,
+            CreateTracker(healthFailureThreshold: 1),
+            grimoire,
+            mcp,
+            providerA,
+            providerB);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { DisableMcpTools = false });
+
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Error);
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+
+        // A's turn was resolved by its own exit; B began a second one and answered into it.
+        Assert.Equal(2, grimoire.BeginCalls.Count);
+        _ = Assert.Single(grimoire.DiscardedAssistantEntryIds);
+        Assert.Equal("answer from B", Assert.Single(grimoire.FinalizedContents));
+        Assert.DoesNotContain(grimoire.FinalizedAssistantEntryIds, grimoire.DiscardedAssistantEntryIds.Contains);
+    }
+
+    /// <summary>
     /// Deferring the turn to the next candidate assumes a next candidate actually reaches inference.
     /// The per-candidate reasoning gate runs at the top of the loop and returns outright, so a
     /// heterogeneous candidate list can defer on A and then never run B — leaving the seeded Session
@@ -1189,6 +1235,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             mcpTools: null,
             covenantEgressGuard: null,
             covenantAuthority: null,
+            mcpConnectionManager: null,
             providers);
 
     /// <summary>
@@ -1230,6 +1277,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             mcpTools: null,
             covenantEgressGuard: null,
             covenantAuthority: null,
+            mcpConnectionManager: null,
             providers);
 
     /// <summary>
@@ -1262,6 +1310,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             mcpTools,
             covenantEgressGuard,
             covenantAuthority,
+            mcpConnectionManager: null,
             providers);
 
     private static WizardIntelligenceProvider CreateWizard(
@@ -1269,6 +1318,27 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IProviderHealthTracker? healthTracker,
         params ProviderSettings[] providers) =>
         CreateWizard(factory, healthTracker, withHealthTracker: true, providers);
+
+    private static WizardIntelligenceProvider CreateWizardWithMcp(
+        IChatClientFactory factory,
+        IProviderHealthTracker? healthTracker,
+        FakeGrimoireRepository grimoire,
+        IMcpConnectionManager mcpConnectionManager,
+        params ProviderSettings[] providers) =>
+        CreateWizard(
+            factory,
+            healthTracker,
+            withHealthTracker: true,
+            grimoire,
+            covenantDispatch: null,
+            auditLogger: null,
+            covenantToolCapabilities: null,
+            turnCommitter: null,
+            mcpTools: null,
+            covenantEgressGuard: null,
+            covenantAuthority: null,
+            mcpConnectionManager,
+            providers);
 
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
@@ -1283,7 +1353,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         bool withHealthTracker,
         FakeGrimoireRepository grimoire,
         params ProviderSettings[] providers) =>
-        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, null, null, null, null, null, providers);
+        CreateWizard(factory, healthTracker, withHealthTracker, grimoire, null, null, null, null, null, null, null, null, providers);
 
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
@@ -1297,6 +1367,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IReadOnlyList<AITool>? mcpTools,
         CovenantToolEgressGuard? covenantEgressGuard,
         ICovenantAuthoritySnapshotProvider? covenantAuthority,
+        IMcpConnectionManager? mcpConnectionManager,
         params ProviderSettings[] providers)
     {
         ArcanumSettings settings = new()
@@ -1310,7 +1381,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         FakeWard ward = new();
 
-        FakeMcpConnectionManager mcp = new(mcpTools ?? []);
+        IMcpConnectionManager mcp = mcpConnectionManager ?? new FakeMcpConnectionManager(mcpTools ?? []);
 
         FakeCampaignRepository campaignRepository = new();
 
@@ -1918,9 +1989,13 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public List<string> FinalizedContents { get; } = [];
 
+        public List<Guid> FinalizedAssistantEntryIds { get; } = [];
+
         public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default)
         {
             FinalizedContents.Add(fullContent);
+
+            FinalizedAssistantEntryIds.Add(assistantEntryId);
 
             return Task.CompletedTask;
         }
@@ -2037,6 +2112,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
     private sealed class FakeMcpConnectionManager(IReadOnlyList<AITool>? tools = null) : IMcpConnectionManager
     {
+        /// <summary>Thrown by the next tool discovery only, as an MCP server that is briefly unreachable.</summary>
+        public Exception? NextDiscoveryFailure { get; set; }
+
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -2056,8 +2134,17 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public Task<McpServerInfo[]> GetAllStatusesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(Array.Empty<McpServerInfo>());
 
-        public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<AITool>>(tools ?? []);
+        public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default)
+        {
+            if (NextDiscoveryFailure is { } failure)
+            {
+                NextDiscoveryFailure = null;
+
+                return Task.FromException<IReadOnlyList<AITool>>(failure);
+            }
+
+            return Task.FromResult<IReadOnlyList<AITool>>(tools ?? []);
+        }
 
         public Task<AIFunction?> GetToolAsync(
             string serverName,

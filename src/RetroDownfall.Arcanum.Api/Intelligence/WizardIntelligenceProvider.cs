@@ -1601,9 +1601,22 @@ public sealed partial class WizardIntelligenceProvider(
         TurnAccountingHandle? streamAccounting = null;
 
         // Failed until the turn earns better: only the success path sets Completed, and the finally
-        // records Abandoned only when the caller cancelled. Starting at Abandoned made every failure
-        // exit that did not overwrite it read as if the caller had walked away.
+        // records Abandoned only for a turn the caller's cancellation ended. Starting at Abandoned
+        // made every failure exit that did not overwrite it read as if the caller had walked away.
         InferenceRunStatus streamAccountingStatus = InferenceRunStatus.Failed;
+
+        // Set by every failure exit as it reports its failure. The iterator cannot catch around its
+        // own yields, so the finally cannot see which exception (if any) ended the turn; what it can
+        // see is whether the turn had already decided it failed. A failure the turn reported stays
+        // Failed even when the caller cancels while the turn unwinds.
+        bool streamFailureReported = false;
+
+        IntelligenceEvent FailureFrame(Error error)
+        {
+            streamFailureReported = true;
+
+            return ErrorFrame(error);
+        }
 
         bool publishedStreamAmbient = false;
 
@@ -1673,7 +1686,7 @@ public sealed partial class WizardIntelligenceProvider(
                         clientToolAvailability.Error);
                 }
 
-                yield return ErrorFrame(clientToolAvailability.Error);
+                yield return FailureFrame(clientToolAvailability.Error);
 
                 yield break;
             }
@@ -1751,7 +1764,7 @@ public sealed partial class WizardIntelligenceProvider(
                 // Hub.Error, and a client racing two turns on one Session never sees its 409.
                 classification.BufferedTerminal = Result<PromptTurnResult>.Failure(begun.Error);
 
-                yield return ErrorFrame(begun.Error);
+                yield return FailureFrame(begun.Error);
 
                 yield break;
             }
@@ -1778,7 +1791,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (begun.IsFailure)
             {
-                yield return ErrorFrame(begun.Error);
+                yield return FailureFrame(begun.Error);
 
                 yield break;
             }
@@ -1822,7 +1835,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming)
             {
-                yield return ErrorFrame(
+                yield return FailureFrame(
                     new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
             }
 
@@ -2096,7 +2109,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming)
             {
-                yield return ErrorFrame(streamAccountingBegin.Error);
+                yield return FailureFrame(streamAccountingBegin.Error);
             }
 
             await grimoireTurnWriter
@@ -2171,7 +2184,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (streaming)
                 {
-                    yield return ErrorFrame(streamRoutedSpell.Error);
+                    yield return FailureFrame(streamRoutedSpell.Error);
                 }
 
                 yield break;
@@ -2387,7 +2400,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (lateBegun.IsFailure)
             {
-                yield return ErrorFrame(lateBegun.Error);
+                yield return FailureFrame(lateBegun.Error);
 
                 yield break;
             }
@@ -2437,7 +2450,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return ErrorFrame(new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
+                        yield return FailureFrame(new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
                     }
 
                     await grimoireTurnWriter
@@ -2527,7 +2540,7 @@ public sealed partial class WizardIntelligenceProvider(
                     CancellationToken.None)
                 .ConfigureAwait(false);
 
-            yield return ErrorFrame(effectiveClientTools.Error);
+            yield return FailureFrame(effectiveClientTools.Error);
 
             yield break;
         }
@@ -2567,7 +2580,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return ErrorFrame(referenceError);
+                        yield return FailureFrame(referenceError);
                     }
 
                     await grimoireTurnWriter
@@ -2721,7 +2734,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return ErrorFrame(boundaryError);
+                        yield return FailureFrame(boundaryError);
                     }
 
                     await grimoireTurnWriter
@@ -3206,29 +3219,28 @@ public sealed partial class WizardIntelligenceProvider(
                             // streamed real provider bytes look like it spent nothing — that
                             // both loses the spend from budget accounting and returns the
                             // reservation via ReleaseAsync instead of ReconcileAsync.
-                            // Reconstruct usage from whatever raw updates already arrived (the
-                            // same conversion the successful-completion path below uses), on
-                            // CancellationToken.None since inferenceToken is already cancelled,
-                            // so a usage chunk seen before the cancellation still gets recorded.
-                            if (roundUpdates.Count > 0)
-                            {
-                                ChatCompletionUsage? partialUsage = MapUsageDetails(
-                                    roundUpdates.ToChatResponse().Usage);
-
-                                await RecordProviderCallUsageAsync(
-                                        streamAccountingLocal,
-                                        partialUsage,
-                                        lease.Provider.Name,
-                                        targetModel,
-                                        streamPurpose,
-                                        CancellationToken.None)
-                                    .ConfigureAwait(false);
-                            }
+                            await RecordPartialRoundUsageAsync(
+                                    roundUpdates,
+                                    streamAccountingLocal,
+                                    lease.Provider.Name,
+                                    targetModel,
+                                    streamPurpose)
+                                .ConfigureAwait(false);
 
                             throw;
                         }
                         catch (Exception ex)
                         {
+                            // The same spend rule for a round the provider ended: a timeout or a
+                            // dropped connection after usage arrived still cost what it reported.
+                            await RecordPartialRoundUsageAsync(
+                                    roundUpdates,
+                                    streamAccountingLocal,
+                                    lease.Provider.Name,
+                                    targetModel,
+                                    streamPurpose)
+                                .ConfigureAwait(false);
+
                             streamingMoveNextFailure = ex;
 
                             logger.LogError(
@@ -3905,7 +3917,7 @@ public sealed partial class WizardIntelligenceProvider(
                         covenantScope?.StagedCommit()).ConfigureAwait(false);
                 }
 
-                yield return ErrorFrame(inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError));
+                yield return FailureFrame(inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError));
 
                 yield break;
             }
@@ -4101,7 +4113,7 @@ public sealed partial class WizardIntelligenceProvider(
                     }
                     else
                     {
-                        yield return ErrorFrame(validationResult.Error);
+                        yield return FailureFrame(validationResult.Error);
                     }
 
                     yield break;
@@ -4136,7 +4148,7 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         if (structuredOutput.StrictMode)
                         {
-                            yield return ErrorFrame(new Error(
+                            yield return FailureFrame(new Error(
                                 ErrorCodes.StructuredOutput.ValidationFailed,
                                 "Streamed response failed JSON schema validation after generation: "
                                     + string.Join("; ", streamValidation.Errors)));
@@ -4151,7 +4163,7 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     if (structuredOutput.StrictMode)
                     {
-                        yield return ErrorFrame(new Error(
+                        yield return FailureFrame(new Error(
                             ErrorCodes.StructuredOutput.SchemaInvalid,
                             "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message));
 
@@ -4189,7 +4201,7 @@ public sealed partial class WizardIntelligenceProvider(
                 .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
                 .ConfigureAwait(false);
 
-            yield return ErrorFrame(guardrailsStreamOutput.Error);
+            yield return FailureFrame(guardrailsStreamOutput.Error);
 
             yield break;
         }
@@ -4244,7 +4256,7 @@ public sealed partial class WizardIntelligenceProvider(
                     new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
             }
 
-            yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
+            yield return FailureFrame(new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
 
             yield break;
         }
@@ -4360,8 +4372,15 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streamAccounting is not null && streamAccounting.OwnsLifecycle)
             {
+                // Abandoned only for a turn the cancellation ended: one that neither completed nor
+                // reported a failure (a buffered exit can report one through its terminal result
+                // alone) and whose caller's token is cancelled.
+                bool failureReported = streamFailureReported
+                    || classification.BufferedTerminal is { IsFailure: true };
+
                 InferenceRunStatus completionStatus =
                     streamAccountingStatus != InferenceRunStatus.Completed
+                    && !failureReported
                     && (callerToken.IsCancellationRequested || inferenceToken.IsCancellationRequested)
                         ? InferenceRunStatus.Abandoned
                         : streamAccountingStatus;
@@ -7754,6 +7773,31 @@ public sealed partial class WizardIntelligenceProvider(
             string.IsNullOrWhiteSpace(auxiliaryProvider) ? mainProvider : auxiliaryProvider,
             string.IsNullOrWhiteSpace(auxiliaryModel) ? mainModel : auxiliaryModel
         );
+
+    /// <summary>
+    /// Records the provider-reported usage a streamed round had already delivered before it ended
+    /// abnormally — the caller cancelled, or the provider failed or timed out.
+    /// </summary>
+    /// <remarks>
+    /// The same conversion the completed-round path uses, from the raw updates that arrived, and on
+    /// <see cref="CancellationToken.None"/>: the spend happened either way, and a round with no ledger
+    /// row hands its reservation back as unspent. A round that reported no usage records nothing.
+    /// </remarks>
+    private Task RecordPartialRoundUsageAsync(
+        List<ChatResponseUpdate> roundUpdates,
+        TurnAccountingHandle accounting,
+        string provider,
+        string model,
+        ModelCallPurpose callPurpose) =>
+        roundUpdates.Count == 0
+            ? Task.CompletedTask
+            : RecordProviderCallUsageAsync(
+                accounting,
+                MapUsageDetails(roundUpdates.ToChatResponse().Usage),
+                provider,
+                model,
+                callPurpose,
+                CancellationToken.None);
 
     private async Task RecordProviderCallUsageAsync(
         TurnAccountingHandle accounting,
