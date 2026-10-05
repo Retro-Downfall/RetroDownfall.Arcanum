@@ -7,16 +7,15 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed class InstallationResetCredentialCatalogTests
 {
-
     [Fact]
     public void Installation_reset_active_accounts_require_one_canonical_profile_suffix()
     {
-
         string profileSuffix = new string('a', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength);
 
         string otherProfileSuffix = new string('b', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength);
@@ -97,9 +96,7 @@ public sealed class InstallationResetCredentialCatalogTests
                          + profileSuffix.ToUpperInvariant(),
                  ])
         {
-
             Assert.False(ArcanumCredentialIdentity.IsInstallationResetActiveAccount(invalid));
-
         }
 
         _ = Assert.Throws<ArgumentException>(
@@ -119,7 +116,6 @@ public sealed class InstallationResetCredentialCatalogTests
         _ = Assert.Throws<ArgumentException>(
             () => ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(
                 profileSuffix.ToUpperInvariant()));
-
     }
 
     /// <summary>
@@ -138,12 +134,10 @@ public sealed class InstallationResetCredentialCatalogTests
     [Fact]
     public void Catalog_is_closed_to_fixed_configured_and_canonical_mirror_identities()
     {
-
         string mirrorRoot = CreateRoot();
 
         try
         {
-
             File.WriteAllText(Path.Combine(mirrorRoot, "provider-OPENAI-key.dat"), "protected");
 
             File.WriteAllText(Path.Combine(mirrorRoot, "provider-MY_CO-key.dat"), "protected");
@@ -189,21 +183,16 @@ public sealed class InstallationResetCredentialCatalogTests
                     ArcanumCredentialIdentity.PerplexityApiKeyAccount,
                 ],
                 accounts);
-
         }
         finally
         {
-
             Directory.Delete(mirrorRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public void Ordinary_account_filter_rejects_actual_transition_key_and_anchor_accounts()
     {
-
         string suffix = new('a', ArcanumCredentialIdentity.ProfileNamespaceSuffixLength);
 
         string[] retained = InstallationResetCredentialCatalog.CollectOrdinaryAccounts(
@@ -214,13 +203,11 @@ public sealed class InstallationResetCredentialCatalogTests
             ]);
 
         Assert.Equal([ArcanumCredentialIdentity.MasterApiKeyAccount], retained);
-
     }
 
     [Fact]
     public void Planning_exposes_status_only_and_never_the_secret_value()
     {
-
         RecordingCredentialStore store = new();
 
         store.Values[ArcanumCredentialIdentity.MasterApiKeyAccount] = "sentinel-secret";
@@ -239,17 +226,15 @@ public sealed class InstallationResetCredentialCatalogTests
 
         Assert.DoesNotContain(
             "sentinel-secret",
-            System.Text.Json.JsonSerializer.Serialize(inventory),
+            System.Text.Json.JsonSerializer.Serialize(inventory, AdHocJson.Options),
             StringComparison.Ordinal);
 
         Assert.Empty(store.DeletedAccounts);
-
     }
 
     [Fact]
     public void Delete_probes_before_and_after_each_admitted_identity()
     {
-
         RecordingCredentialStore store = new();
 
         store.Values[ArcanumCredentialIdentity.MasterApiKeyAccount] = "secret";
@@ -275,13 +260,11 @@ public sealed class InstallationResetCredentialCatalogTests
         Assert.Equal(2, store.ProbeCounts[ArcanumCredentialIdentity.MasterApiKeyAccount]);
 
         Assert.Equal(1, store.ProbeCounts["missing"]);
-
     }
 
     [Fact]
     public void Unavailable_store_never_aggregates_to_success()
     {
-
         RecordingCredentialStore store = new() { IsAvailable = false };
 
         InstallationResetCredentialCatalog catalog = new(store);
@@ -297,12 +280,10 @@ public sealed class InstallationResetCredentialCatalogTests
         Assert.Equal(InstallationResetItemStatus.Unavailable, result.Status);
 
         Assert.Empty(store.DeletedAccounts);
-
     }
 
     private static string CreateRoot()
     {
-
         string root = Path.Combine(
             Path.GetTempPath(),
             "arcanum-reset-credentials-" + Guid.NewGuid().ToString("N"));
@@ -310,12 +291,10 @@ public sealed class InstallationResetCredentialCatalogTests
         Directory.CreateDirectory(root);
 
         return root;
-
     }
 
     private sealed class RecordingCredentialStore : IOsCredentialStore
     {
-
         public bool IsAvailable { get; set; } = true;
 
         public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
@@ -326,22 +305,18 @@ public sealed class InstallationResetCredentialCatalogTests
 
         public OsCredentialStoreResult TryGet(string service, string account)
         {
-
             Assert.Equal(ArcanumCredentialIdentity.Service, service);
 
             ProbeCounts[account] = ProbeCounts.GetValueOrDefault(account) + 1;
 
             if (!IsAvailable)
             {
-
                 return OsCredentialStoreResult.Unavailable("unavailable");
-
             }
 
             return Values.TryGetValue(account, out string? value)
                 ? OsCredentialStoreResult.Ok(value)
                 : OsCredentialStoreResult.NotFound();
-
         }
 
         public OsCredentialStoreResult Set(string service, string account, string secret) =>
@@ -349,29 +324,21 @@ public sealed class InstallationResetCredentialCatalogTests
 
         public OsCredentialStoreResult Delete(string service, string account)
         {
-
             Assert.Equal(ArcanumCredentialIdentity.Service, service);
 
             if (!IsAvailable)
             {
-
                 return OsCredentialStoreResult.Unavailable("unavailable");
-
             }
 
             if (!Values.Remove(account))
             {
-
                 return OsCredentialStoreResult.NotFound();
-
             }
 
             DeletedAccounts.Add(account);
 
             return OsCredentialStoreResult.Ok(string.Empty);
-
         }
-
     }
-
 }

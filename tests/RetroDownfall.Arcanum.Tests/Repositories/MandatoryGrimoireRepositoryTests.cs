@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 [Collection("Grimoire")]
 public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -34,25 +33,20 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
 
     public MandatoryGrimoireRepositoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         SessionEntryPersistence.AfterMandatoryCommitForTests = null;
 
         SessionEntryPersistence.AfterMandatoryTransactionBeganForTests = null;
@@ -65,24 +59,18 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
 
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task New_then_recovered_append_is_idempotent_without_duplicate_counters()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -160,13 +148,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(4, recoveredSession.UnsummarizedEntryCount);
 
         Assert.Equal(firstSession.UpdatedAt, recoveredSession.UpdatedAt);
-
     }
 
     [SkippableFact]
     public async Task Duplicate_provider_ids_across_rounds_both_commit()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -220,13 +206,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             6,
             (await LoadSessionAsync(_db, sessionId)).UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task Multiple_patch_calls_in_one_round_both_commit()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -266,13 +250,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(2, await CountReceiptRowsAsync(_db, first.Receipt));
 
         Assert.Equal(2, await CountReceiptRowsAsync(_db, second.Receipt));
-
     }
 
     [SkippableFact]
     public async Task Injected_lost_commit_response_recovers_by_reading_durable_rows()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -313,13 +295,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             4,
             (await LoadSessionAsync(freshContext, sessionId)).UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task Precancelled_recovery_classifies_existing_rows_before_rethrowing()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -359,13 +339,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             4,
             (await LoadSessionAsync(_db, sessionId)).UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task Precancelled_append_with_confirmed_no_rows_is_failed()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -393,13 +371,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             exception.Data[nameof(MandatoryToolInteractionAppendOutcome)]);
 
         Assert.Equal(0, await CountReceiptRowsAsync(_db!, interaction.Receipt));
-
     }
 
     [SkippableFact]
     public async Task Cancellation_after_transaction_start_and_definitive_rollback_is_failed()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -432,13 +408,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             2,
             (await LoadSessionAsync(_db!, sessionId)).UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task Cancellation_classification_waits_for_competing_append_then_reads_under_lock()
     {
-
         SkipUnavailable();
 
         GrimoireRepository cancelledRepository = CreateRepository(_db!);
@@ -465,16 +439,12 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         SessionEntryPersistence.AfterMandatoryTransactionBeganAsyncForTests =
             async (receipt, cancellationToken) =>
             {
-
                 if (receipt.Id == interaction.Receipt.Id)
                 {
-
                     writerEntered.TrySetResult();
 
                     await releaseWriter.Task.WaitAsync(cancellationToken);
-
                 }
-
             };
 
         SessionEntryPersistence.BeforeMandatoryCancellationClassificationLockForTests =
@@ -482,9 +452,7 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             {
                 if (receipt.Id == interaction.Receipt.Id)
                 {
-
                     classifierAttemptedLock.TrySetResult();
-
                 }
             };
 
@@ -512,19 +480,15 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
 
         try
         {
-
             Task first = await Task.WhenAny(
                 classification,
                 Task.Delay(TimeSpan.FromMilliseconds(150)));
 
             Assert.NotSame(classification, first);
-
         }
         finally
         {
-
             releaseWriter.TrySetResult();
-
         }
 
         Assert.Equal(
@@ -540,13 +504,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             exception.Data[nameof(MandatoryToolInteractionAppendOutcome)]);
 
         Assert.Equal(2, await CountReceiptRowsAsync(_db!, interaction.Receipt));
-
     }
 
     [SkippableFact]
     public async Task Cancellation_classification_lock_timeout_is_ambiguous()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -582,13 +544,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             exception.Data[nameof(MandatoryToolInteractionAppendOutcome)]);
 
         Assert.Equal(0, await CountReceiptRowsAsync(_db!, interaction.Receipt));
-
     }
 
     [SkippableFact]
     public async Task Partial_receipt_is_ambiguous()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -619,13 +579,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             2,
             (await LoadSessionAsync(_db, sessionId)).UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task Mismatched_receipt_is_ambiguous()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -662,13 +620,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             2,
             (await LoadSessionAsync(_db, sessionId)).UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task Definitive_rollback_returns_failed_without_rows()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -687,13 +643,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(MandatoryToolInteractionAppendOutcome.Failed, result.Outcome);
 
         Assert.Equal(0, await CountReceiptRowsAsync(_db!, interaction.Receipt));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_production_sink_persists_exact_new_and_recovered_receipts()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         (Guid sessionId, Guid assistantEntryId) =
@@ -708,7 +662,7 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         ApplyPatchParams request = ModifyRequest("target.txt", "before", "after");
         string exactArguments =
             "{\"dryRun\":false,\"patch\":"
-            + JsonSerializer.Serialize(request.Patch)
+            + JsonSerializer.Serialize(request.Patch, AdHocJson.Options)
             + "}";
         SessionEventHub hub = CreateSessionEventHub();
         GrimoireTurnWriter writer =
@@ -788,13 +742,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             recoveredEvents.Select(static entry => entry.Id));
         _db.ChangeTracker.Clear();
         Assert.Equal(2, await CountReceiptRowsAsync(_db, receipt));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_production_sink_rolls_back_definitive_failure()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         await using TempWorkspace workspace = new();
@@ -833,13 +785,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             workspace.Root,
             "*.arcanum-*",
             SearchOption.AllDirectories));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_preflights_exact_entry_size_before_filesystem_mutation()
     {
-
         SkipUnavailable();
 
         GrimoireRepository repository = CreateRepository(_db!);
@@ -889,13 +839,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         _db!.ChangeTracker.Clear();
 
         Assert.Equal(0, await CountReceiptRowsAsync(_db, receipt));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_production_sink_rejects_partial_receipt_before_mutation()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         (Guid sessionId, Guid assistantEntryId) =
@@ -962,13 +910,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             workspace.Root,
             "*.arcanum-*",
             SearchOption.AllDirectories));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_rollback_incomplete_persists_exact_recovery_receipt_and_replays()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         (Guid sessionId, Guid assistantEntryId) =
@@ -1131,13 +1077,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(result.Content, replayEvents[1].Content);
         _db.ChangeTracker.Clear();
         Assert.Equal(2, await CountReceiptRowsAsync(_db, receipt));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_cancellation_persists_exact_recovery_receipt_before_propagating()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         (Guid sessionId, Guid assistantEntryId) =
@@ -1295,13 +1239,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(result.Content, replayEvents[1].Content);
         _db.ChangeTracker.Clear();
         Assert.Equal(2, await CountReceiptRowsAsync(_db, receipt));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_ambiguous_recovery_receipt_retains_artifacts_and_fails()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         (Guid sessionId, Guid assistantEntryId) =
@@ -1415,13 +1357,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             SearchOption.AllDirectories));
         _db!.ChangeTracker.Clear();
         Assert.Equal(1, await CountReceiptRowsAsync(_db, receipt));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_complete_cancellation_rollback_does_not_persist_receipt()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         (Guid sessionId, Guid assistantEntryId) =
@@ -1481,13 +1421,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             workspace.Root,
             "*.arcanum-*",
             SearchOption.AllDirectories));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_cancellation_finishes_failed_rollback_before_propagating()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         (Guid sessionId, Guid assistantEntryId) =
@@ -1527,13 +1465,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             workspace.Root,
             "*.arcanum-*",
             SearchOption.AllDirectories));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_retry_replays_before_cancellation_handoff_or_mutation()
     {
-
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
         (Guid sessionId, Guid assistantEntryId) =
@@ -1588,13 +1524,11 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             workspace.Root,
             "*.arcanum-*",
             SearchOption.AllDirectories));
-
     }
 
     [SkippableFact]
     public async Task Apply_patch_retained_cleanup_artifact_emits_metric_and_warning()
     {
-
         const string secretMatchText = "MATCH_TEXT_MUST_NOT_REACH_LOGS";
         SkipUnavailable();
         GrimoireRepository repository = CreateRepository(_db!);
@@ -1689,7 +1623,6 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(
             $"[ToolResult: {response.SerializedResult}]",
             result.Content);
-
     }
 
     private static ApplyPatchToolExecutionService CreatePatchExecutor(
@@ -1753,7 +1686,6 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             repository,
             hub ?? CreateSessionEventHub(),
             logger ?? NullLogger<GrimoireTurnWriter>.Instance);
-
     }
 
     private static SessionEventHub CreateSessionEventHub() =>
@@ -1849,7 +1781,6 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         int call,
         DateTimeOffset timestamp)
     {
-
         ToolInteractionReceipt receipt = ToolInteractionReceiptDerivation.Derive(
             new ToolInvocationIdentity(
                 InvocationId: "turn-1",
@@ -1867,7 +1798,6 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             Result: "{\"status\":\"ok\"}",
             ModelUsed: "test-model",
             CreatedAt: timestamp);
-
     }
 
     /// <summary>
@@ -1906,7 +1836,6 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
         GrimoireRepository repository,
         string prompt)
     {
-
         (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
             sessionId: null,
             prompt,
@@ -1914,7 +1843,6 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             cancellationToken: CancellationToken.None);
 
         return sessionId;
-
     }
 
     private static Task<int> CountReceiptRowsAsync(
@@ -1930,11 +1858,9 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
 
     private static void AssertRelativeRecoveryPath(string path)
     {
-
         Assert.False(Path.IsPathRooted(path));
         Assert.DoesNotContain("..", path, StringComparison.Ordinal);
         Assert.DoesNotContain('\\', path);
-
     }
 
     private static Task<Session> LoadSessionAsync(
@@ -1957,7 +1883,6 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(db),
             FixtureLabeledArtifactGuard.For(db));
-
     }
 
     private static void SkipUnavailable() =>
@@ -2090,5 +2015,4 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             Func<TState, Exception?, string> formatter) =>
             _messages.Enqueue(formatter(state, exception));
     }
-
 }

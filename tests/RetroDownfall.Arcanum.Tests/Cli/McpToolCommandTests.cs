@@ -29,6 +29,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Workspaces;
 
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -576,7 +577,7 @@ public sealed class McpToolCommandTests
 
             McpToolInvokeResponse response = new()
             {
-                Result = JsonSerializer.SerializeToElement(new { answer = 42 }),
+                Result = JsonSerializer.SerializeToElement(new { answer = 42 }, AdHocJson.Options),
 
                 ServerName = "workspace-server",
 
@@ -744,7 +745,7 @@ public sealed class McpToolCommandTests
 
                 ToolInvokeResponse response = new()
                 {
-                    Result = JsonSerializer.SerializeToElement("12:00"),
+                    Result = JsonSerializer.SerializeToElement("12:00", AdHocJson.Options),
                 };
 
                 return CreateResponse(
@@ -804,7 +805,7 @@ public sealed class McpToolCommandTests
 
             ToolInvokeResponse response = new()
             {
-                Result = JsonSerializer.SerializeToElement("ok"),
+                Result = JsonSerializer.SerializeToElement("ok", AdHocJson.Options),
             };
 
             return CreateResponse(

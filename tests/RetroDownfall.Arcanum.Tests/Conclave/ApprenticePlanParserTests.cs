@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Conclave;
 
@@ -181,7 +182,7 @@ public sealed class ApprenticePlanParserTests
         const int stepCount = 201;
         string json = System.Text.Json.JsonSerializer.Serialize(
             Enumerable.Range(1, stepCount)
-                .Select(static index => new { description = $"Step {index}" }));
+                .Select(static index => new { description = $"Step {index}" }), AdHocJson.Options);
 
         List<PlanStep> steps = ApprenticePlanParser.ParsePlan(json);
 

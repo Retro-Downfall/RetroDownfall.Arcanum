@@ -40,7 +40,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Built_in_profiles_render_only_closed_server_owned_arguments()
     {
-
         WorkspaceCheckProfileCatalog catalog = WorkspaceCheckProfileCatalog.Create(
             new WorkspaceCheckSettings());
 
@@ -77,7 +76,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Operator_profile_uses_exact_allowlisted_rendering_and_rejects_unknown_values()
     {
-
         WorkspaceCheckSettings settings = new()
         {
             CustomProfiles = new Dictionary<string, WorkspaceCheckProfileSettings>
@@ -125,7 +123,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Configured_profile_target_bypasses_ambiguous_root_discovery_but_stays_contained()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         _ = tree.CreateNativeExecutable("workspace/First.csproj");
@@ -207,7 +204,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     public void Operator_profiles_cannot_override_no_restore_or_trusted_output_roots(
         string forbiddenToken)
     {
-
         WorkspaceCheckSettings settings = new()
         {
             CustomProfiles = new Dictionary<string, WorkspaceCheckProfileSettings>
@@ -256,7 +252,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         bool jailAvailable,
         bool expectedEligible)
     {
-
         WorkspaceCheckExecutionStatus status = WorkspaceCheckExecutionPolicy.Resolve(
             platform,
             enabled,
@@ -288,7 +283,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Workspace_check_environment_starts_empty_and_excludes_secrets_proxies_and_hijacks()
     {
-
         WorkspaceCheckEnvironmentPaths paths = new(
             DotNetRoot: "/trusted/dotnet",
             Home: "/runs/home",
@@ -390,7 +384,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Workspace_check_sandbox_keeps_source_and_packages_read_only()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("source/workspace");
         string packages = tree.CreateDirectory("trusted/packages");
@@ -414,7 +407,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Workspace_check_sandbox_rejects_canonical_writable_overlap()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string packages = tree.CreateDirectory("packages");
@@ -426,20 +418,17 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 workspace,
                 [packages, sdk],
                 [overlappingOutput]));
-
     }
 
     [SkippableFact]
     public void Workspace_check_run_roots_are_owner_only()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "Unix mode ownership is covered on Unix hosts.");
 
         if (OperatingSystem.IsWindows())
         {
-
             return;
         }
 
@@ -466,13 +455,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 #pragma warning disable CA1416 // The test returns above on Windows.
                 (int)(File.GetUnixFileMode(path) & forbidden)));
 #pragma warning restore CA1416
-
     }
 
     [SkippableFact]
     public void Workspace_check_grants_shared_dotnet_ipc_roots_without_owning_them()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS(),
             "The shared .NET PAL roots are a macOS-only jail grant.");
@@ -482,7 +469,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         try
         {
-
             // The child cannot start without a writable PAL root: the SDK takes a named Mutex before
             // any command runs, and the runtime hard-codes /tmp/.dotnet regardless of TMPDIR.
             Assert.NotNull(directories.SharedIpcRoots);
@@ -503,7 +489,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         }
         finally
         {
-
             Directory.Delete(directories.Root, recursive: true);
         }
 
@@ -515,7 +500,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public void Workspace_check_removes_its_partial_run_root_when_the_tree_cannot_be_created()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "The failure is forced against the POSIX path-length boundary.");
@@ -537,14 +521,12 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         while (parent.Length < parentLength)
         {
-
             int segment = Math.Min(
                 200,
                 parentLength - parent.Length - 1);
 
             if (segment < 1)
             {
-
                 break;
             }
 
@@ -561,14 +543,12 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     private static int ProbeLongestCreatableDirectoryPath(
         string baseDirectory)
     {
-
         string chain = baseDirectory;
 
         while (TryCreateDirectory(
                    Path.Combine(chain, new string('p', 200)),
                    out string created))
         {
-
             chain = created;
         }
 
@@ -576,12 +556,10 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         for (int extra = 1; extra <= 200; extra++)
         {
-
             if (!TryCreateDirectory(
                     Path.Combine(chain, new string('x', extra)),
                     out _))
             {
-
                 break;
             }
 
@@ -595,12 +573,10 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         string path,
         out string created)
     {
-
         created = path;
 
         try
         {
-
             Directory.CreateDirectory(path);
 
             return true;
@@ -609,7 +585,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             ex is IOException
                 or UnauthorizedAccessException)
         {
-
             return false;
         }
     }
@@ -617,7 +592,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Diagnostic_parser_extracts_mixed_msbuild_severities_and_caps_results()
     {
-
         string workspace = Path.GetFullPath("/workspace");
         string stdout =
             "/workspace/src/App.cs(12,7): error CS1002: ; expected [/workspace/App.csproj]\n"
@@ -647,7 +621,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Diagnostic_parser_kind_selects_structured_vstest_failures_and_counts()
     {
-
         string workspace = Path.GetFullPath("/workspace");
         const string output =
             "  Failed App.Tests.WidgetTests.Does_work [12 ms]\n"
@@ -680,7 +653,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         Assert.Equal(2, vstest.PassedTestCount);
         Assert.Equal(1, vstest.FailedTestCount);
         Assert.Equal(0, vstest.SkippedTestCount);
-
     }
 
     [Fact]
@@ -742,7 +714,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     public void Every_check_parser_returns_typed_diagnostics(
         int parserValue)
     {
-
         WorkspaceCheckDiagnosticParseResult parsed =
             WorkspaceCheckDiagnosticParser.Parse(
                 (WorkspaceCheckDiagnosticParserKind)parserValue,
@@ -765,7 +736,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Unparsed_check_output_remains_available_for_structured_fallback()
     {
-
         WorkspaceCheckDiagnosticParseResult parsed =
             WorkspaceCheckDiagnosticParser.Parse(
                 WorkspaceCheckDiagnosticParserKind.DotNetFormat,
@@ -782,7 +752,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Diagnostic_parser_skips_individually_oversized_lines()
     {
-
         string oversized =
             "/workspace/Code.cs(8,4): error TEST1000: "
             + new string('x', 256 * 1024);
@@ -799,13 +768,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         Assert.Equal(0, parsed.TotalDiagnosticCount);
         Assert.True(parsed.Truncated);
         Assert.False(parsed.ParsedAny);
-
     }
 
     [Fact]
     public void Structured_result_reports_selected_sdk_and_retains_valid_capped_shape()
     {
-
         WorkspaceCheckToolResultEnvelope result = new()
         {
             Status = "failed",
@@ -843,7 +810,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Executable_identity_is_captured_and_revalidated_before_spawn()
     {
-
         using TestTree tree = new();
         string trustedRoot = tree.CreateDirectory("trusted-dotnet");
         string workspace = tree.CreateDirectory("workspace");
@@ -873,7 +839,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public void Executable_policy_rejects_user_writable_trusted_installation_roots()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "Unix installation ownership policy is covered on Unix hosts.");
@@ -892,13 +857,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         Assert.False(captured.Success);
         Assert.Equal("untrusted_executable", captured.Code);
-
     }
 
     [SkippableFact]
     public void Launch_chain_policy_captures_and_revalidates_root_owned_helpers()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS(),
             "The mandatory workspace-check launch chain is currently macOS-only.");
@@ -909,13 +872,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         Assert.NotNull(snapshot);
         Assert.True(
             WorkspaceCheckLaunchChainPolicy.Revalidate(snapshot!));
-
     }
 
     [Fact]
     public void Runtime_rejects_a_stale_settings_bound_invocation_surface()
     {
-
         WorkspaceCheckSettings original = new();
         WorkspaceCheckSettings current = new()
         {
@@ -936,13 +897,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             "configuration changed",
             status.Reason,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Runtime_keeps_semantically_equivalent_rebound_settings_surface_valid()
     {
-
         WorkspaceCheckSettings original = new();
         WorkspaceCheckSettings current = original with
         {
@@ -977,13 +936,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             "configuration changed",
             status.Reason,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Global_json_selects_only_an_installed_sdk_and_runtime_under_the_trusted_dotnet_root()
     {
-
         using TestTree tree = new();
         string dotnetRoot = tree.CreateDirectory("dotnet");
         string workspace = tree.CreateDirectory("workspace");
@@ -1034,7 +991,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Unavailable_global_json_selection_fails_closed_without_falling_back()
     {
-
         using TestTree tree = new();
         string dotnetRoot = tree.CreateDirectory("dotnet");
         string workspace = tree.CreateDirectory("workspace");
@@ -1062,7 +1018,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Sdk_resolver_honors_nearest_applicable_global_json_and_feature_roll_forward()
     {
-
         using TestTree tree = new();
         string dotnetRoot = tree.CreateDirectory("dotnet");
         string workspaceParent = tree.CreateDirectory("repo");
@@ -1094,7 +1049,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         Assert.True(selected.Success, selected.Message);
         Assert.Equal("10.0.201", selected.Snapshot!.Version);
-
     }
 
     [Theory]
@@ -1149,7 +1103,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Sdk_resolver_honors_trusted_paths_and_rejects_workspace_sdk_paths()
     {
-
         using TestTree tree = new();
         string dotnetRoot = tree.CreateDirectory("dotnet");
         string workspace = tree.CreateDirectory("workspace");
@@ -1171,7 +1124,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                     rollForward = "disable",
                     paths = new[] { dotnetRoot },
                 },
-            }));
+            }, AdHocJson.Options));
 
         WorkspaceCheckSdkResolution trusted =
             WorkspaceCheckSdkResolver.Resolve(
@@ -1201,7 +1154,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         Assert.False(untrusted.Success);
         Assert.Equal("invalid_global_json", untrusted.Code);
-
     }
 
     [Fact]
@@ -1225,7 +1177,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                     version = "10.0.100",
                     paths = new[] { first, second },
                 },
-            }));
+            }, AdHocJson.Options));
         WorkspaceCheckExecutableSnapshot host =
             WorkspaceCheckExecutableRuntimePolicy
                 .ForTrustedRoots([dotnetRoot])
@@ -1331,7 +1283,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public async Task Restore_artifacts_seed_into_the_dotnet_10_artifacts_project_layout()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string projectDirectory = tree.CreateDirectory("workspace/src/App");
@@ -1364,13 +1315,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public async Task Restore_seed_default_continues_beyond_former_project_and_artifact_caps()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
 
         for (int index = 0; index < 129; index++)
         {
-
             string projectName = $"Project{index:D3}";
             string projectDirectory =
                 tree.CreateDirectory($"workspace/{projectName}");
@@ -1380,7 +1329,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             WriteRestoreArtifacts(
                 tree.CreateDirectory($"workspace/{projectName}/obj"),
                 $"{projectName}.csproj");
-
         }
 
         WorkspaceCheckRestoreSeedResult result =
@@ -1394,19 +1342,16 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         Assert.Equal(129, result.ProjectCount);
         Assert.Equal(645, result.FileCount);
         Assert.Equal(129, result.InputManifest!.ProjectCount);
-
     }
 
     [Fact]
     public async Task Restore_seed_rejects_artifacts_project_name_collisions_without_global_tracking()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
 
         foreach (string directory in new[] { "First", "Second" })
         {
-
             string projectDirectory =
                 tree.CreateDirectory($"workspace/{directory}");
             File.WriteAllText(
@@ -1415,7 +1360,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             WriteRestoreArtifacts(
                 tree.CreateDirectory($"workspace/{directory}/obj"),
                 "Shared.csproj");
-
         }
 
         WorkspaceCheckRestoreSeedResult result =
@@ -1431,13 +1375,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             "map to the same .NET artifacts project name 'Shared'",
             result.Message,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Restore_seed_default_continues_beyond_former_per_project_and_global_input_caps()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string projectDirectory = tree.CreateDirectory("workspace/App");
@@ -1445,11 +1387,9 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         foreach (int index in Enumerable.Range(0, 300))
         {
-
             File.WriteAllText(
                 Path.Combine(inputDirectory, $"input-{index:D3}.props"),
                 "<Project />");
-
         }
 
         string imports = string.Join(
@@ -1475,7 +1415,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         Assert.Equal(1, result.ProjectCount);
         Assert.Equal(5, result.FileCount);
         Assert.True(result.InputManifest!.RecordCount > 256);
-
     }
 
     /// <summary>
@@ -1487,7 +1426,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public async Task Restore_seed_fingerprints_a_diamond_import_graph_once_per_file()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string projectDirectory = tree.CreateDirectory("workspace/App");
@@ -1496,7 +1434,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         foreach (int level in Enumerable.Range(0, levels))
         {
-
             File.WriteAllText(
                 Path.Combine(projectDirectory, $"d{level}.props"),
                 $"<Project><Import Project=\"a{level}.props\" /><Import Project=\"b{level}.props\" /></Project>");
@@ -1506,7 +1443,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             File.WriteAllText(
                 Path.Combine(projectDirectory, $"b{level}.props"),
                 $"<Project><Import Project=\"d{level + 1}.props\" /></Project>");
-
         }
 
         File.WriteAllText(
@@ -1536,13 +1472,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             $"The import walk appended {result.InputManifest.RecordCount} manifest records for {distinctInputs} "
             + "distinct files; a file reachable through several import edges must be fingerprinted once per "
             + "property context, not once per path through the graph.");
-
     }
 
     [Fact]
     public async Task Restore_seed_streams_restore_input_xml_beyond_former_eight_megabyte_parser_cap()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string projectDirectory = tree.CreateDirectory("workspace/App");
@@ -1563,13 +1497,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 CancellationToken.None);
 
         Assert.True(result.Success, result.Message);
-
     }
 
     [Fact]
     public async Task Restore_seed_honors_cancellation_without_count_caps()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string projectDirectory = tree.CreateDirectory("workspace/App");
@@ -1588,13 +1520,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 tree.CreateDirectory("run/cancelled"),
                 WorkspaceCheckRestoreSeedOptions.Default,
                 cancellation.Token));
-
     }
 
     [Fact]
     public async Task Missing_and_stale_restore_artifacts_fail_closed()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string firstProjectDirectory = tree.CreateDirectory("workspace/First");
@@ -1624,7 +1554,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Restore_seed_rejects_symlink_escape_and_file_byte_caps()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "File symlink creation requires elevation on Windows.");
@@ -1675,7 +1604,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Restore_seed_rejects_symlinked_directory_components_outside_workspace()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "Directory symlink creation requires elevation on Windows.");
@@ -1700,13 +1628,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal("restore_required", result.Code);
-
     }
 
     [Fact]
     public async Task Restore_seed_applies_streaming_byte_cap_before_complex_artifact_parse()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string projectDirectory = tree.CreateDirectory("workspace/App");
@@ -1731,13 +1657,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal("seed_cap_exceeded", result.Code);
-
     }
 
     [Fact]
     public async Task Restore_seed_rejects_cross_workspace_import_inputs()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string outside = tree.CreateDirectory("outside");
@@ -1766,7 +1690,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal("restore_required", result.Code);
-
     }
 
     [Fact]
@@ -1973,7 +1896,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         if (!OperatingSystem.IsWindows())
         {
-
             Assert.Equal(
                 UnixFileMode.UserRead | UnixFileMode.UserWrite,
                 File.GetUnixFileMode(manifest.Path));
@@ -2051,7 +1973,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Fact]
     public void Process_start_info_uses_argument_list_artifacts_path_and_test_results_root()
     {
-
         using TestTree tree = new();
         string workspace = tree.CreateDirectory("workspace");
         string run = tree.CreateDirectory("run");
@@ -2145,7 +2066,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public void Mandatory_jail_probe_timeout_kills_and_reaps_probe_process()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "Probe process regression uses the Unix shell.");
@@ -2165,7 +2085,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             System.Globalization.CultureInfo.InvariantCulture);
         Assert.Throws<ArgumentException>(() =>
             global::System.Diagnostics.Process.GetProcessById(pid));
-
     }
 
     [Fact]
@@ -2241,7 +2160,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Real_dotnet_build_uses_seeded_assets_read_only_source_and_split_writable_caches()
     {
-
         Skip.IfNot(
             CanRunMacOsWorkspaceCheck(),
             "Requires a runnable macOS sandbox-exec filesystem jail.");
@@ -2303,7 +2221,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Real_package_project_builds_from_seeded_assets_without_restore()
     {
-
         Skip.IfNot(
             CanRunMacOsWorkspaceCheck(),
             "Requires a runnable macOS sandbox-exec filesystem jail.");
@@ -2361,7 +2278,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Real_dotnet_lint_uses_seeded_project_state_without_source_writes()
     {
-
         Skip.IfNot(
             CanRunMacOsWorkspaceCheck(),
             "Requires a runnable macOS sandbox-exec filesystem jail.");
@@ -2410,7 +2326,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Real_dotnet_test_uses_seeded_assets_and_external_result_root()
     {
-
         Skip.IfNot(
             CanRunMacOsWorkspaceCheck(),
             "Requires a runnable macOS sandbox-exec filesystem jail.");
@@ -2479,7 +2394,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Malicious_msbuild_source_write_is_denied_and_reported_structurally()
     {
-
         Skip.IfNot(
             CanRunMacOsWorkspaceCheck(),
             "Requires a runnable macOS sandbox-exec filesystem jail.");
@@ -2531,7 +2445,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Check_owned_timeout_kills_tree_and_returns_normal_timed_out_outcome()
     {
-
         Skip.IfNot(
             CanRunMacOsWorkspaceCheck(),
             "Requires a runnable macOS sandbox-exec filesystem jail.");
@@ -2580,7 +2493,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [SkippableFact]
     public async Task Caller_cancellation_kills_check_cleans_and_propagates()
     {
-
         Skip.IfNot(
             CanRunMacOsWorkspaceCheck(),
             "Requires a runnable macOS sandbox-exec filesystem jail.");
@@ -2656,7 +2568,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         string workspace,
         string profileId = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId)
     {
-
         return new WorkspaceCheckRuntimeRequest(
             workspace,
             profileId,
@@ -2666,7 +2577,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     private static ServiceProvider CreateRuntimeServices(
         Action? beforeLimitApply = null)
     {
-
         ServiceCollection services = new();
         services.AddSingleton<ISanctumGuard>(
             new PermissiveSanctumGuard());
@@ -2680,7 +2590,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
     private static string ResolveInstalledDotNet()
     {
-
         string[] candidates =
         [
             "/opt/dotnet/dotnet",
@@ -2699,7 +2608,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
     private static string CanonicalGlobalPackages()
     {
-
         string path = Path.Combine(
             TestProcessPaths.OriginalUserProfile,
             ".nuget",
@@ -2714,7 +2622,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     private static string FindInstalledPackageVersion(
         string packageId)
     {
-
         string root = Path.Combine(
             CanonicalGlobalPackages(),
             packageId);
@@ -2736,7 +2643,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         string dotnet,
         string project)
     {
-
         System.Diagnostics.ProcessStartInfo startInfo = new()
         {
             FileName = dotnet,
@@ -2790,7 +2696,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         string candidate,
         string root)
     {
-
         string relative = Path.GetRelativePath(
             Path.GetFullPath(root),
             Path.GetFullPath(candidate.Trim()));
@@ -2808,11 +2713,9 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
     private static bool CanRunMacOsWorkspaceCheck()
     {
-
         if (!OperatingSystem.IsMacOS()
             || !File.Exists("/usr/bin/sandbox-exec"))
         {
-
             return false;
         }
 
@@ -2834,13 +2737,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 .ResolveConfiguredOrInstalled(configuredPath: null, workspaceRoot: Path.GetTempPath())
                 .Success)
         {
-
             return false;
         }
 
         try
         {
-
             using System.Diagnostics.Process process = new();
             process.StartInfo = new System.Diagnostics.ProcessStartInfo
             {
@@ -2862,14 +2763,12 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         }
         catch
         {
-
             return false;
         }
     }
 
     private sealed class ManualTimeProvider : TimeProvider
     {
-
         private long _timestamp;
 
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
@@ -2881,7 +2780,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
     private static void WriteRestoreArtifacts(string obj, string projectFileName)
     {
-
         File.WriteAllText(Path.Combine(obj, "project.assets.json"), "{}");
         File.WriteAllText(
             Path.Combine(obj, projectFileName + ".nuget.g.props"),
@@ -2945,14 +2843,12 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     private sealed class CallbackProcessResourceLimiter(
         Action beforeApply) : IProcessResourceLimiter
     {
-
         private readonly ProcessResourceLimiter _inner = new();
 
         public ProcessResourceLimiterResult Apply(
             System.Diagnostics.ProcessStartInfo startInfo,
             ResourceLimits limits)
         {
-
             beforeApply();
             return _inner.Apply(startInfo, limits);
         }
@@ -2968,7 +2864,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
     private sealed class TestTree : IDisposable
     {
-
         private readonly string _root = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-workspace-check-{Guid.NewGuid():N}");
@@ -2977,7 +2872,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         public string CreateDirectory(string relativePath)
         {
-
             string path = Path.Combine(_root, relativePath);
             Directory.CreateDirectory(path);
             return path;
@@ -2985,7 +2879,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         public string CreateNativeExecutable(string relativePath)
         {
-
             string path = Path.Combine(_root, relativePath);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             byte[] nativeHeader = OperatingSystem.IsWindows()
@@ -2997,7 +2890,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
             if (!OperatingSystem.IsWindows())
             {
-
                 File.SetUnixFileMode(
                     path,
                     UnixFileMode.UserRead
@@ -3013,7 +2905,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             string sdkVersion,
             string runtimeVersion)
         {
-
             string sdk = Path.Combine(dotnetRoot, "sdk", sdkVersion);
             Directory.CreateDirectory(sdk);
             File.WriteAllText(

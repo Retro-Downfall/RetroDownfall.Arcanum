@@ -18,11 +18,9 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 public sealed class AttachSessionFileToolTests
 {
-
     [Fact]
     public async Task ToolsList_AdvertisesAttachSessionFile_WhenEnabled()
     {
-
         await using TestMcpSession session = await CreateSessionAsync(attachmentsToolEnabled: true);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
@@ -32,13 +30,11 @@ public sealed class AttachSessionFileToolTests
             McpJsonSerializerContext.Default.McpToolsListResultWire)!;
 
         Assert.Contains(tools.Tools, static t => t.Name == "attach_session_file");
-
     }
 
     [Fact]
     public async Task ToolsList_DoesNotAdvertiseAttachSessionFile_WhenDisabled()
     {
-
         await using TestMcpSession session = await CreateSessionAsync(attachmentsToolEnabled: false);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
@@ -50,7 +46,6 @@ public sealed class AttachSessionFileToolTests
         Assert.DoesNotContain(tools.Tools, static t => t.Name == "attach_session_file");
 
         Assert.DoesNotContain(tools.Tools, static t => t.Name == "refresh_session_file");
-
     }
 
     [Fact]
@@ -90,14 +85,14 @@ public sealed class AttachSessionFileToolTests
         {
             McpToolsCallResultWire missing = await session.CallToolAsync(
                 "refresh_session_file",
-                JsonSerializer.SerializeToElement(new { }));
+                JsonSerializer.SerializeToElement(new { }, AdHocJson.Options));
             McpToolsCallResultWire multiple = await session.CallToolAsync(
                 "refresh_session_file",
                 JsonSerializer.SerializeToElement(new
                 {
                     attachmentId = Guid.NewGuid(),
                     logicalKey = "notes.txt",
-                }));
+                }, AdHocJson.Options));
 
             Assert.True(missing.IsError);
             Assert.True(multiple.IsError);
@@ -113,7 +108,6 @@ public sealed class AttachSessionFileToolTests
     [Fact]
     public async Task ToolsCall_WhenDisabled_ReturnsError()
     {
-
         await using TestMcpSession session = await CreateSessionAsync(attachmentsToolEnabled: false);
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
@@ -125,13 +119,11 @@ public sealed class AttachSessionFileToolTests
         Assert.True(result.IsError);
 
         Assert.Contains("disabled", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ToolsCall_WithoutAmbientSession_ReturnsError()
     {
-
         FakeSessionAttachmentStore store = new();
 
         await using TestMcpSession session = await CreateSessionAsync(attachmentsToolEnabled: true, store: store);
@@ -149,13 +141,11 @@ public sealed class AttachSessionFileToolTests
         Assert.Contains("No current session", result.Content![0].Text!, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Available logical names", result.Content![0].Text!, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ToolsCall_TwoSessionsConcurrent_EachResolvesOwnSessionOnly()
     {
-
         Guid sessionA = Guid.NewGuid();
 
         Guid sessionB = Guid.NewGuid();
@@ -249,13 +239,11 @@ public sealed class AttachSessionFileToolTests
         Assert.DoesNotContain("b-only.txt", results[0].Content![0].Text!, StringComparison.Ordinal);
 
         Assert.DoesNotContain("a-only.txt", results[1].Content![0].Text!, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ToolsList_OpaqueInvocationToken_AbsentFromSchema()
     {
-
         await using TestMcpSession session = await CreateSessionAsync(attachmentsToolEnabled: true);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
@@ -272,13 +260,11 @@ public sealed class AttachSessionFileToolTests
             SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName,
             schemaJson,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ToolsCall_OpaqueTokenPath_StripsTokenBeforeToolLogicAndSnapshot()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         FakeSessionAttachmentStore store = new();
@@ -367,13 +353,11 @@ public sealed class AttachSessionFileToolTests
         {
             SessionAttachmentToolAmbient.CurrentSessionId = null;
         }
-
     }
 
     [Fact]
     public async Task ToolsCall_MissingLogicalName_ListsAvailableNames()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         FakeSessionAttachmentStore store = new();
@@ -417,13 +401,11 @@ public sealed class AttachSessionFileToolTests
         {
             SessionAttachmentToolAmbient.CurrentSessionId = null;
         }
-
     }
 
     [Fact]
     public async Task ToolsCall_Success_ReturnsAckWithoutImageBytes()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         byte[] pngBytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -477,14 +459,12 @@ public sealed class AttachSessionFileToolTests
         {
             SessionAttachmentToolAmbient.CurrentSessionId = null;
         }
-
     }
 
     private static async Task<TestMcpSession> CreateSessionAsync(
         bool attachmentsToolEnabled,
         FakeSessionAttachmentStore? store = null)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<ISessionAttachmentStore>(store ?? new FakeSessionAttachmentStore());
@@ -530,12 +510,10 @@ public sealed class AttachSessionFileToolTests
         await transport.StartAsync();
 
         return new TestMcpSession(transport, serverTask, cts);
-
     }
 
     private sealed class FakeEventBus : IEventBus
     {
-
         public void Publish<T>(T @event) where T : notnull
         {
         }
@@ -544,18 +522,14 @@ public sealed class AttachSessionFileToolTests
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
             where T : notnull
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
-
     }
 
     private sealed class FakeSessionAttachmentStore : ISessionAttachmentStore
     {
-
         public List<SessionAttachmentRecord> Records { get; } = [];
 
         public Dictionary<string, byte[]> BytesByLogical { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -588,7 +562,6 @@ public sealed class AttachSessionFileToolTests
             int? version,
             CancellationToken cancellationToken = default)
         {
-
             IEnumerable<SessionAttachmentRecord> matches = Records.Where(r =>
                 r.SessionId == sessionId
                 && string.Equals(r.LogicalKey, logicalKey, StringComparison.OrdinalIgnoreCase)
@@ -600,7 +573,6 @@ public sealed class AttachSessionFileToolTests
             }
 
             return Task.FromResult(matches.OrderByDescending(r => r.Version).FirstOrDefault());
-
         }
 
         public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
@@ -619,14 +591,12 @@ public sealed class AttachSessionFileToolTests
             SessionAttachmentRecord record,
             CancellationToken cancellationToken = default)
         {
-
             if (BytesByLogical.TryGetValue(record.LogicalKey, out byte[]? bytes))
             {
                 return Task.FromResult<ReadOnlyMemory<byte>>(bytes);
             }
 
             return Task.FromResult<ReadOnlyMemory<byte>>(Encoding.UTF8.GetBytes("hello"));
-
         }
 
         public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
@@ -657,7 +627,6 @@ public sealed class AttachSessionFileToolTests
             IReadOnlySet<Guid>? copiedSourceEntryIds,
             CancellationToken cancellationToken = default)
         {
-
             IEnumerable<SessionAttachmentRecord> bound = Records.Where(r =>
                 r.SessionId == sourceSessionId && r.State == SessionAttachmentState.Bound);
 
@@ -667,7 +636,6 @@ public sealed class AttachSessionFileToolTests
             }
 
             return Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(bound.ToList());
-
         }
 
         public Task CopyBytesForForkAsync(
@@ -684,15 +652,12 @@ public sealed class AttachSessionFileToolTests
 
         private sealed class EmptyDisposable : IDisposable
         {
-
             public static readonly EmptyDisposable Instance = new();
 
             public void Dispose()
             {
             }
-
         }
-
     }
 
     private sealed class TestMcpSession(
@@ -700,14 +665,12 @@ public sealed class AttachSessionFileToolTests
         Task serverTask,
         CancellationTokenSource lifetime) : IAsyncDisposable
     {
-
         private int _nextId;
 
         internal InProcessMcpTransport Transport => transport;
 
         public async ValueTask DisposeAsync()
         {
-
             lifetime.Cancel();
 
             try
@@ -721,12 +684,10 @@ public sealed class AttachSessionFileToolTests
             await transport.DisposeAsync().ConfigureAwait(false);
 
             lifetime.Dispose();
-
         }
 
         public async Task<JsonRpcResponse> SendRequestAsync(string method, JsonElement? parameters)
         {
-
             int id = Interlocked.Increment(ref _nextId);
 
             JsonRpcRequest request = new()
@@ -743,12 +704,10 @@ public sealed class AttachSessionFileToolTests
             Assert.Equal(McpInboundKind.Response, envelope.Kind);
 
             return envelope.Response!;
-
         }
 
         public async Task<McpToolsCallResultWire> CallToolAsync(string name, JsonElement arguments)
         {
-
             McpToolsCallParams callParams = new() { Name = name, Arguments = arguments };
 
             JsonElement paramsElement = JsonSerializer.SerializeToElement(
@@ -760,9 +719,6 @@ public sealed class AttachSessionFileToolTests
             return JsonSerializer.Deserialize(
                 response.Result!.Value,
                 McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
-
         }
-
     }
-
 }

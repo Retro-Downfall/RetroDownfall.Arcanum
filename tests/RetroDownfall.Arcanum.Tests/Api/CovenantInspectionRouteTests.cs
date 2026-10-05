@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Tower;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -21,7 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// </summary>
 public sealed class CovenantInspectionRouteTests
 {
-
     private static readonly string[] InspectionRoutes =
     [
         "ListCovenantEntries",
@@ -48,7 +48,6 @@ public sealed class CovenantInspectionRouteTests
 
     public async Task Every_inspection_route_requires_protected_read_authority(string routeName)
     {
-
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         CovenantAuthorityRequirementMetadata? metadata = graph.Endpoint(routeName)
@@ -57,13 +56,11 @@ public sealed class CovenantInspectionRouteTests
         Assert.NotNull(metadata);
 
         Assert.Equal(CovenantAuthorityRequirement.ProtectedRead, metadata.Requirement);
-
     }
 
     [Fact]
     public async Task The_declared_set_is_exactly_the_six_named_inspection_routes()
     {
-
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         string[] declared =
@@ -75,7 +72,6 @@ public sealed class CovenantInspectionRouteTests
         ];
 
         Assert.Equal([.. InspectionRoutes.Order(StringComparer.Ordinal)], declared);
-
     }
 
     /// <summary>
@@ -90,25 +86,20 @@ public sealed class CovenantInspectionRouteTests
     [Fact]
     public async Task No_inspection_route_carries_its_selector_in_the_url()
     {
-
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         foreach (string routeName in InspectionRoutes)
         {
-
             Endpoint endpoint = graph.Endpoint(routeName);
 
             Assert.Equal(["POST"], endpoint.Metadata.GetMetadata<IHttpMethodMetadata>()!.HttpMethods);
 
             Assert.DoesNotContain('{', ((RouteEndpoint)endpoint).RoutePattern.RawText ?? string.Empty);
-
         }
-
     }
 
     private sealed class RouteGraph : IAsyncDisposable
     {
-
         private WebApplication _app = null!;
 
         internal IReadOnlyList<Endpoint> Endpoints =>
@@ -116,10 +107,7 @@ public sealed class CovenantInspectionRouteTests
 
         internal static async Task<RouteGraph> CreateAsync()
         {
-
-            WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
-
-            builder.WebHost.UseTestServer();
+            WebApplicationBuilder builder = RouteGraphHost.CreateBuilder();
 
             RouteGraph graph = new();
 
@@ -130,7 +118,6 @@ public sealed class CovenantInspectionRouteTests
             await graph._app.StartAsync();
 
             return graph;
-
         }
 
         internal Endpoint Endpoint(string name) =>
@@ -143,13 +130,9 @@ public sealed class CovenantInspectionRouteTests
 
         public async ValueTask DisposeAsync()
         {
-
             await _app.StopAsync();
 
             await _app.DisposeAsync();
-
         }
-
     }
-
 }

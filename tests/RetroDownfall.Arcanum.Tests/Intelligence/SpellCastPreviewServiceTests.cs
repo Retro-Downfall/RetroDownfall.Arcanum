@@ -160,7 +160,7 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
              body
              """);
 
-        string dependenciesJson = System.Text.Json.JsonSerializer.Serialize(dependencies);
+        string dependenciesJson = System.Text.Json.JsonSerializer.Serialize(dependencies, AdHocJson.Options);
 
         _workspace.WriteFile(
             $"spells/{spellName}/SKILL.json",

@@ -1507,7 +1507,7 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             "after");
         string exactArgumentsSnapshot =
             "{\"dryRun\":false,\"patch\":"
-            + JsonSerializer.Serialize(request.Patch)
+            + JsonSerializer.Serialize(request.Patch, AdHocJson.Options)
             + "}";
         ApplyPatchInvocationContext context = InvocationContext(
             sink,

@@ -250,7 +250,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -293,7 +293,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat);
 
@@ -2452,7 +2452,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("optional_tool")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\"", AdHocJson.Options),
             });
 
         Assert.Equal(1, chat.StreamingCallCount);
@@ -2483,7 +2483,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         };
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
-        JsonElement toolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson);
+        JsonElement toolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
@@ -2539,7 +2539,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\"", AdHocJson.Options),
             },
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
@@ -2578,7 +2578,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
             },
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
@@ -2618,7 +2618,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
             });
 
         IntelligenceEvent error = Assert.Single(
@@ -2666,7 +2666,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 ForwardClientTools = true,
                 ClientTools = clientTools.ToArray(),
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
                 ToolPolicy = ToolPolicy.ReadOnlyTools,
             },
             InvocationContexts.AttendedSession(),
@@ -2705,7 +2705,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("write_file")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\"", AdHocJson.Options),
                 ToolPolicy = toolPolicy,
             },
             InvocationContexts.AttendedSession(),
@@ -2747,7 +2747,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("write_file")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\"", AdHocJson.Options),
                 ToolPolicy = toolPolicy,
             });
 
@@ -2783,7 +2783,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\"", AdHocJson.Options),
                 ToolPolicy = ToolPolicy.NoTools,
             },
             InvocationContexts.AttendedSession(),
@@ -2955,7 +2955,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                             new OpenAiFunctionDefinition("get_weather")),
                     ]
                     : [],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
             });
 
         IntelligenceEvent error = Assert.Single(
@@ -2992,7 +2992,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
             },
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
@@ -8400,7 +8400,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -8463,7 +8463,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -8539,7 +8539,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         FakeGrimoireRepository grimoire = new();
 
@@ -8617,7 +8617,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -8672,7 +8672,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -8728,7 +8728,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -8795,7 +8795,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             },
         };
         JsonElement schema = JsonSerializer.Deserialize<JsonElement>(
-            """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""");
+            """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""", AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -8853,7 +8853,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -9131,7 +9131,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -9957,7 +9957,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(Path.Combine(dir, "SPELL.md"), spellMd);
 
-        string dependenciesJson = JsonSerializer.Serialize(dependencies ?? Array.Empty<string>());
+        string dependenciesJson = JsonSerializer.Serialize(dependencies ?? Array.Empty<string>(), AdHocJson.Options);
 
         string skillJson = $$"""
             {
@@ -10012,7 +10012,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(Path.Combine(dir, "SPELL.md"), spellMd);
 
-        string toolsJson = JsonSerializer.Serialize(declaredTools);
+        string toolsJson = JsonSerializer.Serialize(declaredTools, AdHocJson.Options);
 
         string skillJson = $$"""
             {

@@ -919,7 +919,7 @@ public sealed class FamiliarChatClientTests
     private static ChatResponseFormat SchemaFormat() =>
         ChatResponseFormat.ForJsonSchema(
             JsonSerializer.Deserialize<JsonElement>(
-                "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"),
+                "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}", AdHocJson.Options),
             "answer",
             schemaDescription: string.Empty);
 
@@ -928,7 +928,7 @@ public sealed class FamiliarChatClientTests
             JsonSerializer.Deserialize<JsonElement>(
                 "{\"type\":\"object\",\"description\":\""
                 + new string('d', 64 * 1024)
-                + "\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"),
+                + "\",\"properties\":{\"answer\":{\"type\":\"string\"}}}", AdHocJson.Options),
             "answer",
             schemaDescription: string.Empty);
 

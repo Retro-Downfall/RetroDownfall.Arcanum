@@ -993,7 +993,7 @@ public sealed class SessionEndpointTests
 
             {
                 workspacePath = fileName,
-            });
+            }, options: AdHocJson.Options);
 
             HttpResponseMessage response = await client.PostAsync(
                 $"/api/sessions/{sessionId:D}/attachments/reference",
@@ -1095,7 +1095,7 @@ public sealed class SessionEndpointTests
                 workspacePath = fileName,
 
                 workspaceId = workspace!.Id,
-            });
+            }, options: AdHocJson.Options);
 
             HttpResponseMessage response = await client.PostAsync(
                 $"/api/sessions/{sessionId:D}/attachments/reference",
@@ -1167,7 +1167,7 @@ public sealed class SessionEndpointTests
                 workspacePath = fileName,
 
                 logicalName = "refreshable-notes",
-            });
+            }, options: AdHocJson.Options);
 
             HttpResponseMessage createdResponse = await client.PostAsync(
                 $"/api/sessions/{sessionId:D}/attachments/reference",
@@ -1256,7 +1256,7 @@ public sealed class SessionEndpointTests
 
             {
                 workspacePath = "../" + fileName,
-            });
+            }, options: AdHocJson.Options);
 
             HttpResponseMessage response = await client.PostAsync(
                 $"/api/sessions/{sessionId:D}/attachments/reference",

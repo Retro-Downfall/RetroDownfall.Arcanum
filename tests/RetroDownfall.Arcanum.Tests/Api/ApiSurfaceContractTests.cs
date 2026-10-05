@@ -25,6 +25,7 @@ using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -36,7 +37,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ProcessEnvironment")]
 public sealed class ApiSurfaceContractTests : IDisposable
 {
-
     private const string GatedHostApiKey = "api-surface-contract-key";
 
     private readonly string _tempHome;
@@ -45,7 +45,6 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
     public ApiSurfaceContractTests()
     {
-
         _tempHome = Path.Combine(
             Path.GetTempPath(),
             "arcanum-tests",
@@ -60,32 +59,23 @@ public sealed class ApiSurfaceContractTests : IDisposable
         global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
         global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
         global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _tempHome);
-
     }
 
     public void Dispose()
     {
-
         foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
         {
-
             global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-
         }
 
         try
         {
-
             Directory.Delete(_tempHome, recursive: true);
-
         }
         catch (IOException)
         {
-
             // A leftover temp directory is not worth failing a test over.
-
         }
-
     }
 
     private void Capture(string name) =>
@@ -94,7 +84,6 @@ public sealed class ApiSurfaceContractTests : IDisposable
     [Fact]
     public void CorsPolicy_allows_the_documented_request_headers_and_exposes_the_documented_response_headers()
     {
-
         CorsPolicy policy = ResolveCorsPolicy();
 
         // DESIGN §11.4: any header / any method. A header allowlist that omitted Idempotency-Key made the
@@ -113,13 +102,11 @@ public sealed class ApiSurfaceContractTests : IDisposable
         // could send X-Arcanum-Context-Policy but never read back what was honoured would be guessing
         // about whether its request suppressed durable context or silently kept it.
         Assert.Contains(ArcanumApiHeaders.ContextPolicy, policy.ExposedHeaders);
-
     }
 
     [Fact]
     public void ProviderInferenceHttpClient_uses_the_pinned_provider_egress_handler()
     {
-
         using ServiceProvider provider = BuildApiServices();
 
         IHttpMessageHandlerFactory handlerFactory =
@@ -131,9 +118,7 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         while (current is DelegatingHandler delegating && delegating.InnerHandler is not null)
         {
-
             current = delegating.InnerHandler;
-
         }
 
         SocketsHttpHandler primary = Assert.IsType<SocketsHttpHandler>(current);
@@ -145,13 +130,11 @@ public sealed class ApiSurfaceContractTests : IDisposable
         Assert.False(primary.UseProxy);
 
         Assert.NotNull(primary.ConnectCallback);
-
     }
 
     [Fact]
     public async Task UnmatchedRoutes_record_a_fixed_endpoint_label_not_the_raw_request_path()
     {
-
         string scannedPath = $"/api/scanner-probe-{Guid.NewGuid():N}";
 
         List<string> endpointLabels = [];
@@ -160,37 +143,25 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         listener.InstrumentPublished = static (instrument, activeListener) =>
         {
-
             if (string.Equals(instrument.Name, "arcanum_http_requests_total", StringComparison.Ordinal))
             {
-
                 activeListener.EnableMeasurementEvents(instrument);
-
             }
-
         };
 
         listener.SetMeasurementEventCallback<long>(
             (_, _, tags, _) =>
             {
-
                 foreach (KeyValuePair<string, object?> tag in tags)
                 {
-
                     if (string.Equals(tag.Key, "endpoint", StringComparison.Ordinal))
                     {
-
                         lock (endpointLabels)
                         {
-
                             endpointLabels.Add(tag.Value?.ToString() ?? string.Empty);
-
                         }
-
                     }
-
                 }
-
             });
 
         listener.Start();
@@ -217,16 +188,13 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         lock (endpointLabels)
         {
-
             observed = [.. endpointLabels];
-
         }
 
         // Every distinct raw path would otherwise become a permanent series in the Prometheus exporter.
         Assert.DoesNotContain(scannedPath, observed);
 
         Assert.Contains(ApiBootstrapper.UnmatchedRouteMetricLabel, observed);
-
     }
 
     /// <summary>
@@ -236,7 +204,6 @@ public sealed class ApiSurfaceContractTests : IDisposable
     [Fact]
     public async Task Unknown_request_methods_record_a_fixed_method_label_not_the_raw_verb()
     {
-
         const string unknownMethod = "ARCANUMPROBE";
 
         List<string> methodLabels = [];
@@ -245,37 +212,25 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         listener.InstrumentPublished = static (instrument, activeListener) =>
         {
-
             if (string.Equals(instrument.Name, "arcanum_http_requests_total", StringComparison.Ordinal))
             {
-
                 activeListener.EnableMeasurementEvents(instrument);
-
             }
-
         };
 
         listener.SetMeasurementEventCallback<long>(
             (_, _, tags, _) =>
             {
-
                 foreach (KeyValuePair<string, object?> tag in tags)
                 {
-
                     if (string.Equals(tag.Key, "method", StringComparison.Ordinal))
                     {
-
                         lock (methodLabels)
                         {
-
                             methodLabels.Add(tag.Value?.ToString() ?? string.Empty);
-
                         }
-
                     }
-
                 }
-
             });
 
         listener.Start();
@@ -302,24 +257,18 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         lock (methodLabels)
         {
-
             observed = [.. methodLabels];
-
         }
 
         Assert.DoesNotContain(unknownMethod, observed);
 
         Assert.Contains(ApiBootstrapper.OtherMethodMetricLabel, observed);
-
     }
 
     [Fact]
     public async Task FileUploadEndpoint_raises_the_multipart_ceiling_to_the_code_owned_envelope()
     {
-
-        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
-
-        builder.WebHost.UseTestServer();
+        WebApplicationBuilder builder = RouteGraphHost.CreateBuilder();
 
         await using WebApplication app = builder.Build();
 
@@ -345,7 +294,6 @@ public sealed class ApiSurfaceContractTests : IDisposable
         Assert.NotNull(formOptions.MultipartBodyLengthLimit);
 
         Assert.True(formOptions.MultipartBodyLengthLimit >= OpenAiV1Endpoints.ResolveMaxUploadBytes());
-
     }
 
     /// <summary>
@@ -357,10 +305,7 @@ public sealed class ApiSurfaceContractTests : IDisposable
     [Fact]
     public async Task MemoryEndpoints_are_registered_with_unique_endpoint_names()
     {
-
-        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
-
-        builder.WebHost.UseTestServer();
+        WebApplicationBuilder builder = RouteGraphHost.CreateBuilder();
 
         // Registration alone is what endpoint building inspects; these are never resolved here.
         builder.Services.AddScoped<ArcanumDbContext>(static _ => throw new NotSupportedException());
@@ -416,18 +361,15 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         // Duplicate endpoint names throw at routing-table build time, so uniqueness is part of the fix.
         Assert.Equal(names.Length, names.Distinct(StringComparer.Ordinal).Count());
-
     }
 
     [Fact]
     public async Task DuplicateIdempotencyKeyHeaders_are_rejected_instead_of_silently_ignored()
     {
-
         (WebApplication app, ExecutionProbe probe) = await CreateIdempotencyProbeHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             HttpRequestMessage request = BuildProbeRequest();
@@ -449,20 +391,16 @@ public sealed class ApiSurfaceContractTests : IDisposable
             Assert.Equal(0, probe.Executions);
 
             await app.StopAsync();
-
         }
-
     }
 
     [Fact]
     public async Task NoIdempotencyKeyHeader_leaves_the_handler_reachable()
     {
-
         (WebApplication app, ExecutionProbe probe) = await CreateIdempotencyProbeHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             HttpResponseMessage response = await client.SendAsync(BuildProbeRequest());
@@ -474,9 +412,7 @@ public sealed class ApiSurfaceContractTests : IDisposable
             Assert.Equal(1, probe.Executions);
 
             await app.StopAsync();
-
         }
-
     }
 
     /// <summary>
@@ -489,12 +425,10 @@ public sealed class ApiSurfaceContractTests : IDisposable
     [Fact]
     public async Task Unauthenticated_requests_are_rejected_before_the_request_body_is_read()
     {
-
         (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             HttpResponseMessage response = await client.SendAsync(BuildProbeRequest());
@@ -508,9 +442,7 @@ public sealed class ApiSurfaceContractTests : IDisposable
             Assert.Equal(0, probe.RequestBodyBytesRead);
 
             await app.StopAsync();
-
         }
-
     }
 
     /// <summary>
@@ -520,12 +452,10 @@ public sealed class ApiSurfaceContractTests : IDisposable
     [Fact]
     public async Task Unauthenticated_requests_with_an_unparsable_body_still_return_401()
     {
-
         (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             HttpResponseMessage response = await client.SendAsync(BuildMalformedProbeRequest());
@@ -535,20 +465,16 @@ public sealed class ApiSurfaceContractTests : IDisposable
             Assert.Equal(0, probe.Executions);
 
             await app.StopAsync();
-
         }
-
     }
 
     [Fact]
     public async Task Authenticated_requests_still_bind_the_body_and_reach_the_handler()
     {
-
         (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             HttpRequestMessage request = BuildProbeRequest();
@@ -564,15 +490,12 @@ public sealed class ApiSurfaceContractTests : IDisposable
             Assert.True(probe.RequestBodyBytesRead > 0);
 
             await app.StopAsync();
-
         }
-
     }
 
     [Fact]
     public void Fingerprint_covers_the_query_string()
     {
-
         byte[] body = Encoding.UTF8.GetBytes("""{"prompt":"identical"}""");
 
         string workspaceA = IdempotencyIdentity.ComputeFingerprintHash(
@@ -589,13 +512,11 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         // Equal fingerprints replay the first workspace's cached answer for the second request.
         Assert.NotEqual(workspaceA, workspaceB);
-
     }
 
     [Fact]
     public void NormalizeQuery_is_order_independent_but_value_sensitive()
     {
-
         Assert.Equal(
             IdempotencyIdentity.NormalizeQuery(QueryContext("?workspace=/repo/A&version=2")),
             IdempotencyIdentity.NormalizeQuery(QueryContext("?version=2&workspace=/repo/A")));
@@ -605,18 +526,15 @@ public sealed class ApiSurfaceContractTests : IDisposable
             IdempotencyIdentity.NormalizeQuery(QueryContext("?workspace=/repo/B")));
 
         Assert.Equal(string.Empty, IdempotencyIdentity.NormalizeQuery(QueryContext(string.Empty)));
-
     }
 
     [Fact]
     public async Task NormalizeRoute_collapses_routing_equivalent_path_variants()
     {
-
         (WebApplication app, RouteProbe probe) = await CreateRouteProbeHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             await PostAsync(client, "/api/spells/build/execute");
@@ -649,15 +567,12 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
             // ...and so is the route value, or two spells would share one claim key.
             Assert.Contains("build", routes[0], StringComparison.Ordinal);
-
         }
-
     }
 
     [Fact]
     public void ResolvePrincipal_ignores_the_client_supplied_host_header()
     {
-
         DefaultHttpContext localhost = new();
 
         localhost.Request.Host = new HostString("localhost", 5001);
@@ -670,23 +585,19 @@ public sealed class ApiSurfaceContractTests : IDisposable
         Assert.Equal(
             IdempotencyIdentity.ResolvePrincipal(localhost),
             IdempotencyIdentity.ResolvePrincipal(loopback));
-
     }
 
     private static async Task PostAsync(HttpClient client, string requestUri)
     {
-
         using HttpRequestMessage request = new(HttpMethod.Post, requestUri);
 
         using HttpResponseMessage response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
     }
 
     private static async Task<(WebApplication App, RouteProbe Probe)> CreateRouteProbeHostAsync()
     {
-
         RouteProbe probe = new();
 
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
@@ -702,33 +613,27 @@ public sealed class ApiSurfaceContractTests : IDisposable
                 "/spells/{name}/execute",
                 (HttpContext httpContext, RouteProbe routeProbe) =>
                 {
-
                     routeProbe.Record(IdempotencyIdentity.NormalizeRoute(httpContext));
 
                     return Results.Ok();
-
                 });
 
         await app.StartAsync();
 
         return (app, probe);
-
     }
 
     private static DefaultHttpContext QueryContext(string queryString)
     {
-
         DefaultHttpContext context = new();
 
         context.Request.QueryString = new QueryString(queryString);
 
         return context;
-
     }
 
     private static HttpRequestMessage BuildProbeRequest()
     {
-
         string payload = JsonSerializer.Serialize(
             new PingRequest(Prompt: "probe"),
             ArcanumJsonContext.Default.PingRequest);
@@ -737,22 +642,18 @@ public sealed class ApiSurfaceContractTests : IDisposable
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
-
     }
 
     private static HttpRequestMessage BuildMalformedProbeRequest()
     {
-
         return new HttpRequestMessage(HttpMethod.Post, "/api/probe")
         {
             Content = new StringContent("""{"prompt":""", Encoding.UTF8, "application/json"),
         };
-
     }
 
     private static async Task<(WebApplication App, ExecutionProbe Probe)> CreateIdempotencyProbeHostAsync()
     {
-
         ExecutionProbe probe = new();
 
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
@@ -770,13 +671,11 @@ public sealed class ApiSurfaceContractTests : IDisposable
                 "/api/probe",
                 (PingRequest body, ExecutionProbe executionProbe) =>
                 {
-
                     _ = body;
 
                     executionProbe.Record();
 
                     return Results.Ok();
-
                 })
             .AddEndpointFilter(
                 IdempotencyEndpointFilters.ForBoundArgument(0, ArcanumJsonContext.Default.PingRequest));
@@ -784,7 +683,6 @@ public sealed class ApiSurfaceContractTests : IDisposable
         await app.StartAsync();
 
         return (app, probe);
-
     }
 
     /// <summary>
@@ -794,7 +692,6 @@ public sealed class ApiSurfaceContractTests : IDisposable
     /// </summary>
     private static async Task<(WebApplication App, ExecutionProbe Probe)> CreateApiKeyGatedHostAsync()
     {
-
         ExecutionProbe probe = new();
 
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
@@ -816,13 +713,11 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         app.Use(async (HttpContext context, Func<Task> next) =>
         {
-
             context.Request.Body = new CountingRequestBodyStream(
                 context.Request.Body,
                 context.RequestServices.GetRequiredService<ExecutionProbe>());
 
             await next().ConfigureAwait(false);
-
         });
 
         app.UseArcanumApiKeyAuthentication();
@@ -833,24 +728,20 @@ public sealed class ApiSurfaceContractTests : IDisposable
             "/probe",
             (PingRequest body, ExecutionProbe executionProbe) =>
             {
-
                 _ = body;
 
                 executionProbe.Record();
 
                 return Results.Ok();
-
             });
 
         await app.StartAsync();
 
         return (app, probe);
-
     }
 
     private CorsPolicy ResolveCorsPolicy()
     {
-
         using ServiceProvider provider = BuildApiServices();
 
         CorsOptions options = provider
@@ -862,12 +753,10 @@ public sealed class ApiSurfaceContractTests : IDisposable
         Assert.NotNull(policy);
 
         return policy;
-
     }
 
     private ServiceProvider BuildApiServices()
     {
-
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -884,46 +773,34 @@ public sealed class ApiSurfaceContractTests : IDisposable
         services.AddArcanumApiServices(configuration);
 
         return services.BuildServiceProvider();
-
     }
 
     private sealed class RouteProbe
     {
-
         private readonly List<string> _routes = [];
 
         public string[] Routes
         {
             get
             {
-
                 lock (_routes)
                 {
-
                     return [.. _routes];
-
                 }
-
             }
         }
 
         public void Record(string route)
         {
-
             lock (_routes)
             {
-
                 _routes.Add(route);
-
             }
-
         }
-
     }
 
     private sealed class ExecutionProbe
     {
-
         private int _executions;
 
         private long _requestBodyBytesRead;
@@ -935,7 +812,6 @@ public sealed class ApiSurfaceContractTests : IDisposable
         public void Record() => Interlocked.Increment(ref _executions);
 
         public void RecordRequestBodyBytes(int count) => Interlocked.Add(ref _requestBodyBytesRead, count);
-
     }
 
     /// <summary>
@@ -944,7 +820,6 @@ public sealed class ApiSurfaceContractTests : IDisposable
     /// </summary>
     private sealed class CountingRequestBodyStream(Stream inner, ExecutionProbe probe) : Stream
     {
-
         public override bool CanRead => inner.CanRead;
 
         public override bool CanSeek => false;
@@ -963,24 +838,20 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-
             int read = inner.Read(buffer, offset, count);
 
             probe.RecordRequestBodyBytes(read);
 
             return read;
-
         }
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-
             int read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
 
             probe.RecordRequestBodyBytes(read);
 
             return read;
-
         }
 
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
@@ -991,12 +862,10 @@ public sealed class ApiSurfaceContractTests : IDisposable
         public override void SetLength(long value) => throw new NotSupportedException();
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
     }
 
     private sealed class StubSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -1007,7 +876,5 @@ public sealed class ApiSurfaceContractTests : IDisposable
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
-
 }

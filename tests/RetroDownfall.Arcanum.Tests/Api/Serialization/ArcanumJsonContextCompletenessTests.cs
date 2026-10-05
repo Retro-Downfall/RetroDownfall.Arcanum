@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Reflection.Emit;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Text.Json.Serialization;
@@ -191,17 +193,264 @@ public sealed class ArcanumJsonContextCompletenessTests
     [InlineData(typeof(ApiResponse<LexiconCurationResult>))]
     public void TypeInfo_RegisteredForType(Type type)
     {
-
         JsonTypeInfo? typeInfo = ArcanumJsonContext.Default.GetTypeInfo(type);
 
         Assert.NotNull(typeInfo);
+    }
 
+    /// <summary>
+    /// Every <c>ApiResponse&lt;T&gt;</c> the Api assembly can build has a source-generated type info.
+    /// </summary>
+    /// <remarks>
+    /// A route hands its payload to <c>Results.Ok</c> or <c>Results.Json</c> as an <c>IResult</c>, so the
+    /// handler's declared return type never names the payload and the endpoint table cannot be walked for
+    /// it. The envelope is built in the handler's own body, though, so every instantiation the assembly can
+    /// reach appears in its compiled code: as a call target's declaring type, a call's return or generic
+    /// argument, a local, a field. This reads all of those, so a registration removed from
+    /// <c>ArcanumJsonContext</c> fails here for routes no other test happens to hit, instead of
+    /// surfacing as a runtime serialization failure in the published binary, where reflection is off.
+    /// </remarks>
+    [Fact]
+    public void Every_route_response_type_is_source_generated()
+    {
+        Type[] envelopes = ApiResponseInstantiationsIn(typeof(ArcanumJsonContext).Assembly);
+
+        // A scan that silently stops finding envelopes would pass for the wrong reason, so it has to see
+        // ones the routes are known to build before its silence about the rest means anything.
+        Assert.Contains(typeof(ApiResponse<PromptResponseDto>), envelopes);
+
+        Assert.Contains(typeof(ApiResponse<bool>), envelopes);
+
+        string[] unregistered =
+        [
+            .. envelopes
+                .Where(static envelope => ArcanumJsonContext.Default.GetTypeInfo(envelope) is null)
+                .Select(static envelope => envelope.ToString())
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.True(
+            unregistered.Length == 0,
+            "ApiResponse<T> instantiations the Api assembly builds without a [JsonSerializable] entry on "
+            + $"ArcanumJsonContext: {string.Join(", ", unregistered)}");
+    }
+
+    private static Type[] ApiResponseInstantiationsIn(Assembly assembly)
+    {
+        HashSet<Type> found = [];
+
+        HashSet<Type> visited = [];
+
+        const BindingFlags AllMembers =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+        foreach (Type type in assembly.GetTypes())
+        {
+            Visit(type, found, visited);
+
+            foreach (FieldInfo field in type.GetFields(AllMembers))
+            {
+                Visit(field.FieldType, found, visited);
+            }
+
+            foreach (MethodBase method in type.GetMethods(AllMembers).Cast<MethodBase>().Concat(type.GetConstructors(AllMembers)))
+            {
+                if (method is MethodInfo info)
+                {
+                    Visit(info.ReturnType, found, visited);
+                }
+
+                foreach (ParameterInfo parameter in method.GetParameters())
+                {
+                    Visit(parameter.ParameterType, found, visited);
+                }
+
+                MethodBody? body = method.GetMethodBody();
+
+                if (body is null)
+                {
+                    continue;
+                }
+
+                foreach (LocalVariableInfo local in body.LocalVariables)
+                {
+                    Visit(local.LocalType, found, visited);
+                }
+
+                Type[] typeArguments = type.IsGenericTypeDefinition ? type.GetGenericArguments() : [];
+
+                Type[] methodArguments = method.IsGenericMethodDefinition ? method.GetGenericArguments() : [];
+
+                foreach (int token in MetadataTokensIn(body.GetILAsByteArray() ?? []))
+                {
+                    MemberInfo? member;
+
+                    try
+                    {
+                        member = assembly.ManifestModule.ResolveMember(token, typeArguments, methodArguments);
+                    }
+                    catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+                    {
+                        continue;
+                    }
+
+                    switch (member)
+                    {
+                        case Type resolved:
+
+                            Visit(resolved, found, visited);
+
+                            break;
+
+                        case FieldInfo field:
+
+                            Visit(field.DeclaringType, found, visited);
+
+                            Visit(field.FieldType, found, visited);
+
+                            break;
+
+                        case MethodBase called:
+
+                            Visit(called.DeclaringType, found, visited);
+
+                            if (called is MethodInfo calledInfo)
+                            {
+                                Visit(calledInfo.ReturnType, found, visited);
+                            }
+
+                            foreach (ParameterInfo parameter in called.GetParameters())
+                            {
+                                Visit(parameter.ParameterType, found, visited);
+                            }
+
+                            if (called.IsGenericMethod && !called.IsGenericMethodDefinition)
+                            {
+                                foreach (Type argument in called.GetGenericArguments())
+                                {
+                                    Visit(argument, found, visited);
+                                }
+                            }
+
+                            break;
+                    }
+                }
+            }
+        }
+
+        return [.. found];
+    }
+
+    private static void Visit(Type? type, HashSet<Type> found, HashSet<Type> visited)
+    {
+        if (type is null || !visited.Add(type))
+        {
+            return;
+        }
+
+        if (type.HasElementType)
+        {
+            Visit(type.GetElementType(), found, visited);
+
+            return;
+        }
+
+        if (!type.IsGenericType || type.ContainsGenericParameters)
+        {
+            return;
+        }
+
+        if (type.GetGenericTypeDefinition() == typeof(ApiResponse<>))
+        {
+            _ = found.Add(type);
+        }
+
+        foreach (Type argument in type.GetGenericArguments())
+        {
+            Visit(argument, found, visited);
+        }
+    }
+
+    private static readonly Dictionary<ushort, OpCode> OpCodesByValue = typeof(OpCodes)
+        .GetFields(BindingFlags.Public | BindingFlags.Static)
+        .Where(static field => field.FieldType == typeof(OpCode))
+        .Select(static field => (OpCode)field.GetValue(null)!)
+        .ToDictionary(static opCode => (ushort)opCode.Value);
+
+    /// <summary>Every member, type, or token operand a method body's IL names.</summary>
+    private static IEnumerable<int> MetadataTokensIn(byte[] il)
+    {
+        int offset = 0;
+
+        while (offset < il.Length)
+        {
+            ushort value = il[offset++];
+
+            if (value == 0xFE)
+            {
+                value = (ushort)(0xFE00 | il[offset++]);
+            }
+
+            OpCode opCode = OpCodesByValue[value];
+
+            switch (opCode.OperandType)
+            {
+                case OperandType.InlineNone:
+
+                    break;
+
+                case OperandType.ShortInlineBrTarget:
+                case OperandType.ShortInlineI:
+                case OperandType.ShortInlineVar:
+
+                    offset += 1;
+
+                    break;
+
+                case OperandType.InlineVar:
+
+                    offset += 2;
+
+                    break;
+
+                case OperandType.InlineI8:
+                case OperandType.InlineR:
+
+                    offset += 8;
+
+                    break;
+
+                case OperandType.InlineSwitch:
+
+                    int count = BitConverter.ToInt32(il, offset);
+
+                    offset += 4 + (4 * count);
+
+                    break;
+
+                case OperandType.InlineMethod:
+                case OperandType.InlineField:
+                case OperandType.InlineType:
+                case OperandType.InlineTok:
+
+                    yield return BitConverter.ToInt32(il, offset);
+
+                    offset += 4;
+
+                    break;
+
+                default:
+
+                    offset += 4;
+
+                    break;
+            }
+        }
     }
 
     [Fact]
     public void TypeInfo_NotRegisteredForRawResultTypes()
     {
-
         // Result<T> marks Value with [JsonIgnore] (see the "never serialize Value directly" note on
         // Result.cs), so an endpoint that mistakenly hands Results.Ok a raw Result<T> serializes an
         // envelope with the payload dropped and a hollow Error.None — a silent wrong answer. With no
@@ -219,13 +468,11 @@ public sealed class ArcanumJsonContextCompletenessTests
             .ToArray();
 
         Assert.Empty(registeredResultProperties);
-
     }
 
     [Fact]
     public void RoundTrip_ApiResponseBool()
     {
-
         ApiResponse<bool> original = new(true, true, null, "trace");
 
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(original, ArcanumJsonContext.Default.ApiResponseBoolean);
@@ -237,13 +484,11 @@ public sealed class ArcanumJsonContextCompletenessTests
         Assert.True(result.IsSuccess);
 
         Assert.Equal(original.Data, result.Data);
-
     }
 
     [Fact]
     public void RoundTrip_IntelligenceEvent()
     {
-
         IntelligenceEvent original = new(
             IntelligenceEventType.ToolCall,
             "ask_human",
@@ -258,13 +503,11 @@ public sealed class ArcanumJsonContextCompletenessTests
         Assert.Equal(original.Type, result.Type);
 
         Assert.Equal(original.Message, result.Message);
-
     }
 
     [Fact]
     public void Ungated_ward_origin_round_trips_through_stream_and_api_contracts()
     {
-
         WardResolutionOrigin origin = WardResolutionOrigin.Ungated;
 
         IntelligenceEvent streamFrame = new(
@@ -317,7 +560,6 @@ public sealed class ArcanumJsonContextCompletenessTests
             StringComparison.Ordinal);
 
         Assert.Equal("ungated", WardResolutionOrigins.ToMetricLabel(origin));
-
     }
 
     [Fact]
@@ -357,7 +599,6 @@ public sealed class ArcanumJsonContextCompletenessTests
     [Fact]
     public void Workspace_arsenal_round_trips_workspace_check_capability_reason()
     {
-
         WorkspaceArsenalDto original = new(
             [],
             [],
@@ -381,5 +622,4 @@ public sealed class ArcanumJsonContextCompletenessTests
             result.WorkspaceCheck.Reason,
             StringComparison.Ordinal);
     }
-
 }

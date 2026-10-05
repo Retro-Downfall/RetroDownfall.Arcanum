@@ -1285,7 +1285,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     // before serializing. The stream-serializing implementation writes each batch's entries
     // to a Utf8JsonWriter as they are read, keeping the SessionExportPayload wire shape
     // ({ "session": {...}, "entries": [...] }) and the camelCase contract identical to the
-    // previous JsonSerializer.Serialize(SessionExportPayload) output. This characterization
+    // previous JsonSerializer.Serialize(SessionExportPayload, AdHocJson.Options) output. This characterization
     // test pins the wire shape so the streaming refactor cannot drift it.
     [SkippableFact]
     public async Task ExportAsync_json_preserves_session_export_payload_wire_shape()

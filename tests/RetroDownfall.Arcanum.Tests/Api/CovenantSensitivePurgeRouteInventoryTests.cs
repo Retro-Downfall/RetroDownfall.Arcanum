@@ -15,7 +15,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
-
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -35,7 +35,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// </remarks>
 public sealed class CovenantSensitivePurgeRouteInventoryTests
 {
-
     /// <summary>Every route name that may reach a labelled artifact. Exhaustive on purpose.</summary>
     private static readonly string[] DeletionRoutes =
     [
@@ -63,14 +62,12 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
 
     public async Task Every_direct_deletion_route_declares_the_conditional_sensitivity_purge(string routeName)
     {
-
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         Endpoint endpoint = graph.Endpoint(routeName);
 
         Assert.NotNull(
             endpoint.Metadata.GetMetadata<CovenantConditionalSensitivityPurgeMetadata>());
-
     }
 
     /// <summary>
@@ -84,7 +81,6 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
     [Fact]
     public async Task The_declared_set_is_exactly_the_six_named_deletion_routes()
     {
-
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         string[] declared =
@@ -98,7 +94,6 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
         ];
 
         Assert.Equal([.. DeletionRoutes.Order(StringComparer.Ordinal)], declared);
-
     }
 
     [Fact]
@@ -224,7 +219,6 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
 
     private sealed class RouteGraph : IAsyncDisposable
     {
-
         private WebApplication _app = null!;
 
         internal IReadOnlyList<Endpoint> Endpoints =>
@@ -232,10 +226,7 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
 
         internal static async Task<RouteGraph> CreateAsync()
         {
-
-            WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
-
-            builder.WebHost.UseTestServer();
+            WebApplicationBuilder builder = RouteGraphHost.CreateBuilder();
 
             builder.Services.AddScoped<RetroDownfall.Arcanum.Core.Lexicon.ILexiconCurationService>(_ => throw new NotSupportedException());
 
@@ -258,7 +249,6 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
             await graph._app.StartAsync();
 
             return graph;
-
         }
 
         internal Endpoint Endpoint(string name) =>
@@ -271,13 +261,9 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
 
         public async ValueTask DisposeAsync()
         {
-
             await _app.StopAsync();
 
             await _app.DisposeAsync();
-
         }
-
     }
-
 }

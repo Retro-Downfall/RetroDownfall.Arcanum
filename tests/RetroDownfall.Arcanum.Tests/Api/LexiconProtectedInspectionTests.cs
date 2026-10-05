@@ -379,6 +379,9 @@ public sealed class LexiconProtectedInspectionTests
                 return db;
             });
 
+            // Whatever else the memory family's routes take is only declared, never resolved here.
+            RouteGraphHost.RegisterServiceContracts(services);
+
             host._app = builder.Build();
 
             _ = host._app.MapGroup("/api").MapMemoryEndpoints();
