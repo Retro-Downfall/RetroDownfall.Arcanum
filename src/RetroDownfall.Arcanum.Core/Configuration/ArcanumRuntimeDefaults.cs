@@ -1,7 +1,5 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-using RetroDownfall.Arcanum.Core.Intelligence;
-
 /// <summary>
 /// Code-owned physical limits and implementation defaults. This type is not part of the bindable
 /// configuration graph.
@@ -41,13 +39,6 @@ public static class ArcanumRuntimeDefaults
     public const int CliDoctorHealthTimeoutSeconds = 2;
 
     public static IntelligenceSettings Intelligence { get; } = new();
-
-    public static ReasoningSettings Reasoning => new()
-    {
-        Enabled = true,
-        Summaries = false,
-        DefaultEffort = ReasoningEffortLevel.Medium,
-    };
 
     public static ServerSettings Server => new();
 
@@ -124,7 +115,6 @@ public static class ArcanumRuntimeSettings
     {
         IntelligenceSettings defaults = ArcanumRuntimeDefaults.Intelligence;
         FeatureSettings features = settings.Features ?? new FeatureSettings();
-        ReasoningSettings reasoningDefaults = ArcanumRuntimeDefaults.Reasoning;
 
         return defaults with
         {
@@ -134,7 +124,6 @@ public static class ArcanumRuntimeSettings
             EnableTokenTracking = true,
             TolerateToolFailures = true,
             UseFastModelForSpellRouting = true,
-            DefaultReasoningEffort = reasoningDefaults.DefaultEffort ?? ReasoningEffortLevel.Medium,
         };
     }
 

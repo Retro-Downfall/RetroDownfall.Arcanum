@@ -1,9 +1,13 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.Extensions.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
 
@@ -140,6 +144,71 @@ public sealed class ConfigurationSurfaceContractTests
         }
 
         Assert.Empty(initOnly);
+    }
+
+    /// <summary>
+    /// A property on the code-owned runtime projection that nothing reads is a setting that does
+    /// nothing: it can be set, projected and documented while changing no behaviour.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="IntelligenceSettings"/> is projected in code by
+    /// <see cref="ArcanumRuntimeSettings.ResolveIntelligence"/> and is not bound from configuration,
+    /// so the binder cannot be what reads a property. Only a member access can: a property that is
+    /// assigned in an initializer or a <c>with</c> expression but never accessed is dead, and this is
+    /// how the three retired flags (and <c>DefaultReasoningEffort</c>, which was projected from the
+    /// reasoning defaults and never consulted) stayed in the type unnoticed.
+    /// </remarks>
+    [Fact]
+    public void Every_IntelligenceSettings_property_is_read_in_production()
+    {
+        string[] properties =
+        [
+            .. typeof(IntelligenceSettings)
+                .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                .Select(static property => property.Name),
+        ];
+
+        Assert.NotEmpty(properties);
+
+        HashSet<string> read = new(StringComparer.Ordinal);
+
+        foreach (ProductionSource source in ProductionSourceInventory.Sources())
+        {
+            if (source.Is("IntelligenceSettings.cs") || !properties.Any(name => source.Names("." + name)))
+            {
+                continue;
+            }
+
+            foreach (SyntaxNode node in CSharpSyntaxTree.ParseText(source.Text).GetRoot().DescendantNodes())
+            {
+                switch (node)
+                {
+                    case MemberAccessExpressionSyntax { Parent: AssignmentExpressionSyntax assignment } access
+                        when assignment.Left == access:
+                        // A write is not a read.
+                        break;
+
+                    case MemberAccessExpressionSyntax access:
+                        _ = read.Add(access.Name.Identifier.ValueText);
+
+                        break;
+
+                    case MemberBindingExpressionSyntax binding:
+                        _ = read.Add(binding.Name.Identifier.ValueText);
+
+                        break;
+                }
+            }
+        }
+
+        string[] unread =
+        [
+            .. properties.Where(name => !read.Contains(name)).Order(StringComparer.Ordinal),
+        ];
+
+        Assert.True(
+            unread.Length == 0,
+            "IntelligenceSettings properties that no production code reads: " + string.Join(", ", unread));
     }
 
     [Theory]
