@@ -1296,7 +1296,7 @@ Arcanum maintains no backward-compatibility or data-migration path, so there is 
 
 ## Watch stream details
 
-Watch terminal output uses UTC timestamps and source-specific colors. The shared SSE parser joins multi-line `data:` fields, treats comment frames as stderr liveness diagnostics, and treats `[DONE]` as successful completion. `--json` writes only compact source event objects to stdout.
+Watch terminal output uses UTC timestamps and source-specific colors. The shared SSE parser joins multi-line `data:` fields (an event or line over 64 Mi characters is discarded with a recoverable `Api.InvalidResponse` diagnostic), treats comment frames as stderr liveness diagnostics, and treats `[DONE]` as successful completion. `--json` writes only compact source event objects to stdout.
 
 `--reconnect` retries network failures, unexpected EOF, and transient HTTP 408/425/429/5xx responses with exponential delays capped at 30 seconds. Authentication, validation, not-found, and connection-cap denials are terminal. Every reconnect warns that events may have been missed; only session watch carries the last valid Entry ID forward, and that cursor is not a replay guarantee.
 
