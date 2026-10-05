@@ -829,7 +829,7 @@ internal static class PromptEndpoints
                             Result<PromptResponseDto>.Failure(resolvedPing.Error),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-                        statusCode: StatusCodes.Status400BadRequest);
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(resolvedPing.Error.Code));
                 }
 
                 Result<PromptTurnResult> turn = await intelligence
@@ -965,7 +965,7 @@ internal static class PromptEndpoints
 
                 if (resolvedPing.IsFailure)
                 {
-                    ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    ctx.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(resolvedPing.Error.Code);
 
                     await ctx.Response
                         .WriteAsJsonAsync(

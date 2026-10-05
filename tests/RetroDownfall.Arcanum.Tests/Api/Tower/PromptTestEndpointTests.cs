@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 
+[Collection("ApiHost")]
 public sealed class PromptTestEndpointTests : IDisposable
 {
     private const string Sentinel = "SENTINEL-prompt-test-codex-5d41c0a7";
