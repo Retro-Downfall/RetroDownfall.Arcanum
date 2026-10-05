@@ -869,7 +869,7 @@ Before a destructive replacement the CLI confirms interactively (or accepts `--y
 
 `--dry-run` performs every read, authentication, verification, mapping validation, schema comparison, and capacity calculation possible without mutating the destination, and returns the same `BackupRestorePlan` a real restore executes.
 
-`arcanum backup migrate <archive> --output <new-archive>` rewrites a supported archive at the current container format through the authoritative codec. It is a container migration, not a schema migration: entry bytes carry across verbatim and schema convergence stays with the restore-time installer. The source archive is never modified, the output may not be the source, and an existing output requires `--overwrite`.
+`arcanum backup migrate <archive> --output <new-archive>` rewrites a supported archive at the current container format through the authoritative codec. It is a container migration, not a schema migration: entry bytes carry across verbatim and schema convergence stays with the restore-time installer. The source archive is never modified, the output may not be the source, and an existing output requires `--overwrite`. "The source" is decided by file identity (volume and file id through `FileHandleIdentityInterop`, after resolving links) whenever the output exists, not by path spelling, so a case variant on a case-insensitive volume such as the default macOS one, a hard link, or a symbolic link to the source is refused with `backup.migrate_output_is_source` even with `--overwrite`.
 
 No plaintext recovery key or restored content survives outside protected staging: the decrypted payload, extraction root, and staged tree all live under the identity-owned staging root, which is removed on success and on every failure path.
 

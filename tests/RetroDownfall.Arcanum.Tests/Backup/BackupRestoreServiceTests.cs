@@ -34,6 +34,8 @@ using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 /// <summary>
@@ -2315,6 +2317,62 @@ public sealed class BackupRestoreServiceTests : IDisposable
             static issue => issue.Code == "backup.migrate_output_exists");
 
         Assert.Equal("existing", await File.ReadAllTextAsync(occupied));
+    }
+
+    /// <summary>
+    /// A path that names the source through another spelling or another link is the source, and
+    /// <c>--overwrite</c> must not turn it into permission to replace the archive being migrated.
+    /// </summary>
+    /// <remarks>
+    /// The case-variant arm only has something to prove on a volume that folds case, which is the
+    /// default on macOS and Windows; on a case-sensitive volume the two spellings are two files and
+    /// that arm is not exercised. The hard-link arm runs everywhere.
+    /// </remarks>
+    [Fact]
+    public async Task Migrating_onto_the_source_through_a_case_variant_or_hard_link_is_refused()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("migrate-alias.arcbackup");
+
+        byte[] before = await File.ReadAllBytesAsync(archive);
+
+        string hardLink = Path.Combine(_archives, "migrate-alias-link.arcbackup");
+
+        Assert.True(HardLinkTestSupport.TryCreate(hardLink, archive));
+
+        BackupMigrateResult throughLink = await Restore(new RecordingSecretStore()).MigrateAsync(
+            new BackupMigrateRequest(archive, hardLink, Overwrite: true),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.False(throughLink.Migrated);
+
+        Assert.Contains(
+            throughLink.Issues,
+            static issue => issue.Code == "backup.migrate_output_is_source");
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(archive));
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(hardLink));
+
+        string caseVariant = Path.Combine(_archives, "MIGRATE-ALIAS.ARCBACKUP");
+
+        if (File.Exists(caseVariant))
+        {
+            BackupMigrateResult throughVariant = await Restore(new RecordingSecretStore()).MigrateAsync(
+                new BackupMigrateRequest(archive, caseVariant, Overwrite: true),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+            Assert.False(throughVariant.Migrated);
+
+            Assert.Contains(
+                throughVariant.Issues,
+                static issue => issue.Code == "backup.migrate_output_is_source");
+
+            Assert.Equal(before, await File.ReadAllBytesAsync(archive));
+        }
     }
 
     [Fact]
