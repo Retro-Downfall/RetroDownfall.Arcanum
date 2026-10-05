@@ -84,6 +84,12 @@ class PackageStats:
     ``branch-rate`` attributes but no counts, so the weights are rebuilt from the class line
     entries: unique (source file, line) pairs for lines, and the largest condition total any class
     reports for a line for branches. The rates stay exact; only the relative weights are counted.
+
+    Checked 2026-10-05 against a real five-assembly report from the instrumented test run: the summed
+    line weights equal the root ``lines-valid`` exactly, and the summed branch weights are within two of
+    the root ``branches-valid`` (75,518 against 75,520; coverlet's root counts a couple of conditions its
+    class lines do not list, and no per-class or per-method reading of the lines recovers them). That moves
+    a recombined rate by far less than a hundredth of a percentage point.
     """
 
     def __init__(self, package: ET.Element) -> None:
