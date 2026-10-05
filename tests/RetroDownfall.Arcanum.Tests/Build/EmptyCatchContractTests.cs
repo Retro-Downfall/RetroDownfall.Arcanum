@@ -13,13 +13,14 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// An empty catch-all around an <c>await</c> (or an <c>await foreach</c>, an <c>await using</c>, or a blocking
 /// <c>Wait</c>/<c>GetResult</c>/<c>Result</c>) hides exactly the failures a test exists to see: a
 /// <see cref="TimeoutException"/> from a wait, a cancellation that arrived early, a fault in the code under
-/// test. A typed catch that swallows <see cref="TimeoutException"/> or
-/// <see cref="OperationCanceledException"/> on purpose is outside this contract, so it carries its own
-/// comment naming why that exception is the expected end of the wait; the contract bans only the filter-less
-/// catch-all. The empty catch-all that stays (best-effort cleanup of a temp file, a probe that may
-/// legitimately fail) has to carry a comment naming the swallowed path so the next reader can tell
-/// intent from an oversight. The check is syntactic, so a catch clause that only appears inside a
-/// string literal (the Roslyn analysis fixtures) is not a violation.
+/// test. A typed catch of <see cref="OperationCanceledException"/> is the ordinary end of a cancelled wait and
+/// is outside this contract. A typed catch that swallows <see cref="TimeoutException"/> on purpose is allowed,
+/// but its comment has to name why the lapse is the expected end of the wait, or who reports it instead (a
+/// cleanup wait either reports its own lapse to the diagnostic sink or says which assertion already did); the
+/// contract bans the filter-less catch-all and demands that comment. The empty catch-all that stays
+/// (best-effort cleanup of a temp file, a probe that may legitimately fail) has to carry a comment naming the
+/// swallowed path so the next reader can tell intent from an oversight. The check is syntactic, so a catch
+/// clause that only appears inside a string literal (the Roslyn analysis fixtures) is not a violation.
 /// </remarks>
 public sealed class EmptyCatchContractTests
 {
@@ -27,7 +28,7 @@ public sealed class EmptyCatchContractTests
     public void No_test_swallows_an_exception_around_asynchronous_work_with_an_empty_catch_all()
     {
         string[] violations = TestTreeSites.Value
-            .Where(static site => site.WrapsAsynchronousWork)
+            .Where(static site => site.IsCatchAll && site.WrapsAsynchronousWork)
             .Select(static site => site.Describe("wraps asynchronous work; narrow it to OperationCanceledException or TimeoutException"))
             .ToArray();
 
@@ -38,11 +39,76 @@ public sealed class EmptyCatchContractTests
     public void Every_empty_catch_all_in_a_test_names_the_path_it_swallows()
     {
         string[] violations = TestTreeSites.Value
-            .Where(static site => !site.HasComment)
+            .Where(static site => site.IsCatchAll && !site.HasComment)
             .Select(static site => site.Describe("has no comment saying why the exception is swallowed"))
             .ToArray();
 
         Assert.True(violations.Length == 0, string.Join("\n", violations));
+    }
+
+    [Fact]
+    public void Every_empty_catch_of_a_timeout_names_why_it_is_the_expected_end_of_the_wait()
+    {
+        string[] violations = TestTreeSites.Value
+            .Where(static site => !site.IsCatchAll && !site.HasComment)
+            .Select(static site => site.Describe(
+                "swallows a timeout without a comment naming why it is the expected end of the wait (or who reports it)"))
+            .ToArray();
+
+        Assert.True(violations.Length == 0, string.Join("\n", violations));
+    }
+
+    [Theory]
+    [InlineData("catch (TimeoutException) { }", true)]
+    [InlineData("catch (Exception ex) when (ex is TimeoutException or OperationCanceledException) { }", true)]
+    [InlineData("catch (OperationCanceledException) { }", false)]
+    [InlineData("catch (IOException) { }", false)]
+    [InlineData("catch (Exception ex) when (ex is IOException) { }", false)]
+    [InlineData("catch (TimeoutException) { Report(); }", false)]
+    public void Only_an_empty_catch_naming_a_timeout_is_a_site_of_that_kind(
+        string catchClause,
+        bool isSite)
+    {
+        string source = $$"""
+            class Sample
+            {
+                async Task Run()
+                {
+                    try { await Task.Delay(1); }
+                    {{catchClause}}
+                }
+            }
+            """;
+
+        EmptyCatchSite[] sites = [.. FindEmptyCatches(source, "Sample.cs").Where(static site => !site.IsCatchAll)];
+
+        Assert.Equal(isSite, sites.Length == 1);
+
+        Assert.All(sites, static site => Assert.False(site.HasComment));
+    }
+
+    [Fact]
+    public void An_empty_catch_of_a_timeout_is_commented_when_the_comment_sits_inside_its_block()
+    {
+        const string Source = """
+            class Sample
+            {
+                async Task Run()
+                {
+                    try { await Task.Delay(1); }
+                    catch (TimeoutException)
+                    {
+                        // The caller's assertion already reported the lapse.
+                    }
+                }
+            }
+            """;
+
+        EmptyCatchSite site = Assert.Single(FindEmptyCatches(Source, "Sample.cs"));
+
+        Assert.False(site.IsCatchAll);
+
+        Assert.True(site.HasComment);
     }
 
     [Theory]
@@ -127,10 +193,10 @@ public sealed class EmptyCatchContractTests
 
     /// <summary>The scan of the whole test tree, parsed once and shared by both contract facts.</summary>
     private static readonly Lazy<IReadOnlyList<EmptyCatchSite>> TestTreeSites = new(
-        static () => FindEmptyCatchAllsInTestTree().ToArray(),
+        static () => FindEmptyCatchesInTestTree().ToArray(),
         LazyThreadSafetyMode.ExecutionAndPublication);
 
-    private static IEnumerable<EmptyCatchSite> FindEmptyCatchAllsInTestTree()
+    private static IEnumerable<EmptyCatchSite> FindEmptyCatchesInTestTree()
     {
         string testsRoot = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "tests");
 
@@ -144,7 +210,7 @@ public sealed class EmptyCatchContractTests
                 continue;
             }
 
-            foreach (EmptyCatchSite site in FindEmptyCatchAlls(
+            foreach (EmptyCatchSite site in FindEmptyCatches(
                 File.ReadAllText(path),
                 Path.GetRelativePath(testsRoot, path)))
             {
@@ -153,20 +219,35 @@ public sealed class EmptyCatchContractTests
         }
     }
 
-    private static IEnumerable<EmptyCatchSite> FindEmptyCatchAlls(string source, string file)
+    private static IEnumerable<EmptyCatchSite> FindEmptyCatchAlls(string source, string file) =>
+        FindEmptyCatches(source, file).Where(static site => site.IsCatchAll);
+
+    /// <summary>
+    /// Every catch clause with an empty block that either swallows everything (a filter-less
+    /// <c>catch</c> or <c>catch (Exception)</c>, the contract's catch-all) or names a
+    /// <see cref="TimeoutException"/>, which a typed catch may swallow on purpose as the expected end of a
+    /// wait. A typed catch of a cancellation alone is that wait's ordinary end and is outside the contract.
+    /// </summary>
+    private static IEnumerable<EmptyCatchSite> FindEmptyCatches(string source, string file)
     {
         SyntaxNode root = CSharpSyntaxTree.ParseText(source).GetRoot();
 
         foreach (CatchClauseSyntax clause in root.DescendantNodes().OfType<CatchClauseSyntax>())
         {
-            if (clause.Filter is not null
-                || clause.Block.Statements.Count != 0
-                || !CatchesEverything(clause.Declaration))
+            if (clause.Block.Statements.Count != 0)
             {
                 continue;
             }
 
-            bool wrapsAsynchronousWork = clause.Parent is TryStatementSyntax tryStatement
+            bool isCatchAll = clause.Filter is null && CatchesEverything(clause.Declaration);
+
+            if (!isCatchAll && !NamesTimeout(clause))
+            {
+                continue;
+            }
+
+            bool wrapsAsynchronousWork = isCatchAll
+                && clause.Parent is TryStatementSyntax tryStatement
                 && WrapsAsynchronousWork(tryStatement.Block);
 
             bool hasComment = clause.Block.DescendantTrivia().Any(static trivia =>
@@ -175,9 +256,17 @@ public sealed class EmptyCatchContractTests
 
             int line = clause.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
-            yield return new EmptyCatchSite(file, line, wrapsAsynchronousWork, hasComment);
+            yield return new EmptyCatchSite(file, line, isCatchAll, wrapsAsynchronousWork, hasComment);
         }
     }
+
+    /// <summary>
+    /// Whether the clause's exception type or filter names a <see cref="TimeoutException"/>, the outcome a
+    /// wait reports that a typed catch is allowed to swallow only when its comment says why.
+    /// </summary>
+    private static bool NamesTimeout(CatchClauseSyntax clause) =>
+        $"{clause.Declaration?.Type} {clause.Filter?.FilterExpression}"
+            .Contains("TimeoutException", StringComparison.Ordinal);
 
     /// <summary>
     /// Whether <paramref name="block"/> awaits (an <c>await</c> expression, an <c>await foreach</c>, an
@@ -202,7 +291,7 @@ public sealed class EmptyCatchContractTests
         declaration is null
         || declaration.Type.ToString() is "Exception" or "System.Exception" or "global::System.Exception";
 
-    private sealed record EmptyCatchSite(string File, int Line, bool WrapsAsynchronousWork, bool HasComment)
+    private sealed record EmptyCatchSite(string File, int Line, bool IsCatchAll, bool WrapsAsynchronousWork, bool HasComment)
     {
         internal string Describe(string reason) => $"{File}:{Line} {reason}.";
     }
