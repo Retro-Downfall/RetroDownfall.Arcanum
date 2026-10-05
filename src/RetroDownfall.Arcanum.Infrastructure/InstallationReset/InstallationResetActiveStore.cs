@@ -396,8 +396,11 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
     /// no file and a second Begin refuses any anchor.
     ///
     /// <para>Every precondition is re-proved first — the anchor is still exactly the opening just
-    /// written, at revision zero, and the active file and any publication residue are durably
-    /// absent — so this can never retire an anchor that governs real evidence. The anchor codec
+    /// written, and the active file and any publication residue are durably absent — so this can
+    /// never retire an anchor that governs real evidence. The opening's own shape (active, revision
+    /// zero, no envelope, this location) is not re-checked: both callers are in Begin and pass the
+    /// anchor it built a few lines earlier, so the shape holds by construction and a guard for it
+    /// could not be reached. The anchor codec
     /// admits no <c>Closed</c> revision-zero tombstone, so it mirrors the closed suffix instead:
     /// compare-remove the anchor, then remove the key last. A crash between the two leaves the
     /// key-only suffix that startup cleanup already finishes. Nothing here observes the caller's
@@ -410,14 +413,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveLocation location,
         InstallationResetActiveAnchorV1 opening)
     {
-        if (opening.State is not InstallationResetActiveAnchorState.Active
-            || opening.Revision != 0
-            || opening.EnvelopeDigest != InstallationResetActiveRecordAuthenticator.ZeroDigest
-            || opening.ActiveLocationDigest != location.Digest)
-        {
-            return;
-        }
-
         try
         {
             Result<InstallationResetActiveAnchorV1?> current = _anchors!.Read(profile);

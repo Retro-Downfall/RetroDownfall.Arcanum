@@ -669,6 +669,147 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
                 StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("DllNotFound", "get")]
+    [InlineData("DllNotFound", "set")]
+    [InlineData("DllNotFound", "delete")]
+    [InlineData("BadImageFormat", "get")]
+    [InlineData("BadImageFormat", "set")]
+    [InlineData("BadImageFormat", "delete")]
+    [InlineData("TypeLoad", "get")]
+    [InlineData("TypeLoad", "set")]
+    [InlineData("TypeLoad", "delete")]
+    public async Task An_anchor_credential_call_that_throws_a_native_backend_failure_yields_Unavailable(
+        string failure,
+        string operation)
+    {
+        // The anchor store shares the key provider's filter. Its own narrower one let a missing or
+        // unloadable native backend escape as an exception from the same call the key provider already
+        // turned into a content-free Unavailable result.
+        Func<string, string, Exception?> throwForAnchor = (candidateOperation, account) =>
+            candidateOperation == operation && IsAnchorAccount(account)
+                ? NativeBackendFailure(failure)
+                : null;
+
+        if (operation is "delete")
+        {
+            using AuthenticatedFixture deleting = await BeginAuthenticatedAsync(
+                "anchor-delete-" + failure);
+
+            deleting.Credentials.ThrowFor = throwForAnchor;
+
+            Result retired = await deleting.Store.RetireAsync(
+                deleting.Lock,
+                deleting.Record.OperationId,
+                CancellationToken.None);
+
+            Assert.True(retired.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.Unavailable, retired.Error.Code);
+
+            return;
+        }
+
+        string root = _workspace.CreateSubdir($"anchor-{operation}-{failure}");
+
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(root));
+
+        RecordingCredentialStore credentials = new([])
+        {
+            ThrowFor = throwForAnchor,
+        };
+
+        Result<InstallationResetActivePublication> begun = await new InstallationResetActiveStore(
+                root,
+                credentials)
+            .BeginAsync(
+                held,
+                Guid.Parse("3c111111-2222-4333-8444-555555555555"),
+                CreateRecord(InstallationResetPhase.Prepared),
+                CancellationToken.None);
+
+        Assert.True(begun.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, begun.Error.Code);
+
+        static bool IsAnchorAccount(string account) =>
+            account.StartsWith(
+                ArcanumCredentialIdentity.InstallationResetActiveAnchorAccountPrefix,
+                StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("DllNotFound")]
+    [InlineData("BadImageFormat")]
+    [InlineData("TypeLoad")]
+    [InlineData("EntryPointNotFound")]
+    [InlineData("MarshalDirective")]
+    public void The_presence_probe_of_both_reset_credential_owners_maps_a_native_backend_failure_to_unavailable(
+        string failure)
+    {
+        // ProbePresence is the arm that catches before any secret is read, and it is the one place the
+        // key provider and the anchor store each carry a filter of their own. Both are pinned here so
+        // neither can drift back to a narrower set than the credential calls beside it.
+        string root = _workspace.CreateSubdir("presence-" + failure);
+
+        BackupRestoreProfileNamespace profile = Value(
+            BackupRestoreJournalAuthenticator.ResolveProfileNamespace(root));
+
+        PresenceThrowingCredentialStore credentials = new(NativeBackendFailure(failure));
+
+        Result<OsCredentialStoreStatus> keyProbe =
+            new InstallationResetActiveRecordKeyProvider(credentials).ProbePresence(profile);
+
+        Assert.True(keyProbe.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, keyProbe.Error.Code);
+
+        Result<OsCredentialStoreStatus> anchorProbe =
+            new InstallationResetActiveAnchorStore(credentials).ProbePresence(profile);
+
+        Assert.True(anchorProbe.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, anchorProbe.Error.Code);
+
+        Assert.Equal(2, credentials.ProbeCalls);
+    }
+
+    private static Exception NativeBackendFailure(string kind) =>
+        kind switch
+        {
+            "DllNotFound" => new DllNotFoundException("injected"),
+            "BadImageFormat" => new BadImageFormatException("injected"),
+            "TypeLoad" => new TypeLoadException("injected"),
+            "EntryPointNotFound" => new EntryPointNotFoundException("injected"),
+            "MarshalDirective" => new System.Runtime.InteropServices.MarshalDirectiveException("injected"),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
+    private sealed class PresenceThrowingCredentialStore(Exception failure)
+        : IOsCredentialStore, IOsCredentialPresenceProbe
+    {
+        public bool IsAvailable => true;
+
+        public int ProbeCalls { get; private set; }
+
+        public OsCredentialStoreStatus ProbePresence(string service, string account)
+        {
+            ProbeCalls++;
+
+            throw failure;
+        }
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            throw new InvalidOperationException("The probe must never read the credential.");
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            throw new InvalidOperationException("The probe must never write the credential.");
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            throw new InvalidOperationException("The probe must never delete the credential.");
+    }
+
     [Fact]
     public async Task Advance_allows_only_null_to_pair_journaled_then_same_or_next_proven_pair_phase()
     {
