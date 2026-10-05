@@ -396,6 +396,12 @@ public sealed class DocumentationCodeContradictionTests
     /// coordinator; the day a turn path consumes it this fails, and the section has to be rewritten
     /// with the wiring rather than left saying "unconsumed".
     /// </summary>
+    /// <remarks>
+    /// Two other documents read as if the claim were in use and are held to the same fact: the OATH
+    /// issue table must not list durable turn claims as landed behaviour without saying nothing consumes
+    /// them, and the buffered-finalization step takes its exclusive pre-request revision from the begin
+    /// preflight, which is what <c>GrimoireTurnWriter</c> reads, not from a durable claim.
+    /// </remarks>
     [Fact]
     public void The_session_turn_claim_coordinator_is_documented_as_installed_but_unconsumed()
     {
@@ -408,29 +414,38 @@ public sealed class DocumentationCodeContradictionTests
 
         Assert.DoesNotContain("| Durable Session turn claims |", section, StringComparison.Ordinal);
 
+        // Comment-free text, so a doc comment that merely mentions the coordinator is not a consumer, and
+        // repository-relative paths, so two files that share a name cannot alias one another.
         string[] namingFiles =
         [
-            .. Directory
-                .EnumerateFiles(
-                    Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src"),
-                    "*.cs",
-                    SearchOption.AllDirectories)
-                .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-                    && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-                .Where(static path => File
-                    .ReadAllText(path)
-                    .Contains("ISessionTurnClaimCoordinator", StringComparison.Ordinal))
-                .Select(static path => Path.GetFileName(path))
+            .. ProductionSourceInventory
+                .Sources()
+                .Where(static source => source.Text.Contains("ISessionTurnClaimCoordinator", StringComparison.Ordinal))
+                .Select(static source => source.RelativePath)
                 .Order(StringComparer.Ordinal),
         ];
 
         Assert.Equal(
             [
-                "ISessionTurnClaimCoordinator.cs",
-                "ServiceCollectionExtensions.cs",
-                "SessionTurnClaimStore.cs",
+                "src/RetroDownfall.Arcanum.Core/Storage/ISessionTurnClaimCoordinator.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs",
+                "src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionTurnClaimStore.cs",
             ],
             namingFiles);
+
+        string oathRow = Assert.Single(
+            ReadDocument("Arcanum.OATH.md").Split('\n'),
+            static line => line.StartsWith("| **#89** |", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("durable Session turn claims,", oathRow, StringComparison.Ordinal);
+
+        Assert.Contains("no turn path consumes them yet", oathRow, StringComparison.Ordinal);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.DoesNotContain("the turn claim's exclusive pre-request history revision", design, StringComparison.Ordinal);
+
+        Assert.Contains("the begin preflight's exclusive pre-request history revision", design, StringComparison.Ordinal);
     }
 
     /// <summary>
