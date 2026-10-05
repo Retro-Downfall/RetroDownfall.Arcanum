@@ -41,7 +41,7 @@ public sealed class WatchSseParserTests
 
         using OneByteReadStream stream = new(Encoding.UTF8.GetBytes(wire));
 
-        using StreamReader reader = CreateProductionReader(stream);
+        using StreamingTextReader reader = CreateProductionReader(stream);
 
         List<WatchSseFrame> frames = await CollectAsync(
             WatchSseParser.ParseAsync(reader, CancellationToken.None));
@@ -72,7 +72,7 @@ public sealed class WatchSseParserTests
     {
         await using ScriptedStream stream = new();
 
-        using StreamReader reader = CreateProductionReader(stream);
+        using StreamingTextReader reader = CreateProductionReader(stream);
 
         await using IAsyncEnumerator<WatchSseFrame> frames = WatchSseParser
             .ParseAsync(reader, CancellationToken.None)
@@ -320,7 +320,7 @@ public sealed class WatchSseParserTests
     {
         await using ScriptedStream stream = new();
 
-        using StreamReader reader = CreateProductionReader(stream);
+        using StreamingTextReader reader = CreateProductionReader(stream);
 
         using CancellationTokenSource shutdown = new();
 
@@ -394,15 +394,12 @@ public sealed class WatchSseParserTests
     /// <summary>
     /// The reader <c>WatchSseAsync</c> builds over the response stream.
     /// </summary>
-    private static StreamReader CreateProductionReader(Stream stream) =>
+    private static StreamingTextReader CreateProductionReader(Stream stream) =>
         new(
             stream,
             new UTF8Encoding(
                 encoderShouldEmitUTF8Identifier: false,
-                throwOnInvalidBytes: true),
-            detectEncodingFromByteOrderMarks: true,
-            bufferSize: 4096,
-            leaveOpen: true);
+                throwOnInvalidBytes: true));
 
     private static async Task<List<WatchSseFrame>> CollectAsync(
         IAsyncEnumerable<WatchSseFrame> source)

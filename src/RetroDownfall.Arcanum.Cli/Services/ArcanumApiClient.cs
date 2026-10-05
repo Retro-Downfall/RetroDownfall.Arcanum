@@ -2229,7 +2229,7 @@ public sealed partial class ArcanumApiClient(
             {
                 Stream openedStream = responseStream!;
 
-                using StreamReader streamReader = new(openedStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+                using StreamingTextReader streamReader = new(openedStream, Encoding.UTF8);
 
                 BoundedLineReader lineReader = new(streamReader, MaxStreamLineLength);
 
@@ -3777,7 +3777,7 @@ public sealed partial class ArcanumApiClient(
 
             await using (responseStream!)
             {
-                using StreamReader streamReader = new(responseStream!, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+                using StreamingTextReader streamReader = new(responseStream!, Encoding.UTF8);
 
                 BoundedLineReader lineReader = new(streamReader, MaxStreamLineLength);
 
@@ -4194,12 +4194,7 @@ public sealed partial class ArcanumApiClient(
                 .ReadAsStreamAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            using StreamReader streamReader = new(
-                stream,
-                Encoding.UTF8,
-                detectEncodingFromByteOrderMarks: false,
-                bufferSize: 4_096,
-                leaveOpen: true);
+            using StreamingTextReader streamReader = new(stream, Encoding.UTF8);
 
             BoundedLineReader reader = new(streamReader, MaxStreamLineLength);
 

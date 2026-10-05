@@ -354,14 +354,11 @@ public sealed partial class ArcanumApiClient
 
             await using (stream.ConfigureAwait(false))
             {
-                using StreamReader reader = new(
+                using StreamingTextReader reader = new(
                     stream,
                     new UTF8Encoding(
                         encoderShouldEmitUTF8Identifier: false,
-                        throwOnInvalidBytes: true),
-                    detectEncodingFromByteOrderMarks: true,
-                    bufferSize: 4096,
-                    leaveOpen: true);
+                        throwOnInvalidBytes: true));
 
                 await using IAsyncEnumerator<WatchSseFrame> frames =
                     WatchSseParser

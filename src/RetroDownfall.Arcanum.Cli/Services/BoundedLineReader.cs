@@ -15,7 +15,10 @@ internal readonly record struct BoundedLine(string Text, bool TooLong);
 /// complete the moment its terminator arrives; a LF that follows a CR in a later read is swallowed
 /// rather than read as an empty line. Every line-framed stream the CLI reads (the watch SSE streams
 /// and the NDJSON ask, research and Chronicle streams) goes through it, so one runaway line cannot
-/// grow the client without bound on any of them.
+/// grow the client without bound on any of them. It takes the characters of each read as the reader
+/// returns them and waits for more only when it holds no complete line, so the reader it is given
+/// over a network stream must itself return after one read of the stream; a
+/// <see cref="StreamReader"/> does not (see <see cref="StreamingTextReader"/>).
 /// </summary>
 internal sealed class BoundedLineReader(TextReader reader, int maxLineLength)
 {
