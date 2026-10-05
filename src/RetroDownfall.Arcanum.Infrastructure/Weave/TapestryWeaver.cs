@@ -28,6 +28,7 @@ internal sealed class TapestryWeaver(
     ITapestryStore store,
     IWeaveService weave,
     ITapestrySummarizer summarizer,
+    TapestryBuildBackoff backoff,
     TimeProvider clock,
     ILogger<TapestryWeaver> logger)
 {
@@ -66,6 +67,8 @@ internal sealed class TapestryWeaver(
 
         if (fingerprintLeaves.Count == 0)
         {
+            backoff.RecordSuccess(scope);
+
             return new TapestryWeaveOutcome(TapestryWeaveStatus.NoCorpus);
         }
 
@@ -87,6 +90,8 @@ internal sealed class TapestryWeaver(
 
         if (IsUpToDate(current, corpusFingerprint, settingsFingerprint, summaryModel, bounds))
         {
+            backoff.RecordSuccess(scope);
+
             return new TapestryWeaveOutcome(
                 TapestryWeaveStatus.UpToDate,
                 current!.GenerationId,
@@ -112,6 +117,27 @@ internal sealed class TapestryWeaver(
         if (!weave.IsAvailable)
         {
             return new TapestryWeaveOutcome(TapestryWeaveStatus.EmbeddingUnavailable);
+        }
+
+        // Only now, once a rebuild is certain and nothing has been spent, so a scope that is merely
+        // current or merely unconfigured never consults the record. A build that already failed on this
+        // very corpus, under these settings and this model, has paid for its earlier summaries and
+        // discarded them; starting it again on every sweep repeats that spend for the same result.
+        TimeSpan sweepInterval = TimeSpan.FromMinutes(
+            ArcanumSettingClamps.EmbeddingsTapestryRebuildIntervalMinutes(
+                (embeddings.Tapestry ?? new TapestryEmbeddingSettings()).RebuildIntervalMinutes));
+
+        if (backoff.IsBackingOff(
+            scope,
+            BuildIdentity(corpusFingerprint, settingsFingerprint, summaryModel),
+            clock.GetUtcNow()))
+        {
+            logger.LogDebug(
+                "Tapestry weave skipped for {ScopeKind} {ScopeId}: this build failed recently and is backing off.",
+                scope.Kind,
+                scope.Id);
+
+            return new TapestryWeaveOutcome(TapestryWeaveStatus.BackingOff);
         }
 
         // A rebuild is now certain, so pay for the full corpus — the same rows again, this time carrying
@@ -143,6 +169,8 @@ internal sealed class TapestryWeaver(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        string buildIdentity = BuildIdentity(corpusFingerprint, settingsFingerprint, summaryModel);
+
         try
         {
             TapestryWeaveOutcome outcome = await BuildAsync(
@@ -151,6 +179,10 @@ internal sealed class TapestryWeaver(
                 leaves,
                 bounds,
                 cancellationToken).ConfigureAwait(false);
+
+            // Recorded before the cancellation check: a build that published must be forgotten, and one
+            // that failed must be remembered, whether or not the host is stopping as it returns.
+            RecordOutcome(scope, buildIdentity, outcome.Status, sweepInterval);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -179,7 +211,42 @@ internal sealed class TapestryWeaver(
 
             await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
+            RecordOutcome(scope, buildIdentity, TapestryWeaveStatus.Failed, sweepInterval);
+
             return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed);
+        }
+    }
+
+    /// <summary>
+    /// Identifies one build for the failure record: the corpus it covers, the tree-shaping settings, and
+    /// the model that writes the summaries. Anything that changes the outcome of a build is in it.
+    /// </summary>
+    private static string BuildIdentity(string corpusFingerprint, string settingsFingerprint, string? summaryModel) =>
+        TapestryHash.OfParts([corpusFingerprint, settingsFingerprint, summaryModel ?? string.Empty]);
+
+    private void RecordOutcome(
+        TapestryScope scope,
+        string buildIdentity,
+        TapestryWeaveStatus status,
+        TimeSpan sweepInterval)
+    {
+        switch (status)
+        {
+            case TapestryWeaveStatus.Woven:
+                backoff.RecordSuccess(scope);
+
+                break;
+
+            case TapestryWeaveStatus.Failed:
+                DateTimeOffset retryAfter = backoff.RecordFailure(scope, buildIdentity, clock.GetUtcNow(), sweepInterval);
+
+                logger.LogInformation(
+                    "Tapestry build failed for {ScopeKind} {ScopeId}; it will not be retried before {RetryAfter:O} unless the corpus, settings or summary model change.",
+                    scope.Kind,
+                    scope.Id,
+                    retryAfter);
+
+                break;
         }
     }
 

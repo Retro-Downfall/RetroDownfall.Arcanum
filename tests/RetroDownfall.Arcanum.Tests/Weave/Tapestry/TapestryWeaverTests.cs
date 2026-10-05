@@ -73,8 +73,10 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
     private readonly CapturingLogger _logger = new();
 
+    private readonly TapestryBuildBackoff _backoff = new();
+
     private TapestryWeaver CreateWeaver() =>
-        new(_store!, _weave!, _summarizer!, TimeProvider.System, _logger);
+        new(_store!, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
 
     /// <summary>Surfaces the weaver's own diagnostics in assertion messages so a build failure is legible.</summary>
     private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger<TapestryWeaver>
@@ -602,6 +604,102 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.Equal(0, await _store.ReconcileGenerationsAsync(CancellationToken.None));
     }
 
+    /// <summary>
+    /// A build that fails part way has already paid for the summaries it wrote, and nothing remembers
+    /// them: the failed generation is abandoned, reuse reads only published generations, and the corpus
+    /// fingerprint has not moved, so the next attempt repeats the whole paid prefix. The record of the
+    /// failure is what stops that repeat until the wait has passed.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_ASummaryFailureDoesNotRebillEarlierClustersOnTheNextAttempt()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        FakeTimeProvider clock = new();
+
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, clock, _logger);
+
+        _summarizer!.FailOnCallNumber = 3;
+
+        TapestryWeaveOutcome first = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.Failed, first.Status);
+
+        int paidSoFar = _summarizer.CallCount;
+
+        Assert.Equal(3, paidSoFar);
+
+        // The corpus is unchanged, so an immediate second attempt must not pay for the same clusters.
+        TapestryWeaveOutcome second = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.BackingOff, second.Status);
+
+        Assert.Equal(paidSoFar, _summarizer.CallCount);
+
+        Assert.Null(await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None));
+
+        // Once a sweep interval has passed the same build is tried again, and a failure that was
+        // transient now succeeds.
+        clock.Advance(TimeSpan.FromMinutes(61));
+
+        TapestryWeaveOutcome third = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.True(third.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {third.Status}. Log:\n{_logger}");
+    }
+
+    [SkippableFact]
+    public async Task WeaveAsync_ABackedOffBuildIsAttemptedAgainAsSoonAsTheCorpusChanges()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, new FakeTimeProvider(), _logger);
+
+        _summarizer!.FailEverySummary = true;
+
+        Assert.Equal(TapestryWeaveStatus.Failed, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        Assert.Equal(
+            TapestryWeaveStatus.BackingOff,
+            (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        // A different corpus is a different build, and the failure of the old one says nothing about it.
+        await SeedChunksAsync(("c99", "new.cs", "a chunk that changes the corpus"));
+
+        int callsBefore = _summarizer.CallCount;
+
+        Assert.Equal(TapestryWeaveStatus.Failed, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        Assert.True(_summarizer.CallCount > callsBefore, "the changed corpus was not attempted");
+    }
+
+    /// <summary>
+    /// A build that fails before it spends anything — here, an embedding provider that is down — is not
+    /// a failure the record may punish: the next attempt after the provider returns must not wait.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_ABuildThatNeverStartedDoesNotBackOff()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, new FakeTimeProvider(), _logger);
+
+        _weave!.Available = false;
+
+        Assert.Equal(
+            TapestryWeaveStatus.EmbeddingUnavailable,
+            (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        _weave.Available = true;
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+    }
+
     [SkippableFact]
     public async Task WeaveAsync_EmbeddingProviderDownLeavesThePriorGenerationCurrent()
     {
@@ -680,6 +778,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             _store!,
             ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService(),
             _summarizer!,
+            _backoff,
             TimeProvider.System,
             _logger);
 
@@ -916,6 +1015,9 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public bool FailEverySummary { get; set; }
 
+        /// <summary>The one-based call that fails, once; every other call succeeds.</summary>
+        public int? FailOnCallNumber { get; set; }
+
         public bool AlwaysFits { get; set; }
 
         public string? OversizedContentSubstring { get; set; }
@@ -974,7 +1076,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             }
 
             return Task.FromResult(
-                FailEverySummary
+                FailEverySummary || CallCount == FailOnCallNumber
                     ? Result<string>.Failure(new Error(
                         ErrorCodes.Embeddings.ProviderUnavailable,
                         "summary model unavailable"))

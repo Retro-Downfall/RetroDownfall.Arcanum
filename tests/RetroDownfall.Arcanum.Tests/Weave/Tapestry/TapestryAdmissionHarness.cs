@@ -60,6 +60,7 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
             Persistence,
             new Embeddings(this),
             new Summarizer(this),
+            new TapestryBuildBackoff(),
             TimeProvider.System,
             NullLogger<TapestryWeaver>.Instance));
 

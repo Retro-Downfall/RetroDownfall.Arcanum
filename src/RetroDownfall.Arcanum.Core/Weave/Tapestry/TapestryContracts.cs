@@ -245,6 +245,12 @@ public enum TapestryWeaveStatus
 
     /// <summary>The build failed; the staging generation was abandoned and the prior one stays current.</summary>
     Failed,
+
+    /// <summary>
+    /// The same build (corpus, settings and summary model) failed recently, so nothing was started or
+    /// spent; it is retried after an exponentially growing wait, or sooner if any of the three change.
+    /// </summary>
+    BackingOff,
 }
 
 /// <summary>The result of one scope's weave attempt, including what the build actually spent.</summary>
