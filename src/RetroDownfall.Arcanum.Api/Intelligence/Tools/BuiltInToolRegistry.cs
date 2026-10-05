@@ -192,7 +192,9 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
             return new ArcanumBrowseWebTool(
                 _httpClientFactory,
                 _settings,
-                _browseWebLogger);
+                _browseWebLogger,
+                TimeProvider.System,
+                new SystemDnsResolver());
         }
 
         if (string.Equals(toolName, ArcanumWebSearchTool.ToolName, StringComparison.Ordinal)

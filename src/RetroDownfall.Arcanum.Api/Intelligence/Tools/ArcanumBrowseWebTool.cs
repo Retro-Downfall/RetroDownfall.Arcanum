@@ -79,9 +79,11 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         IHttpClientFactory httpClientFactory,
         IOptionsSnapshot<ArcanumSettings> options,
         ILogger? logger,
-        TimeProvider? timeProvider = null,
-        IDnsResolver? dnsResolver = null)
+        TimeProvider? timeProvider,
+        IDnsResolver dnsResolver)
     {
+        ArgumentNullException.ThrowIfNull(dnsResolver);
+
         _httpClientFactory = httpClientFactory;
 
         _options = options;
@@ -90,7 +92,7 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
         _timeProvider = timeProvider ?? TimeProvider.System;
 
-        _dnsResolver = dnsResolver ?? new SystemDnsResolver();
+        _dnsResolver = dnsResolver;
 
         // Tools are built per turn from the live snapshot, so the advertised bound is the enforced one.
         _schema = BuildSchema(options.Value.ResolveWebBrowsing());
