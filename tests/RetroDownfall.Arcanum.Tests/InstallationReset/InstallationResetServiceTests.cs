@@ -1555,6 +1555,7 @@ public sealed partial class InstallationResetServiceTests
     [InlineData(ErrorCodes.Data.QuarantineRecoveryRequired)]
     [InlineData(ErrorCodes.Data.OperationNotFinalized)]
     [InlineData(ErrorCodes.Data.FileLocked)]
+    [InlineData(ErrorCodes.Data.RecoveryRequired)]
     public async Task Failed_apply_after_the_point_of_no_return_keeps_the_record_unless_the_refusal_is_proven_pre_effect(
         string dataErrorCode)
     {
@@ -1615,6 +1616,9 @@ public sealed partial class InstallationResetServiceTests
     public async Task Failed_apply_that_is_a_proven_pre_effect_refusal_retires_the_record_and_reports_the_failure(
         string dataErrorCode)
     {
+        // Inventory unavailable is only a pre-effect refusal because the stopped-host data service
+        // answers it solely for failures before its canonical action has started; one raised after the
+        // action began reports recovery required instead (see InstallationResetExistingGrimoireTests).
         FakeDataService data = new(CreateDataPlan("workspace-data"))
         {
             ApplyResult = Result<DataRetentionApplyResult>.Failure(new Error(

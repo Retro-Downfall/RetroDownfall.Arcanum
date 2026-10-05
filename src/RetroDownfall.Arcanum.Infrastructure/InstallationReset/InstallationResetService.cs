@@ -195,7 +195,7 @@ internal sealed class InstallationResetStateRoots : IInstallationResetStateRoots
         ];
     }
 
-    private static StringComparer PathComparer { get; } =
+    internal static StringComparer PathComparer { get; } =
         OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
@@ -1397,7 +1397,9 @@ internal sealed class InstallationResetService(
             // A legacy V1 file is the one active record nothing seals, so it is checked against this
             // installation before it is migrated: once migrated it is sealed, and every later arm
             // trusts the roots and accounts it names.
-            Result legacyValidation = ValidateLegacyV1Binding(legacy);
+            Result legacyValidation = InstallationResetLegacyRecordValidator.Validate(
+                legacy,
+                _stateRoots);
 
             if (legacyValidation.IsFailure)
             {
@@ -1551,59 +1553,17 @@ internal sealed class InstallationResetService(
     }
 
     /// <summary>
-    /// Requires an unsealed legacy record to name only what this installation would itself have planned.
-    /// </summary>
-    /// <remarks>
-    /// Three independent checks, because the first alone proves nothing: an editor of the file can
-    /// recompute a binding id over whatever they wrote. The binding id has to match its own contents;
-    /// every selected root has to be one the current roots for that scope and workspace would select,
-    /// so a widened record cannot point the sweep at a directory this installation never owned; and no
-    /// account may be restore, reset or transition evidence or the host-tools taint marker, which an
-    /// ordinary reset retains by definition.
-    ///
-    /// <para>The binding id is accepted in either of its two historical forms. Records written before
-    /// the injective preimage carry the joined-text form, and refusing them would refuse every record
-    /// that era produced; the weaker form is accepted here only, on a path that also checks the roots
-    /// and accounts directly.</para>
-    /// </remarks>
-    private Result ValidateLegacyV1Binding(InstallationResetActiveRecord legacy)
-    {
-        InstallationResetAcceptedBinding binding = legacy.AcceptedBinding;
-
-        bool bindingMatches =
-            string.Equals(
-                binding.BindingId,
-                ComputeBindingId(legacy.Scope, binding),
-                StringComparison.Ordinal)
-            || string.Equals(
-                binding.BindingId,
-                ComputeDelimiterEraBindingId(legacy.Scope, binding),
-                StringComparison.Ordinal);
-
-        string[] permittedRoots = _stateRoots.Resolve(legacy.Scope, legacy.Workspace);
-
-        bool rootsPermitted = binding.SelectedRoots.All(
-            root => permittedRoots.Contains(root, PathComparer));
-
-        bool accountsOrdinary =
-            InstallationResetCredentialCatalog
-                .CollectOrdinaryAccounts(binding.CredentialAccounts)
-                .Length == binding.CredentialAccounts.Length;
-
-        return bindingMatches && rootsPermitted && accountsOrdinary
-            ? Result.Success()
-            : Result.Failure(new Error(
-                ErrorCodes.Covenant.ManualRecoveryRequired,
-                "The legacy installation-reset record names state this installation would not have planned and requires manual recovery."));
-    }
-
-    /// <summary>
     /// The closed set of data-service refusals that are made before the service has changed anything.
     /// </summary>
     /// <remarks>
     /// Closed on purpose: an unrecognised code is treated as possibly having committed, because the
     /// two mistakes are not symmetric. Keeping a record that could have been retired costs the operator
     /// one resume; retiring one whose reset had begun deletes the evidence that it did.
+    ///
+    /// <para>Inventory unavailable is in the set on a promise the stopped-host data service keeps: it
+    /// answers that code only for failures before its canonical action has started. A failure raised by
+    /// the action, or by releasing the lease after it, reports recovery required, which is not in the
+    /// set.</para>
     /// </remarks>
     private static bool IsProvenPreEffectRefusal(Error error) =>
         error.Code is ErrorCodes.Data.InvalidRequest
@@ -2755,7 +2715,7 @@ internal sealed class InstallationResetService(
     /// <remarks>
     /// Kept only to recognise a legacy V1 file's own id. Nothing new is ever issued under it.
     /// </remarks>
-    private static string ComputeDelimiterEraBindingId(
+    internal static string ComputeDelimiterEraBindingId(
         InstallationResetScope scope,
         InstallationResetAcceptedBinding binding) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(
@@ -2768,7 +2728,7 @@ internal sealed class InstallationResetService(
             string.Join(',', binding.CredentialAccounts),
             string.Join(',', binding.DataPlanIds)))));
 
-    private static string ComputeBindingId(
+    internal static string ComputeBindingId(
         InstallationResetScope scope,
         InstallationResetAcceptedBinding binding)
     {

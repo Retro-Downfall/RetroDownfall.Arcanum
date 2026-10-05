@@ -1111,6 +1111,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IInstallationResetDatabaseIdentityReader,
             InstallationResetDatabaseIdentityReader>();
 
+        // The coordinator checks a legacy record against the roots this installation would plan, the
+        // same ones the CLI composition registers for the service.
+        services.TryAddScoped<IInstallationResetStateRoots>(static _ =>
+            InstallationResetStateRoots.Default);
+
         services.AddScoped<IInstallationResetHostHandoffCoordinator,
             InstallationResetHostHandoffCoordinator>();
 

@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal interface IInstallationResetHostHandoffCoordinator
 {
-
     Task<Result> BeginOrRecoverAsync(
         InstallationResetHostHandoff handoff,
         ArcanumMaintenanceLock heldInstallationLock,
@@ -28,31 +27,25 @@ internal interface IInstallationResetHostHandoffCoordinator
         InstallationResetHostHandoff handoff,
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default);
-
 }
 
 internal interface IInstallationResetDatabaseIdentityReader
 {
-
     Task<Result<Guid>> ReadAsync(CancellationToken cancellationToken = default);
-
 }
 
 internal sealed class InstallationResetDatabaseIdentityReader(
     ICovenantConnectionSource connectionSource)
     : IInstallationResetDatabaseIdentityReader
 {
-
     private readonly ICovenantConnectionSource _connectionSource =
         connectionSource ?? throw new ArgumentNullException(nameof(connectionSource));
 
     public async Task<Result<Guid>> ReadAsync(
         CancellationToken cancellationToken = default)
     {
-
         try
         {
-
             SqliteConnection connection = await _connectionSource
                 .GetOpenConnectionAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -60,13 +53,10 @@ internal sealed class InstallationResetDatabaseIdentityReader(
             return await ReadOpenConnectionAsync(
                 connection,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -74,18 +64,14 @@ internal sealed class InstallationResetDatabaseIdentityReader(
                 or InvalidOperationException
                 or OverflowException)
         {
-
             return Unavailable<Guid>();
-
         }
-
     }
 
     internal static async Task<Result<Guid>> ReadOpenConnectionAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -105,18 +91,14 @@ internal sealed class InstallationResetDatabaseIdentityReader(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rowCount++;
 
             if (rowCount == 1)
             {
-
                 stateKey = reader.IsDBNull(0) ? null : reader.GetInt64(0);
 
                 storedIdentity = reader.IsDBNull(1) ? null : reader.GetString(1);
-
             }
-
         }
 
         Guid installationId = Guid.Empty;
@@ -132,22 +114,20 @@ internal sealed class InstallationResetDatabaseIdentityReader(
         return rowCount == 1 && stateKey == 1 && canonical
             ? installationId
             : Unavailable<Guid>();
-
     }
 
     private static Result<T> Unavailable<T>() =>
         new Error(
             ErrorCodes.Data.RecoveryRequired,
             "The installation identity could not be authenticated from the Grimoire authority row.");
-
 }
 
 internal sealed class InstallationResetHostHandoffCoordinator(
     InstallationResetActiveStore activeStore,
-    IInstallationResetDatabaseIdentityReader identityReader)
+    IInstallationResetDatabaseIdentityReader identityReader,
+    IInstallationResetStateRoots stateRoots)
     : IInstallationResetHostHandoffCoordinator
 {
-
     private static readonly TimeSpan CheckpointTimeout = TimeSpan.FromSeconds(5);
 
     private readonly InstallationResetActiveStore _activeStore =
@@ -156,12 +136,14 @@ internal sealed class InstallationResetHostHandoffCoordinator(
     private readonly IInstallationResetDatabaseIdentityReader _identityReader =
         identityReader ?? throw new ArgumentNullException(nameof(identityReader));
 
+    private readonly IInstallationResetStateRoots _stateRoots =
+        stateRoots ?? throw new ArgumentNullException(nameof(stateRoots));
+
     public async Task<Result> BeginOrRecoverAsync(
         InstallationResetHostHandoff handoff,
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(handoff);
 
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -172,9 +154,7 @@ internal sealed class InstallationResetHostHandoffCoordinator(
 
         if (installation.IsFailure)
         {
-
             return Result.Failure(installation.Error);
-
         }
 
         Result<InstallationResetActiveRecoveryState> recovered = await _activeStore
@@ -183,14 +163,11 @@ internal sealed class InstallationResetHostHandoffCoordinator(
 
         if (recovered.IsFailure)
         {
-
             return Result.Failure(recovered.Error);
-
         }
 
         if (recovered.Value.Outcome is InstallationResetActiveRecoveryOutcome.NoActiveRecord)
         {
-
             InstallationResetActiveRecord prepared = Prepared(handoff);
 
             Result<InstallationResetActivePublication> begun = await _activeStore
@@ -204,17 +181,14 @@ internal sealed class InstallationResetHostHandoffCoordinator(
             return begun.IsSuccess
                 ? Result.Success()
                 : Result.Failure(begun.Error);
-
         }
 
         if (recovered.Value.Outcome is InstallationResetActiveRecoveryOutcome.AuthenticatedV2
             && recovered.Value.Publication is { } publication)
         {
-
             return MatchesPrepared(publication.Payload.ToRecord(), handoff)
                 ? Result.Success()
                 : Mismatch();
-
         }
 
         if (recovered.Value.Outcome is InstallationResetActiveRecoveryOutcome.LegacyV1
@@ -222,6 +196,17 @@ internal sealed class InstallationResetHostHandoffCoordinator(
             && recovered.Value.LegacyFileIdentity is { } legacyIdentity
             && MatchesPrepared(legacy, handoff))
         {
+            // The handoff was built from this very record, so MatchesPrepared only proves the file
+            // agrees with itself. Migrating seals it and every later arm trusts what it names, so it is
+            // checked against this installation first, exactly as the service's own legacy branch does.
+            Result legacyValidation = InstallationResetLegacyRecordValidator.Validate(
+                legacy,
+                _stateRoots);
+
+            if (legacyValidation.IsFailure)
+            {
+                return Result.Failure(legacyValidation.Error);
+            }
 
             Result<InstallationResetActivePublication> migrated = await _activeStore
                 .MigrateLegacyV1Async(
@@ -238,11 +223,9 @@ internal sealed class InstallationResetHostHandoffCoordinator(
                     : migrated.IsFailure
                         ? Result.Failure(migrated.Error)
                         : Mismatch();
-
         }
 
         return Mismatch();
-
     }
 
     public async Task<Result> RecordOnlineCompletionAsync(
@@ -251,7 +234,6 @@ internal sealed class InstallationResetHostHandoffCoordinator(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(handoff);
 
         ArgumentNullException.ThrowIfNull(result);
@@ -260,9 +242,7 @@ internal sealed class InstallationResetHostHandoffCoordinator(
 
         if (!TrustedCompletion(handoff, result))
         {
-
             return ReconciliationFailure();
-
         }
 
         using CancellationTokenSource checkpoint = CreateCheckpointToken();
@@ -271,37 +251,29 @@ internal sealed class InstallationResetHostHandoffCoordinator(
 
         try
         {
-
             recovered = await _activeStore
                 .RecoverAsync(heldInstallationLock, checkpoint.Token)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             return ReconciliationFailure();
-
         }
 
         if (recovered.IsFailure
             || recovered.Value.Outcome is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
             || recovered.Value.Publication is not { } publication)
         {
-
             return recovered.IsFailure
                 ? Result.Failure(recovered.Error)
                 : Mismatch();
-
         }
 
         InstallationResetActiveRecord current = publication.Payload.ToRecord();
 
         if (!MatchesPrepared(current, handoff))
         {
-
             return Mismatch();
-
         }
 
         InstallationResetOnlineDataCompletion completion = new(
@@ -315,7 +287,6 @@ internal sealed class InstallationResetHostHandoffCoordinator(
 
         if (current.OnlineDataCompletion is { } existing)
         {
-
             bool sameIdentity = existing.ServerOperationId == completion.ServerOperationId
                 && existing.RequestedOperationId == completion.RequestedOperationId
                 && string.Equals(
@@ -331,7 +302,6 @@ internal sealed class InstallationResetHostHandoffCoordinator(
             return sameIdentity && (existing == completion || replayCounts)
                 ? Result.Success()
                 : ReconciliationFailure();
-
         }
 
         InstallationResetActiveRecord next = current with
@@ -343,7 +313,6 @@ internal sealed class InstallationResetHostHandoffCoordinator(
 
         try
         {
-
             advanced = await _activeStore
                 .AdvanceAsync(
                     heldInstallationLock,
@@ -351,19 +320,15 @@ internal sealed class InstallationResetHostHandoffCoordinator(
                     next,
                     checkpoint.Token)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             return ReconciliationFailure();
-
         }
 
         return advanced.IsSuccess
             ? Result.Success()
             : Result.Failure(advanced.Error);
-
     }
 
     public async Task<Result> RetirePreEffectAsync(
@@ -371,7 +336,6 @@ internal sealed class InstallationResetHostHandoffCoordinator(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(handoff);
 
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -382,28 +346,22 @@ internal sealed class InstallationResetHostHandoffCoordinator(
 
         try
         {
-
             recovered = await _activeStore
                 .RecoverAsync(heldInstallationLock, checkpoint.Token)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             return ReconciliationFailure();
-
         }
 
         if (recovered.IsFailure
             || recovered.Value.Outcome is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
             || recovered.Value.Publication is not { } publication)
         {
-
             return recovered.IsFailure
                 ? Result.Failure(recovered.Error)
                 : Mismatch();
-
         }
 
         InstallationResetActiveRecord current = publication.Payload.ToRecord();
@@ -417,29 +375,22 @@ internal sealed class InstallationResetHostHandoffCoordinator(
             || current.CredentialResults.Length != 0
             || current.LastErrorCode is not null)
         {
-
             return Mismatch();
-
         }
 
         try
         {
-
             return await _activeStore
                 .RetireAsync(
                     heldInstallationLock,
                     handoff.RequestedOperationId,
                     checkpoint.Token)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             return ReconciliationFailure();
-
         }
-
     }
 
     private static InstallationResetActiveRecord Prepared(
@@ -516,5 +467,4 @@ internal sealed class InstallationResetHostHandoffCoordinator(
         Result.Failure(new Error(
             ErrorCodes.Data.ReconciliationFailed,
             "The authenticated host data reset completion proof did not reconcile."));
-
 }
