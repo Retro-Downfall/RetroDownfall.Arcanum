@@ -29,17 +29,8 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
 
     public ToolExecutionPipelineSanctumEgressTests() => Directory.CreateDirectory(_root);
 
-    public void Dispose()
-    {
-        try
-        {
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (IOException)
-        {
-            // Best-effort fixture cleanup.
-        }
-    }
+    public void Dispose() =>
+        _ = TestDirectoryCleanup.TryDelete(_root, nameof(ToolExecutionPipelineSanctumEgressTests));
 
     [Fact]
     public async Task ReadUrl_InStrictSanctum_PublishesWardAndOptionsCarryIt()

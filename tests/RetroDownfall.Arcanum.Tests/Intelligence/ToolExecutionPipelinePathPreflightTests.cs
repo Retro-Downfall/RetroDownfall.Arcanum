@@ -383,7 +383,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         }
         finally
         {
-            Directory.Delete(workspace, recursive: true);
+            _ = TestDirectoryCleanup.TryDelete(workspace, nameof(ToolExecutionPipelinePathPreflightTests));
         }
     }
 
@@ -421,8 +421,79 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         }
         finally
         {
-            Directory.Delete(workspace, recursive: true);
+            _ = TestDirectoryCleanup.TryDelete(workspace, nameof(ToolExecutionPipelinePathPreflightTests));
         }
+    }
+
+    /// <summary>
+    /// The guard resolves what it is handed against the host process's current directory, so an escape
+    /// written relative to the workspace is only judged correctly when the pipeline anchors it to the
+    /// workspace root first. The campaign here is the directory above the test host's own, which puts the
+    /// host's current directory inside it: <c>../outside</c> read against that directory is inside the
+    /// campaign, while read against the workspace root it leaves it.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(PathArgumentTools))]
+    public async Task Escape_is_recorded_even_when_the_host_working_directory_is_inside_the_campaign(
+        string toolName,
+        string argumentName)
+    {
+        string hostDirectory = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(global::System.Environment.CurrentDirectory));
+
+        string? workspace = Path.GetDirectoryName(hostDirectory);
+
+        Assert.False(
+            string.IsNullOrEmpty(workspace) || Path.GetDirectoryName(workspace) is null,
+            $"The test host's directory '{hostDirectory}' is too close to the filesystem root for this probe.");
+
+        SanctumPipelineHarness harness = SanctumPipelineHarness.Create(workspace!);
+
+        (ToolExecutionPipeline.ProcessedToolCall processed, bool invoked) =
+            await harness.ProcessStandInAsync(
+                toolName,
+                new Dictionary<string, object?> { [argumentName] = "../outside" },
+                harness.StrictTurnContext());
+
+        Assert.True(
+            processed.Denied,
+            $"{toolName} accepted an escaping '{argumentName}' judged against the host working directory.");
+
+        Assert.False(invoked);
+
+        SanctumBreachRecord breach = Assert.Single(harness.Breaches.Records);
+
+        Assert.Equal("PathEscape", breach.BreachType);
+
+        Assert.Equal(toolName, breach.ToolName);
+    }
+
+    [Theory]
+    [InlineData("../outside")]
+    [InlineData("a/../../outside")]
+    public void A_relative_spelling_is_anchored_to_the_workspace_root(string spelling)
+    {
+        string root = Path.Combine(Path.GetTempPath(), "arcanum-anchor-" + Guid.NewGuid().ToString("N"));
+
+        Assert.Equal(
+            Path.GetFullPath(Path.Combine(root, "..", "outside")),
+            ToolExecutionPipeline.AnchorToWorkspaceRoot(root, spelling));
+
+        Assert.Equal(
+            Path.Combine(root, "inside", "file.txt"),
+            ToolExecutionPipeline.AnchorToWorkspaceRoot(root, "inside/file.txt"));
+
+        string absolute = Path.Combine(Path.GetTempPath(), "arcanum-elsewhere", "file.txt");
+
+        Assert.Equal(absolute, ToolExecutionPipeline.AnchorToWorkspaceRoot(root, absolute));
+    }
+
+    [Fact]
+    public void An_unresolvable_spelling_is_handed_over_as_written_for_the_guard_to_reject()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "arcanum-anchor-" + Guid.NewGuid().ToString("N"));
+
+        Assert.Equal("bad\0name", ToolExecutionPipeline.AnchorToWorkspaceRoot(root, "bad\0name"));
     }
 
     [Fact]
