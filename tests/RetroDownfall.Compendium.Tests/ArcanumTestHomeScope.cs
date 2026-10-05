@@ -15,10 +15,15 @@ namespace RetroDownfall.Compendium.Ux.Tests;
 /// override only when a host environment reads <c>Testing</c> <em>and</em>
 /// <c>ARCANUM_TEST_HOME</c> is set, which is the contract this scope establishes before the first
 /// path access.
+///
+/// A twin of this type lives in
+/// <c>tests/RetroDownfall.Arcanum.Tests/Support/ArcanumTestHomeScope.cs</c> (namespace
+/// <c>RetroDownfall.Arcanum.Tests.Support</c>): this project cannot reference the Arcanum test
+/// assembly, so the scope is deliberately duplicated. Keep the two in step; a change to the set of
+/// redirected variables belongs in both.
 /// </remarks>
 internal sealed class ArcanumTestHomeScope : IDisposable
 {
-
     private const string Testing = "Testing";
 
     /// <summary>Mirrors the private constant <see cref="ArcanumPaths"/> reads for its override.</summary>
@@ -40,12 +45,9 @@ internal sealed class ArcanumTestHomeScope : IDisposable
     public ArcanumTestHomeScope(
         string prefix)
     {
-
         foreach (string name in RedirectedVariables)
         {
-
             _originalValues[name] = global::System.Environment.GetEnvironmentVariable(name);
-
         }
 
         Root = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -63,7 +65,6 @@ internal sealed class ArcanumTestHomeScope : IDisposable
         global::System.Environment.SetEnvironmentVariable(
             TestHomeVariable,
             Root);
-
     }
 
     /// <summary>Temporary profile root owned exclusively by the current test class.</summary>
@@ -71,50 +72,35 @@ internal sealed class ArcanumTestHomeScope : IDisposable
 
     public void Dispose()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
 
         foreach ((string name, string? value) in _originalValues)
         {
-
             global::System.Environment.SetEnvironmentVariable(name, value);
-
         }
 
         try
 
         {
-
             if (Directory.Exists(Root))
             {
-
                 Directory.Delete(Root, recursive: true);
-
             }
-
         }
         catch (IOException)
 
         {
-
             // Best-effort cleanup.
-
         }
         catch (UnauthorizedAccessException)
 
         {
-
             // Best-effort cleanup.
-
         }
-
     }
-
 }

@@ -15,6 +15,11 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// override only when a host environment reads <c>Testing</c> <em>and</em>
 /// <c>ARCANUM_TEST_HOME</c> is set, which is the contract this scope establishes before the first
 /// path access.
+///
+/// A twin of this type lives in <c>tests/RetroDownfall.Compendium.Tests/ArcanumTestHomeScope.cs</c>
+/// (namespace <c>RetroDownfall.Compendium.Ux.Tests</c>): that project cannot reference this test
+/// assembly, so the scope is deliberately duplicated. Keep the two in step; a change to the set of
+/// redirected variables belongs in both.
 /// </remarks>
 internal sealed class ArcanumTestHomeScope : IDisposable
 {
@@ -79,7 +84,6 @@ internal sealed class ArcanumTestHomeScope : IDisposable
         }
 
         try
-
         {
             if (Directory.Exists(Root))
             {
@@ -87,12 +91,10 @@ internal sealed class ArcanumTestHomeScope : IDisposable
             }
         }
         catch (IOException)
-
         {
             // Best-effort cleanup.
         }
         catch (UnauthorizedAccessException)
-
         {
             // Best-effort cleanup.
         }
