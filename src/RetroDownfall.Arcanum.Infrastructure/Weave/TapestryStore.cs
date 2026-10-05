@@ -1072,11 +1072,13 @@ internal sealed class TapestryStore(
                     WHERE n."GenerationId" = g."GenerationId" AND n."NodeKind" = 'Summary')
             FROM "tapestry_generations" g
             WHERE g."Status" = 'Complete'
-              AND (@sessionId IS NULL OR (g."ScopeKind" <> 'Workspace' AND g."ScopeId" = @sessionId))
+              AND (@sessionId IS NULL OR (
+                    (g."ScopeKind" = 'Session' AND g."ScopeId" = @canonicalSessionId)
+                    OR (g."ScopeKind" = 'SessionAttachment' AND g."ScopeId" = @sessionId)))
             ORDER BY g."ScopeKind", g."ScopeId"
             """;
 
-        AddParameter(command, "@sessionId", sessionId is null ? DBNull.Value : sessionId.Value.ToString());
+        AddSessionScopeParameters(command, sessionId);
 
         List<TapestryScopeStatus> statuses = [];
 
@@ -1112,14 +1114,35 @@ internal sealed class TapestryStore(
             FROM "tapestry_nodes" n
             INNER JOIN "tapestry_generations" g ON g."GenerationId" = n."GenerationId"
             WHERE g."Status" = 'Complete'
-              AND (@sessionId IS NULL OR (g."ScopeKind" <> 'Workspace' AND g."ScopeId" = @sessionId))
+              AND (@sessionId IS NULL OR (
+                    (g."ScopeKind" = 'Session' AND g."ScopeId" = @canonicalSessionId)
+                    OR (g."ScopeKind" = 'SessionAttachment' AND g."ScopeId" = @sessionId)))
             """;
 
-        AddParameter(command, "@sessionId", sessionId is null ? DBNull.Value : sessionId.Value.ToString());
+        AddSessionScopeParameters(command, sessionId);
 
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return result is null or DBNull ? 0 : Convert.ToInt32(result, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Binds one Session under the two spellings its trees are keyed by. A Session tree is keyed by
+    /// <c>Entries.SessionId</c> (uppercase) and an attachment tree by the chunk column (lowercase), so
+    /// one parameter can never match both kinds; the spellings come from the same helpers retrieval
+    /// builds its scopes with.
+    /// </summary>
+    private static void AddSessionScopeParameters(DbCommand command, Guid? sessionId)
+    {
+        AddParameter(
+            command,
+            "@sessionId",
+            sessionId is { } attachment ? TapestryScope.ForSessionAttachment(attachment).Id : DBNull.Value);
+
+        AddParameter(
+            command,
+            "@canonicalSessionId",
+            sessionId is { } session ? TapestryScope.ForSession(session).Id : DBNull.Value);
     }
 
     private static string ParentScopeKey(string generationId, string? parentNodeId) =>

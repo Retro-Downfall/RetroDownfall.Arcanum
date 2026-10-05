@@ -4790,6 +4790,8 @@ One dequeued request is also one unit of Grimoire admission (§10.20.3), and thi
 | `SessionAttachment` | `session_attachment_chunks` for one session's latest retrieval scopes | `ChunkId` |
 | `Session` | that session's non-empty `Entries` | `Entry.Id` |
 
+**Scope ids are spelled per kind.** A scope id is the exact spelling of the corpus the tree was woven from, and every comparison is byte for byte. The two Session kinds therefore spell one Session differently: a `Session` tree is keyed by `Entries.SessionId`, which is uppercase dashed, and a `SessionAttachment` tree by `session_attachment_chunks.SessionId`, which is deliberately lowercase. `TapestryScope.ForSession` and `TapestryScope.ForSessionAttachment` are the one place each spelling is written; turn retrieval, `GET /api/memory/status` and the per-Session counters all build their keys through them, and no stored id is ever rewritten. Reading both kinds under one spelling would silently skip the other kind's trees, and normalizing both kinds in the store would orphan every attachment-scoped generation.
+
 A corpus with no indexed rows yields no scope, so the Tapestry degrades naturally when (say) codebase retrieval is off — no extra gate is needed. Session-scoped trees stay session-scoped exactly like §21.8, and attachment-derived nodes remain bound by the §10.6.1 memory-promotion gate: a Tapestry summary is turn-local injected context and never silently promotes into Lexicon or Saga.
 
 #### Clustering — deterministic spherical K-Means (`SphericalKMeans`, Core)

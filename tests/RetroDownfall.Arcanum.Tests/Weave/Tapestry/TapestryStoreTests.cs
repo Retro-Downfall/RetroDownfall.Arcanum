@@ -1,5 +1,11 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -867,6 +873,165 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.DoesNotContain(withoutWorkspace, scope => scope.Kind == TapestryScopeKind.Workspace);
+    }
+
+    /// <summary>
+    /// A Session's own history tree is found by the scope retrieval builds for that Session.
+    /// </summary>
+    /// <remarks>
+    /// <c>Entries.SessionId</c> is guaranteed uppercase-dashed, so the sweep keys a Session-kind tree
+    /// under that spelling; <c>session_attachment_chunks.SessionId</c> is deliberately lowercase, so the
+    /// attachment kind is keyed under that one. The two kinds therefore disagree about how one Session
+    /// is spelled, and the scopes the turn builds have to agree with each kind separately. The Entry is
+    /// written through the object-relational writer production uses, and the scopes the turn reads are
+    /// built by the provider's own <c>BuildTapestryScopes</c>, so neither side is spelled by the test.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Session_scope_generation_is_found_by_the_scope_the_retrieval_path_builds()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await SeedSessionEntryAsync(sessionId, "the session history the tree summarizes");
+
+        await SeedAttachmentChunkAsync(sessionId.ToString("D"), "attachment-chunk", "attachment body");
+
+        IReadOnlyList<TapestryScope> discovered = await _store!.DiscoverScopesAsync(
+            includeWorkspace: false,
+            includeSessionAttachments: true,
+            includeSessions: true,
+            CancellationToken.None);
+
+        TapestryScope sessionScope = Assert.Single(discovered, static scope => scope.Kind == TapestryScopeKind.Session);
+
+        TapestryScope attachmentScope = Assert.Single(discovered, static scope => scope.Kind == TapestryScopeKind.SessionAttachment);
+
+        foreach (TapestryScope scope in new[] { sessionScope, attachmentScope })
+        {
+            string generationId = await _store.BeginGenerationAsync(
+                scope,
+                SphericalKMeans.AlgorithmVersion,
+                "settings-1",
+                "fast",
+                TapestryHash.SummaryRecipeVersion,
+                TestDimensions,
+                "corpus-1",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+
+            await _store.AppendNodesAsync(
+                [LeafIn(scope, generationId, $"node-{scope.Kind}", $"source-{scope.Kind}", "body")],
+                CancellationToken.None);
+
+            await _store.PublishGenerationAsync(
+                generationId,
+                1,
+                1,
+                1,
+                TapestryTerminalReason.LeafOnly,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+        }
+
+        TapestryEmbeddingSettings settings = new()
+        {
+            SessionTreesEnabled = true,
+            SessionAttachmentTreesEnabled = true,
+            WorkspaceTreesEnabled = false,
+        };
+
+        List<TapestryScope> retrievalScopes = WizardIntelligenceProvider.BuildTapestryScopes(
+            new PingRequest("hi", SessionId: sessionId),
+            settings,
+            new UnusedIndexingService());
+
+        Assert.Equal(2, retrievalScopes.Count);
+
+        foreach (TapestryScope retrieval in retrievalScopes)
+        {
+            TapestryGeneration? current = await _store.GetCurrentGenerationAsync(retrieval, CancellationToken.None);
+
+            Assert.True(
+                current is not null,
+                $"retrieval built {retrieval.Kind} scope '{retrieval.Id}' but the sweep keyed it under "
+                + $"'{(retrieval.Kind == TapestryScopeKind.Session ? sessionScope.Id : attachmentScope.Id)}'");
+        }
+
+        // The published nodes are counted for that Session too, per kind spelling.
+        Assert.Equal(2, await _store.CountPublishedNodesAsync(sessionId, CancellationToken.None));
+
+        Assert.Equal(2, (await _store.GetScopeStatusesAsync(sessionId, CancellationToken.None)).Count);
+    }
+
+    private static TapestryNodeWrite LeafIn(
+        TapestryScope scope,
+        string generationId,
+        string nodeId,
+        string sourceId,
+        string content) =>
+        new(
+            new TapestryNode(
+                nodeId,
+                generationId,
+                scope.Kind,
+                scope.Id,
+                0,
+                TapestryNodeKind.Leaf,
+                null,
+                scope.Kind == TapestryScopeKind.Session
+                    ? TapestryLeafSourceKind.Entry
+                    : TapestryLeafSourceKind.SessionAttachmentChunk,
+                sourceId,
+                "label",
+                null,
+                TapestryHash.OfContent(content),
+                null,
+                1,
+                0,
+                TapestryPartitionReason.None,
+                TestDimensions,
+                DateTimeOffset.UtcNow),
+            Vec(1f));
+
+    /// <summary>One Session with one Entry, written through the object-relational writer.</summary>
+    private async Task SeedSessionEntryAsync(Guid sessionId, string content)
+    {
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Status = "active",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        _db.Entries.Add(new Entry
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            Role = MessageRole.User,
+            Content = content,
+            ModelUsed = "test-model",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Sequence = 1,
+        });
+
+        _ = await _db.SaveChangesAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The scopes under test carry no working directory, so the indexing boundary must never be asked.
+    /// </summary>
+    private sealed class UnusedIndexingService : IWorkspaceIndexingService
+    {
+        public void RegisterWorkspace(string workspacePath) => throw new NotSupportedException();
+
+        public void UnregisterWorkspace(string workspacePath) => throw new NotSupportedException();
+
+        public string ResolveIndexedWorkspacePath(string workspacePath) => throw new NotSupportedException();
+
+        public Result<WorkspaceIndexQueueDisposition> QueueIndexNow(string workspacePath) =>
+            throw new NotSupportedException();
     }
 
     [SkippableFact]

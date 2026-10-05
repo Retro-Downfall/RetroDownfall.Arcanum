@@ -5552,14 +5552,17 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (request.SessionId is { } sessionId)
         {
+            // Each kind is keyed by the spelling of the corpus it was woven from, and the two corpora
+            // disagree about how one Session is spelled, so the spelling lives with the scope rather
+            // than being rendered here.
             if (tapestry.SessionAttachmentTreesEnabled)
             {
-                scopes.Add(new TapestryScope(TapestryScopeKind.SessionAttachment, sessionId.ToString()));
+                scopes.Add(TapestryScope.ForSessionAttachment(sessionId));
             }
 
             if (tapestry.SessionTreesEnabled)
             {
-                scopes.Add(new TapestryScope(TapestryScopeKind.Session, sessionId.ToString()));
+                scopes.Add(TapestryScope.ForSession(sessionId));
             }
         }
 

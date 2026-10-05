@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Core.Weave.Tapestry;
 /// </summary>
 public enum TapestryScopeKind
 {
-
     /// <summary>One registered workspace's indexed code chunks (<c>workspace_file_chunks</c>).</summary>
     Workspace,
 
@@ -21,29 +20,24 @@ public enum TapestryScopeKind
 
     /// <summary>One session's Grimoire <c>Entries</c>.</summary>
     Session,
-
 }
 
 /// <summary>Leaf nodes mirror an existing corpus row; summary nodes are abstractive and model-authored.</summary>
 public enum TapestryNodeKind
 {
-
     Leaf,
 
     Summary,
-
 }
 
 /// <summary>The durable row a leaf node references by stable id rather than copying.</summary>
 public enum TapestryLeafSourceKind
 {
-
     WorkspaceFileChunk,
 
     SessionAttachmentChunk,
 
     Entry,
-
 }
 
 /// <summary>
@@ -53,19 +47,16 @@ public enum TapestryLeafSourceKind
 /// </summary>
 public enum TapestryGenerationStatus
 {
-
     Building,
 
     Complete,
 
     Superseded,
-
 }
 
 /// <summary>Why recursion stopped. Persisted so a multi-root tree is never misreported as rooted.</summary>
 public enum TapestryTerminalReason
 {
-
     /// <summary>The whole remaining layer fit one summary request, so a single root was written.</summary>
     SingleRoot,
 
@@ -74,7 +65,6 @@ public enum TapestryTerminalReason
 
     /// <summary>The corpus was small enough that the leaf layer is also the terminal layer.</summary>
     LeafOnly,
-
 }
 
 /// <summary>
@@ -83,7 +73,6 @@ public enum TapestryTerminalReason
 /// </summary>
 public enum TapestryPartitionReason
 {
-
     /// <summary>Raw K-Means membership, unmodified.</summary>
     None,
 
@@ -98,7 +87,6 @@ public enum TapestryPartitionReason
 
     /// <summary>A single-child cluster was carried directly to the next layer without a new summary.</summary>
     SingletonCarry,
-
 }
 
 /// <summary>
@@ -109,17 +97,35 @@ public enum TapestryPartitionReason
 [JsonConverter(typeof(JsonStringEnumConverter<TapestryRetrievalMode>))]
 public enum TapestryRetrievalMode
 {
-
     /// <summary>Leaf and summary nodes are searched as one flat pool. The default.</summary>
     CollapsedTree,
 
     /// <summary>Descends level by level from the terminal layer, expanding only the selected nodes' children.</summary>
     TreeTraversal,
-
 }
 
-/// <summary>One tree's corpus identity.</summary>
-public readonly record struct TapestryScope(TapestryScopeKind Kind, string Id);
+/// <summary>
+/// One tree's corpus identity.
+/// </summary>
+/// <remarks>
+/// <see cref="Id"/> is the exact spelling the corpus the tree was woven from carries, because the
+/// store keys a generation by the identity the sweep read and compares it byte for byte. The two
+/// Session kinds therefore spell the same Session differently: the Session history tree reads
+/// <c>Entries.SessionId</c>, which is guaranteed uppercase dashed, and the attachment tree reads
+/// <c>session_attachment_chunks.SessionId</c>, which is deliberately lowercase. <see cref="ForSession"/>
+/// and <see cref="ForSessionAttachment"/> are the one place that per-kind spelling is written down, so a
+/// reader building the scope for a turn cannot disagree with the sweep that keyed it.
+/// </remarks>
+public readonly record struct TapestryScope(TapestryScopeKind Kind, string Id)
+{
+    /// <summary>The Session history scope: the uppercase dashed spelling <c>Entries.SessionId</c> holds.</summary>
+    public static TapestryScope ForSession(Guid sessionId) =>
+        new(TapestryScopeKind.Session, sessionId.ToString("D").ToUpperInvariant());
+
+    /// <summary>The attachment scope: the lowercase dashed spelling <c>session_attachment_chunks.SessionId</c> holds.</summary>
+    public static TapestryScope ForSessionAttachment(Guid sessionId) =>
+        new(TapestryScopeKind.SessionAttachment, sessionId.ToString("D"));
+}
 
 /// <summary>
 /// One immutable build of one scope's tree. Algorithm/settings/model provenance is stored with the
@@ -193,7 +199,6 @@ public sealed record TapestrySummaryReuseCandidate(
 /// </summary>
 public static class TapestryStorageKeys
 {
-
     /// <summary>The vec0 acceleration table. Divination strips the suffix for the managed fallback.</summary>
     public const string VectorTable = "tapestry_node_embeddings_vec";
 
@@ -218,13 +223,11 @@ public static class TapestryStorageKeys
 
     public static string ParentScopeKey(string generationId, string? parentNodeId) =>
         $"{generationId}#{(string.IsNullOrEmpty(parentNodeId) ? RootParentMarker : parentNodeId)}";
-
 }
 
 /// <summary>Why one scope's weave attempt ended.</summary>
 public enum TapestryWeaveStatus
 {
-
     /// <summary>The current generation already matches the corpus, settings, algorithm, recipe, and model.</summary>
     UpToDate,
 
@@ -242,7 +245,6 @@ public enum TapestryWeaveStatus
 
     /// <summary>The build failed; the staging generation was abandoned and the prior one stays current.</summary>
     Failed,
-
 }
 
 /// <summary>The result of one scope's weave attempt, including what the build actually spent.</summary>
@@ -313,7 +315,6 @@ public sealed record TapestryContextNode(
 /// </summary>
 public static class TapestryHash
 {
-
     /// <summary>
     /// Bumped whenever the summarization prompt or its output contract changes. Part of a summary
     /// node's reuse identity: an older recipe's prose is never silently carried into a new shape.
@@ -342,7 +343,6 @@ public static class TapestryHash
     /// </remarks>
     public static string OfParts(IEnumerable<string> parts)
     {
-
         ArgumentNullException.ThrowIfNull(parts);
 
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -353,30 +353,24 @@ public static class TapestryHash
 
         try
         {
-
             foreach (string part in parts)
             {
-
                 int required = Encoding.UTF8.GetByteCount(part);
 
                 Span<byte> buffer = inline;
 
                 if (required > buffer.Length)
                 {
-
                     if (rented is not null && rented.Length < required)
                     {
-
                         ArrayPool<byte>.Shared.Return(rented);
 
                         rented = null;
-
                     }
 
                     rented ??= ArrayPool<byte>.Shared.Rent(required);
 
                     buffer = rented;
-
                 }
 
                 int written = Encoding.UTF8.GetBytes(part, buffer);
@@ -384,24 +378,17 @@ public static class TapestryHash
                 hash.AppendData(buffer[..written]);
 
                 hash.AppendData(PartSeparator);
-
             }
-
         }
         finally
         {
-
             if (rented is not null)
             {
-
                 ArrayPool<byte>.Shared.Return(rented);
-
             }
-
         }
 
         return Convert.ToHexStringLower(hash.GetHashAndReset());
-
     }
 
     /// <summary>
@@ -414,7 +401,6 @@ public static class TapestryHash
         string summaryRecipeVersion,
         string? summaryModel)
     {
-
         ArgumentNullException.ThrowIfNull(childContentHashes);
 
         List<string> sorted = [.. childContentHashes];
@@ -427,7 +413,6 @@ public static class TapestryHash
             summaryModel ?? string.Empty,
             .. sorted,
         ]);
-
     }
 
     /// <summary>
@@ -437,7 +422,6 @@ public static class TapestryHash
     /// </summary>
     public static string OfCorpus(IEnumerable<TapestryLeafSource> leaves)
     {
-
         ArgumentNullException.ThrowIfNull(leaves);
 
         List<string> identities = [.. leaves.Select(static leaf => $"{leaf.SourceId}\u001f{leaf.ContentHash}")];
@@ -445,7 +429,6 @@ public static class TapestryHash
         identities.Sort(StringComparer.Ordinal);
 
         return OfParts(identities);
-
     }
 
     /// <summary>
@@ -468,5 +451,4 @@ public static class TapestryHash
             maxSummaryTokens.ToString(CultureInfo.InvariantCulture),
             dimensions.ToString(CultureInfo.InvariantCulture),
         ]);
-
 }

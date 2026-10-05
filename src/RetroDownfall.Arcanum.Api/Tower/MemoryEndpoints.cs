@@ -941,8 +941,8 @@ internal static class MemoryEndpoints
                   SELECT COUNT(*) FROM tapestry_nodes n
                   INNER JOIN tapestry_generations g ON g.GenerationId = n.GenerationId
                   WHERE g.Status = 'Complete'
-                    AND g.ScopeKind <> 'Workspace'
-                    AND g.ScopeId = @sessionId
+                    AND ((g.ScopeKind = 'Session' AND g.ScopeId = @canonicalSessionId)
+                      OR (g.ScopeKind = 'SessionAttachment' AND g.ScopeId = @sessionId))
                   """,
             sessionId,
             cancellationToken).ConfigureAwait(false);
@@ -1532,14 +1532,18 @@ internal static class MemoryEndpoints
     /// <c>@canonicalSessionId</c> is for a column that holds the uppercase dashed form the
     /// object-relational writer renders. <c>@sessionId</c> is for the columns that deliberately hold the
     /// lowercase one: <c>session_attachment_chunks.SessionId</c>, which the tapestry reads as its live
-    /// scope-id set, <c>saga_memories.SessionId</c>, and <c>tapestry_generations.ScopeId</c>, which is
-    /// filled from the first. One parameter served both groups until the attachment family moved, and
-    /// the bound-attachment count then compared a lowercase value against a canonical column and
-    /// reported zero.
+    /// scope-id set, and <c>saga_memories.SessionId</c>. One parameter served both groups until the
+    /// attachment family moved, and the bound-attachment count then compared a lowercase value against a
+    /// canonical column and reported zero.
+    ///
+    /// <para><c>tapestry_generations.ScopeId</c> belongs to neither group, because it is filled from the
+    /// corpus each scope kind was woven from: a <c>Session</c> tree reads <c>Entries.SessionId</c>, so its
+    /// scope id is canonical, and a <c>SessionAttachment</c> tree reads the chunk column, so its scope id
+    /// is lowercase. Its predicate therefore binds each kind to its own parameter.</para>
     ///
     /// <para>Every predicate that reads a canonical column now binds <c>@canonicalSessionId</c>: the
     /// entry, pinned-entry and campaign-summary counts, and both session-scoped search predicates, join
-    /// the bound-attachment count in doing so. Only the three columns named above stay bound to the
+    /// the bound-attachment count in doing so. Only the two columns named above stay bound to the
     /// deliberately-lowercase group.</para>
     ///
     /// <para>Both names are always added. A named parameter a statement never mentions is simply not

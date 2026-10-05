@@ -441,9 +441,15 @@ public sealed class TapestryRetrievalTests
             new TapestryEmbeddingSettings(),
             indexing);
 
+        // Each kind carries the spelling of the corpus it is woven from: Entries.SessionId is uppercase
+        // dashed and session_attachment_chunks.SessionId is lowercase.
         Assert.Contains(
             withSession,
-            scope => scope.Kind == TapestryScopeKind.Session && scope.Id == sessionId.ToString());
+            scope => scope.Kind == TapestryScopeKind.Session && scope.Id == sessionId.ToString("D").ToUpperInvariant());
+
+        Assert.Contains(
+            withSession,
+            scope => scope.Kind == TapestryScopeKind.SessionAttachment && scope.Id == sessionId.ToString("D"));
     }
 
     private sealed class AliasingIndexingService(string alias, string indexed) : IWorkspaceIndexingService
