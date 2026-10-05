@@ -34,7 +34,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Trait("Category", "Integration")]
 public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 {
-
     private const int TestDimensions = 64;
 
     private static readonly Guid CampaignA = new("A0000000-0000-4000-8000-00000000000A");
@@ -55,7 +54,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -76,60 +74,47 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [Fact]
     public async Task A_memory_written_in_a_campaign_bound_session_records_that_campaign()
     {
-
         Guid session = await SeedCampaignSessionAsync(CampaignA);
 
         string id = await InsertAsync(session, "a conclusion", Vec(1f));
 
         Assert.Equal((SagaMemoryScopeKind.Campaign, CampaignA), await ReadScopeAsync(id));
-
     }
 
     [Fact]
     public async Task A_memory_written_in_a_global_only_session_records_global_scope()
     {
-
         Guid session = await SeedGlobalOnlySessionAsync();
 
         string id = await InsertAsync(session, "a conclusion", Vec(1f));
 
         Assert.Equal((SagaMemoryScopeKind.Global, (Guid?)null), await ReadScopeAsync(id));
-
     }
 
     [Fact]
     public async Task A_memory_written_without_a_session_records_global_scope()
     {
-
         string id = await InsertAsync(sessionId: null, "a conclusion", Vec(1f));
 
         Assert.Equal((SagaMemoryScopeKind.Global, (Guid?)null), await ReadScopeAsync(id));
-
     }
 
     /// <summary>
@@ -139,13 +124,11 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_memory_written_in_a_legacy_unresolved_session_records_no_authority()
     {
-
         Guid session = await SeedLegacyUnresolvedSessionAsync();
 
         string id = await InsertAsync(session, "a conclusion", Vec(1f));
 
         Assert.Equal((SagaMemoryScopeKind.LegacyUnresolved, (Guid?)null), await ReadScopeAsync(id));
-
     }
 
     /// <summary>
@@ -155,7 +138,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_campaign_scoped_search_sees_its_own_campaign_and_the_global_memories_only()
     {
-
         SeededCorpus corpus = await SeedCorpusAsync();
 
         Assert.Equal(
@@ -165,7 +147,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         Assert.Equal(
             Ordered(corpus.GlobalId, corpus.CampaignBId),
             await SearchAsync(CampaignB));
-
     }
 
     /// <summary>
@@ -174,11 +155,9 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_search_with_no_resolved_campaign_sees_only_the_global_memories()
     {
-
         SeededCorpus corpus = await SeedCorpusAsync();
 
         Assert.Equal(Ordered(corpus.GlobalId), await SearchAsync(campaignId: null));
-
     }
 
     /// <summary>
@@ -188,13 +167,11 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task An_unresolved_memory_is_a_candidate_in_no_scope()
     {
-
         SeededCorpus corpus = await SeedCorpusAsync();
 
         Assert.DoesNotContain(corpus.UnresolvedId, await SearchAsync(CampaignA));
 
         Assert.DoesNotContain(corpus.UnresolvedId, await SearchAsync(campaignId: null));
-
     }
 
     /// <summary>
@@ -210,7 +187,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_campaign_scoped_search_answers_identically_whether_or_not_vec_is_available()
     {
-
         SeededCorpus corpus = await SeedCorpusAsync();
 
         _availability!.SetAvailable(false);
@@ -224,7 +200,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         Assert.Equal(managed, accelerated);
 
         Assert.Equal(Ordered(corpus.GlobalId, corpus.CampaignAId), accelerated);
-
     }
 
     /// <summary>
@@ -237,7 +212,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_retired_memory_is_excluded_from_a_campaign_scoped_search()
     {
-
         Guid session = await SeedCampaignSessionAsync(CampaignA);
 
         float[] shared = Vec(1f);
@@ -255,7 +229,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         Assert.Equal(SagaCurationOutcomeKind.Applied, outcome.Kind);
 
         Assert.Equal([survivorId], await SearchAsync(CampaignA));
-
     }
 
     /// <summary>
@@ -296,7 +269,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_campaign_scoped_search_returns_the_memories_of_both_binding_writers_sessions()
     {
-
         await SeedCampaignAsync(CampaignA);
 
         Guid boundByRepository = await SessionBindingWriters.BoundByTheRepositoryAsync(
@@ -315,7 +287,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             boundByInitializer, "a conclusion from an upgraded session", shared);
 
         Assert.Equal(Ordered(fromRepository, fromInitializer), await SearchAsync(CampaignA));
-
     }
 
     /// <summary>
@@ -330,7 +301,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_campaign_scoped_listing_shows_the_memories_of_both_binding_writers_sessions()
     {
-
         await SeedCampaignAsync(CampaignA);
 
         float[] shared = Vec(1f);
@@ -356,7 +326,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         string[] listedIds = [.. listed.Select(static memory => memory.Id).Order(StringComparer.Ordinal)];
 
         Assert.Equal(Ordered(fromRepository, fromInitializer), listedIds);
-
     }
 
     /// <summary>
@@ -366,7 +335,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task The_identity_walk_reaches_every_memory_whatever_its_scope()
     {
-
         SeededCorpus corpus = await SeedCorpusAsync();
 
         SagaMemoryPosition[] walked = await _store!.ListPositionsAfterAsync(null, 50, CancellationToken.None);
@@ -376,7 +344,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         Assert.Equal(
             Ordered(corpus.GlobalId, corpus.CampaignAId, corpus.CampaignBId, corpus.UnresolvedId),
             walkedIds);
-
     }
 
     /// <summary>
@@ -401,7 +368,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_retirement_recorded_before_the_campaign_spelling_settled_still_suppresses_its_memory()
     {
-
         Guid session = await SeedCampaignSessionAsync(CampaignA);
 
         // Retiring something establishes the installation's suppression key, which nothing else creates.
@@ -456,7 +422,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(SagaMemoryWriteOutcome.Suppressed, written);
-
     }
 
     /// <summary>
@@ -485,7 +450,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     [Fact]
     public async Task A_memory_retired_before_the_campaign_spelling_settled_can_be_reinstated()
     {
-
         Guid session = await SeedCampaignSessionAsync(CampaignA);
 
         const string Content = "a conclusion the operator changed their mind about";
@@ -542,8 +506,10 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             Vec(1f),
             CancellationToken.None);
 
-        Assert.Equal(SagaMemoryWriteOutcome.Written, rewritten);
-
+        // The reinstated row is live again, so a re-extraction of the same conclusion in the same Session is
+        // recognised as already stored. Reaching that answer at all means the stale suppression, which is
+        // checked first, no longer refuses it.
+        Assert.Equal(SagaMemoryWriteOutcome.AlreadyPresent, rewritten);
     }
 
     private sealed record SeededCorpus(
@@ -562,7 +528,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     /// </remarks>
     private async Task<SeededCorpus> SeedCorpusAsync()
     {
-
         float[] shared = Vec(1f);
 
         string globalId = await InsertAsync(sessionId: null, "an installation-scoped conclusion", shared);
@@ -583,7 +548,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             shared);
 
         return new SeededCorpus(globalId, campaignAId, campaignBId, unresolvedId);
-
     }
 
     /// <summary>
@@ -599,7 +563,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     /// <summary>Ids of every candidate the scoped search admits, ordered so a comparison is stable.</summary>
     private async Task<string[]> SearchAsync(Guid? campaignId)
     {
-
         DivinationService divination = new(
             _db!,
             _availability!,
@@ -618,12 +581,10 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         Assert.True(search.IsSuccess);
 
         return [.. search.Value.Select(static hit => hit.Id).Order(StringComparer.Ordinal)];
-
     }
 
     private async Task<string> InsertAsync(Guid? sessionId, string content, float[] embedding)
     {
-
         string id = Guid.NewGuid().ToString();
 
         _ = await _store!.InsertAsync(
@@ -637,12 +598,10 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             CancellationToken.None);
 
         return id;
-
     }
 
     private async Task<(SagaMemoryScopeKind Kind, Guid? CampaignId)> ReadScopeAsync(string memoryId)
     {
-
         await using DbCommand command = Connection.CreateCommand();
 
         command.CommandText = """SELECT ScopeKindCode, CampaignId FROM "saga_memories" WHERE "Id" = $id;""";
@@ -662,16 +621,13 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         return (
             (SagaMemoryScopeKind)reader.GetInt32(0),
             reader.IsDBNull(1) ? null : Guid.Parse(reader.GetString(1)));
-
     }
 
     private async Task<Guid> SeedCampaignSessionAsync(Guid campaignId)
     {
-
         await SeedCampaignAsync(campaignId);
 
         return await SeedSessionAsync(campaignId, bindingKindCode: 2);
-
     }
 
     private Task SeedCampaignAsync(Guid campaignId) =>
@@ -692,7 +648,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 
     private async Task<Guid> SeedSessionAsync(Guid? campaignId, long bindingKindCode)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         await ExecuteAsync(
@@ -733,7 +688,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             ("$now", Timestamp));
 
         return sessionId;
-
     }
 
     /// <summary>
@@ -753,14 +707,12 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 
     private async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
     {
-
         await using DbCommand command = Connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object? value) in parameters)
         {
-
             DbParameter parameter = command.CreateParameter();
 
             parameter.ParameterName = name;
@@ -768,22 +720,17 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
             parameter.Value = value ?? DBNull.Value;
 
             command.Parameters.Add(parameter);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static float[] Vec(params float[] leading)
     {
-
         float[] result = new float[TestDimensions];
 
         leading.AsSpan().CopyTo(result);
 
         return result;
-
     }
-
 }

@@ -1212,6 +1212,75 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Null(await GetExtractionCursorAsync(sessionId));
     }
 
+    /// <summary>
+    /// Per-candidate inserts commit before the page cursor, so an in-process fault on a later candidate
+    /// leaves the earlier conclusion durable with the cursor unmoved. The retry re-reviews the same page
+    /// and must recognise that conclusion rather than store it a second time.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExtractForSessionAsync_SecondInsertThrows_RetryDoesNotDuplicateFirstMemory()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "Two durable facts are stated in this turn.");
+
+        // The second embedding of the first attempt has the wrong width, so the store refuses the second
+        // insert by throwing after the first insert has already committed.
+        FakeWeaveService weave = new()
+        {
+            VectorForCall = callCount => callCount == 2 ? new float[TestDimensions + 1] : Vec(1f),
+        };
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "First durable fact.", "attachmentId": null }, { "content": "Second durable fact.", "attachmentId": null }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None));
+
+        Assert.Equal(1, await CountMemoriesAsync());
+
+        Assert.Null(await GetExtractionCursorAsync(sessionId));
+
+        SagaExtractionOutcome retried = await ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        Assert.Equal(SagaExtractionOutcome.Completed, retried);
+
+        SagaMemoryDto[] memories = await CreateStore().ListAsync(
+            null,
+            sessionId,
+            MemoryScope.Installation,
+            10,
+            0,
+            CancellationToken.None);
+
+        Assert.Equal(
+            ["First durable fact.", "Second durable fact."],
+            memories.Select(static memory => memory.Content).Order(StringComparer.Ordinal));
+
+        Assert.NotNull(await GetExtractionCursorAsync(sessionId));
+    }
+
     [SkippableFact]
     public async Task ExtractForSessionAsync_EmptyMemoriesArray_NoInserts_StillAdvancesWatermark()
     {
@@ -1384,7 +1453,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         Assert.Equal(SagaExtractionOutcome.Completed, resumedOutcome);
 
-        Assert.Equal(3, await CountMemoriesAsync());
+        // All three pages return the same conclusion, which the Session stores once.
+        Assert.Equal(1, await CountMemoriesAsync());
 
         Assert.Equal(latestTimestamp, await GetWatermarkAsync(sessionId));
 
@@ -5455,6 +5525,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         internal Func<int, bool>? AvailabilityForCheck { get; init; }
 
+        /// <summary>When set, supplies the vector for each embedding call by its 1-based call number.</summary>
+        internal Func<int, float[]>? VectorForCall { get; init; }
+
         public bool IsAvailable
         {
             get
@@ -5479,7 +5552,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 return Result<Embedding<float>>.Failure(new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure."));
             }
 
-            return Result<Embedding<float>>.Success(new Embedding<float>(Vec(1f)));
+            return Result<Embedding<float>>.Success(
+                new Embedding<float>(VectorForCall?.Invoke(callCount) ?? Vec(1f)));
         }
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken) =>

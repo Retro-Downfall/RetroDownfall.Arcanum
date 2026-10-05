@@ -1197,6 +1197,15 @@ public sealed class SagaExtractionService : BackgroundService
                         cancellationToken).ConfigureAwait(false);
                 }
 
+                if (outcome == SagaMemoryWriteOutcome.AlreadyPresent)
+                {
+                    // An earlier attempt of this page committed this conclusion before a later candidate
+                    // failed. It is this page's durable disposition, not a second memory.
+                    insertedCount++;
+
+                    continue;
+                }
+
                 if (outcome == SagaMemoryWriteOutcome.Suppressed)
                 {
                     // A deliberate rejection, not a failure: the operator already retired or erased an
