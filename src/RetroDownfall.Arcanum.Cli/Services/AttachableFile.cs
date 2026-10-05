@@ -10,10 +10,13 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 /// <remarks>
 /// A FIFO reports a length of 0, <c>File.Exists</c> says true for it, and opening it for reading blocks until
 /// a writer appears, which nothing can interrupt. A device has no end. Only a regular file is a bounded
-/// source, so everything else is refused before it is opened.
+/// source, so everything else is refused before it is opened, and <see cref="OpenForRead"/> opens without
+/// ever waiting on the path, so a path that changes between the check and the open is refused too.
 /// </remarks>
 internal static class AttachableFile
 {
+    private const string NotRegularFileMessage = "The path is not a regular file.";
+
     /// <summary>
     /// True when <paramref name="fullPath"/> (symbolic links followed) names a regular file. Otherwise
     /// <paramref name="reason"/> says why, in words that read after "is" and after "Cannot stage name:".
@@ -105,8 +108,6 @@ internal static class AttachableFile
 
         return stream;
     }
-
-    private const string NotRegularFileMessage = "The path is not a regular file.";
 
     private static FileStream OpenUnixWithoutBlocking(string fullPath, int bufferSize)
     {
