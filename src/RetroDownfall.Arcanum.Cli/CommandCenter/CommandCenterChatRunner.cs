@@ -24,6 +24,13 @@ internal sealed class CommandCenterChatRunner(
     CommandCenterHumanPromptCoordinator humanPromptCoordinator,
     ILogger<CommandCenterChatRunner> logger)
 {
+    /// <summary>
+    /// Builds the turn's attachments. A seam: production reads the files, and a test substitutes a build
+    /// that blocks the way a read stalled inside the operating system does.
+    /// </summary>
+    internal AttachmentBuildDelegate BuildAttachmentsAsync { get; set; } =
+        CommandCenterTurnAttachmentBuilder.BuildAsync;
+
     public async Task RunTurnAsync(
         string prompt,
         CommandCenterState state,
@@ -86,9 +93,10 @@ internal sealed class CommandCenterChatRunner(
             string workingDirectory = state.WorkingDirectory;
             ArcanumSettings settings = settingsMonitor.CurrentValue;
             string[] pathsToStage = staged.Paths;
+            AttachmentBuildDelegate buildAttachments = BuildAttachmentsAsync;
             TurnAttachmentBuildResult attachments = await AbandonableBlockingWork
                 .RunAsync(
-                    () => CommandCenterTurnAttachmentBuilder.BuildAsync(
+                    () => buildAttachments(
                         prompt,
                         workingDirectory,
                         pathsToStage,

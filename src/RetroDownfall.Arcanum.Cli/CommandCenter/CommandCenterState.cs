@@ -156,16 +156,6 @@ internal sealed class CommandCenterState
         }
     }
 
-    /// <summary>Drops everything staged, as an operator discard does.</summary>
-    public void ClearAllStaged()
-    {
-        lock (_stagedGate)
-        {
-            _stagedAttachmentPaths.Clear();
-            _stagedAttachmentReferences.Clear();
-        }
-    }
-
     public IReadOnlyList<SessionAttachmentDto> SessionAttachments { get; set; } = [];
 
     private int _turnActive;

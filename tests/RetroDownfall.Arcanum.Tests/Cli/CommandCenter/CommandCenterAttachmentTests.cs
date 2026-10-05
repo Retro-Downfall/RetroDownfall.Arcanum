@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Cli.Commands;
@@ -18,7 +19,6 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
-using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -246,6 +246,41 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
 
         Assert.False(staged);
         Assert.Contains("not a regular file", statusLine, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The stat that refuses a FIFO and the open that reads the file are two steps, and the path can change
+    /// between them. The read must therefore never wait for a writer itself: it opens without blocking and
+    /// then checks what it opened, so a path swapped for a FIFO is refused instead of parking a thread-pool
+    /// thread until something writes to it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Reading_a_path_that_became_a_fifo_after_the_stat_is_refused_without_waiting_for_a_writer()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_root, "swapped.txt");
+        Assert.True(PosixFifo.TryCreate(fifo), "mkfifo did not create the FIFO.");
+
+        Task<string?> read = Task.Run(() =>
+            CommandCenterTurnAttachmentBuilder.ReadBoundedTextAsync(fifo, 1024, CancellationToken.None));
+
+        try
+        {
+            IOException refused = await Assert.ThrowsAsync<IOException>(() =>
+                read.WaitAsync(TimeSpan.FromSeconds(30)));
+
+            Assert.Contains("not a regular file", refused.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!read.IsCompleted)
+            {
+                // A read parked in open(2) is the defect this pins. Pair a writer with it so the test
+                // host does not keep a blocked thread for the rest of the run.
+                using FileStream writer = new(fifo, FileMode.Open, FileAccess.Write);
+            }
+        }
     }
 
     [SkippableFact]
@@ -506,6 +541,29 @@ public sealed class CommandCenterAttachmentFileKindTests : IDisposable
         Assert.Equal(expectedProbeAsked ? 1 : 0, asked);
     }
 
+    /// <summary>
+    /// An opened handle is the file itself: the operating system has already followed every link to reach
+    /// it, so the handle's own kind is the whole answer and there is no second look at the path to race.
+    /// Windows reports a reparse point that names no other location (a cloud placeholder, deduplicated
+    /// data) as <see cref="FileSystemObjectKind.Other"/>, so there that kind is attachable.
+    /// </summary>
+    [Theory]
+    [InlineData("RegularFile", false, true)]
+    [InlineData("RegularFile", true, true)]
+    [InlineData("Directory", false, false)]
+    [InlineData("Directory", true, false)]
+    [InlineData("Other", false, false)]
+    [InlineData("Other", true, true)]
+    public void An_opened_handle_is_judged_by_its_own_kind_and_never_by_a_second_look_at_the_path(
+        string kindName,
+        bool onWindows,
+        bool expectedAttachable)
+    {
+        FileSystemObjectKind kind = Enum.Parse<FileSystemObjectKind>(kindName);
+
+        Assert.Equal(expectedAttachable, AttachableFile.IsAttachableHandleKind(kind, onWindows));
+    }
+
     [SkippableFact]
     public async Task A_path_the_stat_reports_as_neither_file_nor_directory_is_refused_off_windows()
     {
@@ -630,11 +688,10 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
     /// A FIFO in the workspace is the unbounded case: <c>File.Exists</c> reports it as a file, its length
     /// is 0 so the size guard passes, and opening it for reading blocks until a writer appears. Staging
     /// rejects anything that is not a regular file, so the turn reports why and carries on with the
-    /// literal token instead of wedging the TUI; and the turn still reaches its first yield before it
-    /// touches the filesystem, because submit calls it from the Terminal.Gui main loop.
+    /// literal token instead of wedging the TUI.
     /// </summary>
     [SkippableFact]
-    public async Task A_turn_yields_before_it_reads_a_staged_attachment()
+    public async Task A_staged_fifo_is_refused_with_a_status_line_and_the_literal_token_stays()
     {
         Skip.If(
             OperatingSystem.IsWindows(),
@@ -647,9 +704,36 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = _root };
         Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
 
+        // No writer ever pairs with the FIFO: the turn has to finish because staging refused it.
+        await runner.RunTurnAsync("summarize @trace.log", state, updates.Writer, CancellationToken.None)
+            .WaitAsync(AsyncTestTimeout);
+
+        string transcript = state.Log.RenderPlainText();
+        Assert.Contains("not a regular file", transcript, StringComparison.Ordinal);
+        Assert.Contains("@trace.log", transcript, StringComparison.Ordinal);
+        Assert.False(state.ThinkingActive);
+    }
+
+    /// <summary>
+    /// Submit reaches <see cref="CommandCenterChatRunner.RunTurnAsync"/> straight from the Terminal.Gui key
+    /// handler with nothing awaited in between, so whatever the turn does before its first yield runs on the
+    /// main loop. The build is made to block outright, which is what a read inside the operating system
+    /// does: the turn must hand the caller back while it is still blocked.
+    /// </summary>
+    [Fact]
+    public async Task A_turn_hands_its_caller_back_while_the_attachment_build_is_still_blocked()
+    {
+        using ManualResetEventSlim buildStarted = new();
+        using ManualResetEventSlim releaseBuild = new();
+        CommandCenterChatRunner runner = CreateRunner(
+            new TestOptionsMonitor(new ArcanumSettings()),
+            BlockingBuild(buildStarted, releaseBuild));
+        CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = _root };
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
         Task turn = Task.CompletedTask;
         Thread mainLoop = new(() =>
-            turn = runner.RunTurnAsync("summarize @trace.log", state, updates.Writer, CancellationToken.None))
+            turn = runner.RunTurnAsync("hello", state, updates.Writer, CancellationToken.None))
         {
             IsBackground = true,
         };
@@ -657,18 +741,64 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         mainLoop.Start();
         bool yielded = mainLoop.Join(AsyncTestTimeout);
 
-        Assert.True(
-            yielded,
-            "RunTurnAsync blocked its caller reading a staged attachment; on the real submit path that "
-                + "caller is the Terminal.Gui main loop.");
+        try
+        {
+            Assert.True(
+                yielded,
+                "RunTurnAsync ran the attachment build on its caller; on the real submit path that caller "
+                    + "is the Terminal.Gui main loop.");
+            Assert.True(buildStarted.Wait(AsyncTestTimeout), "The attachment build never started.");
+            Assert.False(turn.IsCompleted);
+            Assert.True(state.ThinkingActive);
+        }
+        finally
+        {
+            releaseBuild.Set();
+        }
 
-        // No writer ever pairs with the FIFO: the turn has to finish because staging refused it.
-        await turn.WaitAsync(TimeSpan.FromSeconds(30));
+        await turn.WaitAsync(AsyncTestTimeout);
 
-        string transcript = state.Log.RenderPlainText();
-        Assert.Contains("not a regular file", transcript, StringComparison.Ordinal);
-        Assert.Contains("@trace.log", transcript, StringComparison.Ordinal);
         Assert.False(state.ThinkingActive);
+    }
+
+    /// <summary>
+    /// Ctrl+C has to get the composer back even when the build can no longer be reached: a read parked in
+    /// the operating system never observes the token. The turn walks away from it rather than waiting.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_releases_a_turn_whose_attachment_build_is_stuck_in_the_operating_system()
+    {
+        using ManualResetEventSlim buildStarted = new();
+        using ManualResetEventSlim releaseBuild = new();
+        CommandCenterChatRunner runner = CreateRunner(
+            new TestOptionsMonitor(new ArcanumSettings()),
+            BlockingBuild(buildStarted, releaseBuild));
+        CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = _root };
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        using CancellationTokenSource cts = new();
+
+        Task run = runner.RunTurnAsync("hello", state, updates.Writer, cts.Token);
+
+        try
+        {
+            Assert.True(buildStarted.Wait(AsyncTestTimeout), "The attachment build never started.");
+
+            cts.Cancel();
+
+            await run.WaitAsync(AsyncTestTimeout);
+
+            Assert.False(releaseBuild.IsSet);
+            Assert.False(state.ThinkingActive);
+            Assert.Contains(
+                "Cancelled before the message was sent.",
+                state.Log.RenderPlainText(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(state.Log.Snapshot(), static entry => entry.Streaming);
+        }
+        finally
+        {
+            releaseBuild.Set();
+        }
     }
 
     /// <summary>
@@ -719,10 +849,32 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         Assert.DoesNotContain(state.Log.Snapshot(), static entry => entry.Streaming);
     }
 
+    /// <summary>
+    /// Longer than <see cref="AsyncTestTimeout"/>, so a turn that waits for the stuck build fails on its own
+    /// wait rather than racing the build's own release.
+    /// </summary>
+    private static readonly TimeSpan StuckBuildCeiling = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// A build that never returns on its own, as a read stalled inside the operating system does: it
+    /// ignores the token and holds its thread until the test releases it.
+    /// </summary>
+    private static AttachmentBuildDelegate BlockingBuild(
+        ManualResetEventSlim started,
+        ManualResetEventSlim release) =>
+        (prompt, _, _, _, _) =>
+        {
+            started.Set();
+            _ = release.Wait(StuckBuildCeiling);
+            return Task.FromResult(new TurnAttachmentBuildResult(prompt, null, null, [], false));
+        };
+
     private static CommandCenterChatRunner CreateRunner() =>
         CreateRunner(new TestOptionsMonitor(new ArcanumSettings()));
 
-    private static CommandCenterChatRunner CreateRunner(IOptionsMonitor<ArcanumSettings> settingsMonitor)
+    private static CommandCenterChatRunner CreateRunner(
+        IOptionsMonitor<ArcanumSettings> settingsMonitor,
+        AttachmentBuildDelegate? buildAttachments = null)
     {
         string ndjson = JsonSerializer.Serialize(
             new IntelligenceEvent(IntelligenceEventType.Result, "done", "done"),
@@ -735,12 +887,19 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
             new NoopLastSessionStore(),
             NullLogger<SessionWorkspaceService>.Instance);
         CommandCenterHardModalArbiter arbiter = new();
-        return new CommandCenterChatRunner(
+        CommandCenterChatRunner runner = new(
             client,
             settingsMonitor,
             workspace,
             new CommandCenterHumanPromptCoordinator(client, arbiter),
             NullLogger<CommandCenterChatRunner>.Instance);
+
+        if (buildAttachments is not null)
+        {
+            runner.BuildAttachmentsAsync = buildAttachments;
+        }
+
+        return runner;
     }
 
     private sealed class ThrowingOptionsMonitor : IOptionsMonitor<ArcanumSettings>
@@ -1463,13 +1622,15 @@ public sealed class ShellCommandDispatcherAttachmentsTests
     }
 
     [Fact]
-    public void Staged_attachment_references_can_be_cleared_like_paths()
+    public void A_sent_snapshot_clears_the_staged_references_it_carried()
     {
         CommandCenterState state = new(new SessionLogBuffer());
         Guid id = Guid.NewGuid();
         _ = state.StageAttachmentReference(id);
         Assert.Single(state.StagedAttachmentReferences);
-        state.ClearAllStaged();
+
+        state.ClearStaged(state.SnapshotStaged());
+
         Assert.Empty(state.StagedAttachmentReferences);
     }
 
