@@ -172,6 +172,40 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     }
 
     /// <summary>
+    /// A fault between the spent disposition and the anchor's close keeps staging, because the anchor
+    /// still commits to the journal inside it.
+    /// </summary>
+    /// <remarks>
+    /// The disposition alone used to count as final, so the cleanup deleted staging — the V2 journal
+    /// with it — while the anchor that names that journal was still active. The next start would then
+    /// find an active anchor committing to a journal that no longer exists, which it can only refuse.
+    /// </remarks>
+    [Fact]
+    public async Task A_fault_after_the_disposition_but_before_the_anchor_closes_keeps_staging()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        harness.Markers.ReleaseFault = new InvalidOperationException("injected release fault");
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal("backup.restore_completion_failed", Assert.Single(result.Issues).Code);
+
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // Committed, so not reversed.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+
+        string staging = Assert.Single(harness.StagingRoots());
+
+        Assert.True(File.Exists(Path.Combine(staging, BackupRestoreJournalAnchorStore.JournalFileName)));
+    }
+
+    /// <summary>
     /// The window the previous test cannot reach: the gate has applied <c>CommitAndReopen</c> and admission
     /// is open, but the marker finalizer's own commit has not landed, so the session has not yet recorded
     /// the disposition. A full disk there is a <c>SqliteException</c> that used to surface in the service's
@@ -324,6 +358,44 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             harness.Gate.Dispositions);
 
         Assert.Equal(0, harness.Markers.ReconcileCalls);
+    }
+
+    /// <summary>
+    /// A fault no catch names, escaping the commit after its first rename, is not proof that nothing was
+    /// displaced: admission stays closed and staging, with the displaced installation in it, is kept.
+    /// </summary>
+    /// <remarks>
+    /// The commit had recorded no outcome, so the abort was told the restore never began its renames. It
+    /// spent <c>RollbackAndReopen</c> over a live root holding the unfinished replacement, closed the
+    /// anchor, and the cleanup then deleted staging with the prior installation inside it.
+    /// </remarks>
+    [Fact]
+    public async Task A_fault_no_catch_names_inside_the_commit_keeps_admission_closed_and_staging()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string existingBackup = Path.Combine(_installation, "backups", "older.arcbackup");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(existingBackup)!);
+
+        await File.WriteAllTextAsync(existingBackup, "older");
+
+        harness.Options = harness.Options with
+        {
+            FailBeforePreservedEntry = "backups",
+        };
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(() => harness.RestoreAsync());
+
+        // Disposed without a disposition, which is exactly KeepClosed.
+        Assert.Empty(harness.Gate.Dispositions);
+
+        string staging = Assert.Single(harness.StagingRoots());
+
+        Assert.Equal(
+            "older",
+            await File.ReadAllTextAsync(
+                Path.Combine(staging, BackupRestoreJournal.DisplacedDirectoryName, "backups", "older.arcbackup")));
     }
 
     [Fact]
@@ -819,6 +891,16 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                             "The harness failed this restore at " + phase + ".");
                     }
                 },
+
+                // A type no catch in the restore names, so the fault escapes the commit itself.
+                BeforePreservedEntryMoveForTests = name =>
+                {
+                    if (Options.FailBeforePreservedEntry == name)
+                    {
+                        throw new ArgumentException(
+                            "The harness failed this restore while preserving " + name + ".");
+                    }
+                },
             };
 
             Markers.Published = Published;
@@ -1052,7 +1134,8 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         BackupRestoreConflictMode ConflictMode = BackupRestoreConflictMode.ReplaceInstallation,
         string? DestinationRoot = null,
         BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
-        bool ProtectedStateConfirmed = false);
+        bool ProtectedStateConfirmed = false,
+        string? FailBeforePreservedEntry = null);
 
     private sealed class HarnessSecretReader(string grimoireSecret) : IBackupSecretSnapshotReader
     {
@@ -1420,8 +1503,18 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             return answer;
         }
 
+        /// <summary>Thrown from the next root release instead of releasing, when set.</summary>
+        internal Exception? ReleaseFault { get; set; }
+
         public ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)
         {
+            if (ReleaseFault is { } fault)
+            {
+                ReleaseFault = null;
+
+                throw fault;
+            }
+
             ReleasedOwnerOperationId = ownerOperationId;
 
             return ValueTask.CompletedTask;

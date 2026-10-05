@@ -175,6 +175,33 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
         Assert.Equal("live", File.ReadAllText(Path.Combine(_live, "marker.txt")));
     }
 
+    /// <summary>
+    /// A journal past <c>Commit</c> over a tree no finished commit leaves keeps its staging, because a
+    /// reversal that stopped before it could rewind the journal leaves the prior installation there.
+    /// </summary>
+    /// <remarks>
+    /// The phase alone used to decide: anything past <c>Commit</c> was "only staging cleanup remained",
+    /// so a process death between a post-commit reversal's two renames — the restored tree moved back to
+    /// <c>staged/</c>, the prior installation not yet out of <c>previous/</c> — deleted both, leaving no
+    /// installation at all.
+    /// </remarks>
+    [Theory]
+    [InlineData(BackupRestorePhase.Reconcile)]
+    [InlineData(BackupRestorePhase.Cleanup)]
+    public void A_post_commit_journal_over_a_tree_no_finished_commit_leaves_keeps_staging(
+        BackupRestorePhase phase)
+    {
+        Interrupted interrupted = Interrupt(phase, live: false, staged: true, displaced: true);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_live));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.Equal("live", File.ReadAllText(Path.Combine(interrupted.DisplacedRoot, "marker.txt")));
+
+        Assert.Equal("staged", File.ReadAllText(Path.Combine(interrupted.StagedRoot, "marker.txt")));
+    }
+
     [Fact]
     public void A_journal_describing_another_installation_is_left_alone()
     {
@@ -221,6 +248,78 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
         Assert.False(Directory.Exists(interrupted.StagingRoot));
 
         Assert.Empty(BackupRestoreStagingIndex.Read(_live));
+    }
+
+    /// <summary>
+    /// A new-profile journal at <c>Commit</c> is resolved from its own staging alone, whatever the
+    /// default installation it names as its live root looks like.
+    /// </summary>
+    /// <remarks>
+    /// A new-profile commit renames <c>staged/</c> to a root the journal does not name and never touches
+    /// the live root it does name. Read as a replacement, a finished new-profile commit on a machine with
+    /// no default installation — staged gone, live absent, nothing displaced — matched no commit shape and
+    /// stopped startup with ReconciliationRequired; and a staged tree that never left staging, beside no
+    /// default installation, did the same. Staged gone is a completed commit and staged present is one
+    /// that never began, both only needing their staging removed.
+    /// </remarks>
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public void A_new_profile_commit_journal_is_resolved_without_reference_to_the_default_installation(
+        bool defaultInstallationPresent,
+        bool staged)
+    {
+        BackupRestoreRecoveryOutcome expected = staged
+            ? BackupRestoreRecoveryOutcome.RolledBack
+            : BackupRestoreRecoveryOutcome.CommitCompleted;
+
+        string elsewhere = Path.Combine(_root, "another-volume");
+
+        Directory.CreateDirectory(elsewhere);
+
+        Interrupted interrupted = Interrupt(
+            BackupRestorePhase.Commit,
+            live: defaultInstallationPresent,
+            staged: staged,
+            displaced: false,
+            stagingParent: elsewhere,
+            conflictMode: BackupRestoreConflictMode.NewProfileRoot);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_live));
+
+        Assert.Equal(expected, report.Outcome);
+
+        Assert.False(Directory.Exists(interrupted.StagingRoot));
+
+        Assert.Equal(defaultInstallationPresent, Directory.Exists(_live));
+    }
+
+    /// <summary>
+    /// No new-profile commit displaces anything, so a new-profile journal whose staging holds a displaced
+    /// root is not a shape any restore leaves, and its staging is kept for an operator.
+    /// </summary>
+    [Fact]
+    public void A_new_profile_commit_journal_with_a_displaced_root_demands_reconciliation()
+    {
+        string elsewhere = Path.Combine(_root, "another-volume");
+
+        Directory.CreateDirectory(elsewhere);
+
+        Interrupted interrupted = Interrupt(
+            BackupRestorePhase.Commit,
+            live: true,
+            staged: false,
+            displaced: true,
+            stagingParent: elsewhere,
+            conflictMode: BackupRestoreConflictMode.NewProfileRoot);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_live));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.True(Directory.Exists(interrupted.DisplacedRoot));
     }
 
     /// <summary>

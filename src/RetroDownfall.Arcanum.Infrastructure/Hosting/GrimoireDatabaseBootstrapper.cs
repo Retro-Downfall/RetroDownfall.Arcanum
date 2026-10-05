@@ -559,6 +559,19 @@ public static class GrimoireDatabaseBootstrapper
             throw new GrimoireDatabaseUnavailableException(
                 "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
         }
+
+        // Every other outcome stops too, so one added later cannot let readiness through by default.
+        if (recovered.Value is not (BackupRestoreStartupRecoveryOutcome.NoActiveJournal
+            or BackupRestoreStartupRecoveryOutcome.RecoveredReady))
+        {
+            Log.Fatal(
+                "An interrupted Arcanum restore was resolved, but its retained staging still needs an "
+                + "operator: its rollback could not reinstate every local secret. Arcanum will not start "
+                + "until that staging is resolved.");
+
+            throw new GrimoireDatabaseUnavailableException(
+                "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
+        }
     }
 
     /// <summary>

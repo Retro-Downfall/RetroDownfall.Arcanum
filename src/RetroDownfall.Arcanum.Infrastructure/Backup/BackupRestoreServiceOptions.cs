@@ -22,7 +22,6 @@ internal sealed record CovenantSelectiveImportServices(
 
 internal sealed class BackupRestoreServiceOptions
 {
-
     /// <summary>Embedding width this installation is configured for; derived vectors of any other width are rebuilt.</summary>
     public int EmbeddingDimensions { get; init; } = 1536;
 
@@ -75,6 +74,23 @@ internal sealed class BackupRestoreServiceOptions
     internal Action? BeforeReversalRenameForTests { get; init; }
 
     /// <summary>
+    /// Invoked inside the guard around the post-commit <c>Cleanup</c> journal advance, immediately before
+    /// the write; throwing simulates that bookkeeping write failing on any platform.
+    /// </summary>
+    /// <remarks>
+    /// The phase hook for <c>Cleanup</c> runs before the guard, so a fault thrown there reaches the
+    /// restore's general catch instead; only this seam reaches the guard itself without sealing the
+    /// staging root with Unix mode bits.
+    /// </remarks>
+    internal Action? BeforeCleanupJournalAdvanceForTests { get; init; }
+
+    /// <summary>
+    /// Invoked immediately before the journal is rewritten to retain staging for reconciliation;
+    /// throwing simulates that write failing after a reversal has already run.
+    /// </summary>
+    internal Action? BeforeRetainedJournalWriteForTests { get; init; }
+
+    /// <summary>
     /// Invoked with each archive entry as the staged generation is composed, before that entry is
     /// laid down.
     /// </summary>
@@ -115,5 +131,4 @@ internal sealed class BackupRestoreServiceOptions
     /// on demand, and so prove a failed checkpoint is reported as a pending scrub.
     /// </remarks>
     internal Func<SqliteConnection, CancellationToken, Task<Result<CovenantWalCheckpointOutcome>>>? StagedCheckpointForTests { get; init; }
-
 }
