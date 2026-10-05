@@ -455,7 +455,7 @@ Outcomes, least to most severe:
 | `operations.stale_leases` | Operations | Operation leases that expired while still claiming to run. | `arcanum operation list` |
 | `operations.durable_state` | Operations | The host's own durable-operation summary when it is reachable. | `arcanum operation list --state ReconciliationRequired` |
 | `runtime.pid_file` | Runtime | Whether the PID file names a live process. | `arcanum doctor --repair runtime.remove_stale_pid --apply` |
-| `runtime.maintenance_lock` | Runtime | Whether another process holds the installation maintenance lock. Read-only: it opens the existing file rather than acquiring the lock. | — |
+| `runtime.maintenance_lock` | Runtime | Whether another process holds the installation maintenance lock. Read-only: it opens the existing file with a shared mode rather than acquiring the exclusive lock, so it never blocks other diagnostics. The open itself is momentary and can overlap a host's startup acquisition, which retries a contended attempt for about 35 ms before reporting contention. | — |
 | `runtime.disk_space` | Runtime | Free space on the Arcanum volume. | `arcanum data prune --dry-run` |
 | `runtime.tool_child_sandbox` | Runtime | Filesystem jail, resource limits, and escape-hatch posture for tool children. | — |
 | `weave.embeddings` | Weave | Configured embedding provider, model, and vector mode. Managed compatibility budget `0` means no total row budget. | — |

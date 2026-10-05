@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 /// </summary>
 public sealed class PidFileCheck : IDoctorCheck
 {
-
     public const string CheckId = "runtime.pid_file";
 
     public string Id => CheckId;
@@ -31,7 +30,6 @@ public sealed class PidFileCheck : IDoctorCheck
 
     internal static DoctorFinding Inspect()
     {
-
         PidFilePosture posture = PidFilePosture.Read();
 
         return posture.Kind switch
@@ -59,7 +57,6 @@ public sealed class PidFileCheck : IDoctorCheck
                 + "'arcanum serve' treats this as crash residue and clears it on the next start.",
                 [StaleRemedy]),
         };
-
     }
 
     private static DoctorRemedy StaleRemedy =>
@@ -68,12 +65,10 @@ public sealed class PidFileCheck : IDoctorCheck
             RemoveStalePidRepair.RepairId,
             DoctorRemedyCommands.RepairStalePidFile,
             "Remove the PID file left behind by a host that is no longer running.");
-
 }
 
 internal enum PidFileKind
 {
-
     Absent,
 
     Live,
@@ -83,49 +78,37 @@ internal enum PidFileKind
     Malformed,
 
     Unreadable,
-
 }
 
 internal readonly record struct PidFilePosture(PidFileKind Kind, int Pid, string Path)
 {
-
     internal static PidFilePosture Read()
     {
-
         string path = ArcanumRuntimeDefaults.Server.PidFilePath
             ?? System.IO.Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.pid");
 
         if (!File.Exists(path))
         {
-
             return new PidFilePosture(PidFileKind.Absent, 0, path);
-
         }
 
         string text;
 
         try
         {
-
             text = File.ReadAllText(path).Trim();
-
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-
             return new PidFilePosture(PidFileKind.Unreadable, 0, path);
-
         }
 
         if (!int.TryParse(text, out int pid) || pid <= 0)
         {
-
             return new PidFilePosture(PidFileKind.Malformed, 0, path);
-
         }
 
         return new PidFilePosture(IsRunning(pid) ? PidFileKind.Live : PidFileKind.Stale, pid, path);
-
     }
 
     /// <summary>
@@ -135,25 +118,18 @@ internal readonly record struct PidFilePosture(PidFileKind Kind, int Pid, string
     /// </summary>
     private static bool IsRunning(int pid)
     {
-
         try
         {
-
             using Process process = Process.GetProcessById(pid);
 
             return !process.HasExited;
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or InvalidOperationException or NotSupportedException)
         {
-
             return false;
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -165,7 +141,6 @@ internal readonly record struct PidFilePosture(PidFileKind Kind, int Pid, string
 /// </summary>
 public sealed class RemoveStalePidRepair : IDoctorRepair
 {
-
     public const string RepairId = "runtime.remove_stale_pid";
 
     public string Id => RepairId;
@@ -179,7 +154,6 @@ public sealed class RemoveStalePidRepair : IDoctorRepair
 
     public Task<DoctorRepairResult> PlanAsync(CancellationToken cancellationToken)
     {
-
         PidFilePosture posture = PidFilePosture.Read();
 
         return Task.FromResult(posture.Kind switch
@@ -195,44 +169,34 @@ public sealed class RemoveStalePidRepair : IDoctorRepair
 
             _ => Refused(posture),
         });
-
     }
 
     public Task<DoctorRepairResult> ApplyAsync(CancellationToken cancellationToken)
     {
-
         PidFilePosture posture = PidFilePosture.Read();
 
         if (posture.Kind == PidFileKind.Absent)
         {
-
             return Task.FromResult(Converged());
-
         }
 
         if (posture.Kind is not (PidFileKind.Stale or PidFileKind.Malformed))
         {
-
             return Task.FromResult(Refused(posture));
-
         }
 
         try
         {
-
             File.Delete(posture.Path);
-
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-
             return Task.FromResult(new DoctorRepairResult(
                 RepairId,
                 DoctorRepairState.Failed,
                 "The stale PID file could not be deleted.",
                 [new DoctorRepairStep(posture.Path, DescribeBefore(posture), "unchanged")],
                 exception.GetType().Name));
-
         }
 
         return Task.FromResult(new DoctorRepairResult(
@@ -241,7 +205,6 @@ public sealed class RemoveStalePidRepair : IDoctorRepair
             "Removed the stale PID file.",
             [new DoctorRepairStep(posture.Path, DescribeBefore(posture), "removed")],
             null));
-
     }
 
     private static string DescribeBefore(PidFilePosture posture) =>
@@ -266,7 +229,6 @@ public sealed class RemoveStalePidRepair : IDoctorRepair
                 : "The PID file could not be read, so it is not safe to remove.",
             [],
             null);
-
 }
 
 /// <summary>
@@ -274,12 +236,27 @@ public sealed class RemoveStalePidRepair : IDoctorRepair
 /// Strictly read-only, unlike <c>ArcanumMaintenanceLock.CannotAcquireSafely</c>, which attempts an
 /// acquisition and therefore creates the lock file as a side effect when the topology is admissible.
 /// A diagnostic must not create the artifact it reports on, so this opens the existing file without
-/// <c>FileMode.OpenOrCreate</c> and treats a sharing violation as "held".
+/// <c>FileMode.OpenOrCreate</c> and treats a sharing violation as "held". The probe opens with a shared
+/// mode, so it never takes the exclusive installation lock itself; a held lock is only knowable by
+/// attempting an open, so the probe's instantaneous open can still collide with a concurrent acquisition,
+/// and <c>ArcanumMaintenanceLock.AcquireDetailed</c> retries a contended attempt briefly for that reason.
 /// </summary>
 public sealed class MaintenanceLockCheck : IDoctorCheck
 {
-
     public const string CheckId = "runtime.maintenance_lock";
+
+    private static readonly AsyncLocal<Action?> ProbeOpenedObserverOverride = new();
+
+    /// <summary>
+    /// Test seam invoked while the probe handle is open, for the current async flow only, so a test can
+    /// act while the probe is held.
+    /// </summary>
+    internal static Action? ProbeOpenedObserverForTests
+    {
+        get => ProbeOpenedObserverOverride.Value;
+
+        set => ProbeOpenedObserverOverride.Value = value;
+    }
 
     public string Id => CheckId;
 
@@ -294,7 +271,6 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
 
     internal static DoctorFinding Inspect(string guardedRoot)
     {
-
         string path = ArcanumMaintenanceLock.LockPathFor(guardedRoot);
 
         string parent = Path.GetDirectoryName(path)!;
@@ -305,20 +281,16 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
         if (parentTopology.IsSuccess
             && parentTopology.Value is NoFollowPathTopologyKind.Absent)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Healthy,
                 "No maintenance lock file is present.");
-
         }
 
         if (parentTopology.IsFailure
             || parentTopology.Value is not NoFollowPathTopologyKind.Directory
             || !SecureFilePermissions.HasOwnerOnlyPosture(parent, isDirectory: true))
         {
-
             return UnsafeFinding();
-
         }
 
         Result<NoFollowPathTopologyKind> leafTopology =
@@ -327,11 +299,9 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
         if (leafTopology.IsSuccess
             && leafTopology.Value is NoFollowPathTopologyKind.Absent)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Healthy,
                 "No maintenance lock file is present.");
-
         }
 
         if (leafTopology.IsFailure
@@ -343,26 +313,27 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
             || named.HardLinkCount != 1
             || !SecureFilePermissions.HasOwnerOnlyPosture(path, isDirectory: false))
         {
-
             return UnsafeFinding();
-
         }
 
         try
         {
-
             using FileStream stream = new(
                 path,
                 new FileStreamOptions
                 {
-
                     Mode = FileMode.Open,
 
                     Access = FileAccess.ReadWrite,
 
-                    Share = FileShare.None,
-
+                    // Shared, so the probe claims nothing exclusive: it still fails against a holder (whose
+                    // exclusive open refuses every other open) but two diagnostics never report each other
+                    // as that holder. An open of any kind collides with an acquisition that lands in the same
+                    // instant, which is why acquisition retries a contended attempt briefly.
+                    Share = FileShare.ReadWrite,
                 });
+
+            ProbeOpenedObserverForTests?.Invoke();
 
             if (!FileHandleIdentityInterop.TryGetHandleMetadata(
                     stream.SafeFileHandle,
@@ -382,9 +353,7 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
                             opened.Identity,
                             namedAfterOpen.Identity))))
             {
-
                 return UnsafeFinding();
-
             }
 
             // The file exists but nothing holds it. That is not a fault: the lock is advisory and a
@@ -392,11 +361,9 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
             return new DoctorFinding(
                 DoctorOutcome.Healthy,
                 "A maintenance lock file exists but no process holds it; it will be reused as-is.");
-
         }
         catch (IOException exception)
         {
-
             return ArcanumMaintenanceLock.IsVerifiedSharingViolation(exception)
                 ? new DoctorFinding(
                     DoctorOutcome.Degraded,
@@ -405,22 +372,17 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
                     + "wait for it to finish before "
                     + "changing installation state.")
                 : UnsafeFinding();
-
         }
         catch (UnauthorizedAccessException)
         {
-
             return UnsafeFinding();
-
         }
-
     }
 
     private static DoctorFinding UnsafeFinding() =>
         new(
             DoctorOutcome.Degraded,
             "The maintenance lock topology, identity, or owner-only permissions could not be inspected safely. Check the Arcanum installation path and its permissions.");
-
 }
 
 /// <summary>
@@ -430,7 +392,6 @@ public sealed class MaintenanceLockCheck : IDoctorCheck
 /// </summary>
 public sealed class DiskSpaceCheck : IDoctorCheck
 {
-
     public const string CheckId = "runtime.disk_space";
 
     /// <summary>Below this, SQLite checkpoints and blob writes start failing in practice.</summary>
@@ -451,51 +412,41 @@ public sealed class DiskSpaceCheck : IDoctorCheck
 
     internal static DoctorFinding Inspect(string directory)
     {
-
         long available;
 
         try
         {
-
             available = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(directory)) ?? directory)
                 .AvailableFreeSpace;
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or IOException or UnauthorizedAccessException)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unavailable,
                 "Free space on the Arcanum volume could not be measured.");
-
         }
 
         string readable = $"{available / (1024.0 * 1024 * 1024):F1} GiB";
 
         if (available < UnhealthyBytes)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unhealthy,
                 $"Only {readable} free on the Arcanum volume. Writes to the Grimoire and to encrypted "
                 + "blob storage will start failing.",
                 [FreeSpaceRemedy]);
-
         }
 
         if (available < DegradedBytes)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Degraded,
                 $"{readable} free on the Arcanum volume, which leaves little headroom for a backup or a restore.",
                 [FreeSpaceRemedy]);
-
         }
 
         return new DoctorFinding(DoctorOutcome.Healthy, $"{readable} free on the Arcanum volume.");
-
     }
 
     private static DoctorRemedy FreeSpaceRemedy =>
@@ -504,5 +455,4 @@ public sealed class DiskSpaceCheck : IDoctorCheck
             null,
             DoctorRemedyCommands.DataPrunePreview,
             "Review what retention would reclaim, then free space on the volume holding the Arcanum installation.");
-
 }

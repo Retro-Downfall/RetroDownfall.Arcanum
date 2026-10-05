@@ -13,36 +13,32 @@ namespace RetroDownfall.Arcanum.Tests.Diagnostics;
 [Collection("WorkspacePathPolicy")]
 public sealed class MaintenanceLockCheckTests : IDisposable
 {
-
     private readonly string _container = Path.Combine(
         Path.GetTempPath(),
         "arcanum-maintenance-lock-check-" + Guid.NewGuid().ToString("N"));
 
     public MaintenanceLockCheckTests()
     {
-
         Directory.CreateDirectory(_container);
-
     }
 
     public void Dispose()
     {
-
         SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
+
+        MaintenanceLockCheck.ProbeOpenedObserverForTests = null;
+
+        ArcanumMaintenanceLock.ContentionRetryObserverForTests = null;
 
         if (Directory.Exists(_container))
         {
-
             Directory.Delete(_container, recursive: true);
-
         }
-
     }
 
     [Fact]
     public void Absent_parent_is_healthy_without_creating_any_path()
     {
-
         string guarded = Path.Combine(_container, "absent-parent", "arcanum");
 
         string parent = Path.GetDirectoryName(
@@ -55,13 +51,11 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.False(Directory.Exists(parent));
 
         Assert.False(File.Exists(ArcanumMaintenanceLock.LockPathFor(guarded)));
-
     }
 
     [Fact]
     public void Stale_owner_only_lock_is_reusable_and_its_bytes_are_unchanged()
     {
-
         string guarded = Path.Combine(_container, "stale", "arcanum");
 
         string path = CreateOwnerOnlyLockFile(guarded, "stale-sentinel");
@@ -75,13 +69,94 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.Contains("reused", finding.Detail, StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(before, File.ReadAllBytes(path));
+    }
 
+    /// <summary>
+    /// A diagnostic cannot learn that another process holds the lock without briefly opening the file
+    /// itself, so the probe's open can land on a host's acquisition. That collision must not fail the
+    /// acquisition: a contended acquire is retried, and the probe is gone by the time it is.
+    /// </summary>
+    [Fact]
+    public async Task Inspect_does_not_block_a_concurrent_acquire()
+    {
+        string guarded = Path.Combine(_container, "concurrent-acquire", "arcanum");
+
+        _ = CreateOwnerOnlyLockFile(guarded, "concurrent-sentinel");
+
+        using ManualResetEventSlim probeOpen = new(initialState: false);
+
+        using ManualResetEventSlim releaseProbe = new(initialState: false);
+
+        MaintenanceLockCheck.ProbeOpenedObserverForTests = () =>
+        {
+            probeOpen.Set();
+
+            Assert.True(releaseProbe.Wait(TimeSpan.FromSeconds(30)));
+        };
+
+        Task<DoctorFinding> inspecting = Task.Run(() => Inspect(guarded));
+
+        Assert.True(probeOpen.Wait(TimeSpan.FromSeconds(30)));
+
+        // Deterministic hand-off: the first attempt collides with the open probe, and only then does
+        // the probe finish, so the retry that follows can only succeed if retrying exists at all.
+        ArcanumMaintenanceLock.ContentionRetryObserverForTests = retry =>
+        {
+            releaseProbe.Set();
+
+            _ = inspecting.GetAwaiter().GetResult();
+        };
+
+        ArcanumMaintenanceLockAcquisitionResult acquired = await Task.Run(
+            () => ArcanumMaintenanceLock.AcquireDetailed(guarded));
+
+        using ArcanumMaintenanceLock? held = acquired.Lock;
+
+        Assert.Equal(ArcanumMaintenanceLockAcquisitionDisposition.Acquired, acquired.Disposition);
+
+        Assert.Equal(DoctorOutcome.Healthy, (await inspecting).Outcome);
+    }
+
+    /// <summary>
+    /// The probe takes no exclusive claim of its own, so two diagnostics running together never report
+    /// each other as the process that holds the lock.
+    /// </summary>
+    [Fact]
+    public async Task Concurrent_inspections_do_not_report_each_other_as_the_holder()
+    {
+        string guarded = Path.Combine(_container, "concurrent-inspect", "arcanum");
+
+        _ = CreateOwnerOnlyLockFile(guarded, "concurrent-sentinel");
+
+        using ManualResetEventSlim probeOpen = new(initialState: false);
+
+        using ManualResetEventSlim releaseProbe = new(initialState: false);
+
+        MaintenanceLockCheck.ProbeOpenedObserverForTests = () =>
+        {
+            probeOpen.Set();
+
+            Assert.True(releaseProbe.Wait(TimeSpan.FromSeconds(30)));
+        };
+
+        Task<DoctorFinding> first = Task.Run(() => Inspect(guarded));
+
+        Assert.True(probeOpen.Wait(TimeSpan.FromSeconds(30)));
+
+        MaintenanceLockCheck.ProbeOpenedObserverForTests = null;
+
+        DoctorFinding second = Inspect(guarded);
+
+        releaseProbe.Set();
+
+        Assert.Equal(DoctorOutcome.Healthy, second.Outcome);
+
+        Assert.Equal(DoctorOutcome.Healthy, (await first).Outcome);
     }
 
     [Fact]
     public void Doctor_opens_the_lock_with_the_same_write_access_required_by_real_acquisition()
     {
-
         ProductionSource source = Assert.Single(
             ProductionSourceInventory.Sources(),
             static candidate => candidate.IsExactOwner(
@@ -90,13 +165,11 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.True(source.Names("Access = FileAccess.ReadWrite"));
 
         Assert.False(source.Names("Access = FileAccess.Read,"));
-
     }
 
     [Fact]
     public void A_genuinely_held_lock_is_reported_as_proven_contention()
     {
-
         string guarded = Path.Combine(_container, "held", "arcanum");
 
         using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
@@ -109,13 +182,11 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.Contains("another process", finding.Detail, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("installation reset", finding.Detail, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [SkippableFact]
     public void Windows_read_only_stale_lock_is_degraded_and_its_bytes_are_unchanged()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "The Windows ReadOnly attribute is the access mismatch this regression pins.");
@@ -130,7 +201,6 @@ public sealed class MaintenanceLockCheckTests : IDisposable
 
         try
         {
-
             DoctorFinding finding = Inspect(guarded);
 
             Assert.Equal(DoctorOutcome.Degraded, finding.Outcome);
@@ -138,21 +208,16 @@ public sealed class MaintenanceLockCheckTests : IDisposable
             Assert.DoesNotContain("another process", finding.Detail, StringComparison.OrdinalIgnoreCase);
 
             Assert.Equal(before, File.ReadAllBytes(path));
-
         }
         finally
         {
-
             File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
-
         }
-
     }
 
     [Fact]
     public void Lock_leaf_symlink_is_unsafe_and_its_target_is_unchanged()
     {
-
         string guarded = Path.Combine(_container, "symlink", "arcanum");
 
         string path = ArcanumMaintenanceLock.LockPathFor(guarded);
@@ -174,13 +239,11 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.DoesNotContain("another process", finding.Detail, StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(original, File.ReadAllBytes(sentinel));
-
     }
 
     [Fact]
     public void Lock_parent_symlink_is_unsafe_and_its_target_is_unchanged()
     {
-
         string target = Path.Combine(_container, "parent-symlink-target");
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(target);
@@ -198,13 +261,11 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.DoesNotContain("another process", finding.Detail, StringComparison.OrdinalIgnoreCase);
 
         Assert.Empty(Directory.GetFileSystemEntries(target));
-
     }
 
     [Fact]
     public void Directory_at_the_lock_leaf_is_unsafe_and_unchanged()
     {
-
         string guarded = Path.Combine(_container, "directory-leaf", "arcanum");
 
         string path = ArcanumMaintenanceLock.LockPathFor(guarded);
@@ -222,13 +283,11 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.True(Directory.Exists(path));
 
         Assert.Empty(Directory.GetFileSystemEntries(path));
-
     }
 
     [SkippableFact]
     public void Hard_link_lock_leaf_is_unsafe_and_its_target_is_unchanged()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows(),
             "Unsupported operating system.");
@@ -256,7 +315,6 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         Assert.DoesNotContain("another process", finding.Detail, StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(original, File.ReadAllBytes(sentinel));
-
     }
 
     [Theory]
@@ -264,7 +322,6 @@ public sealed class MaintenanceLockCheckTests : IDisposable
     [InlineData(false)]
     public void Non_owner_only_parent_or_leaf_is_unsafe_and_read_only(bool rejectParent)
     {
-
         string guarded = Path.Combine(_container, "posture", "arcanum");
 
         string path = CreateOwnerOnlyLockFile(guarded, "posture-sentinel");
@@ -280,7 +337,6 @@ public sealed class MaintenanceLockCheckTests : IDisposable
 
         try
         {
-
             DoctorFinding finding = Inspect(guarded);
 
             Assert.Equal(DoctorOutcome.Degraded, finding.Outcome);
@@ -288,20 +344,15 @@ public sealed class MaintenanceLockCheckTests : IDisposable
             Assert.DoesNotContain("another process", finding.Detail, StringComparison.OrdinalIgnoreCase);
 
             Assert.Equal(before, File.ReadAllBytes(path));
-
         }
         finally
         {
-
             SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
-
         }
-
     }
 
     private static string CreateOwnerOnlyLockFile(string guarded, string contents)
     {
-
         string path = ArcanumMaintenanceLock.LockPathFor(guarded);
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(Path.GetDirectoryName(path)!);
@@ -311,10 +362,8 @@ public sealed class MaintenanceLockCheckTests : IDisposable
         SecureFilePermissions.ApplyOwnerOnlyFile(path);
 
         return path;
-
     }
 
     private static DoctorFinding Inspect(string guarded)
         => MaintenanceLockCheck.Inspect(guarded);
-
 }
