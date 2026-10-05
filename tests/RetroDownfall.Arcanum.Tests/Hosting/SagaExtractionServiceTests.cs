@@ -1678,6 +1678,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Contains(eligibleContent, onlyCall, StringComparison.Ordinal);
 
         Assert.DoesNotContain(ineligibleContent, onlyCall, StringComparison.Ordinal);
+
+        // The provider call count proves nothing was asked of the model for the ineligible session; this
+        // proves nothing was stored for it either (the eligible session's own write races the stop, so only
+        // the ineligible session has a deterministic count).
+        Assert.Equal(0, await CreateStore().CountBySessionAsync(ineligibleSessionId, CancellationToken.None));
     }
 
     [SkippableFact]

@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 
 public sealed class BackupManifestValidationTests
 {
-
     private static readonly byte[] Salt =
         Convert.FromHexString("000102030405060708090A0B0C0D0E0F");
 
@@ -16,20 +15,17 @@ public sealed class BackupManifestValidationTests
     [Fact]
     public void ValidateManifest_AcceptsMatchingAuthenticatedHeaderMetadata()
     {
-
         BackupManifest manifest = Manifest();
 
         BackupArchiveCodec.ValidateManifest(
             manifest,
             Header(),
             Salt);
-
     }
 
     [Fact]
     public void ValidateManifest_AcceptsCommittedPresetSidecarsAsConfigurationEntries()
     {
-
         BackupManifestEntry[] entries =
         [
             Entry(
@@ -48,18 +44,15 @@ public sealed class BackupManifestValidationTests
 
         BackupManifest manifest = Manifest() with
         {
-
             Components = ComponentsFor(entries),
 
             Entries = entries,
-
         };
 
         BackupArchiveCodec.ValidateManifest(
             manifest,
             Header(),
             Salt);
-
     }
 
     [Theory]
@@ -68,37 +61,31 @@ public sealed class BackupManifestValidationTests
     public void ValidateManifest_AcceptsSessionProvenanceForBroaderAndSpecificScopes(
         BackupScope scope)
     {
-
         BackupManifest manifest = Manifest() with
         {
-
             Scope = scope,
 
             SessionId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-
         };
 
         BackupArchiveCodec.ValidateManifest(
             manifest,
             Header(),
             Salt);
-
     }
 
     [Theory]
-    [MemberData(nameof(HeaderMismatchCases))]
+    [MemberData(nameof(HeaderMismatchCaseIndexes))]
     public void ValidateManifest_RejectsEnvelopeOrTimestampThatDisagreesWithHeader(
-        Func<BackupManifest, BackupManifest> mutate)
+        int caseIndex)
     {
-
-        BackupManifest manifest = mutate(Manifest());
+        BackupManifest manifest = HeaderMismatchMutations()[caseIndex](Manifest());
 
         Assert.Throws<InvalidDataException>(() =>
             BackupArchiveCodec.ValidateManifest(
                 manifest,
                 Header(),
                 Salt));
-
     }
 
     [Theory]
@@ -106,19 +93,14 @@ public sealed class BackupManifestValidationTests
     [InlineData(false)]
     public void ValidateManifest_RejectsUndefinedRequestedComponentValues(bool mutateIncludes)
     {
-
         BackupManifest manifest = mutateIncludes
             ? Manifest() with
             {
-
                 RequestedIncludes = [(BackupComponent)int.MaxValue],
-
             }
             : Manifest() with
             {
-
                 RequestedExcludes = [(BackupComponent)int.MaxValue],
-
             };
 
         Assert.Throws<InvalidDataException>(() =>
@@ -126,51 +108,62 @@ public sealed class BackupManifestValidationTests
                 manifest,
                 Header(),
                 Salt));
-
     }
 
     [Theory]
-    [MemberData(nameof(MalformedManifestCases))]
+    [MemberData(nameof(MalformedManifestCaseIndexes))]
     public void ValidateManifest_RejectsMalformedReferenceMetadataAsInvalidData(
-        Func<BackupManifest, BackupManifest> mutate)
+        int caseIndex)
     {
-
-        BackupManifest manifest = mutate(Manifest());
+        BackupManifest manifest = MalformedManifestMutations()[caseIndex](Manifest());
 
         Assert.Throws<InvalidDataException>(() =>
             BackupArchiveCodec.ValidateManifest(
                 manifest,
                 Header(),
                 Salt));
-
     }
 
     [Theory]
-    [MemberData(nameof(SemanticMismatchCases))]
+    [MemberData(nameof(SemanticMismatchCaseIndexes))]
     public void ValidateManifest_RejectsNoncanonicalOrInconsistentSemanticMetadata(
-        Func<BackupManifest, BackupManifest> mutate)
+        int caseIndex)
     {
-
-        BackupManifest manifest = mutate(Manifest());
+        BackupManifest manifest = SemanticMismatchMutations()[caseIndex](Manifest());
 
         Assert.Throws<InvalidDataException>(() =>
             BackupArchiveCodec.ValidateManifest(
                 manifest,
                 Header(),
                 Salt));
-
     }
 
-    public static TheoryData<Func<BackupManifest, BackupManifest>> HeaderMismatchCases()
+    /// <summary>
+    /// The theories carry a case index rather than the mutation delegate itself: xunit cannot serialize a
+    /// delegate, so it would fall back to one opaque test case (and print a notice on every run) instead of
+    /// reporting each mutation on its own.
+    /// </summary>
+    private static TheoryData<int> IndexesOf(List<Func<BackupManifest, BackupManifest>> mutations)
     {
+        TheoryData<int> indexes = [];
 
-        TheoryData<Func<BackupManifest, BackupManifest>> cases = [];
+        for (int index = 0; index < mutations.Count; index++)
+        {
+            indexes.Add(index);
+        }
+
+        return indexes;
+    }
+
+    public static TheoryData<int> HeaderMismatchCaseIndexes => IndexesOf(HeaderMismatchMutations());
+
+    private static List<Func<BackupManifest, BackupManifest>> HeaderMismatchMutations()
+    {
+        List<Func<BackupManifest, BackupManifest>> cases = [];
 
         cases.Add(manifest => manifest with
         {
-
             CreatedAt = manifest.CreatedAt.AddMilliseconds(1),
-
         });
 
         cases.Add(manifest => WithEnvelope(
@@ -185,9 +178,7 @@ public sealed class BackupManifestValidationTests
             manifest,
             envelope => envelope with
             {
-
                 KdfIterations = envelope.KdfIterations + 1,
-
             }));
 
         cases.Add(manifest => WithEnvelope(
@@ -215,38 +206,31 @@ public sealed class BackupManifestValidationTests
             envelope => envelope with { ChunkSize = envelope.ChunkSize * 2 }));
 
         return cases;
-
     }
 
-    public static TheoryData<Func<BackupManifest, BackupManifest>> MalformedManifestCases()
+    public static TheoryData<int> MalformedManifestCaseIndexes => IndexesOf(MalformedManifestMutations());
+
+    private static List<Func<BackupManifest, BackupManifest>> MalformedManifestMutations()
     {
-
-        TheoryData<Func<BackupManifest, BackupManifest>> cases = [];
+        List<Func<BackupManifest, BackupManifest>> cases = [];
 
         cases.Add(manifest => manifest with
         {
-
             Envelope = null!,
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Components = [null!],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Entries = [null!],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Entries =
             [
                 new BackupManifestEntry(
@@ -255,12 +239,10 @@ public sealed class BackupManifestValidationTests
                     Sha256: new string('0', 64),
                     BackupComponent.Configuration),
             ],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Entries =
             [
                 new BackupManifestEntry(
@@ -269,128 +251,99 @@ public sealed class BackupManifestValidationTests
                     Sha256: null!,
                     BackupComponent.Configuration),
             ],
-
         });
 
         return cases;
-
     }
 
-    public static TheoryData<Func<BackupManifest, BackupManifest>> SemanticMismatchCases()
+    public static TheoryData<int> SemanticMismatchCaseIndexes => IndexesOf(SemanticMismatchMutations());
+
+    private static List<Func<BackupManifest, BackupManifest>> SemanticMismatchMutations()
     {
-
-        TheoryData<Func<BackupManifest, BackupManifest>> cases = [];
+        List<Func<BackupManifest, BackupManifest>> cases = [];
 
         cases.Add(manifest => manifest with
         {
-
             ArcanumVersion = string.Empty,
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Build = " ",
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             DatabaseSchemaVersion = string.Empty,
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Platform = string.Empty,
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Build = "build-e\u0301",
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Platform = new string('p', 4097),
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Scope = BackupScope.SpecificSession,
 
             SessionId = null,
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             RequestedIncludes = [
                 BackupComponent.CompendiumSettings,
                 BackupComponent.Configuration,
             ],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             RequestedIncludes = [
                 BackupComponent.Configuration,
                 BackupComponent.Configuration,
             ],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             RequestedExcludes = [
                 BackupComponent.MasterApiKey,
                 BackupComponent.AuditLogs,
             ],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             RequestedExcludes = [
                 BackupComponent.AuditLogs,
                 BackupComponent.AuditLogs,
             ],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Components = [.. manifest.Components.Reverse()],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Components = [.. manifest.Components[..^1]],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Components = [.. manifest.Components, manifest.Components[^1]],
-
         });
 
         cases.Add(manifest => ReplaceComponent(
@@ -418,26 +371,20 @@ public sealed class BackupManifestValidationTests
             BackupComponent.AuditLogs,
             component => component with
             {
-
                 Status = BackupComponentStatus.Unavailable,
 
                 Bytes = 1,
-
             }));
 
         cases.Add(manifest => manifest with
         {
-
             Entries =
             [
                 manifest.Entries[0] with
                 {
-
                     Component = BackupComponent.AuditLogs,
-
                 },
             ],
-
         });
 
         cases.Add(manifest => ReplaceComponent(
@@ -452,70 +399,53 @@ public sealed class BackupManifestValidationTests
 
         cases.Add(manifest => manifest with
         {
-
             Entries =
             [
                 manifest.Entries[0] with
                 {
-
                     Sha256 = new string('A', 64),
-
                 },
             ],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Entries =
             [
                 manifest.Entries[0] with
                 {
-
                     Sha256 = new string('g', 64),
-
                 },
             ],
-
         });
 
         cases.Add(manifest => manifest with
         {
-
             Entries =
             [
                 manifest.Entries[0] with
                 {
-
                     Sha256 = new string('0', 63),
-
                 },
             ],
-
         });
 
         cases.Add(manifest =>
         {
-
             BackupManifestEntry duplicate = manifest.Entries[0];
 
             BackupManifestEntry[] entries = [duplicate, duplicate];
 
             return manifest with
             {
-
                 Components = ComponentsFor(entries),
 
                 Entries = entries,
-
             };
-
         });
 
         cases.Add(manifest =>
         {
-
             BackupManifestEntry authored = Entry(
                 "authored/CODEX.md",
                 size: 3,
@@ -525,17 +455,13 @@ public sealed class BackupManifestValidationTests
 
             return manifest with
             {
-
                 Components = ComponentsFor(entries),
 
                 Entries = entries,
-
             };
-
         });
 
         return cases;
-
     }
 
     private static BackupManifest WithEnvelope(
@@ -543,9 +469,7 @@ public sealed class BackupManifestValidationTests
         Func<BackupEnvelopeDescriptor, BackupEnvelopeDescriptor> mutate) =>
         manifest with
         {
-
             Envelope = mutate(manifest.Envelope),
-
         };
 
     private static BackupArchiveHeader Header() =>
@@ -560,7 +484,6 @@ public sealed class BackupManifestValidationTests
 
     private static BackupManifest Manifest()
     {
-
         BackupManifestEntry[] entries =
         [
             Entry(
@@ -601,7 +524,6 @@ public sealed class BackupManifestValidationTests
             SecurityWarnings: [],
             Components: ComponentsFor(entries),
             Entries: entries);
-
     }
 
     private static BackupManifest ReplaceComponent(
@@ -610,13 +532,11 @@ public sealed class BackupManifestValidationTests
         Func<BackupManifestComponent, BackupManifestComponent> mutate) =>
         manifest with
         {
-
             Components = manifest.Components
                 .Select(component => component.Component == target
                     ? mutate(component)
                     : component)
                 .ToArray(),
-
         };
 
     private static BackupManifestComponent[] ComponentsFor(
@@ -624,7 +544,6 @@ public sealed class BackupManifestValidationTests
         Enum.GetValues<BackupComponent>()
             .Select(component =>
             {
-
                 BackupManifestEntry[] owned = entries
                     .Where(entry => entry.Component == component)
                     .ToArray();
@@ -640,7 +559,6 @@ public sealed class BackupManifestValidationTests
                     complete ? "complete" : "omitted",
                     owned.LongLength,
                     owned.Sum(static entry => entry.Size));
-
             })
             .ToArray();
 
@@ -653,5 +571,4 @@ public sealed class BackupManifestValidationTests
             size,
             new string('0', 64),
             component);
-
 }

@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Performance;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -305,6 +306,132 @@ public sealed class ArcanumWebApplicationFactoryTests
 
             await profile.DisposeAsync();
         }
+    }
+
+    /// <summary>
+    /// The environment goes back before an owned profile is released, so that until the release (which
+    /// can be slow or throw) has finished no path in the process still resolves into the profile's tree.
+    /// </summary>
+    [Fact]
+    public async Task Constructor_failure_restores_the_environment_before_it_releases_an_owned_profile()
+    {
+        string? before = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string? testHomeWhenReleased = "never released";
+
+        RestartableArcanumProfileFixture profile = new(
+            clearPools: static () => { },
+            disposeGrimoire: () => testHomeWhenReleased =
+                global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+
+        string tempHome = profile.TempHome;
+
+        Directory.Delete(tempHome, recursive: true);
+
+        File.WriteAllText(tempHome, "A file squats the isolated profile root.");
+
+        try
+        {
+            _ = Assert.ThrowsAny<IOException>(
+                () => new ArcanumWebApplicationFactory(profile, ownsProfile: true));
+
+            Assert.NotEqual("never released", testHomeWhenReleased);
+
+            Assert.Equal(before, testHomeWhenReleased);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", before);
+
+            File.Delete(tempHome);
+
+            await profile.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A cleanup that fails while the constructor is already failing must not replace the failure that
+    /// explains why the factory could not be built; it is reported instead.
+    /// </summary>
+    [Fact]
+    public async Task Constructor_failure_is_not_replaced_by_a_failure_to_release_the_owned_profile()
+    {
+        string? before = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        RestartableArcanumProfileFixture profile = new(
+            clearPools: static () => { },
+            disposeGrimoire: static () => throw new InvalidOperationException("the profile could not be released"));
+
+        string tempHome = profile.TempHome;
+
+        Directory.Delete(tempHome, recursive: true);
+
+        File.WriteAllText(tempHome, "A file squats the isolated profile root.");
+
+        List<string> reports = [];
+
+        try
+        {
+            _ = Assert.ThrowsAny<IOException>(
+                () => new ArcanumWebApplicationFactory(profile, ownsProfile: true, reports.Add));
+
+            string report = Assert.Single(reports);
+
+            Assert.Contains("the profile could not be released", report, StringComparison.Ordinal);
+
+            Assert.Equal(before, global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", before);
+
+            File.Delete(tempHome);
+
+            await profile.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Disposal restores the environment before it deletes an owned profile's root: a slow or failing
+    /// delete can then never leave the process resolving paths into a half-deleted tree.
+    /// </summary>
+    [Fact]
+    public async Task Disposal_restores_the_environment_before_it_deletes_an_owned_profile()
+    {
+        string? before = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string? testHomeWhenDeleted = "never deleted";
+
+        RestartableArcanumProfileFixture profile = new(
+            clearPools: static () => { },
+            disposeGrimoire: static () => { },
+            deleteTempHome: path =>
+            {
+                testHomeWhenDeleted = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+                TestDirectoryCleanup.DeleteTree(path);
+            });
+
+        string tempHome = profile.TempHome;
+
+        ArcanumWebApplicationFactory factory = new(profile, ownsProfile: true);
+
+        try
+        {
+            Assert.Equal(tempHome, global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+        }
+        finally
+        {
+            await factory.DisposeAsync();
+
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", before);
+        }
+
+        Assert.NotEqual("never deleted", testHomeWhenDeleted);
+
+        Assert.Equal(before, testHomeWhenDeleted);
+
+        Assert.False(Directory.Exists(tempHome));
     }
 
     [Fact]

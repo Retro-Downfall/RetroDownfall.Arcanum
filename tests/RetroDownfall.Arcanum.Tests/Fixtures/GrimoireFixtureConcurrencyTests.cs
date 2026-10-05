@@ -217,6 +217,88 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
         }
     }
 
+    /// <summary>
+    /// A failed open can still have created the file (SQLite creates it as the connection opens), so the
+    /// probe removes it on every path rather than only after a success.
+    /// </summary>
+    [SkippableFact]
+    public void A_failed_probe_leaves_no_database_file_behind()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string directory = Path.Combine(Path.GetTempPath(), $"arcanum-probe-failed-{Guid.NewGuid():N}");
+
+        string probePath = Path.Combine(directory, "probe.db");
+
+        try
+        {
+            (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(
+                probePath,
+                "probe-passphrase",
+                static (path, _) =>
+                {
+                    File.WriteAllText(path, "created before the open failed");
+
+                    throw new InvalidOperationException("encryption is not supported by this build");
+                });
+
+            Assert.False(available);
+
+            Assert.Contains("encryption is not supported by this build", reason, StringComparison.Ordinal);
+
+            Assert.False(File.Exists(probePath), "The failed probe left its database file behind.");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The probe runs from the static constructor, where an escaping exception fails the type initializer for
+    /// good, so its cleanup must not throw for any reason: a failure to delete is reported and the probe's
+    /// own verdict stands.
+    /// </summary>
+    [Fact]
+    public void A_probe_whose_cleanup_fails_for_any_reason_still_reports_its_verdict()
+    {
+        List<string> reports = [];
+
+        GrimoireFixture.TryDeleteProbe(
+            "probe.db",
+            static _ => throw new NotSupportedException("the path format is not supported"),
+            reports.Add);
+
+        string report = Assert.Single(reports);
+
+        Assert.Contains("probe.db", report, StringComparison.Ordinal);
+
+        Assert.Contains("the path format is not supported", report, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The sweep runs from the static constructor too. A failure of any kind, not only the I/O and access
+    /// failures it expects, is reported and skipped instead of failing every later <c>Skip.IfNot</c> with a
+    /// <see cref="TypeInitializationException"/>.
+    /// </summary>
+    [Fact]
+    public void A_sweep_that_fails_for_any_reason_is_reported_and_never_escapes()
+    {
+        List<string> reports = [];
+
+        int removed = GrimoireFixture.TrySweepAbandonedTestArtifacts(
+            "arcanum-tests",
+            TimeSpan.FromHours(12),
+            static (_, _) => throw new InvalidOperationException("an unexpected failure"),
+            reports.Add);
+
+        Assert.Equal(0, removed);
+
+        string report = Assert.Single(reports);
+
+        Assert.Contains("an unexpected failure", report, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public void Probe_reports_available_and_removes_its_temp_database()
     {
