@@ -7,11 +7,9 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 
 public sealed class PromptImportHelperTests
 {
-
     [Fact]
     public async Task ImportAsync_NewPrompt_PersistsCompleteMappedPrompt()
     {
-
         FakePromptRepository repository = new();
         Guid targetCampaignId = Guid.NewGuid();
         Guid payloadCampaignId = Guid.NewGuid();
@@ -75,13 +73,11 @@ public sealed class PromptImportHelperTests
         Assert.Equal("Summarizes a topic", summary.Description);
         Assert.Equal(["utility", "writing"], summary.Tags);
         Assert.Equal(added.UpdatedAt, summary.UpdatedAt);
-
     }
 
     [Fact]
     public async Task ImportAsync_DuplicateVersion_ReturnsFailureWithoutPersisting()
     {
-
         FakePromptRepository repository = new()
         {
             Existing = new Prompt
@@ -119,13 +115,11 @@ public sealed class PromptImportHelperTests
             result.Error.Message);
         Assert.Null(repository.Added);
         Assert.Equal(cancellation.Token, repository.LookupCancellationToken);
-
     }
 
     [Fact]
     public async Task ImportAsync_NullPayload_ReturnsFailureWithoutTouchingRepository()
     {
-
         FakePromptRepository repository = new();
         using CancellationTokenSource cancellation = new();
 
@@ -140,7 +134,6 @@ public sealed class PromptImportHelperTests
         Assert.Equal(ErrorCodes.Prompt.InvalidRequest, result.Error.Code);
         Assert.Null(repository.Added);
         Assert.Null(repository.LookupName);
-
     }
 
     [Theory]
@@ -153,7 +146,6 @@ public sealed class PromptImportHelperTests
         string? version,
         string expectedCode)
     {
-
         FakePromptRepository repository = new();
         using CancellationTokenSource cancellation = new();
         PromptExportDto payload = new(
@@ -180,13 +172,11 @@ public sealed class PromptImportHelperTests
         Assert.Equal(expectedCode, result.Error.Code);
         Assert.Null(repository.Added);
         Assert.Null(repository.LookupName);
-
     }
 
     [Fact]
     public async Task ImportAsync_NullTemplate_ReturnsFailureWithoutPersisting()
     {
-
         FakePromptRepository repository = new();
         using CancellationTokenSource cancellation = new();
         PromptExportDto payload = new(
@@ -212,13 +202,11 @@ public sealed class PromptImportHelperTests
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Prompt.InvalidRequest, result.Error.Code);
         Assert.Null(repository.Added);
-
     }
 
     [Fact]
     public async Task ImportAsync_NullTags_PersistsAnEmptyTagArrayRatherThanTheLiteralNull()
     {
-
         FakePromptRepository repository = new();
         using CancellationTokenSource cancellation = new();
         PromptExportDto payload = new(
@@ -245,12 +233,10 @@ public sealed class PromptImportHelperTests
 
         Prompt added = Assert.IsType<Prompt>(repository.Added);
         Assert.Equal("[]", added.Tags);
-
     }
 
     private sealed class FakePromptRepository : IPromptRepository
     {
-
         public Prompt? Existing { get; init; }
 
         public Prompt? Added { get; private set; }
@@ -271,22 +257,18 @@ public sealed class PromptImportHelperTests
             Guid? campaignId,
             CancellationToken cancellationToken = default)
         {
-
             LookupName = name;
             LookupVersion = version;
             LookupCampaignId = campaignId;
             LookupCancellationToken = cancellationToken;
             return Task.FromResult(Existing);
-
         }
 
         public Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default)
         {
-
             Added = prompt;
             AddCancellationToken = cancellationToken;
             return Task.FromResult(prompt);
-
         }
 
         public Task<Prompt?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -311,6 +293,10 @@ public sealed class PromptImportHelperTests
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<Result<int>> ReplaceCampaignPromptsAsync(
+            Guid campaignId,
+            IReadOnlyList<Prompt> prompts,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
-
 }

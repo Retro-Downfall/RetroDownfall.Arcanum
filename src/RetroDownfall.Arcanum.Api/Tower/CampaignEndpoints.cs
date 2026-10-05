@@ -483,6 +483,16 @@ internal static class CampaignEndpoints
 
                 string strategy = string.IsNullOrWhiteSpace(request?.Strategy) ? "merge" : request.Strategy.Trim();
 
+                bool replacePrompts = string.Equals(strategy, "replace", StringComparison.OrdinalIgnoreCase);
+
+                // Any other value used to fall through as a merge, so a typo such as "replce" quietly did
+                // the opposite of what the caller asked. Refusing it up front also keeps it ahead of every
+                // read and write below.
+                if (!replacePrompts && !string.Equals(strategy, "merge", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ImportFailed(traceId, "strategy must be 'merge' or 'replace'.");
+                }
+
                 CampaignExportDto? payload = request?.Payload;
 
                 if (payload is null)
@@ -565,6 +575,31 @@ internal static class CampaignEndpoints
                     return ImportFailed(traceId, "Import payload must not contain null spell or prompt entries.");
                 }
 
+                // Every prompt entry is checked here too, ahead of any write. A prompt that lacks a name, a
+                // version or a template, or two entries that share a (name, version), used to be discovered
+                // only after the "replace" sweep had deleted the Campaign's prompts, and then reported as a
+                // warning on a 200.
+                HashSet<(string Name, string Version)> promptKeys = new(prompts.Count);
+
+                foreach (PromptExportDto promptExport in prompts)
+                {
+                    Result<PromptExportDto> promptValidity = PromptImportHelper.Validate(promptExport);
+
+                    if (promptValidity.IsFailure)
+                    {
+                        return ImportFailed(
+                            traceId,
+                            $"Prompt '{promptExport.Name}/{promptExport.Version}' is not importable: {promptValidity.Error.Message}");
+                    }
+
+                    if (!promptKeys.Add((promptExport.Name.Trim(), promptExport.Version.Trim())))
+                    {
+                        return ImportFailed(
+                            traceId,
+                            $"Prompt '{promptExport.Name.Trim()}/{promptExport.Version.Trim()}' appears more than once in the bundle.");
+                    }
+                }
+
                 // Parse every embedded spell metadata string up front for the same reason: a bundle
                 // whose spell metadata is unparsable is a bad bundle, and discovering that partway
                 // through would leave the Campaign half-replaced behind a 400.
@@ -596,14 +631,30 @@ internal static class CampaignEndpoints
 
                 var warnings = new List<string>();
 
-                if (string.Equals(strategy, "replace", StringComparison.OrdinalIgnoreCase))
+                if (replacePrompts)
                 {
-                    foreach (Prompt p in (await promptRepo
-                        .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
-                        .ConfigureAwait(false)).Items)
+                    // One transaction deletes every prompt the Campaign holds, however many, and writes the
+                    // bundle's: the previous set survives any failure, and a bundle prompt may reuse the name
+                    // and version of one it replaces. The bundle was validated in full above, so the
+                    // existing-duplicate pre-check the merge path relies on is deliberately not repeated here.
+                    Result<int> replaced = await promptRepo
+                        .ReplaceCampaignPromptsAsync(
+                            id,
+                            [.. prompts.Select(promptExport => PromptImportHelper.BuildPrompt(promptExport, id))],
+                            ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
+                    if (replaced.IsFailure)
                     {
-                        await promptRepo.DeleteAsync(p.Id, ctx.RequestAborted).ConfigureAwait(false);
+                        return Results.Json(
+                            ApiResponse<CampaignImportResultDto>.FromResult(
+                                Result<CampaignImportResultDto>.Failure(replaced.Error),
+                                traceId),
+                            ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto,
+                            statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(replaced.Error.Code));
                     }
+
+                    promptsImported = replaced.Value;
                 }
 
                 if (payload.Campaign.Settings is not null)
@@ -639,7 +690,8 @@ internal static class CampaignEndpoints
                     }
                 }
 
-                foreach (PromptExportDto promptExport in prompts)
+                // The replace strategy already wrote the bundle's prompts above.
+                foreach (PromptExportDto promptExport in replacePrompts ? Array.Empty<PromptExportDto>() : prompts)
                 {
                     Result<PromptSummaryDto> importResult = await PromptImportHelper
                         .ImportAsync(promptRepo, new PromptImportRequest(promptExport, id), ctx.RequestAborted)

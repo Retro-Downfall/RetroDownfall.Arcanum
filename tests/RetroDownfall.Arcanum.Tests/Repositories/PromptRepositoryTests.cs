@@ -414,6 +414,212 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
             await repository.GetByIdAsync(saved.Id, CancellationToken.None));
     }
 
+    [SkippableFact]
+    public async Task ReplaceCampaignPromptsAsync_swaps_the_campaign_set_and_leaves_other_scopes_alone()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Guid target = await SeedCampaignAsync("replace-target");
+
+        Guid other = await SeedCampaignAsync("replace-other");
+
+        Prompt targetAlpha = await SeedPromptAsync(target, "alpha", "1", now);
+
+        Prompt targetBeta = await SeedPromptAsync(target, "beta", "1", now);
+
+        Prompt otherAlpha = await SeedPromptAsync(other, "alpha", "1", now);
+
+        Prompt globalAlpha = await SeedPromptAsync(null, "alpha", "1", now);
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        // "alpha" 1 reuses the name and version of a prompt being deleted, which the unique index only
+        // admits when the delete and the add share a transaction.
+        Prompt incomingAlpha = CreatePrompt(null, "alpha", "1", now);
+
+        incomingAlpha.Template = "incoming";
+
+        Result<int> result = await repository.ReplaceCampaignPromptsAsync(
+            target,
+            [incomingAlpha, CreatePrompt(null, "gamma", "1", now)],
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(2, result.Value);
+
+        ListPageResult<Prompt> after = await repository.ListAsync(target, cancellationToken: CancellationToken.None);
+
+        Assert.Equal(["alpha", "gamma"], after.Items.Select(static p => p.Name));
+
+        Assert.All(after.Items, p => Assert.Equal(target, p.CampaignId));
+
+        Assert.Equal("incoming", after.Items[0].Template);
+
+        Assert.DoesNotContain(after.Items, p => p.Id == targetAlpha.Id || p.Id == targetBeta.Id);
+
+        Assert.NotNull(await repository.GetByIdAsync(otherAlpha.Id, CancellationToken.None));
+
+        Assert.NotNull(await repository.GetByIdAsync(globalAlpha.Id, CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task ReplaceCampaignPromptsAsync_rolls_back_the_delete_when_an_add_fails()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Guid target = await SeedCampaignAsync("replace-rollback");
+
+        Prompt kept = await SeedPromptAsync(target, "kept", "1", now);
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        // The second add collides with the first on (name, version, campaign).
+        Result<int> result = await repository.ReplaceCampaignPromptsAsync(
+            target,
+            [CreatePrompt(null, "twin", "1", now), CreatePrompt(null, "twin", "1", now)],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Prompt.DuplicateVersion, result.Error.Code);
+
+        ListPageResult<Prompt> after = await repository.ListAsync(target, cancellationToken: CancellationToken.None);
+
+        Assert.Equal(kept.Id, Assert.Single(after.Items).Id);
+
+        // The context is still usable: a clean replacement afterwards succeeds.
+        Result<int> retried = await repository.ReplaceCampaignPromptsAsync(
+            target,
+            [CreatePrompt(null, "twin", "1", now)],
+            CancellationToken.None);
+
+        Assert.True(retried.IsSuccess);
+
+        Assert.Equal("twin", Assert.Single((await repository.ListAsync(target, cancellationToken: CancellationToken.None)).Items).Name);
+    }
+
+    [SkippableFact]
+    public async Task ReplaceCampaignPromptsAsync_into_an_unknown_campaign_fails_without_writing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        Guid missing = Guid.NewGuid();
+
+        Result<int> result = await repository.ReplaceCampaignPromptsAsync(
+            missing,
+            [CreatePrompt(null, "orphan", "1", DateTimeOffset.UtcNow)],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Campaign.NotFound, result.Error.Code);
+
+        Assert.Empty((await repository.ListAsync(missing, cancellationToken: CancellationToken.None)).Items);
+    }
+
+    [SkippableFact]
+    public async Task ReplaceCampaignPromptsAsync_with_a_cancelled_token_changes_nothing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Guid target = await SeedCampaignAsync("replace-cancelled");
+
+        Prompt kept = await SeedPromptAsync(target, "kept", "1", now);
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        using CancellationTokenSource cancellation = new();
+
+        await cancellation.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            repository.ReplaceCampaignPromptsAsync(
+                target,
+                [CreatePrompt(null, "new", "1", now)],
+                cancellation.Token));
+
+        Assert.Equal(
+            kept.Id,
+            Assert.Single((await repository.ListAsync(target, cancellationToken: CancellationToken.None)).Items).Id);
+    }
+
+    [SkippableFact]
+    public async Task ReplaceCampaignPromptsAsync_finishes_once_the_delete_has_run_even_if_the_token_is_cancelled()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Guid target = await SeedCampaignAsync("replace-point-of-no-return");
+
+        _ = await SeedPromptAsync(target, "old", "1", now);
+
+        using CancellationTokenSource cancellation = new();
+
+        PromptRepository repository = new(_db!, NullLogger<PromptRepository>.Instance)
+        {
+            // The caller disconnects the instant the first delete has run: the swap is past the point where
+            // stopping is cheaper than finishing, so the adds and the commit must not honour the token.
+            AfterReplaceDeleteForTesting = async _ => await cancellation.CancelAsync(),
+        };
+
+        Result<int> result = await repository.ReplaceCampaignPromptsAsync(
+            target,
+            [CreatePrompt(null, "new", "1", now), CreatePrompt(null, "newer", "1", now)],
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(
+            ["new", "newer"],
+            (await repository.ListAsync(target, cancellationToken: CancellationToken.None)).Items.Select(static p => p.Name));
+    }
+
+    private async Task<Guid> SeedCampaignAsync(string name)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Guid id = Guid.NewGuid();
+
+        _db!.Campaigns.Add(new Campaign
+        {
+            Id = id,
+            Name = name,
+            NameLower = name,
+            Path = Path.Combine(Path.GetTempPath(), $"prompt-campaign-{id:N}"),
+            Type = WorkspaceType.Campaign,
+            Settings = "{}",
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+
+        _ = await _db.SaveChangesAsync(CancellationToken.None);
+
+        return id;
+    }
+
+    private async Task<Prompt> SeedPromptAsync(Guid? campaignId, string name, string version, DateTimeOffset timestamp)
+    {
+        Prompt prompt = CreatePrompt(campaignId, name, version, timestamp);
+
+        _db!.Prompts.Add(prompt);
+
+        _ = await _db.SaveChangesAsync(CancellationToken.None);
+
+        return prompt;
+    }
+
     private static Prompt CreatePrompt(
         Guid? campaignId,
         string name,

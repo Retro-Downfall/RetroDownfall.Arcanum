@@ -765,6 +765,12 @@ public sealed class CovenantPlaintextExportTests
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<Result<int>> ReplaceCampaignPromptsAsync(
+            Guid campaignId,
+            IReadOnlyList<Prompt> prompts,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class StubSpellRepository : ISpellRepository

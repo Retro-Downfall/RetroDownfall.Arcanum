@@ -100,6 +100,135 @@ public sealed class CampaignEndpointTests
     }
 
     [SkippableFact]
+    public async Task ImportCampaign_replace_with_one_prompt_lacking_template_rejects_without_deleting_prompts()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "replace-shape");
+
+        string payload = ReplaceBundle(
+            campaign,
+            """{"name":"complete","version":"1.0.0","template":"Hello","tags":[]}""",
+            """{"name":"incomplete","version":"1.0.0","tags":[]}""");
+
+        HttpResponseMessage response = await client.PostAsync(
+            $"/api/campaigns/{campaign.Id}/import",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        await AssertImportRefusedAsync(response);
+
+        // The first prompt of the bundle is valid, so the existing prompt must also survive the half
+        // of the bundle that would have been written before the invalid entry was reached.
+        Assert.Single(await ListCampaignPromptsAsync(client, campaign.Id));
+    }
+
+    [SkippableFact]
+    public async Task ImportCampaign_replace_with_a_duplicate_name_and_version_in_the_bundle_rejects_without_deleting_prompts()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "replace-duplicate");
+
+        PromptSummaryDto existing = Assert.Single(await ListCampaignPromptsAsync(client, campaign.Id));
+
+        string payload = ReplaceBundle(
+            campaign,
+            """{"name":"twin","version":"1.0.0","template":"One","tags":[]}""",
+            """{"name":" twin ","version":"1.0.0","template":"Two","tags":[]}""");
+
+        HttpResponseMessage response = await client.PostAsync(
+            $"/api/campaigns/{campaign.Id}/import",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        await AssertImportRefusedAsync(response);
+
+        Assert.Equal(existing.Id, Assert.Single(await ListCampaignPromptsAsync(client, campaign.Id)).Id);
+    }
+
+    [SkippableTheory]
+    [InlineData("replce")]
+    [InlineData("overwrite")]
+    [InlineData("merge-all")]
+    public async Task ImportCampaign_unknown_strategy_is_400(string strategy)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "unknown-strategy");
+
+        string payload = ReplaceBundle(
+            campaign,
+            """{"name":"fresh","version":"1.0.0","template":"Hello","tags":[]}""")
+            .Replace("\"replace\"", $"\"{strategy}\"", StringComparison.Ordinal);
+
+        HttpResponseMessage response = await client.PostAsync(
+            $"/api/campaigns/{campaign.Id}/import",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        await AssertImportRefusedAsync(response);
+
+        // An unrecognised strategy used to behave as a silent merge and import the bundle's prompts.
+        Assert.Single(await ListCampaignPromptsAsync(client, campaign.Id));
+    }
+
+    [SkippableFact]
+    public async Task ImportCampaign_replace_strategy_is_case_insensitive_and_swaps_the_prompt_set()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "replace-swap");
+
+        PromptSummaryDto existing = Assert.Single(await ListCampaignPromptsAsync(client, campaign.Id));
+
+        // One incoming prompt reuses the existing prompt's name and version: the unique index only admits it
+        // because the delete and the adds share one transaction.
+        string payload = ReplaceBundle(
+            campaign,
+            $$"""{"name":"{{existing.Name}}","version":"{{existing.Version}}","template":"Replaced","tags":[]}""",
+            """{"name":"added","version":"2.0.0","template":"Added","tags":[]}""")
+            .Replace("\"replace\"", "\"REPLACE\"", StringComparison.Ordinal);
+
+        HttpResponseMessage response = await client.PostAsync(
+            $"/api/campaigns/{campaign.Id}/import",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<CampaignImportResultDto>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto);
+
+        Assert.Equal(2, body!.Data!.PromptsImported);
+
+        Assert.Empty(body.Data.Warnings);
+
+        IReadOnlyList<PromptSummaryDto> after = await ListCampaignPromptsAsync(client, campaign.Id);
+
+        Assert.Equal(2, after.Count);
+
+        Assert.DoesNotContain(after, p => p.Id == existing.Id);
+
+        Assert.Contains(after, p => p.Name == existing.Name && p.Version == existing.Version);
+
+        Assert.Contains(after, p => p.Name == "added");
+    }
+
+    [SkippableFact]
     public async Task ImportCampaign_payload_without_spells_or_prompts_imports_nothing_and_succeeds()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -425,6 +554,34 @@ public sealed class CampaignEndpointTests
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<Result<int>> ReplaceCampaignPromptsAsync(
+            Guid campaignId,
+            IReadOnlyList<Prompt> prompts,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private static string ReplaceBundle(CampaignDto campaign, params string[] promptJson) =>
+        "{\"strategy\":\"replace\",\"payload\":{\"campaign\":"
+        + CampaignJson(campaign)
+        + ",\"spells\":[],\"prompts\":["
+        + string.Join(",", promptJson)
+        + "]}}";
+
+    private static async Task AssertImportRefusedAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<CampaignImportResultDto>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto);
+
+        Assert.NotNull(body);
+
+        Assert.False(body!.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Campaign.ImportFailed, body.Error!.Value.Code);
     }
 
     private static string CampaignJson(CampaignDto campaign) =>
