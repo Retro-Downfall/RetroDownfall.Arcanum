@@ -35,6 +35,18 @@ public interface IApprenticeRepository
         int expectedCurrentStep,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Sets only the status, and only while the stored status is one of
+    /// <paramref name="expectedStatuses"/>. An operator transition writes through this so a row snapshot
+    /// read before the execution was stopped can never revert progress the execution committed since.
+    /// Returns false, writing nothing, when the row is gone or its status has moved on.
+    /// </summary>
+    Task<bool> TryUpdateStatusAsync(
+        Guid id,
+        string status,
+        IReadOnlyCollection<string> expectedStatuses,
+        CancellationToken cancellationToken = default);
+
     Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default);

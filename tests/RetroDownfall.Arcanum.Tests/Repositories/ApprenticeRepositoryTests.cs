@@ -302,6 +302,49 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
         Assert.Equal("step failed", written.ErrorMessage);
     }
 
+    [SkippableFact]
+    public async Task TryUpdateStatusAsync_sets_only_the_status_and_only_from_an_expected_status()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Running, currentStep: 0),
+            CancellationToken.None);
+
+        // The execution commits a step after an operator's snapshot of the row was taken.
+        Apprentice progressed = CopyOf(stored);
+
+        progressed.CurrentStep = 1;
+
+        Assert.True(await repository.UpdateProgressAsync(progressed, CancellationToken.None));
+
+        Assert.False(await repository.TryUpdateStatusAsync(
+            stored.Id,
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Escalated.ToString()],
+            CancellationToken.None));
+
+        Assert.True(await repository.TryUpdateStatusAsync(
+            stored.Id,
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Running.ToString(), ApprenticeStatus.Planning.ToString()],
+            CancellationToken.None));
+
+        Apprentice paused = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), paused.Status);
+
+        Assert.Equal(1, paused.CurrentStep);
+
+        Assert.False(await repository.TryUpdateStatusAsync(
+            Guid.NewGuid(),
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Running.ToString()],
+            CancellationToken.None));
+    }
+
     private static Apprentice NewApprentice(
         ApprenticeStatus status,
         int currentStep,

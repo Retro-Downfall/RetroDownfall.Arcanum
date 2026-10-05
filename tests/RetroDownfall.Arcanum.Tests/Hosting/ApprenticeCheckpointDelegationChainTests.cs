@@ -369,6 +369,22 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             return true;
         }
 
+        public Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_store.TryGetValue(id, out Apprentice? stored)
+                || !expectedStatuses.Contains(stored.Status, StringComparer.Ordinal))
+            {
+                return Task.FromResult(false);
+            }
+            stored.Status = status;
+
+            return Task.FromResult(true);
+        }
+
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
 

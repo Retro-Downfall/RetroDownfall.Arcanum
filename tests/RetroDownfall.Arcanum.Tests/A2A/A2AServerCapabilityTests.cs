@@ -755,6 +755,13 @@ public sealed class A2AServerCapabilityTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
 
+        public Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

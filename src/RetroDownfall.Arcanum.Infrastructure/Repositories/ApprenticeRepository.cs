@@ -289,6 +289,49 @@ public sealed class ApprenticeRepository : IApprenticeRepository
         return updated > 0;
     }
 
+    public async Task<bool> TryUpdateStatusAsync(
+        Guid id,
+        string status,
+        IReadOnlyCollection<string> expectedStatuses,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(status);
+
+        ArgumentNullException.ThrowIfNull(expectedStatuses);
+
+        if (expectedStatuses.Count == 0)
+        {
+            return false;
+        }
+
+        string[] statuses = [.. expectedStatuses];
+
+        string statusList = string.Join(", ", statuses.Select(static (_, index) => $"$expectedStatus{index}"));
+
+        int updated = await ExecuteWriteAsync(
+            $"""
+            UPDATE "Apprentices"
+            SET "Status" = $status,
+                "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id
+              AND "Status" IN ({statusList});
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(id));
+                GrimoireEntitySql.AddParameter(command, "$status", status);
+                GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(DateTimeOffset.UtcNow));
+
+                for (int index = 0; index < statuses.Length; index++)
+                {
+                    GrimoireEntitySql.AddParameter(command, $"$expectedStatus{index}", statuses[index]);
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return updated > 0;
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
         await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(

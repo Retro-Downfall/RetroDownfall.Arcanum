@@ -66,6 +66,27 @@ internal sealed class ApprenticeService(
         ApprenticeStatus.Planning.ToString(),
     ];
 
+    private static readonly string[] EscalatedStatuses = [ApprenticeStatus.Escalated.ToString()];
+
+    /// <summary>The statuses <see cref="IsCancellable"/> admits.</summary>
+    private static readonly string[] CancellableStatuses =
+    [
+        ApprenticeStatus.Running.ToString(),
+        ApprenticeStatus.Planning.ToString(),
+        ApprenticeStatus.Paused.ToString(),
+        ApprenticeStatus.Escalated.ToString(),
+    ];
+
+    /// <summary>A queued start can be withdrawn from any status that has not already ended.</summary>
+    private static readonly string[] QueuedCancellableStatuses =
+    [
+        ApprenticeStatus.Idle.ToString(),
+        ApprenticeStatus.Planning.ToString(),
+        ApprenticeStatus.Running.ToString(),
+        ApprenticeStatus.Paused.ToString(),
+        ApprenticeStatus.Escalated.ToString(),
+    ];
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
@@ -295,17 +316,29 @@ internal sealed class ApprenticeService(
         // increments the generation; a late Pause must not clobber that Running status.
         if (pauseGeneration is null || OwnsExecutionGeneration(apprenticeId, pauseGeneration.Value))
         {
-            apprentice.Status = ApprenticeStatus.Paused.ToString();
-
-            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
-
-            Publish(apprenticeId, new ApprenticeEvent
+            // The row read above predates stopping the execution, which may have committed a step since,
+            // so only the status is written, and only while the execution still owns the row. It records
+            // a cancellation that already happened, so it runs on CancellationToken.None.
+            if (await repo
+                    .TryUpdateStatusAsync(
+                        apprenticeId,
+                        ApprenticeStatus.Paused.ToString(),
+                        ExecutingStatuses,
+                        CancellationToken.None)
+                    .ConfigureAwait(false))
             {
-                Type = ApprenticeEventType.ApprenticePaused,
-                ApprenticeId = apprenticeId,
-                Timestamp = DateTimeOffset.UtcNow,
-                AtStep = apprentice.CurrentStep,
-            });
+                Apprentice? paused = await repo
+                    .GetByIdAsync(apprenticeId, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                Publish(apprenticeId, new ApprenticeEvent
+                {
+                    Type = ApprenticeEventType.ApprenticePaused,
+                    ApprenticeId = apprenticeId,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    AtStep = paused?.CurrentStep ?? apprentice.CurrentStep,
+                });
+            }
         }
 
         return Result<string>.Success(apprenticeId.ToString());
@@ -336,16 +369,30 @@ internal sealed class ApprenticeService(
 
         try
         {
-            apprentice.Status = ApprenticeStatus.Running.ToString();
+            // The row was read before the slot was won, so the previous execution may have committed a
+            // step since; only the status moves, and only from Paused.
+            if (!await repo
+                    .TryUpdateStatusAsync(
+                        apprenticeId,
+                        ApprenticeStatus.Running.ToString(),
+                        [ApprenticeStatus.Paused.ToString()],
+                        cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                ReleaseAcquiredExecutionSlot(apprenticeId);
 
-            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+                return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotPaused, "Apprentice is not paused."));
+            }
+            Apprentice? resumed = await repo
+                .GetByIdAsync(apprenticeId, CancellationToken.None)
+                .ConfigureAwait(false);
 
             Publish(apprenticeId, new ApprenticeEvent
             {
                 Type = ApprenticeEventType.ApprenticeResumed,
                 ApprenticeId = apprenticeId,
                 Timestamp = DateTimeOffset.UtcNow,
-                FromStep = apprentice.CurrentStep,
+                FromStep = resumed?.CurrentStep ?? apprentice.CurrentStep,
             });
 
             BeginExecutionTask(apprenticeId);
@@ -379,16 +426,23 @@ internal sealed class ApprenticeService(
             {
                 return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
             }
-            apprentice.Status = ApprenticeStatus.Cancelled.ToString();
 
-            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
-
-            Publish(apprenticeId, new ApprenticeEvent
+            // The start was already withdrawn from the queue, so the transition records that effect.
+            if (await repo
+                    .TryUpdateStatusAsync(
+                        apprenticeId,
+                        ApprenticeStatus.Cancelled.ToString(),
+                        QueuedCancellableStatuses,
+                        CancellationToken.None)
+                    .ConfigureAwait(false))
             {
-                Type = ApprenticeEventType.ApprenticeCancelled,
-                ApprenticeId = apprenticeId,
-                Timestamp = DateTimeOffset.UtcNow,
-            });
+                Publish(apprenticeId, new ApprenticeEvent
+                {
+                    Type = ApprenticeEventType.ApprenticeCancelled,
+                    ApprenticeId = apprenticeId,
+                    Timestamp = DateTimeOffset.UtcNow,
+                });
+            }
 
             return Result<string>.Success(apprenticeId.ToString());
         }
@@ -427,16 +481,23 @@ internal sealed class ApprenticeService(
         // increments the generation; a late Cancel must not clobber that Running status.
         if (cancelGeneration is null || OwnsExecutionGeneration(apprenticeId, cancelGeneration.Value))
         {
-            loaded.Status = ApprenticeStatus.Cancelled.ToString();
-
-            await outerRepo.UpdateAsync(loaded, cancellationToken).ConfigureAwait(false);
-
-            Publish(apprenticeId, new ApprenticeEvent
+            // As in Pause: the snapshot predates stopping the execution, so only the status is written,
+            // on CancellationToken.None because the cancellation it records has already happened.
+            if (await outerRepo
+                    .TryUpdateStatusAsync(
+                        apprenticeId,
+                        ApprenticeStatus.Cancelled.ToString(),
+                        CancellableStatuses,
+                        CancellationToken.None)
+                    .ConfigureAwait(false))
             {
-                Type = ApprenticeEventType.ApprenticeCancelled,
-                ApprenticeId = apprenticeId,
-                Timestamp = DateTimeOffset.UtcNow,
-            });
+                Publish(apprenticeId, new ApprenticeEvent
+                {
+                    Type = ApprenticeEventType.ApprenticeCancelled,
+                    ApprenticeId = apprenticeId,
+                    Timestamp = DateTimeOffset.UtcNow,
+                });
+            }
         }
 
         return Result<string>.Success(apprenticeId.ToString());
@@ -476,14 +537,28 @@ internal sealed class ApprenticeService(
 
         List<PlanStep> currentPlan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
+        string observedStatus = apprentice.Status;
+
+        int observedStep = apprentice.CurrentStep;
+
         List<PlanStep> merged = ApprenticeExecutionPolicy.MergePlanTail(
             currentPlan,
-            apprentice.CurrentStep,
+            observedStep,
             validated.Value!);
 
         apprentice.Plan = ApprenticeRepository.SerializePlan(merged);
 
-        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+        // A Paused execution may still be committing its last step; a tail merged at a step it has since
+        // passed must not be written over that commit.
+        if (!await repo
+                .TryUpdateAsync(apprentice, [observedStatus], observedStep, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            return Result<ApprenticeDetailDto>.Failure(
+                new Error(
+                    ErrorCodes.Apprentice.CannotReweave,
+                    "The Apprentice changed while its plan was being re-woven; read it again and retry."));
+        }
 
         Publish(apprenticeId, new ApprenticeEvent
         {
@@ -535,6 +610,8 @@ internal sealed class ApprenticeService(
 
         try
         {
+            int observedStep = apprentice.CurrentStep;
+
             ApplyDivineInterventionGuidance(apprentice, guidance.Trim());
 
             if (resume)
@@ -542,7 +619,18 @@ internal sealed class ApprenticeService(
                 apprentice.Status = ApprenticeStatus.Running.ToString();
             }
 
-            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+            if (!await repo
+                    .TryUpdateAsync(apprentice, EscalatedStatuses, observedStep, cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                if (resume)
+                {
+                    ReleaseAcquiredExecutionSlot(apprenticeId);
+                }
+
+                return Result<string>.Failure(
+                    new Error(ErrorCodes.Apprentice.NotEscalated, "Apprentice is no longer awaiting Divine Intervention."));
+            }
 
             Publish(apprenticeId, new ApprenticeEvent
             {

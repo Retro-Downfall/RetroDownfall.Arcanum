@@ -223,6 +223,13 @@ public sealed class ConclaveSimulacrumTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
 
+        public Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(Items.RemoveAll(a => a.Id == id) > 0);
 

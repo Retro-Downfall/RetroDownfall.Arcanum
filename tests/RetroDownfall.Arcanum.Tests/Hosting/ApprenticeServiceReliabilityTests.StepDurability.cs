@@ -184,6 +184,69 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.Null(persisted.ErrorMessage);
     }
 
+    [Fact]
+    public async Task PauseAsync_ConcurrentStepCompletion_DoesNotRevertCurrentStep()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(
+        [
+            new PlanStep { Index = 0, Description = "Completes while Pause is in flight" },
+            new PlanStep { Index = 1, Description = "Pause lands here" },
+        ]);
+
+        PauseReadGateRepository repo = new(apprentice);
+
+        TwoStepPauseRaceIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        using CancellationTokenSource pauseRequest = new();
+
+        repo.PauseToken = pauseRequest.Token;
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await intelligence.FirstStreamReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Pause reads the row while step 0 is still running, then waits there.
+        Task<Result<string>> pause = service.PauseAsync(apprenticeId, pauseRequest.Token);
+
+        await repo.PauseReadReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        intelligence.AllowFirstStream.TrySetResult();
+
+        await intelligence.SecondStreamReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, repo.Get(apprenticeId).CurrentStep);
+
+        repo.AllowPauseRead.TrySetResult();
+
+        Result<string> paused = await pause.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(paused.IsSuccess, paused.IsFailure ? paused.Error.Message : null);
+
+        intelligence.AllowSecondStreamEnd.TrySetResult();
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice persisted = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), persisted.Status);
+
+        Assert.Equal(1, persisted.CurrentStep);
+
+        Assert.Equal("completed", ApprenticeRepository.DeserializePlan(persisted.Plan)[0].Status);
+    }
+
     private static void AssertStepCommittedThenPaused(Apprentice persisted)
     {
         Assert.Equal(ApprenticeStatus.Paused.ToString(), persisted.Status);
@@ -254,6 +317,91 @@ public sealed partial class ApprenticeServiceReliabilityTests
         UpdatedAt = source.UpdatedAt,
         ParentApprenticeId = source.ParentApprenticeId,
     };
+
+    /// <summary>
+    /// Holds the read made with <see cref="PauseToken"/> — Pause's own snapshot — so a step completion can
+    /// commit between that read and Pause's write.
+    /// </summary>
+    private sealed class PauseReadGateRepository(params Apprentice[] apprentices)
+        : InMemoryApprenticeRepository(apprentices)
+    {
+        internal CancellationToken PauseToken { get; set; }
+
+        internal TaskCompletionSource PauseReadReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowPauseRead { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<Apprentice?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice? snapshot = await base.GetByIdAsync(id, cancellationToken);
+
+            if (cancellationToken.CanBeCanceled && cancellationToken == PauseToken)
+            {
+                PauseReadReached.TrySetResult();
+
+                await AllowPauseRead.Task;
+            }
+
+            return snapshot;
+        }
+    }
+
+    /// <summary>
+    /// Step 0 completes when the test allows it; step 1 holds until the test lets it observe the Pause.
+    /// </summary>
+    private sealed class TwoStepPauseRaceIntelligence : IArcanumIntelligenceProvider
+    {
+        private int _streams;
+
+        internal TaskCompletionSource FirstStreamReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowFirstStream { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource SecondStreamReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowSecondStreamEnd { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            Task.FromResult<Result<PromptTurnResult>>(
+                new PromptTurnResult("NO_CHANGE", Usage: null));
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            if (Interlocked.Increment(ref _streams) == 1)
+            {
+                FirstStreamReached.TrySetResult();
+
+                await AllowFirstStream.Task;
+
+                yield return new IntelligenceEvent(IntelligenceEventType.Result, "step 0 complete");
+
+                yield break;
+            }
+            SecondStreamReached.TrySetResult();
+
+            await AllowSecondStreamEnd.Task;
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return new IntelligenceEvent(IntelligenceEventType.Result, "step 1 complete");
+        }
+    }
 
     /// <summary>
     /// A step stream whose transport, once the execution is aborted, fails with an ordinary exception

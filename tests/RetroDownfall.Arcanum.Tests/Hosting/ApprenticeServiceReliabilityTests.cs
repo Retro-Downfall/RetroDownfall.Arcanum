@@ -4730,6 +4730,31 @@ public sealed partial class ApprenticeServiceReliabilityTests
             return true;
         }
 
+        public virtual async Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice updated;
+
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(id, out Apprentice? stored)
+                    || !expectedStatuses.Contains(stored.Status, StringComparer.Ordinal))
+                {
+                    return false;
+                }
+                updated = CloneApprentice(stored);
+            }
+            updated.Status = status;
+
+            // Routed through UpdateAsync so a repository that observes writes sees this one too.
+            _ = await UpdateAsync(updated, cancellationToken);
+
+            return true;
+        }
+
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default)
         {
             string running = ApprenticeStatus.Running.ToString();
