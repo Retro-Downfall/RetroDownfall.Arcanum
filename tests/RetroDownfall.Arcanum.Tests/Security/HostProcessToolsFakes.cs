@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </remarks>
 internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuthorityStore
 {
-
     internal const string Installation = "6F1C0B2E-9A44-4E1D-8B7A-2C5D3F6A8E90";
 
     internal FakeHostProcessToolsAuthorityStore() =>
@@ -41,8 +40,17 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
 
     internal bool FailTaintCommit { get; set; }
 
-    public Task<Result<HostProcessToolsAuthorityRow>> ReadAsync(CancellationToken cancellationToken) =>
-        Task.FromResult(Result<HostProcessToolsAuthorityRow>.Success(Row));
+    /// <summary>Runs after each authoritative read, standing in for work that races the transition.</summary>
+    internal Action? AfterRead { get; set; }
+
+    public Task<Result<HostProcessToolsAuthorityRow>> ReadAsync(CancellationToken cancellationToken)
+    {
+        HostProcessToolsAuthorityRow row = Row;
+
+        AfterRead?.Invoke();
+
+        return Task.FromResult(Result<HostProcessToolsAuthorityRow>.Success(row));
+    }
 
     public Task<Result<HostProcessToolsAuthorityRow?>> TryReadAsync(CancellationToken cancellationToken) =>
         Task.FromResult(Result<HostProcessToolsAuthorityRow?>.Success(Row));
@@ -57,14 +65,11 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
         Guid transitionId,
         CancellationToken cancellationToken)
     {
-
         if (Row != expected || Row.State is not CovenantHostToolsState.Clean)
         {
-
             return Task.FromResult(Result.Failure(new Error(
                 ErrorCodes.Covenant.RevisionConflict,
                 "The authority row moved.")));
-
         }
 
         Row = Row with
@@ -79,7 +84,6 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
         };
 
         return Task.FromResult(Result.Success());
-
     }
 
     public Task<Result> CommitTaintedAsync(
@@ -87,23 +91,21 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
         Guid transitionId,
         CancellationToken cancellationToken)
     {
+        // The real compare-and-swap is a database command that throws when its token is cancelled.
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (FailTaintCommit)
         {
-
             return Task.FromResult(Result.Failure(new Error(
                 ErrorCodes.Grimoire.WriteFailed,
                 "The taint commit failed.")));
-
         }
 
         if (Row.State is not CovenantHostToolsState.PendingHostToolsTaint || Row.TransitionId != transitionId)
         {
-
             return Task.FromResult(Result.Failure(new Error(
                 ErrorCodes.Covenant.RevisionConflict,
                 "The authority row moved.")));
-
         }
 
         Row = Row with
@@ -116,7 +118,6 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
         };
 
         return Task.FromResult(Result.Success());
-
     }
 
     public Task<Result> CompensateToCleanAsync(
@@ -124,14 +125,13 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
         Guid transitionId,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (Row.State is not CovenantHostToolsState.PendingHostToolsTaint || Row.TransitionId != transitionId)
         {
-
             return Task.FromResult(Result.Failure(new Error(
                 ErrorCodes.Covenant.RevisionConflict,
                 "The authority row moved.")));
-
         }
 
         Row = Row with
@@ -146,25 +146,19 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
         };
 
         return Task.FromResult(Result.Success());
-
     }
 
     internal static CovenantDigest Digest(byte seed)
     {
-
         byte[] bytes = new byte[32];
 
         for (int index = 0; index < bytes.Length; index++)
         {
-
             bytes[index] = (byte)(seed + index);
-
         }
 
         return new CovenantDigest(bytes);
-
     }
-
 }
 
 /// <summary>An in-memory taint slot whose write outcome the test chooses.</summary>
@@ -174,7 +168,6 @@ internal sealed class FakeHostProcessToolsAuthorityStore : IHostProcessToolsAuth
 /// </remarks>
 internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerStore
 {
-
     private static readonly Guid ForeignTransition = Guid.Parse("99998888-7777-6666-5555-444433332222");
 
     internal byte[]? Stored { get; private set; }
@@ -185,6 +178,9 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
     internal HostProcessToolsMarkerReadStatus? ReadStatusOverride { get; set; }
 
     internal bool CorruptOnReadback { get; set; }
+
+    /// <summary>Runs once the write has been accepted, standing in for work that races it.</summary>
+    internal Action? AfterWrite { get; set; }
 
     internal int WriteCount { get; private set; }
 
@@ -199,26 +195,19 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
 
     public HostProcessToolsMarkerReadResult Read()
     {
-
         if (ReadStatusOverride is { } forced)
         {
-
             return new HostProcessToolsMarkerReadResult(forced, null);
-
         }
 
         if (Stored is not { } payload)
         {
-
             return new HostProcessToolsMarkerReadResult(HostProcessToolsMarkerReadStatus.Absent, null);
-
         }
 
         if (!HostProcessToolsMarkerPayload.TryDecode(payload, out HostProcessToolsMarkerFields fields))
         {
-
             return new HostProcessToolsMarkerReadResult(HostProcessToolsMarkerReadStatus.Malformed, null);
-
         }
 
         return new HostProcessToolsMarkerReadResult(
@@ -230,7 +219,6 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
                 fields.TaintFingerprint,
                 HostProcessToolsMarkerPayload.DigestOf(payload),
                 FakeHostProcessToolsAuthorityStore.Digest(200)));
-
     }
 
     public HostProcessToolsMarkerWriteStatus Write(
@@ -239,14 +227,11 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
         ulong taintMasterKeyVersion,
         CovenantDigest taintFingerprint)
     {
-
         WriteCount++;
 
         if (WriteStatus is HostProcessToolsMarkerWriteStatus.Refused)
         {
-
             return WriteStatus;
-
         }
 
         // An uncertain write still stores the payload: that is exactly what makes it uncertain
@@ -257,8 +242,9 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
             taintMasterKeyVersion,
             taintFingerprint);
 
-        return WriteStatus;
+        AfterWrite?.Invoke();
 
+        return WriteStatus;
     }
 
     /// <summary>
@@ -271,30 +257,24 @@ internal sealed class FakeHostProcessToolsMarkerStore : IHostProcessToolsMarkerS
     /// </remarks>
     internal bool ClearStoredForTest(HostProcessToolsOsMarkerEvidence expected)
     {
-
         CompareDeleteCount++;
 
         if (Stored is not { } payload
             || !HostProcessToolsMarkerPayload.TryDecode(payload, out HostProcessToolsMarkerFields fields)
             || fields.TransitionId != expected.TransitionId)
         {
-
             return false;
-
         }
 
         Stored = null;
 
         return true;
-
     }
-
 }
 
 /// <summary>Trusted process facts the test sets directly.</summary>
 internal sealed class FakeHostProcessToolsEnvironmentProbe : IHostProcessToolsEnvironmentProbe
 {
-
     internal ArcanumEdition Edition { get; set; } = ArcanumEdition.Development;
 
     internal bool EscapeHatchOptIn { get; set; } = true;
@@ -303,13 +283,11 @@ internal sealed class FakeHostProcessToolsEnvironmentProbe : IHostProcessToolsEn
 
     public HostProcessToolsTransitionEnvironment Read() =>
         new(Edition, EscapeHatchOptIn, CovenantOpenedInThisProcess);
-
 }
 
 /// <summary>An installation lock that is either free or held by somebody else.</summary>
 internal sealed class FakeHostProcessToolsInstallationLockSource : IHostProcessToolsInstallationLockSource
 {
-
     internal bool Available { get; set; } = true;
 
     internal bool Released { get; private set; }
@@ -318,11 +296,8 @@ internal sealed class FakeHostProcessToolsInstallationLockSource : IHostProcessT
 
     private sealed class Handle(FakeHostProcessToolsInstallationLockSource owner) : IDisposable
     {
-
         public void Dispose() => owner.Released = true;
-
     }
-
 }
 
 /// <summary>
@@ -335,7 +310,5 @@ internal sealed class FakeHostProcessToolsInstallationLockSource : IHostProcessT
 /// </remarks>
 internal static class HostProcessToolsTestGate
 {
-
     internal static HostProcessToolsMarkerMutationGate Shared { get; } = new();
-
 }

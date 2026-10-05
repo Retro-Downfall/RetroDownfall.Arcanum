@@ -26,14 +26,11 @@ public static class HttpsCertificateLoader
         HttpsSettings https,
         ILogger? logger = null)
     {
-
         string? certificatePath = HttpsCertificatePathResolver.Resolve(https.CertificatePath);
 
         if (string.IsNullOrWhiteSpace(certificatePath))
         {
-
             return HttpsCertificateLoadResult.Failure("HTTPS certificate path is not configured.");
-
         }
 
         bool usePem = !string.IsNullOrWhiteSpace(https.PrivateKeyPath);
@@ -44,33 +41,26 @@ public static class HttpsCertificateLoader
                 certificatePath,
                 EnvironmentCredentialResolver.ResolveHttpsCertificatePassword(https),
                 logger);
-
     }
 
     private static HttpsCertificateLoadResult LoadPem(string certificatePath, string keyPathRaw, ILogger? logger)
     {
-
         string? keyPath = HttpsCertificatePathResolver.Resolve(keyPathRaw);
 
         if (string.IsNullOrWhiteSpace(keyPath))
         {
-
             return HttpsCertificateLoadResult.Failure(
                 FormatFailure(certificatePath, "PEM", "missing file"));
-
         }
 
         if (!File.Exists(certificatePath) || !File.Exists(keyPath))
         {
-
             return HttpsCertificateLoadResult.Failure(
                 FormatFailure(certificatePath, "PEM", "missing file"));
-
         }
 
         try
         {
-
             X509Certificate2 pemCertificate = X509Certificate2.CreateFromPemFile(certificatePath, keyPath);
 
             // Windows Schannel cannot bind a certificate whose key lives only in an ephemeral (in-memory)
@@ -78,50 +68,72 @@ public static class HttpsCertificateLoader
             // rehydrates the certificate in a form Kestrel can use there; other platforms use it directly.
             if (OperatingSystem.IsWindows())
             {
+                X509Certificate2 rehydrated = RehydrateThroughPkcs12(
+                    pemCertificate,
+                    static certificate => certificate.Export(X509ContentType.Pkcs12),
+                    PemRehydrationKeyStorageFlags);
 
-                byte[] pkcs12 = pemCertificate.Export(X509ContentType.Pkcs12);
-
-                // The try starts immediately after pkcs12 is populated: the observer invoke and
-                // pemCertificate.Dispose() below are not exception-free, and a throw from either
-                // one, before this method's own try/finally existed, would have skipped zeroing
-                // a buffer that already held the unencrypted private key.
-                try
-                {
-
-                    ExportedPkcs12ObserverForTests?.Invoke(pkcs12);
-
-                    pemCertificate.Dispose();
-
-                    X509Certificate2 rehydrated = X509CertificateLoader.LoadPkcs12(
-                        pkcs12,
-                        password: null,
-                        keyStorageFlags: X509KeyStorageFlags.EphemeralKeySet);
-
-                    return ValidateAndHold(rehydrated, certificatePath, "PEM", logger);
-
-                }
-                finally
-                {
-
-                    CryptographicOperations.ZeroMemory(pkcs12);
-
-                }
-
+                return ValidateAndHold(rehydrated, certificatePath, "PEM", logger);
             }
 
             return ValidateAndHold(pemCertificate, certificatePath, "PEM", logger);
-
         }
         catch (Exception ex)
         {
-
             logger?.LogError(ex, "Failed to load HTTPS PEM certificate from {CertificatePath}.", certificatePath);
 
             return HttpsCertificateLoadResult.Failure(
                 FormatFailure(certificatePath, "PEM", "wrong password / unloadable certificate"));
-
         }
+    }
 
+    /// <summary>
+    /// Key storage used when a PEM certificate is rehydrated through PKCS#12 on Windows. Schannel cannot
+    /// bind an ephemeral key, so this must not include <see cref="X509KeyStorageFlags.EphemeralKeySet"/>;
+    /// the default key set keeps the key in a process-lifetime container that is released when the
+    /// certificate is disposed.
+    /// </summary>
+    internal static X509KeyStorageFlags PemRehydrationKeyStorageFlags =>
+        X509KeyStorageFlags.DefaultKeySet;
+
+    /// <summary>
+    /// Re-imports <paramref name="pemCertificate"/> through an unencrypted PKCS#12 export. The export
+    /// buffer is zeroed on every path and <paramref name="pemCertificate"/> is disposed whether or not
+    /// the export or the round trip succeeds. Separated from the Windows-only call site so the disposal
+    /// and zeroing contract is testable on any platform.
+    /// </summary>
+    internal static X509Certificate2 RehydrateThroughPkcs12(
+        X509Certificate2 pemCertificate,
+        Func<X509Certificate2, byte[]> exportPkcs12,
+        X509KeyStorageFlags keyStorageFlags)
+    {
+        try
+        {
+            byte[] pkcs12 = exportPkcs12(pemCertificate);
+
+            // The try starts immediately after pkcs12 is populated: the observer invoke below is not
+            // exception-free, and a throw from it, or from the import, must still zero a buffer that
+            // already holds the unencrypted private key.
+            try
+            {
+                ExportedPkcs12ObserverForTests?.Invoke(pkcs12);
+
+                return X509CertificateLoader.LoadPkcs12(
+                    pkcs12,
+                    password: null,
+                    keyStorageFlags: keyStorageFlags);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(pkcs12);
+            }
+        }
+        finally
+        {
+            // The ephemeral PEM-loaded certificate has served its purpose on every path, including a
+            // failed Export, so it never outlives this call.
+            pemCertificate.Dispose();
+        }
     }
 
     private static HttpsCertificateLoadResult LoadPfx(
@@ -129,13 +141,10 @@ public static class HttpsCertificateLoader
         string? password,
         ILogger? logger)
     {
-
         if (!File.Exists(certificatePath))
         {
-
             return HttpsCertificateLoadResult.Failure(
                 FormatFailure(certificatePath, "PFX", "missing file"));
-
         }
 
         // macOS keychain-backed key import rejects the ephemeral key set; every other platform uses it
@@ -146,25 +155,20 @@ public static class HttpsCertificateLoader
 
         try
         {
-
             X509Certificate2 certificate = X509CertificateLoader.LoadPkcs12FromFile(
                 certificatePath,
                 password,
                 keyStorageFlags);
 
             return ValidateAndHold(certificate, certificatePath, "PFX", logger);
-
         }
         catch (Exception ex)
         {
-
             logger?.LogError(ex, "Failed to load HTTPS PFX certificate from {CertificatePath}.", certificatePath);
 
             return HttpsCertificateLoadResult.Failure(
                 FormatFailure(certificatePath, "PFX", "wrong password / unloadable certificate"));
-
         }
-
     }
 
     private static HttpsCertificateLoadResult ValidateAndHold(
@@ -173,43 +177,34 @@ public static class HttpsCertificateLoader
         string mode,
         ILogger? logger)
     {
-
         if (!certificate.HasPrivateKey)
         {
-
             certificate.Dispose();
 
             return HttpsCertificateLoadResult.Failure(
                 FormatFailure(certificatePath, mode, "no private key"));
-
         }
 
         if (certificate.NotAfter.ToUniversalTime() <= DateTime.UtcNow)
         {
-
             certificate.Dispose();
 
             return HttpsCertificateLoadResult.Failure(
                 FormatFailure(certificatePath, mode, "expired certificate"));
-
         }
 
         if (certificate.NotBefore.ToUniversalTime() > DateTime.UtcNow)
         {
-
             logger?.LogWarning(
                 "HTTPS {Mode} certificate at {CertificatePath} is not yet valid (NotBefore={NotBefore:o}).",
                 mode,
                 certificatePath,
                 certificate.NotBefore);
-
         }
 
         return HttpsCertificateLoadResult.Success(HttpsCertificateLifetime.Hold(certificate));
-
     }
 
     private static string FormatFailure(string certificatePath, string mode, string reason) =>
         $"HTTPS {mode} certificate at '{certificatePath}' could not be loaded ({reason}).";
-
 }

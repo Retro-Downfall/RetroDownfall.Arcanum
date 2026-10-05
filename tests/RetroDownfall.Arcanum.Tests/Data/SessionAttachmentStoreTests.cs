@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -445,7 +446,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             byte[] bytes = Encoding.UTF8.GetBytes("workspace source");
             string sourcePath = Path.Combine(workspace, "source.txt");
             await File.WriteAllBytesAsync(sourcePath, bytes);
-            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace), new EmptyWorkspaceRegistry());
             SessionAttachmentStore store = new(
                 _db!,
                 Options.Create(_settings),
@@ -500,7 +501,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
             await File.WriteAllBytesAsync(sourcePath, before);
 
-            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace), new EmptyWorkspaceRegistry());
 
             SessionAttachmentStore store = new(
                 _db!,
@@ -571,7 +572,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             string sourcePath = Path.Combine(workspace, "notes.txt");
             byte[] original = Encoding.UTF8.GetBytes("original");
             await File.WriteAllBytesAsync(sourcePath, original);
-            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace), new EmptyWorkspaceRegistry());
             SessionAttachmentStore store = new(
                 _db!, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore(), sourceResolver: resolver);
             SessionAttachmentRecord first = await store.PersistNewFromSourceAsync(
@@ -613,7 +614,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             string sourcePath = Path.Combine(workspace, "notes.txt");
             byte[] original = Encoding.UTF8.GetBytes("unchanged");
             await File.WriteAllBytesAsync(sourcePath, original);
-            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace), new EmptyWorkspaceRegistry());
             SessionAttachmentStore store = new(
                 _db!, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore(), sourceResolver: resolver);
             SessionAttachmentRecord first = await store.PersistNewFromSourceAsync(

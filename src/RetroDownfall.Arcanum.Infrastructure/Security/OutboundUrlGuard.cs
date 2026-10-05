@@ -372,7 +372,12 @@ public static class OutboundUrlGuard
                 throw new HttpRequestException(BlockedMessage);
             }
 
-            Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+            Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+            {
+                // Mirrors SocketsHttpHandler's default connect path: small request frames must not wait
+                // on Nagle's algorithm just because this handler owns the socket.
+                NoDelay = true,
+            };
 
             try
             {
@@ -459,34 +464,7 @@ public static class OutboundUrlGuard
 
         if (address.AddressFamily == AddressFamily.InterNetwork)
         {
-            byte[] bytes = address.GetAddressBytes();
-
-            if (IsLinkLocalIPv4(bytes))
-            {
-                return true;
-            }
-
-            if (IsCarrierGradeNatIPv4(bytes))
-            {
-                return true;
-            }
-
-            if (allowPrivateAndLoopback)
-            {
-                return false;
-            }
-
-            if (IsLoopbackIPv4(bytes))
-            {
-                return true;
-            }
-
-            if (IsPrivateIPv4(bytes))
-            {
-                return true;
-            }
-
-            return bytes[0] == 0;
+            return IsBlockedIPv4(address.GetAddressBytes(), allowPrivateAndLoopback);
         }
 
         // IPAddress instances are IPv4 or IPv6; the IPv4 path returned above.
@@ -500,6 +478,24 @@ public static class OutboundUrlGuard
             return true;
         }
 
+        // ff00::/8 is never a unicast egress target, whatever the trust level.
+        if (address.IsIPv6Multicast)
+        {
+            return true;
+        }
+
+        byte[] ipv6Bytes = address.GetAddressBytes();
+
+        // NAT64, 6to4 and Teredo carry an IPv4 destination inside the IPv6 address; a translator on the
+        // path would reach that IPv4 host, so the embedded address meets the same IPv4 policy.
+        foreach (byte[] embedded in EmbeddedIPv4Addresses(ipv6Bytes))
+        {
+            if (IsBlockedIPv4(embedded, allowPrivateAndLoopback))
+            {
+                return true;
+            }
+        }
+
         if (allowPrivateAndLoopback)
         {
             return false;
@@ -509,8 +505,6 @@ public static class OutboundUrlGuard
         {
             return true;
         }
-
-        byte[] ipv6Bytes = address.GetAddressBytes();
 
         if ((ipv6Bytes[0] & 0xFE) == 0xFC)
         {
@@ -523,6 +517,102 @@ public static class OutboundUrlGuard
         }
 
         return false;
+    }
+
+    private static bool IsBlockedIPv4(byte[] bytes, bool allowPrivateAndLoopback)
+    {
+        if (IsLinkLocalIPv4(bytes))
+        {
+            return true;
+        }
+
+        if (IsCarrierGradeNatIPv4(bytes))
+        {
+            return true;
+        }
+
+        // 224.0.0.0/4 multicast and 240.0.0.0/4 reserved (which includes 255.255.255.255 broadcast) are
+        // never valid unicast destinations, so even trusted provider egress refuses them.
+        if (bytes[0] >= 224)
+        {
+            return true;
+        }
+
+        if (allowPrivateAndLoopback)
+        {
+            return false;
+        }
+
+        if (IsLoopbackIPv4(bytes))
+        {
+            return true;
+        }
+
+        if (IsPrivateIPv4(bytes))
+        {
+            return true;
+        }
+
+        if (IsProtocolAssignmentOrBenchmarkIPv4(bytes))
+        {
+            return true;
+        }
+
+        return bytes[0] == 0;
+    }
+
+    private static IEnumerable<byte[]> EmbeddedIPv4Addresses(byte[] ipv6Bytes)
+    {
+        // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): the IPv4 address is the final 32 bits.
+        if (ipv6Bytes[0] == 0x00
+            && ipv6Bytes[1] == 0x64
+            && ipv6Bytes[2] == 0xFF
+            && ipv6Bytes[3] == 0x9B
+            && HasZeroBytes(ipv6Bytes, 4, 12))
+        {
+            yield return ipv6Bytes[12..16];
+
+            yield break;
+        }
+
+        // 6to4 2002::/16 (RFC 3056): the IPv4 address follows the prefix.
+        if (ipv6Bytes[0] == 0x20 && ipv6Bytes[1] == 0x02)
+        {
+            yield return ipv6Bytes[2..6];
+
+            yield break;
+        }
+
+        // Teredo 2001:0000::/32 (RFC 4380): the Teredo server IPv4 follows the prefix and the client IPv4
+        // is stored inverted in the final 32 bits.
+        if (ipv6Bytes[0] == 0x20
+            && ipv6Bytes[1] == 0x01
+            && ipv6Bytes[2] == 0x00
+            && ipv6Bytes[3] == 0x00)
+        {
+            yield return ipv6Bytes[4..8];
+
+            yield return
+            [
+                (byte)~ipv6Bytes[12],
+                (byte)~ipv6Bytes[13],
+                (byte)~ipv6Bytes[14],
+                (byte)~ipv6Bytes[15],
+            ];
+        }
+    }
+
+    private static bool HasZeroBytes(byte[] bytes, int start, int end)
+    {
+        for (int index = start; index < end; index++)
+        {
+            if (bytes[index] != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool IsLoopbackIPv4(byte[] bytes) => bytes[0] == 127;
@@ -546,4 +636,12 @@ public static class OutboundUrlGuard
 
     private static bool IsCarrierGradeNatIPv4(byte[] bytes) =>
         bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127;
+
+    /// <summary>
+    /// 192.0.0.0/24 (IETF protocol assignments) and 198.18.0.0/15 (benchmarking). Neither is a public
+    /// service address, but proxy fake-IP modes use 198.18.0.0/15, so trusted provider egress keeps it.
+    /// </summary>
+    private static bool IsProtocolAssignmentOrBenchmarkIPv4(byte[] bytes) =>
+        (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 0)
+        || (bytes[0] == 198 && (bytes[1] == 18 || bytes[1] == 19));
 }

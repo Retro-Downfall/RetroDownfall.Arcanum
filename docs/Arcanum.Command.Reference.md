@@ -446,7 +446,7 @@ Outcomes, least to most severe:
 | `credentials.providers` | Credentials | Per-credential presence and source, resolved exactly as the run time resolves it. | `arcanum key provider set <provider>` |
 | `credentials.master_key` | Credentials | Whether the master API key is readable. | `arcanum key set` |
 | `webresearch.credential` | WebResearch | Web-research credential presence and decryptability. Reachability is deliberately not probed: the provider bills every request. | `arcanum key provider set perplexity --kind web-research` |
-| `grimoire.key_material` | Grimoire | Encryption-secret status and a stranded pending KDF upgrade. The opening checks try every derivation this installation supports — committed sidecar, pending sidecar, and both legacy forms — so a pre-upgrade or mid-upgrade database is not misreported as unopenable. | `arcanum backup restore <archive>` |
+| `grimoire.key_material` | Grimoire | Encryption-secret status and a stranded pending KDF upgrade. The opening checks try every derivation this installation supports — committed sidecar, pending sidecar, and both legacy forms — so a pre-upgrade or mid-upgrade database is not misreported as unopenable. The committed sidecar is read, not just looked for: a damaged or unsupported sidecar is `Unhealthy` with a sidecar-specific remedy rather than "current", while a sidecar that cannot be opened for permission or I/O reasons is `Unavailable` with no restore remedy. | `arcanum backup restore <archive>` |
 | `grimoire.integrity` | Grimoire | `PRAGMA quick_check` on the encrypted database, opened read-only. | `arcanum backup create --scope grimoire` |
 | `grimoire.foreign_keys` | Grimoire | `PRAGMA foreign_key_check`; reports table names only. | `arcanum backup create --scope grimoire` |
 | `grimoire.wal_size` | Grimoire | Write-ahead log size, which grows when no clean shutdown checkpoints it. | `arcanum daemon status` |
@@ -455,7 +455,7 @@ Outcomes, least to most severe:
 | `operations.stale_leases` | Operations | Operation leases that expired while still claiming to run. | `arcanum operation list` |
 | `operations.durable_state` | Operations | The host's own durable-operation summary when it is reachable. | `arcanum operation list --state ReconciliationRequired` |
 | `runtime.pid_file` | Runtime | Whether the PID file names a live process. | `arcanum doctor --repair runtime.remove_stale_pid --apply` |
-| `runtime.maintenance_lock` | Runtime | Whether another process holds the installation maintenance lock. Read-only: it opens the existing file rather than acquiring the lock. | — |
+| `runtime.maintenance_lock` | Runtime | Whether another process holds the installation maintenance lock. Read-only: it opens the existing file with a shared mode rather than acquiring the exclusive lock, so it never blocks other diagnostics. The open itself is momentary and can overlap a host's startup acquisition, which retries a contended attempt for about 35 ms before reporting contention. | — |
 | `runtime.disk_space` | Runtime | Free space on the Arcanum volume. | `arcanum data prune --dry-run` |
 | `runtime.tool_child_sandbox` | Runtime | Filesystem jail, resource limits, and escape-hatch posture for tool children. | — |
 | `weave.embeddings` | Weave | Configured embedding provider, model, and vector mode. Managed compatibility budget `0` means no total row budget. | — |

@@ -29,14 +29,12 @@ internal sealed class CovenantAuthorityTransitionPublisher(
     CovenantAvailability availability)
     : ICovenantAuthorityTransitionPublisher, ICovenantCommittedTransitionPublisher
 {
-
     /// <inheritdoc/>
     public ValueTask<Result> PublishCommittedAsync(
         CovenantCommittedAuthorityTransition transition,
         ICovenantExclusiveOperationLease lease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(transition);
 
         return PublishCommittedAsync(
@@ -44,7 +42,6 @@ internal sealed class CovenantAuthorityTransitionPublisher(
             lease,
             runtime.Current,
             cancellationToken);
-
     }
 
     /// <summary>
@@ -56,7 +53,6 @@ internal sealed class CovenantAuthorityTransitionPublisher(
         CovenantRuntimeGenerationState expected,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(transition);
 
         ArgumentNullException.ThrowIfNull(lease);
@@ -67,12 +63,10 @@ internal sealed class CovenantAuthorityTransitionPublisher(
 
         if (lease.Snapshot.RecoveryOwner is not { } recoveryOwner)
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "A committed authority transition requires an exact exclusive recovery owner."));
-
         }
 
         if (expected.RuntimeAuthorityGeneration != observedRuntimeGeneration)
@@ -87,11 +81,9 @@ internal sealed class CovenantAuthorityTransitionPublisher(
 
         if (transition.IsFailure)
         {
-
             _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
 
             return Result.Failure(transition.Error);
-
         }
 
         CovenantCommittedAuthorityTransition committed = transition.Value;
@@ -100,10 +92,11 @@ internal sealed class CovenantAuthorityTransitionPublisher(
 
         try
         {
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            Result live = await lease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+            // The transition this publishes is already durable, so there is no longer a "not yet" for a
+            // caller's cancellation to select: abandoning publication here would leave the process
+            // holding keys the commit invalidated while the exclusive gate stays closed. The caller's
+            // token governed everything up to the commit; from here the work runs to completion.
+            Result live = await lease.RevalidateAsync(CancellationToken.None).ConfigureAwait(false);
 
             if (!live.IsSuccess)
             {
@@ -192,23 +185,17 @@ internal sealed class CovenantAuthorityTransitionPublisher(
             }
 
             return published;
-
         }
         catch
         {
-
             _ = runtime.RetireAuthorityGeneration(observedRuntimeGeneration, recoveryOwner);
 
             throw;
-
         }
         finally
         {
-
             prepared?.Dispose();
-
         }
-
     }
 
     private static Result<CovenantHealthTransition> ResolveHealthTransition(
@@ -225,5 +212,4 @@ internal sealed class CovenantAuthorityTransitionPublisher(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This exclusive operation cannot publish a Covenant authority transition.")),
         };
-
 }

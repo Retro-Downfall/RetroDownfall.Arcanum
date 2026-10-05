@@ -321,6 +321,12 @@ public static class ServiceCollectionExtensions
         // resolves repository services from the CLI container.
         services.TryAddSingleton<IHostWorkspaceContext, HostWorkspaceContext>();
 
+        // ...and a workspace registry, which it needs to prove a claimed workspace root against. Offline
+        // maintenance registers no workspace, so this one is empty and every claimed root is refused as
+        // unregistered; the host composition replaces it with the Campaign-backed registry (a later
+        // registration wins, and TryAdd leaves that one alone if it came first).
+        services.TryAddSingleton<IWorkspaceRegistry, InMemoryWorkspaceRegistry>();
+
         // An explicit factory rather than a type registration: the Covenant mutation kernel is
         // internal, so the composed constructor cannot be reached by a reflective activator.
         services.AddScoped<IGrimoireRepository>(
@@ -1853,6 +1859,11 @@ public static class ServiceCollectionExtensions
             static sp => sp.GetRequiredService<CampaignRootIdentityKeyProvider>());
 
         services.AddSingleton<ICampaignRootIdentityRecoveryKeyProvider>(
+            static sp => sp.GetRequiredService<CampaignRootIdentityKeyProvider>());
+
+        // The only port that may create the key. It takes the caller's registered-roots evidence, so it
+        // is a separate registration from the read ports: nothing that merely reads can mint a key.
+        services.AddSingleton<ICampaignRootIdentityKeyCreator>(
             static sp => sp.GetRequiredService<CampaignRootIdentityKeyProvider>());
 
         services.AddSingleton(

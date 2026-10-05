@@ -75,6 +75,11 @@ internal static partial class SecureDirectoryNameEnumerator
 
             try
             {
+                // dup shares the open file description, hence the directory offset, with the caller's
+                // handle. Without a rewind a second enumeration of the same capability starts where the
+                // last one ended and silently reports a populated directory as empty.
+                RewindDirectoryUnix(stream);
+
                 List<string> names = [];
                 while (true)
                 {
@@ -256,6 +261,9 @@ internal static partial class SecureDirectoryNameEnumerator
 
     [LibraryImport("libc", EntryPoint = "readdir", SetLastError = true)]
     private static partial IntPtr ReadDirectoryUnix(IntPtr directory);
+
+    [LibraryImport("libc", EntryPoint = "rewinddir")]
+    private static partial void RewindDirectoryUnix(IntPtr directory);
 
     [LibraryImport("libc", EntryPoint = "closedir", SetLastError = true)]
     private static partial int CloseDirectoryUnix(IntPtr directory);

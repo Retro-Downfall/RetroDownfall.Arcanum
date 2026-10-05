@@ -293,6 +293,108 @@ public sealed class OutboundUrlGuardTests
         Assert.False(OutboundUrlGuard.IsBlockedAddress(publicAddress, allowPrivateAndLoopback));
     }
 
+    [Theory]
+    [InlineData("64:ff9b::a00:1", false)]
+    [InlineData("64:ff9b::7f00:1", false)]
+    [InlineData("64:ff9b::c0a8:101", false)]
+    [InlineData("64:ff9b::a9fe:a9fe", true)]
+    [InlineData("64:ff9b::6440:1", true)]
+    public void IsBlockedAddress_Nat64EmbeddedPrivateIpv4_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Fact]
+    public void IsBlockedAddress_Nat64EmbeddedPrivateIpv4_FollowsTheIpv4PolicyForTrustedEgress()
+    {
+        IPAddress embeddedPrivate = IPAddress.Parse("64:ff9b::a00:1");
+
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(embeddedPrivate, allowPrivateAndLoopback: true));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void IsBlockedAddress_Nat64EmbeddedPublicIpv4_NotBlocked(bool allowPrivateAndLoopback)
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("64:ff9b::808:808"), allowPrivateAndLoopback));
+    }
+
+    [Theory]
+    [InlineData("2002:7f00:1::", false)]
+    [InlineData("2002:a00:1::1", false)]
+    [InlineData("2002:a9fe:a9fe::", true)]
+    public void IsBlockedAddress_6to4EmbeddedLoopback_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Fact]
+    public void IsBlockedAddress_6to4EmbeddedPublicIpv4_NotBlocked()
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("2002:808:808::1"), allowPrivateAndLoopback: false));
+    }
+
+    [Theory]
+    [InlineData("2001:0:5a5a:5a5a::f5ff:fffe", false)]
+    [InlineData("2001:0:a00:1::f7f7:f7f7", false)]
+    [InlineData("2001:0:808:808::5601:5601", true)]
+    public void IsBlockedAddress_TeredoEmbeddedPrivateIpv4_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Fact]
+    public void IsBlockedAddress_TeredoWithPublicServerAndClient_NotBlocked()
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("2001:0:808:808::f7f7:f7f7"), allowPrivateAndLoopback: false));
+    }
+
+    [Fact]
+    public void IsBlockedAddress_DocumentationIpv6PrefixIsNotTreatedAsTeredo()
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("2001:db8::1"), allowPrivateAndLoopback: false));
+    }
+
+    [Theory]
+    [InlineData("ff02::1", false)]
+    [InlineData("ff02::1", true)]
+    [InlineData("ff0e::1234", false)]
+    [InlineData("ff0e::1234", true)]
+    [InlineData("224.0.0.1", false)]
+    [InlineData("224.0.0.1", true)]
+    [InlineData("239.255.255.250", true)]
+    [InlineData("240.0.0.1", true)]
+    [InlineData("255.255.255.255", false)]
+    [InlineData("255.255.255.255", true)]
+    public void IsBlockedAddress_Multicast_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Theory]
+    [InlineData("192.0.0.8")]
+    [InlineData("198.18.0.1")]
+    [InlineData("198.19.255.254")]
+    public void IsBlockedAddress_BenchmarkAndProtocolAssignments_BlockedWhenUntrustedOnly(string literal)
+    {
+        IPAddress address = IPAddress.Parse(literal);
+
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(address, allowPrivateAndLoopback: false));
+
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(address, allowPrivateAndLoopback: true));
+    }
+
+    [Theory]
+    [InlineData("223.255.255.254")]
+    [InlineData("198.17.255.255")]
+    [InlineData("198.20.0.1")]
+    [InlineData("192.0.1.1")]
+    public void IsBlockedAddress_NeighboursOfTheSpecialPurposeRanges_NotBlocked(string literal)
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: false));
+    }
+
     [Fact]
     public async Task ValidateArcanumSettingsAsync_DefaultCommLink_Succeeds()
     {

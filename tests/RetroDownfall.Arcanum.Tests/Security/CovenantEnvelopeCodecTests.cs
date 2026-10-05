@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </summary>
 public sealed class CovenantEnvelopeCodecTests
 {
-
     private static readonly Guid Installation = Guid.Parse("2C4A5E3B-9F17-4D0C-8A6E-1B3D5F70921A");
 
     private static readonly Guid Dataset = Guid.Parse("0D1E2F30-4152-4637-8899-AABBCCDDEEFF");
@@ -36,16 +35,13 @@ public sealed class CovenantEnvelopeCodecTests
         byte code,
         string label)
     {
-
         Assert.Equal(code, (byte)purpose);
         Assert.Equal(label, CovenantEnvelopeLimits.Label(purpose));
-
     }
 
     [Fact]
     public void Purpose_set_is_closed_and_splits_dataset_from_recovery_keying()
     {
-
         Assert.Equal(6, Enum.GetValues<CovenantEnvelopePurpose>().Length);
 
         Assert.True(CovenantEnvelopeLimits.IsDatasetKeyed(CovenantEnvelopePurpose.Cursor));
@@ -55,7 +51,6 @@ public sealed class CovenantEnvelopeCodecTests
         Assert.False(CovenantEnvelopeLimits.IsDatasetKeyed(CovenantEnvelopePurpose.FamilyReinitialize));
         Assert.False(CovenantEnvelopeLimits.IsDatasetKeyed(CovenantEnvelopePurpose.CampaignPathIdentity));
         Assert.False(CovenantEnvelopeLimits.IsDatasetKeyed(CovenantEnvelopePurpose.SessionCampaignBinding));
-
     }
 
     [Theory]
@@ -67,7 +62,6 @@ public sealed class CovenantEnvelopeCodecTests
     [InlineData(CovenantEnvelopePurpose.SessionCampaignBinding)]
     public void Round_trip_preserves_the_exact_payload_for_every_purpose(CovenantEnvelopePurpose purpose)
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         byte[] payload = [0x00, 0x01, 0xFE, 0xFF, 0x7F, 0x80];
@@ -83,13 +77,11 @@ public sealed class CovenantEnvelopeCodecTests
         Assert.Equal(payload, decoded.Value.Payload);
         Assert.Equal(Now, decoded.Value.IssuedAtUtc);
         Assert.Equal(Now.AddMinutes(5), decoded.Value.ExpiresAtUtc);
-
     }
 
     [Fact]
     public void A_caller_whose_payload_repeats_the_stamp_may_state_the_instant()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         DateTimeOffset stated = Now.AddSeconds(-30);
@@ -111,13 +103,11 @@ public sealed class CovenantEnvelopeCodecTests
         Assert.Equal(
             stated.AddMinutes(5).ToUnixTimeMilliseconds(),
             body.ExpiresAtUtc.ToUnixTimeMilliseconds());
-
     }
 
     [Fact]
     public void An_envelope_cannot_be_issued_in_the_future()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         // Backdating only shortens a token's life, which is what a caller aligning its payload with
@@ -132,13 +122,11 @@ public sealed class CovenantEnvelopeCodecTests
         Assert.True(refused.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, refused.Error.Code);
-
     }
 
     [Fact]
     public void An_envelope_cannot_be_issued_already_expired()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         // A stamp a whole lifetime old mints a token the very next decode refuses, so the caller is
@@ -164,13 +152,11 @@ public sealed class CovenantEnvelopeCodecTests
         Assert.True(accepted.IsSuccess);
 
         Assert.True(harness.Codec.Decode(CovenantEnvelopePurpose.OperatorPreflight, accepted.Value).IsSuccess);
-
     }
 
     [Fact]
     public void An_omitted_instant_still_leaves_the_codec_owning_the_clock()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         string token = harness.Codec
@@ -180,13 +166,11 @@ public sealed class CovenantEnvelopeCodecTests
         CovenantEnvelopeBody body = harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token).Value;
 
         Assert.Equal(Now.ToUnixTimeMilliseconds(), body.IssuedAtUtc.ToUnixTimeMilliseconds());
-
     }
 
     [Fact]
     public void Wire_layout_is_the_exact_forty_six_byte_header_plus_ciphertext_and_tag()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         byte[] payload = Encoding.ASCII.GetBytes("cursor-state");
@@ -220,13 +204,11 @@ public sealed class CovenantEnvelopeCodecTests
         Assert.Equal(
             (uint)(CovenantEnvelopeLimits.BodyTimeBytes + payload.Length),
             BinaryPrimitives.ReadUInt32BigEndian(wire.AsSpan(42)));
-
     }
 
     [Fact]
     public void Counter_advances_per_purpose_and_never_repeats_a_nonce()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         ulong first = Counter(harness.Codec.Encode(CovenantEnvelopePurpose.Cursor, [1], TimeSpan.FromMinutes(1)).Value);
@@ -239,13 +221,11 @@ public sealed class CovenantEnvelopeCodecTests
         Assert.Equal(1ul, first);
         Assert.Equal(2ul, second);
         Assert.Equal(1ul, otherPurpose);
-
     }
 
     [Fact]
     public void Cross_purpose_presentation_is_refused()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         string cursor = harness.Codec.Encode(
@@ -258,7 +238,47 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, decoded.Error.Code);
+    }
 
+    [Fact]
+    public void A_genuine_token_for_another_purpose_is_reported_as_a_purpose_mismatch()
+    {
+        using CodecHarness harness = CodecHarness.Create();
+
+        string cursor = harness.Codec.Encode(
+            CovenantEnvelopePurpose.Cursor,
+            [7],
+            TimeSpan.FromMinutes(1)).Value;
+
+        Result<CovenantEnvelopeBody> decoded =
+            harness.Codec.Decode(CovenantEnvelopePurpose.OperatorPreflight, cursor);
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.PurposeMismatch), decoded.Error);
+    }
+
+    [Fact]
+    public void A_forged_header_with_another_purpose_is_reported_as_invalid_not_mismatch()
+    {
+        using CodecHarness harness = CodecHarness.Create();
+
+        string token = harness.Codec.Encode(
+            CovenantEnvelopePurpose.Cursor,
+            [7],
+            TimeSpan.FromMinutes(1)).Value;
+
+        // Rewriting the unauthenticated-looking purpose byte must not be answered from the header: the
+        // refusal "issued for a different purpose" is only true of a token whose tag verified, and a
+        // forged one would otherwise confirm to an attacker that the rest of the framing parsed.
+        byte[] wire = Base64Url.DecodeFromChars(token);
+
+        wire[5] = (byte)CovenantEnvelopePurpose.OperatorPreflight;
+
+        Result<CovenantEnvelopeBody> decoded =
+            harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, Base64Url.EncodeToString(wire));
+
+        Assert.False(decoded.IsSuccess);
+        Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
     }
 
     [Theory]
@@ -269,7 +289,6 @@ public sealed class CovenantEnvelopeCodecTests
     [InlineData(50)]
     public void Tampering_with_any_authenticated_byte_is_refused(int index)
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         string token = harness.Codec.Encode(
@@ -286,13 +305,11 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, decoded.Error.Code);
-
     }
 
     [Fact]
     public void Body_times_must_equal_the_authenticated_header_times()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         // Only the expiry halves disagree, and the body claims the longer life. Without the equality
@@ -311,13 +328,11 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, decoded.Error.Code);
-
     }
 
     [Fact]
     public void A_body_issued_instant_that_differs_from_the_header_is_refused()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         long expiresMs = Now.AddMinutes(1).ToUnixTimeMilliseconds();
@@ -338,7 +353,6 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, decoded.Error.Code);
-
     }
 
     [Theory]
@@ -346,7 +360,6 @@ public sealed class CovenantEnvelopeCodecTests
     [InlineData(-5)]
     public void An_envelope_that_expires_no_later_than_it_was_issued_is_refused(int expiryOffsetMinutes)
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         DateTimeOffset issuedAt = Now.AddMinutes(10);
@@ -369,13 +382,11 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
-
     }
 
     [Fact]
     public void An_elapsed_lifetime_is_reported_separately_from_an_invalid_token()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         string token = harness.Codec.Encode(
@@ -390,7 +401,6 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, decoded.Error.Code);
-
     }
 
     [Theory]
@@ -402,20 +412,17 @@ public sealed class CovenantEnvelopeCodecTests
     [InlineData("QUNWRQ")]
     public void Malformed_input_is_refused_before_any_cryptography(string? token)
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         Result<CovenantEnvelopeBody> decoded = harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, token);
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, decoded.Error.Code);
-
     }
 
     [Fact]
     public void An_oversized_token_is_refused_without_allocating_from_its_length()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         Result<CovenantEnvelopeBody> decoded = harness.Codec.Decode(
@@ -424,13 +431,11 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, decoded.Error.Code);
-
     }
 
     [Fact]
     public void An_oversized_payload_or_lifetime_is_refused_at_issuance()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         Result<string> tooLarge = harness.Codec.Encode(
@@ -463,13 +468,11 @@ public sealed class CovenantEnvelopeCodecTests
         {
             Assert.False(harness.Codec.Encode(CovenantEnvelopePurpose.Cursor, [1], lifetime).IsSuccess);
         }
-
     }
 
     [Fact]
     public void A_dataset_keyed_purpose_has_no_key_when_no_dataset_exists()
     {
-
         using CodecHarness harness = CodecHarness.CreateWithoutDataset();
 
         Result<string> cursor = harness.Codec.Encode(
@@ -487,13 +490,11 @@ public sealed class CovenantEnvelopeCodecTests
                 CovenantEnvelopePurpose.FamilyReinitialize,
                 [1],
                 TimeSpan.FromMinutes(1)).IsSuccess);
-
     }
 
     [Fact]
     public void Encoding_before_initialization_fails_closed()
     {
-
         using CovenantEnvelopeMasterKeyProvider keys = new();
 
         CovenantEnvelopeCodec codec = new(keys, FakeClock(Now));
@@ -502,13 +503,11 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(encoded.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.OperatorAuthorityUnavailable, encoded.Error.Code);
-
     }
 
     [Fact]
     public async Task Encoding_returns_stale_and_zeroizes_temporaries_when_retired_after_key_copy()
     {
-
         using BlockingCodecCheckpoint checkpoint = new(CovenantEnvelopeCodecStep.PurposeKeyCopied);
 
         using CodecHarness harness = CodecHarness.Create(checkpoint);
@@ -538,13 +537,11 @@ public sealed class CovenantEnvelopeCodecTests
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
-
     }
 
     [Fact]
     public async Task Encoding_returns_stale_without_a_token_when_a_generation_publishes_after_crypto()
     {
-
         using BlockingCodecCheckpoint checkpoint = new(
             CovenantEnvelopeCodecStep.BeforeGenerationRevalidation);
 
@@ -585,13 +582,11 @@ public sealed class CovenantEnvelopeCodecTests
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
-
     }
 
     [Fact]
     public async Task Decoding_returns_stale_and_zeroizes_temporaries_when_retired_after_key_copy()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         string token = harness.Codec.Encode(
@@ -625,13 +620,11 @@ public sealed class CovenantEnvelopeCodecTests
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
-
     }
 
     [Fact]
     public async Task Decoding_returns_stale_without_a_payload_when_a_generation_publishes_after_crypto()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         string token = harness.Codec.Encode(
@@ -676,13 +669,11 @@ public sealed class CovenantEnvelopeCodecTests
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
-
     }
 
     [Fact]
     public async Task Encoding_holds_publication_between_current_proof_and_token_materialization()
     {
-
         using BlockingCodecCheckpoint checkpoint = new(
             CovenantEnvelopeCodecStep.CurrentGenerationProven);
 
@@ -706,30 +697,25 @@ public sealed class CovenantEnvelopeCodecTests
 
         checkpoint.WaitUntilReached();
 
-        TaskCompletionSource publicationStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        CovenantEnvelopeKeyGeneration predecessor = harness.Keys.Current!;
+
+        Thread? publisher = null;
 
         Task publication = RunLongRunning(
             () =>
             {
-
-                publicationStarted.SetResult();
+                publisher = Thread.CurrentThread;
 
                 harness.PublishOwned(owned, transition);
-
             });
 
         try
         {
+            // The publisher is parked on the holder lock the encoder still holds, which is the state this
+            // test claims, not a wall-clock guess that it has not finished yet.
+            AssertBlockedOnALock(publication, () => publisher);
 
-            await publicationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-            Task completed = await Task.WhenAny(
-                publication,
-                Task.Delay(TimeSpan.FromMilliseconds(100)));
-
-            Assert.NotSame(publication, completed);
-
+            Assert.Same(predecessor, harness.Keys.Current);
         }
         finally
         {
@@ -750,13 +736,11 @@ public sealed class CovenantEnvelopeCodecTests
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
-
     }
 
     [Fact]
     public async Task Decoding_holds_retirement_between_current_proof_and_payload_materialization()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         byte[] payload = [16, 17, 18];
@@ -776,30 +760,22 @@ public sealed class CovenantEnvelopeCodecTests
 
         checkpoint.WaitUntilReached();
 
-        TaskCompletionSource retirementStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        Thread? retiree = null;
 
         Task retirement = RunLongRunning(
             () =>
             {
-
-                retirementStarted.SetResult();
+                retiree = Thread.CurrentThread;
 
                 harness.Retire();
-
             });
 
         try
         {
+            AssertBlockedOnALock(retirement, () => retiree);
 
-            await retirementStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-            Task completed = await Task.WhenAny(
-                retirement,
-                Task.Delay(TimeSpan.FromMilliseconds(100)));
-
-            Assert.NotSame(retirement, completed);
-
+            // Retirement has not taken effect: the keys the decoder is mid-way through using are intact.
+            Assert.NotNull(harness.Keys.Current);
         }
         finally
         {
@@ -817,13 +793,11 @@ public sealed class CovenantEnvelopeCodecTests
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Plaintext, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Nonce, expectedCount: 1);
         checkpoint.AssertZeroized(CovenantEnvelopeCodecBufferKind.Wire, expectedCount: 1);
-
     }
 
     [Fact]
     public void A_codec_refuses_to_exist_without_keys_a_clock_or_a_checkpoint()
     {
-
         using CovenantEnvelopeMasterKeyProvider keys = new();
 
         FakeTimeProvider time = FakeClock(Now);
@@ -847,13 +821,11 @@ public sealed class CovenantEnvelopeCodecTests
             Assert.Throws<ArgumentNullException>(
                 () => new CovenantEnvelopeCodec(keys, time, null!))
                 .ParamName);
-
     }
 
     [Fact]
     public void The_key_snapshot_is_empty_until_a_generation_is_published()
     {
-
         using CovenantEnvelopeMasterKeyProvider uninitialized = new();
 
         CovenantEnvelopeCodec codec = new(uninitialized, FakeClock(Now));
@@ -877,7 +849,6 @@ public sealed class CovenantEnvelopeCodecTests
         Assert.Equal(2, published.RecoveryEnvelopeEpoch);
         Assert.Equal(Installation.ToString().ToUpperInvariant(), published.InstallationIdentity);
         Assert.Equal(Dataset, published.DatasetGeneration);
-
     }
 
     [Theory]
@@ -886,7 +857,6 @@ public sealed class CovenantEnvelopeCodecTests
     [InlineData(200)]
     public void An_undefined_purpose_cannot_be_issued(byte code)
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         // Every purpose indexes the key table by its own code, so an undefined one reads outside that
@@ -898,7 +868,6 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.True(refused.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.InvalidCursor, refused.Error.Code);
-
     }
 
     [Theory]
@@ -907,7 +876,6 @@ public sealed class CovenantEnvelopeCodecTests
     [InlineData(200)]
     public void A_route_that_names_an_undefined_purpose_learns_only_that_the_token_is_invalid(byte code)
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         string token = harness.Codec
@@ -921,13 +889,11 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
-
     }
 
     [Fact]
     public void A_purpose_that_has_spent_its_issuance_counter_must_re_key_rather_than_continue()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         CovenantEnvelopeCodec codec = new(new ExhaustedCounterKeys(harness.Keys), harness.Time);
@@ -939,13 +905,11 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.True(refused.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, refused.Error.Code);
-
     }
 
     [Fact]
     public void A_token_longer_than_this_framing_can_produce_is_refused_before_it_is_decoded()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         int maxWireBytes = CovenantEnvelopeLimits.HeaderBytes
@@ -963,7 +927,6 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
-
     }
 
     [Theory]
@@ -973,7 +936,6 @@ public sealed class CovenantEnvelopeCodecTests
     public void A_token_whose_last_group_sets_bits_no_encoder_emits_is_refused_rather_than_thrown(
         string token)
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         // These are base64url's own alphabet at a legal unpadded length, so the character filter passes
@@ -984,13 +946,11 @@ public sealed class CovenantEnvelopeCodecTests
 
         Assert.False(decoded.IsSuccess);
         Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), decoded.Error);
-
     }
 
     [Fact]
     public void A_signed_token_respelled_with_an_unused_trailing_bit_is_refused_though_its_bytes_verify()
     {
-
         using CodecHarness harness = CodecHarness.Create();
 
         int respelled = 0;
@@ -999,7 +959,6 @@ public sealed class CovenantEnvelopeCodecTests
         // end in a short group whose last character carries bits no encoder sets.
         for (int length = 1; length <= 3; length++)
         {
-
             string token = harness.Codec
                 .Encode(CovenantEnvelopePurpose.Cursor, new byte[length], TimeSpan.FromMinutes(1))
                 .Value;
@@ -1008,9 +967,7 @@ public sealed class CovenantEnvelopeCodecTests
 
             if (token.Length % 4 is 0)
             {
-
                 continue;
-
             }
 
             // The respelling decodes to exactly the signed bytes, so the tag verifies. It is a second
@@ -1024,11 +981,9 @@ public sealed class CovenantEnvelopeCodecTests
             Assert.Equal(CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid), refused.Error);
 
             respelled++;
-
         }
 
         Assert.Equal(2, respelled);
-
     }
 
     private static ulong Counter(string token) =>
@@ -1049,6 +1004,28 @@ public sealed class CovenantEnvelopeCodecTests
             TaskScheduler.Default);
 
     /// <summary>
+    /// Proves <paramref name="task"/> is parked waiting on a lock rather than merely not finished yet:
+    /// waits until its dedicated thread reports a wait state, failing if the task completes first.
+    /// </summary>
+    /// <remarks>
+    /// A negative proof built on <c>Task.Delay</c> can only ever be false-green: on a slow machine the
+    /// operation under test has not started when the delay ends, so "it has not completed" is true for
+    /// the wrong reason. The wait state is the positive evidence that the operation reached the lock and
+    /// is held there. A thread reports it only while blocked, so a pass cannot be an accident of timing.
+    /// </remarks>
+    private static void AssertBlockedOnALock(Task task, Func<Thread?> thread)
+    {
+        bool blocked = SpinWait.SpinUntil(
+            () => task.IsCompleted
+                || (thread() is { } candidate && (candidate.ThreadState & ThreadState.WaitSleepJoin) != 0),
+            TimeSpan.FromSeconds(30));
+
+        Assert.True(blocked, "The operation neither blocked on the lock nor completed.");
+
+        Assert.False(task.IsCompleted, "The operation completed while the lock was still held.");
+    }
+
+    /// <summary>
     /// Frames one cursor token the way the codec would, with header and body times stated separately.
     /// </summary>
     /// <remarks>
@@ -1066,7 +1043,6 @@ public sealed class CovenantEnvelopeCodecTests
         long bodyExpiresMs,
         byte[] payload)
     {
-
         Span<byte> header = stackalloc byte[CovenantEnvelopeLimits.HeaderBytes];
 
         Encoding.ASCII.GetBytes(CovenantEnvelopeLimits.Magic).CopyTo(header);
@@ -1118,7 +1094,6 @@ public sealed class CovenantEnvelopeCodecTests
             header);
 
         return Base64Url.EncodeToString(wire);
-
     }
 
     /// <summary>
@@ -1132,7 +1107,6 @@ public sealed class CovenantEnvelopeCodecTests
     private sealed class ExhaustedCounterKeys(ICovenantEnvelopeMasterKeyProvider inner)
         : ICovenantEnvelopeMasterKeyProvider
     {
-
         public CovenantEnvelopeKeyGeneration? Current => inner.Current;
 
         public CovenantEnvelopeKeyCopyStatus TryCopyPurposeKeyAndReserve(
@@ -1140,11 +1114,9 @@ public sealed class CovenantEnvelopeCodecTests
             Span<byte> destination,
             out CovenantEnvelopeKeyReservation reservation)
         {
-
             reservation = default;
 
             return CovenantEnvelopeKeyCopyStatus.CounterExhausted;
-
         }
 
         public CovenantEnvelopeKeyCopyStatus TryCopyPurposeKey(
@@ -1157,19 +1129,16 @@ public sealed class CovenantEnvelopeCodecTests
             long runtimeAuthorityGeneration,
             CovenantEnvelopeKeyGenerationIdentity identity) =>
             inner.AcquireMaterializationLease(runtimeAuthorityGeneration, identity);
-
     }
 
     private sealed class CodecHarness : IDisposable
     {
-
         private CodecHarness(
             CovenantEnvelopeMasterKeyProvider keys,
             CovenantEnvelopeCodec codec,
             FakeTimeProvider time,
             byte[] cursorKey)
         {
-
             Keys = keys;
 
             Codec = codec;
@@ -1177,7 +1146,6 @@ public sealed class CovenantEnvelopeCodecTests
             Time = time;
 
             CursorKey = cursorKey;
-
         }
 
         public CovenantEnvelopeMasterKeyProvider Keys { get; }
@@ -1200,7 +1168,6 @@ public sealed class CovenantEnvelopeCodecTests
             Guid? dataset,
             ICovenantEnvelopeCodecCheckpoint? checkpoint = null)
         {
-
             CovenantEnvelopeMasterKeyProvider keys = new();
 
             Result initialized = dataset is { } committedDataset
@@ -1247,7 +1214,6 @@ public sealed class CovenantEnvelopeCodecTests
                 : new CovenantEnvelopeCodec(keys, time, checkpoint);
 
             return new CodecHarness(keys, codec, time, cursorKey);
-
         }
 
         internal void PublishOwned(
@@ -1259,13 +1225,10 @@ public sealed class CovenantEnvelopeCodecTests
 
         public void Dispose()
         {
-
             CryptographicOperations.ZeroMemory(CursorKey);
 
             Keys.Dispose();
-
         }
-
     }
 
     private static CovenantCommittedAuthorityTransition Transition(Guid? dataset, uint masterKeyVersion) =>
@@ -1307,7 +1270,6 @@ public sealed class CovenantEnvelopeCodecTests
     private sealed class BlockingCodecCheckpoint(
         CovenantEnvelopeCodecStep blockedStep) : ICovenantEnvelopeCodecCheckpoint, IDisposable
     {
-
         private static readonly TimeSpan ReachedTimeout = TimeSpan.FromSeconds(5);
 
         private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(30);
@@ -1320,7 +1282,6 @@ public sealed class CovenantEnvelopeCodecTests
 
         public void Reached(CovenantEnvelopeCodecStep step)
         {
-
             if (step != blockedStep)
             {
                 return;
@@ -1332,7 +1293,6 @@ public sealed class CovenantEnvelopeCodecTests
             // Release() disposes the harness under that same lock, so an unbounded wait would hang the
             // whole run; the bound turns that into a red test instead.
             _release.Wait(ReleaseTimeout);
-
         }
 
         public void Zeroized(CovenantEnvelopeCodecBufferKind kind, bool isZero) =>
@@ -1340,7 +1300,6 @@ public sealed class CovenantEnvelopeCodecTests
 
         public void WaitUntilReached()
         {
-
             bool reached = _reached.Wait(ReachedTimeout);
 
             if (!reached)
@@ -1349,46 +1308,36 @@ public sealed class CovenantEnvelopeCodecTests
             }
 
             Assert.True(reached, $"The codec did not reach {blockedStep} within {ReachedTimeout.TotalSeconds:0} seconds.");
-
         }
 
         public void Release() => _release.Set();
 
         public void AssertZeroized(CovenantEnvelopeCodecBufferKind kind, int expectedCount)
         {
-
             (CovenantEnvelopeCodecBufferKind Kind, bool IsZero)[] matching =
                 [.. _zeroizations.Where(item => item.Kind == kind)];
 
             Assert.Equal(expectedCount, matching.Length);
             Assert.All(matching, static item => Assert.True(item.IsZero));
-
         }
 
         public void Dispose()
         {
-
             _release.Set();
 
             _reached.Dispose();
 
             _release.Dispose();
-
         }
-
     }
-
 
     /// <summary>A fixed clock, so envelope timestamps and expiry are exact rather than approximate.</summary>
     private static FakeTimeProvider FakeClock(DateTimeOffset now)
     {
-
         FakeTimeProvider provider = new();
 
         provider.SetUtcNow(now);
 
         return provider;
-
     }
-
 }

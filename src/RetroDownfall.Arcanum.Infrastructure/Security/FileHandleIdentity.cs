@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 using Microsoft.Win32.SafeHandles;
 
@@ -32,6 +33,12 @@ internal readonly record struct FileHandleMetadata(
     FileHandleIdentity Identity,
     ulong HardLinkCount,
     FileSystemObjectKind Kind = FileSystemObjectKind.RegularFile);
+
+internal readonly record struct WindowsFileIdInfoLayout(
+    int Size,
+    int VolumeSerialNumberOffset,
+    int FileIdLowOffset,
+    int FileIdHighOffset);
 
 internal readonly record struct WindowsFileInformationLayout(
     int Size,
@@ -92,6 +99,93 @@ internal static partial class FileHandleIdentityInterop
                 nameof(BY_HANDLE_FILE_INFORMATION.nFileIndexHigh)).ToInt32(),
             Marshal.OffsetOf<BY_HANDLE_FILE_INFORMATION>(
                 nameof(BY_HANDLE_FILE_INFORMATION.nFileIndexLow)).ToInt32());
+
+    internal static WindowsFileIdInfoLayout GetWindowsFileIdInfoLayoutForTests() =>
+        new(
+            Marshal.SizeOf<FILE_ID_INFO>(),
+            Marshal.OffsetOf<FILE_ID_INFO>(nameof(FILE_ID_INFO.VolumeSerialNumber)).ToInt32(),
+            Marshal.OffsetOf<FILE_ID_INFO>(nameof(FILE_ID_INFO.FileIdLow)).ToInt32(),
+            Marshal.OffsetOf<FILE_ID_INFO>(nameof(FILE_ID_INFO.FileIdHigh)).ToInt32());
+
+    /// <summary>
+    /// Reads the raw <c>FileIdInfo</c> of an open handle, for the Windows-lane test that compares it with
+    /// the identity the handle reports.
+    /// </summary>
+    internal static bool TryReadWindowsFileIdInfoForTests(
+        SafeFileHandle handle,
+        out ulong volumeSerialNumber,
+        out ulong fileIdLow,
+        out ulong fileIdHigh)
+    {
+        volumeSerialNumber = 0;
+
+        fileIdLow = 0;
+
+        fileIdHigh = 0;
+
+        if (!OperatingSystem.IsWindows() || !TryGetWindowsFileIdInfo(handle, out FILE_ID_INFO info))
+        {
+            return false;
+        }
+
+        volumeSerialNumber = info.VolumeSerialNumber;
+
+        fileIdLow = info.FileIdLow;
+
+        fileIdHigh = info.FileIdHigh;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Widens the legacy identity (32-bit volume serial, 64-bit file index) with the handle's 128-bit
+    /// <c>FileIdInfo</c> without changing the identity of anything the legacy form already told apart.
+    /// </summary>
+    /// <remarks>
+    /// An NTFS file id is a 64-bit file reference with a zero upper half, so for every NTFS file the legacy
+    /// identity is already the whole id and is returned unchanged. That is the compatibility rule: the pair
+    /// is persisted (marker bytes, journal entries, receipts) and keyed into every registered Campaign root
+    /// digest, so an NTFS identity that moved would orphan its registration.
+    ///
+    /// <para>A ReFS or Dev Drive id can use the upper half, and the legacy index drops it, so two files
+    /// whose ids differ only there shared an identity. Those ids cannot fit the persisted 64-bit file field
+    /// unchanged, so they are folded into it through a domain-separated SHA-256 of the whole 128-bit id and
+    /// the 64-bit volume serial. The volume half stays the legacy serial: it is compared across different
+    /// files on the same volume (the mount-point and same-volume checks), so it must depend on the volume
+    /// alone. A root registered on such a volume by an earlier build re-derives a different digest and must
+    /// be registered again; an identity that collided before could not safely be honoured anyway.</para>
+    /// </remarks>
+    internal static FileHandleIdentity ResolveWindowsFileIdInfoIdentity(
+        FileHandleIdentity legacy,
+        ulong volumeSerialNumber,
+        ulong fileIdLow,
+        ulong fileIdHigh)
+    {
+        if (fileIdHigh == 0)
+        {
+            return legacy;
+        }
+
+        ReadOnlySpan<byte> label = "Arcanum.FileIdInfo.v1\0"u8;
+
+        Span<byte> preimage = stackalloc byte[label.Length + 24];
+
+        label.CopyTo(preimage);
+
+        BinaryPrimitives.WriteUInt64LittleEndian(preimage[label.Length..], volumeSerialNumber);
+
+        BinaryPrimitives.WriteUInt64LittleEndian(preimage[(label.Length + 8)..], fileIdLow);
+
+        BinaryPrimitives.WriteUInt64LittleEndian(preimage[(label.Length + 16)..], fileIdHigh);
+
+        Span<byte> digest = stackalloc byte[SHA256.HashSizeInBytes];
+
+        _ = SHA256.HashData(preimage, digest);
+
+        return new FileHandleIdentity(
+            legacy.VolumeId,
+            BinaryPrimitives.ReadUInt64LittleEndian(digest));
+    }
 
     internal static uint GetWindowsDirectoryDesiredAccessForTests(
         bool requestReadControl,
@@ -1101,13 +1195,36 @@ internal static partial class FileHandleIdentityInterop
 
         ulong fileId = ((ulong)info.nFileIndexHigh << 32) | info.nFileIndexLow;
 
+        FileHandleIdentity identity = new(info.dwVolumeSerialNumber, fileId);
+
+        // The 64-bit file index above is the low half of the file's real id, and on ReFS and Dev Drive
+        // volumes (128-bit ids) two different files can share it. FileIdInfo carries the whole id; a
+        // filesystem that does not answer it keeps the legacy identity, as every handle did before.
+        if (TryGetWindowsFileIdInfo(handle, out FILE_ID_INFO wide))
+        {
+            identity = ResolveWindowsFileIdInfoIdentity(
+                identity,
+                wide.VolumeSerialNumber,
+                wide.FileIdLow,
+                wide.FileIdHigh);
+        }
+
         metadata = new FileHandleMetadata(
-            new FileHandleIdentity(info.dwVolumeSerialNumber, fileId),
+            identity,
             info.nNumberOfLinks,
             ClassifyWindowsAttributes(info.dwFileAttributes));
 
         return true;
     }
+
+    private static bool TryGetWindowsFileIdInfo(
+        SafeFileHandle handle,
+        out FILE_ID_INFO info) =>
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfoClass,
+            out info,
+            FileIdInfoSize);
 
     private static bool TryGetUnixPathMetadata(
         string path,
@@ -1209,7 +1326,11 @@ internal static partial class FileHandleIdentityInterop
 
         if (isMacOS)
         {
-            if (architecture is not (Architecture.X64 or Architecture.Arm64)
+            // Only the arm64 layout is read. The plain `stat` symbol on macOS x64 is the legacy struct with
+            // a 32-bit inode, whose fields sit at different offsets than the 64-bit-inode layout parsed
+            // below; reading it this way would fabricate an identity from the wrong bytes. x64 is not a
+            // shipping RID, so it fails closed rather than carrying a second layout nobody can verify.
+            if (architecture is not Architecture.Arm64
                 || buffer.Length < MacOsStatMinimumSize)
             {
                 return false;
@@ -1321,6 +1442,12 @@ internal static partial class FileHandleIdentityInterop
 
     private const uint FileFlagOverlapped = 0x40000000;
 
+    /// <summary><c>FILE_INFO_BY_HANDLE_CLASS.FileIdInfo</c>.</summary>
+    private const int FileIdInfoClass = 18;
+
+    /// <summary>The native <c>FILE_ID_INFO</c> size; <c>Windows_file_id_info_layout_matches_native_FILE_ID_INFO</c> pins it.</summary>
+    private const uint FileIdInfoSize = 24;
+
     private const uint FileDirectoryFile = 0x00000001;
 
     private const uint FileNonDirectoryFile = 0x00000040;
@@ -1405,6 +1532,20 @@ internal static partial class FileHandleIdentityInterop
         public uint nFileIndexLow;
     }
 
+    /// <summary>
+    /// <c>FILE_ID_INFO</c>: the 64-bit volume serial and the 128-bit <c>FILE_ID_128</c>, which Windows
+    /// defines as a little-endian 128-bit integer, so its low half is the first eight bytes.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILE_ID_INFO
+    {
+        public ulong VolumeSerialNumber;
+
+        public ulong FileIdLow;
+
+        public ulong FileIdHigh;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private unsafe struct UNICODE_STRING
     {
@@ -1444,6 +1585,14 @@ internal static partial class FileHandleIdentityInterop
     private static partial bool GetFileInformationByHandle(
         SafeFileHandle hFile,
         out BY_HANDLE_FILE_INFORMATION lpFileInformation);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetFileInformationByHandleEx(
+        SafeFileHandle hFile,
+        int fileInformationClass,
+        out FILE_ID_INFO lpFileInformation,
+        uint dwBufferSize);
 
     [LibraryImport(
         "kernel32.dll",

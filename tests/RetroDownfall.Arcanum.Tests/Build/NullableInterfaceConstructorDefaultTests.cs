@@ -18,6 +18,10 @@ using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -49,8 +53,11 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// V-1 shape that are nothing of the kind.</para>
     ///
     /// <para>Several sites here are dependencies whose absence would disable a refusal rather than
-    /// an observation - the two labelled-artifact guards, the two sensitive-artifact purgers, and the
-    /// workspace registry behind the attachment root check. None of them is a live bypass: each
+    /// an observation - the two labelled-artifact guards and the two sensitive-artifact purgers. The
+    /// workspace registry behind the attachment root check used to be a fifth, and is not any more: the
+    /// resolver requires it, and the offline-maintenance composition supplies a registry that knows no
+    /// workspace, so a claimed root is refused there as an explicit registration rather than by a null
+    /// that nobody supplied. None of them is a live bypass: each
     /// reason names the registration or the single construction site that supplies it, so the claim
     /// this list makes is that the container is what keeps the refusal reachable, not that the
     /// parameter is harmless when null. What the list buys is the ninety-ninth entry - a new optional
@@ -234,8 +241,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Resilience/ProviderHealthProbe.cs:ProviderHealthProbe:apiKeyResolver"] = "owner is container-activated and IProviderApiKeyResolver is registered; the container supplies it in a composed host",
 
-        ["src/RetroDownfall.Arcanum.Infrastructure/Security/AttachmentSourceResolver.cs:AttachmentSourceResolver:workspaceRegistry"] = "the owner is registered by `AddScoped<IAttachmentSourceResolver, AttachmentSourceResolver>()` in both the host and the offline-maintenance compositions and IWorkspaceRegistry by the CampaignBackedWorkspaceRegistry singleton; a null makes the `workspaceRegistry is null` branch of the claimed-root resolution return Success(claimedRoot) on a claim a registry can answer Unsafe for, so the container supplying it is what keeps that refusal reachable",
-
         ["src/RetroDownfall.Arcanum.Infrastructure/Security/SanctumGuard.cs:SanctumGuard:dnsResolver"] = "the null coalesces to a constructed default at the use site, so no host runs without a IDnsResolver",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs:EmbeddingsResetService:purger"] = "the only construction in src is the EmbeddingsResetService factory in ServiceCollectionExtensions, which passes the registered ICovenantSensitiveArtifactPurger; a null would make PurgeLabeledScopeAsync return an empty purge outcome, so the factory passing it is what keeps the purge reachable",
@@ -342,6 +347,25 @@ public sealed class NullableInterfaceConstructorDefaultTests
                 .Select(static parameter => $"{parameter.Name} is optional")
                 .ToArray());
     }
+
+    /// <summary>
+    /// The attachment source resolver cannot be composed without a workspace registry, in any spelling.
+    /// </summary>
+    /// <remarks>
+    /// A claimed workspace root is caller-asserted, and the registry is the only thing that can prove it
+    /// names a registered workspace. An optional parameter let a composition omit it and leave the
+    /// resolver with nothing to prove a claim against; the source inventory above would catch the usual
+    /// spelling of that default, and this reads the compiled constructors so any other spelling, or a
+    /// second constructor without the registry, is caught too.
+    /// </remarks>
+    [Fact]
+    public void The_attachment_source_resolver_requires_a_workspace_registry() =>
+        Assert.All(
+            typeof(AttachmentSourceResolver).GetConstructors(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            static constructor => Assert.Contains(
+                constructor.GetParameters(),
+                static parameter => parameter.ParameterType == typeof(IWorkspaceRegistry) && !parameter.HasDefaultValue));
 
     /// <summary>
     /// The types that decide whether an automatic write may record a memory an operator erased.

@@ -359,6 +359,13 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
                 ]);
         }
 
+        DoctorFinding? sidecarFinding = InspectCommittedSidecar(path);
+
+        if (sidecarFinding is not null)
+        {
+            return sidecarFinding;
+        }
+
         if (GrimoireKdfSidecarFile.PendingExists(path))
         {
             return new DoctorFinding(
@@ -379,6 +386,60 @@ public sealed class GrimoireKeyMaterialCheck(ISecretStore secretStore) : IDoctor
             GrimoireKdfSidecarFile.Exists(path)
                 ? "The encryption secret is readable and the key-derivation sidecar is current. No key value is read by this check."
                 : "The encryption secret is readable. No key value is read by this check.");
+    }
+
+    /// <summary>
+    /// Reads the committed sidecar rather than trusting that a file of that name exists. A torn,
+    /// truncated or unsupported sidecar leaves the database's salt unknown, so the host cannot derive
+    /// the key and the database cannot be opened; calling that "current" would send the operator to the
+    /// wrong remedy. Returns <see langword="null"/> when there is no sidecar or it parses.
+    /// </summary>
+    private static DoctorFinding? InspectCommittedSidecar(string databasePath)
+    {
+        if (!GrimoireKdfSidecarFile.Exists(databasePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            _ = GrimoireKdfSidecarFile.Read(databasePath);
+
+            return null;
+        }
+        catch (FileNotFoundException)
+        {
+            // Removed since the existence check; the legacy derivation is then the one in force.
+            return null;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or NotSupportedException)
+        {
+            return new DoctorFinding(
+                DoctorOutcome.Unhealthy,
+                "The key-derivation sidecar next to the Grimoire database is damaged or unsupported "
+                + "(it could not be parsed, or names a version this build does not read), so the key "
+                + "salt is unknown and the database cannot be opened. The sidecar was left unchanged; "
+                + "the host will not derive a replacement over existing ciphertext.",
+                [
+                    new DoctorRemedy(
+                        "grimoire.restore_kdf_sidecar",
+                        null,
+                        DoctorRemedyCommands.BackupRestore,
+                        "Restore the database's .kdf sidecar from the backup that holds this database. A new salt cannot open the existing pages."),
+                ]);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Content unknown, not known bad: this includes the open itself being refused or failing
+            // (GrimoireKdfSidecarFile.Read reports those as UnauthorizedAccessException / IOException,
+            // never as damage). Point at the file's permissions and offer no restore, which would
+            // replace a sidecar whose only fault may be who is allowed to read it.
+            return new DoctorFinding(
+                DoctorOutcome.Unavailable,
+                $"The key-derivation sidecar could not be read ({exception.GetType().Name}: permissions or an I/O "
+                + "error), so its state is unknown. It was left unchanged: make it an owner-only regular file "
+                + "readable by this user and retry.");
+        }
     }
 }
 

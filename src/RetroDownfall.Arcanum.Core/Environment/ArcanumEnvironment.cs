@@ -4,7 +4,6 @@ namespace RetroDownfall.Arcanum.Core.Environment;
 
 public static class ArcanumEnvironment
 {
-
     public const string EditionEnvVar = "ARCANUM_EDITION";
 
     /// <summary>
@@ -13,20 +12,25 @@ public static class ArcanumEnvironment
     /// </summary>
     public static bool IsHostAnyEnabled(bool configValue)
     {
-
         // Environment override always wins so containerized deployments don't need rebuilds.
         string? env = global::System.Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
 
         if (!string.IsNullOrWhiteSpace(env))
         {
-
             return ParseTruthyEnv(env) ?? configValue;
-
         }
 
         return configValue;
-
     }
+
+    /// <summary>
+    /// True only when <c>ARCANUM_HOST_ANY</c> holds a recognised boolean (<c>1</c>, <c>0</c>, <c>true</c> or
+    /// <c>false</c>), i.e. exactly when the variable overrides the configured binding in
+    /// <see cref="IsHostAnyEnabled"/>. An unrecognised value is ignored there and must therefore not count
+    /// as an operator acknowledgement elsewhere.
+    /// </summary>
+    public static bool IsHostAnyEnvironmentOverrideSet() =>
+        ParseTruthyEnv(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY")) is not null;
 
     /// <summary>
     /// Returns whether the fixed-window rate limiter should be active. Binding to all interfaces
@@ -103,5 +107,4 @@ public static class ArcanumEnvironment
 
         return null;
     }
-
 }

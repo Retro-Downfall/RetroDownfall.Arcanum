@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Storage;
 
@@ -29,7 +30,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
         string path = Path.Combine(_workspace, "notes.txt");
         byte[] bytes = Encoding.UTF8.GetBytes("verified");
         await File.WriteAllBytesAsync(path, bytes);
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
 
         AttachmentSourceResolution result = await resolver.ResolveForPersistenceAsync(
             new AttachmentSourceClaim(path), bytes);
@@ -46,7 +47,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
     {
         string path = Path.Combine(_workspace, "notes.txt");
         await File.WriteAllTextAsync(path, "current");
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
 
         AttachmentSourceResolution result = await resolver.ResolveForPersistenceAsync(
             new AttachmentSourceClaim(path), Encoding.UTF8.GetBytes("older"));
@@ -59,7 +60,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
     [Fact]
     public async Task ResolveForPersistenceAsync_rejects_external_and_missing_sources()
     {
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
         string external = Path.Combine(Path.GetTempPath(), "outside-" + Guid.NewGuid().ToString("N"));
         await File.WriteAllTextAsync(external, "outside");
         try
@@ -82,7 +83,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
     [Fact]
     public async Task RevalidateAsync_fails_closed_when_workspace_identity_changes()
     {
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
         AttachmentSourceMetadata source = new(
             AttachmentSourceKind.WorkspaceFile,
             "different-workspace",
@@ -106,7 +107,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
     {
         string path = Path.Combine(_workspace, "notes.txt");
         await File.WriteAllTextAsync(path, "current");
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
         AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(
             new AttachmentSourceClaim(path), Encoding.UTF8.GetBytes("older"));
 
@@ -127,7 +128,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
     {
         string path = Path.Combine(_workspace, "notes.txt");
         await File.WriteAllTextAsync(path, "before");
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
         AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(
             new AttachmentSourceClaim(path), Encoding.UTF8.GetBytes("before"));
         resolver.AfterFirstRefreshReadForTesting = _ => File.WriteAllTextAsync(path, "after-change");
@@ -148,7 +149,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
     {
         string path = Path.Combine(_workspace, "notes.txt");
         await File.WriteAllTextAsync(path, "too long");
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
         AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(
             new AttachmentSourceClaim(path), Encoding.UTF8.GetBytes("too long"));
         int authorizerCalls = 0;
@@ -173,7 +174,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
     {
         string path = Path.Combine(_workspace, "notes.txt");
         await File.WriteAllTextAsync(path, "12345");
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
         AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(
             new AttachmentSourceClaim(path), Encoding.UTF8.GetBytes("12345"));
 
@@ -208,7 +209,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
         await File.WriteAllTextAsync(first, "first");
         await File.WriteAllTextAsync(second, "second");
         File.CreateSymbolicLink(link, first);
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
         AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(
             new AttachmentSourceClaim(link), Encoding.UTF8.GetBytes("first"));
         resolver.AfterFirstRefreshReadForTesting = _ =>
@@ -290,7 +291,9 @@ public sealed class AttachmentSourceResolverTests : IDisposable
 
         await File.WriteAllTextAsync(path, "bounded");
 
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(
+            new TestWorkspaceContext(_workspace),
+            new TestWorkspaceRegistry(_workspace));
 
         AttachmentSourceClaim claim = CreateSourceClaim(path, _workspace);
 
@@ -327,7 +330,6 @@ public sealed class AttachmentSourceResolverTests : IDisposable
     public async Task ResolveForReferenceAsync_rejects_in_workspace_symlink_retarget_before_open()
 
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Symlink retarget-before-open is exercised on Unix hosts.");
 
         string first = Path.Combine(_workspace, "first.txt");
@@ -342,24 +344,21 @@ public sealed class AttachmentSourceResolverTests : IDisposable
 
         File.CreateSymbolicLink(link, first);
 
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
 
         resolver.BeforeSourceOpenForTesting = _ =>
 
         {
-
             File.Delete(link);
 
             File.CreateSymbolicLink(link, second);
 
             return Task.CompletedTask;
-
         };
 
         string? authorizedPath = null;
 
         AttachmentSourceResolution result = await ResolveForReferenceAsync(
-
             resolver,
 
             new AttachmentSourceClaim(link),
@@ -369,11 +368,9 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             authorizeCanonicalPath: (canonicalPath, _) =>
 
             {
-
                 authorizedPath = canonicalPath;
 
                 return Task.FromResult(true);
-
             });
 
         Assert.Equal(AttachmentSourceStatus.Unsafe, result.Metadata.Status);
@@ -383,7 +380,6 @@ public sealed class AttachmentSourceResolverTests : IDisposable
         Assert.Null(result.DetectedMimeType);
 
         Assert.Null(authorizedPath);
-
     }
 
     [Fact]
@@ -393,7 +389,9 @@ public sealed class AttachmentSourceResolverTests : IDisposable
 
         await File.WriteAllTextAsync(path, "12345");
 
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(
+            new TestWorkspaceContext(_workspace),
+            new TestWorkspaceRegistry(_workspace));
 
         AttachmentSourceClaim claim = CreateSourceClaim(path, _workspace);
 
@@ -460,7 +458,9 @@ public sealed class AttachmentSourceResolverTests : IDisposable
 
         await File.WriteAllTextAsync(path, "1234");
 
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(
+            new TestWorkspaceContext(_workspace),
+            new TestWorkspaceRegistry(_workspace));
 
         resolver.AfterFirstRefreshReadForTesting = _ => File.WriteAllTextAsync(path, "12345");
 
@@ -488,7 +488,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
 
         await File.WriteAllBytesAsync(path, original);
 
-        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace));
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
 
         AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(
             new AttachmentSourceClaim(path),
@@ -503,6 +503,98 @@ public sealed class AttachmentSourceResolverTests : IDisposable
         Assert.Equal(original.LongLength, revalidated.LastObservedByteLength);
 
         Assert.Equal(persisted.Metadata.LastObservedContentSha256, revalidated.LastObservedContentSha256);
+    }
+
+    [Fact]
+    public async Task A_claimed_root_is_refused_without_a_registry()
+    {
+        string path = Path.Combine(_workspace, "notes.txt");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("claimed");
+
+        await File.WriteAllBytesAsync(path, bytes);
+
+        // No registry is injected, so nothing can prove the claimed root is a registered workspace.
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
+
+        AttachmentSourceClaim claim = CreateSourceClaim(path, _workspace);
+
+        AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(claim, bytes);
+
+        AttachmentSourceResolution referenced = await ResolveForReferenceAsync(
+            resolver,
+            claim,
+            maxBytes: 1024,
+            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+
+        Assert.Equal(AttachmentSourceStatus.Unsafe, persisted.Metadata.Status);
+
+        Assert.Equal(AttachmentSourceKind.SnapshotOnly, persisted.Metadata.Kind);
+
+        Assert.Equal(AttachmentSourceStatus.Unsafe, referenced.Metadata.Status);
+
+        Assert.True(referenced.VerifiedBytes.IsEmpty);
+    }
+
+    [Fact]
+    public async Task An_unclaimed_source_still_resolves_against_the_active_workspace_without_a_registry()
+    {
+        string path = Path.Combine(_workspace, "notes.txt");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("active");
+
+        await File.WriteAllBytesAsync(path, bytes);
+
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
+
+        AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(
+            new AttachmentSourceClaim(path),
+            bytes);
+
+        Assert.Equal(AttachmentSourceStatus.Refreshable, persisted.Metadata.Status);
+    }
+
+    [SkippableFact]
+    public async Task A_hard_link_to_an_outside_file_is_unsafe()
+    {
+        string outside = Path.Combine(Path.GetTempPath(), "outside-" + Guid.NewGuid().ToString("N"));
+
+        byte[] bytes = Encoding.UTF8.GetBytes("outside content");
+
+        await File.WriteAllBytesAsync(outside, bytes);
+
+        try
+        {
+            string alias = Path.Combine(_workspace, "alias.txt");
+
+            Skip.IfNot(
+                HardLinkTestSupport.TryCreate(alias, outside),
+                "The platform refused to create a hard link.");
+
+            AttachmentSourceResolver resolver = new(
+                new TestWorkspaceContext(_workspace),
+                new TestWorkspaceRegistry(_workspace));
+
+            AttachmentSourceClaim claim = CreateSourceClaim(alias, _workspace);
+
+            AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(claim, bytes);
+
+            AttachmentSourceResolution referenced = await ResolveForReferenceAsync(
+                resolver,
+                claim,
+                maxBytes: 1024,
+                authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+
+            Assert.Equal(AttachmentSourceStatus.Unsafe, persisted.Metadata.Status);
+
+            Assert.Equal(AttachmentSourceStatus.Unsafe, referenced.Metadata.Status);
+
+            Assert.True(referenced.VerifiedBytes.IsEmpty);
+        }
+        finally
+        {
+            File.Delete(outside);
+        }
     }
 
     private static AttachmentSourceClaim CreateSourceClaim(
