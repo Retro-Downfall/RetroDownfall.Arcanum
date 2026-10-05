@@ -413,7 +413,7 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
     /// trap writes <paramref name="marker"/> to stderr on that refusal and is removed just before
     /// <c>exec</c>, so only a prelude refusal — never the target's own exit 126 — carries it.
     /// </summary>
-    private static string? BuildUlimitPrelude(
+    internal static string? BuildUlimitPrelude(
         ResourceLimits limits,
         bool includeMemory,
         string? cgroupPath,

@@ -183,6 +183,49 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [SkippableFact]
+    public void Windows_prepare_failure_with_escape_hatch_leaves_environment_untouched()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The Windows broker prepare path only runs on Windows.");
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "cmd.exe",
+            UseShellExecute = false,
+        };
+
+        startInfo.Environment["TMP"] = @"C:\operator\original-tmp";
+
+        startInfo.Environment["TEMP"] = @"C:\operator\original-temp";
+
+        ChildProcessSandboxRequest request = new()
+        {
+            ReadWriteRoots = [_workspace],
+
+            ReadExecuteRoots = [],
+
+            AllowUnsandboxed = true,
+
+            ToolName = "execute_command",
+        };
+
+        // A broker executable that does not exist fails the prepare after TMP/TEMP were redirected to the
+        // per-run temp directory (and the directory was deleted again in the catch).
+        using IDisposable brokerOverride = ChildProcessFilesystemJail.UseWindowsBrokerExecutableForTests(
+            Path.Combine(_outsideDir, "missing-broker.exe"));
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            request,
+            NullLogger.Instance);
+
+        Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
+
+        Assert.Equal(@"C:\operator\original-tmp", startInfo.Environment["TMP"]);
+
+        Assert.Equal(@"C:\operator\original-temp", startInfo.Environment["TEMP"]);
+    }
+
+    [SkippableFact]
     public async Task MacOsSandbox_DeniesSignalsToProcessesOutsideTheSandbox()
     {
         Skip.IfNot(

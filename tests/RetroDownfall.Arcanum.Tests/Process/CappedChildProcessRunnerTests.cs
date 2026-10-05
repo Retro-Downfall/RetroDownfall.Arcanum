@@ -662,6 +662,271 @@ public sealed class CappedChildProcessRunnerTests
         }
     }
 
+    [SkippableFact]
+    public async Task RunAsync_post_exit_drain_is_bounded_by_one_grace_when_both_pipes_are_held()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && File.Exists("/usr/bin/ruby"),
+            "Needs a POSIX host with fork/setsid available to strand an inherited pipe.");
+
+        // The post-exit drain documents one 5 s bound. Waiting for each pipe in turn made it up to twice
+        // that: a descendant that closes stdout late but keeps stderr was given a fresh 5 s for stderr
+        // once stdout finally reached EOF. Both pipes are held here — stdout for four seconds, stderr for
+        // good — so only a single shared deadline brings the run back in time.
+        string pidDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-two-pipe-descendant-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(pidDirectory);
+
+        string pidFile = Path.Combine(pidDirectory, "descendant.pid");
+
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = "/usr/bin/ruby",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+
+            psi.ArgumentList.Add("-e");
+            psi.ArgumentList.Add(
+                "fork { fork { Process.setsid; File.write('"
+                + pidFile
+                + "', Process.pid.to_s); sleep 4; STDOUT.reopen('/dev/null'); sleep 30 }; exit! 0 }; sleep 0.5; exit 0");
+
+            Stopwatch stopwatch = Stopwatch.StartNew();
+
+            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 65_536,
+                timeout: Timeout.InfiniteTimeSpan,
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None);
+
+            stopwatch.Stop();
+
+            Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+            // One grace from the start of the drain (~0.6 s) plus the short regrace, not two graces.
+            // (dup2 over fd 1 is what really closes the pipe's write end; Ruby's STDOUT.close does not.)
+            Assert.True(
+                stopwatch.Elapsed < TimeSpan.FromSeconds(8),
+                $"The post-exit drain took {stopwatch.Elapsed}; both pipes must share one 5 s deadline.");
+
+            // The reader that did finish keeps its output; only the one still held is reported truncated.
+            Assert.False(result.Stdout.Truncated);
+
+            Assert.True(result.Stderr.Truncated);
+        }
+        finally
+        {
+            KillRecordedDescendant(pidFile);
+
+            Directory.Delete(pidDirectory, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_sandbox_unavailable_still_runs_limiter_cleanup()
+    {
+        int cleanups = 0;
+
+        ProcessStartInfo psi = CreateHarmlessEchoProcessStartInfo();
+
+        // No roots to allow is "no jail to apply" on every platform, and there is no operator escape, so
+        // the runner refuses to start the child — after the limiter has already created its scope.
+        ChildProcessSandboxRequest request = new()
+        {
+            ReadWriteRoots = [],
+
+            ReadExecuteRoots = [],
+
+            AllowUnsandboxed = false,
+
+            ToolName = "execute_command",
+        };
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.ToolExec,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(10),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 256 },
+            resourceLimiter: new CleanupRecordingLimiter(() =>
+            {
+                _ = Interlocked.Increment(ref cleanups);
+
+                return Task.CompletedTask;
+            }),
+            CancellationToken.None,
+            request);
+
+        Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxUnavailable, result.Outcome);
+
+        // The cgroup scope directory (and any other limiter state) exists from Apply onwards, so every
+        // return after it — not only the ones after Process.Start — owes the cleanup.
+        Assert.Equal(1, cleanups);
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_a_faulting_limiter_cleanup_does_not_replace_the_result()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "The harmless child is POSIX here.");
+
+        ProcessStartInfo psi = CreateHarmlessEchoProcessStartInfo();
+
+        // Teardown runs in a finally: an exception from one step there replaced the run's result and
+        // skipped every step after it.
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(10),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 256 },
+            resourceLimiter: new CleanupRecordingLimiter(
+                () => throw new InvalidOperationException("injected limiter cleanup fault")),
+            CancellationToken.None);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+        Assert.Contains(SentinelToken, result.Stdout.Text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_kills_the_child_when_the_memory_monitor_cannot_attach()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "The memory monitor is a macOS mechanism; the child here is POSIX.");
+
+        int startedPid = 0;
+
+        ProcessStartInfo psi = CreateSleepProcessStartInfo(30);
+
+        // A configured ceiling with nothing to enforce it would let the child run unbounded, so the
+        // runner must kill it and fail closed. The seam stands in for a supervisor that could not attach.
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(60),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 256 },
+            resourceLimiter: new MonitoredMemoryLimiter(256L * 1024 * 1024),
+            CancellationToken.None,
+            descendantSupervisorFactory: (pid, _) =>
+            {
+                startedPid = pid;
+
+                return null;
+            });
+
+        Assert.Equal(CappedChildProcessOutcome.ResourceLimitApplyFailed, result.Outcome);
+
+        Assert.Contains("memory monitor could not attach", result.ResourceLimitApplyError, StringComparison.Ordinal);
+
+        Assert.NotEqual(0, startedPid);
+
+        Assert.True(
+            await WaitForProcessExitOrZombieAsync(startedPid, TimeSpan.FromSeconds(5)),
+            "The un-monitored child was left running.");
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_fails_the_run_when_the_memory_monitor_faults()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        ProcessStartInfo psi = CreateSleepProcessStartInfo(30);
+
+        // The monitor loop is the only thing enforcing a macOS memory ceiling. When it faults the
+        // supervisor ends the tree, and the run is reported as an apply failure — not as a normal
+        // completion of a child whose limit silently stopped being enforced.
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(60),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 4096 },
+            resourceLimiter: new MonitoredMemoryLimiter(4096L * 1024 * 1024),
+            CancellationToken.None,
+            descendantSupervisorFactory: (pid, limit) => MacOsDescendantSupervisor.TryStart(
+                pid,
+                monitorTickHold: () => throw new InvalidOperationException("injected monitor fault"),
+                memoryLimitBytes: limit));
+
+        Assert.Equal(CappedChildProcessOutcome.ResourceLimitApplyFailed, result.Outcome);
+
+        Assert.Contains("memory monitor", result.ResourceLimitApplyError, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_cancellation_kills_a_forked_descendant_without_the_descendant_supervisor()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Unix process cleanup is covered on Unix hosts.");
+
+        string pidDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-cancel-descendant-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(pidDirectory);
+
+        string pidFile = Path.Combine(pidDirectory, "descendant.pid");
+
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = "/bin/sh",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add($"sleep 60 </dev/null >/dev/null 2>&1 & echo $! > '{pidFile}'; sleep 60");
+
+            using CancellationTokenSource cancellation = new();
+
+            cancellation.CancelAfter(TimeSpan.FromSeconds(2));
+
+            // No post-start setpgid can ever succeed (the child has already exec'd), so the runner has no
+            // process group of its own to kill on macOS. What kills the forked sleep on cancellation is the
+            // tree kill and the launcher's own cleanup — proven here with the supervisor taken out of play.
+            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 65_536,
+                timeout: Timeout.InfiniteTimeSpan,
+                resourceLimits: null,
+                resourceLimiter: null,
+                cancellation.Token,
+                descendantSupervisorFactory: static (_, _) => null);
+
+            Assert.Equal(CappedChildProcessOutcome.Canceled, result.Outcome);
+
+            int descendantPid = int.Parse(
+                (await File.ReadAllTextAsync(pidFile)).Trim(),
+                System.Globalization.CultureInfo.InvariantCulture);
+
+            Assert.True(
+                await WaitForProcessExitOrZombieAsync(
+                    descendantPid,
+                    TimeSpan.FromSeconds(5)),
+                $"Forked descendant {descendantPid} survived cancellation.");
+        }
+        finally
+        {
+            KillRecordedDescendant(pidFile);
+
+            Directory.Delete(pidDirectory, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task RunAsync_revalidates_trusted_identity_immediately_before_spawn()
     {
@@ -973,6 +1238,42 @@ public sealed class CappedChildProcessRunnerTests
     {
         public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits) =>
             new(null, null, wasOomKilled is null ? null : () => Task.FromResult(wasOomKilled.Value));
+    }
+
+    /// <summary>Leaves the start info untouched and hands the runner a cleanup callback to invoke.</summary>
+    private sealed class CleanupRecordingLimiter(Func<Task> cleanup) : IProcessResourceLimiter
+    {
+        public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits) =>
+            new(null, _ => cleanup());
+    }
+
+    /// <summary>
+    /// Reports a ceiling the runner itself has to enforce (what the macOS limiter does), without
+    /// rewriting the start info.
+    /// </summary>
+    private sealed class MonitoredMemoryLimiter(long monitoredLimitBytes) : IProcessResourceLimiter
+    {
+        public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits) =>
+            new(null, null, MonitoredMemoryLimitBytes: monitoredLimitBytes);
+    }
+
+    private static void KillRecordedDescendant(string pidFile)
+    {
+        try
+        {
+            using global::System.Diagnostics.Process descendant =
+                global::System.Diagnostics.Process.GetProcessById(
+                    int.Parse(
+                        File.ReadAllText(pidFile),
+                        System.Globalization.CultureInfo.InvariantCulture));
+
+            descendant.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is IOException or FormatException or ArgumentException or InvalidOperationException or global::System.ComponentModel.Win32Exception)
+        {
+            // The descendant may never have written its pid file, or may already be gone; either way
+            // there is nothing left to kill and the test's own assertions have already run.
+        }
     }
 
     private static ProcessStartInfo CreateHarmlessEchoProcessStartInfo()
