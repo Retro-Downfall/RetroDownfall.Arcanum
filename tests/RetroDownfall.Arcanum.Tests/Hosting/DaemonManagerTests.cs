@@ -107,6 +107,88 @@ public sealed class DaemonManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Windows_install_creates_then_starts_the_service_through_sc()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(2, runner.Calls.Count);
+
+        Assert.StartsWith("sc.exe create ArcanumDaemon ", runner.Calls[0], StringComparison.Ordinal);
+
+        Assert.Equal("sc.exe start ArcanumDaemon", runner.Calls[1]);
+    }
+
+    [Fact]
+    public async Task Windows_manager_reports_elevation_when_the_runner_reports_access_denied()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => new DaemonProcessOutcome(-1, string.Empty, string.Empty, null, AccessDenied: true));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonElevationRequired", result.Error.Code);
+
+        Assert.Single(runner.Calls);
+    }
+
+    [Fact]
+    public async Task Windows_uninstall_continues_to_delete_when_the_service_is_not_active()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "stop"
+                ? ScriptedDaemonProcessRunner.Exit(1062)
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.UninstallAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(["sc.exe stop ArcanumDaemon", "sc.exe delete ArcanumDaemon"], runner.Calls);
+    }
+
+    [Fact]
+    public async Task Windows_status_reports_a_missing_service_as_not_installed()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(1060));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(WindowsDaemonManager.NotInstalledMessage, result.Value);
+    }
+
+    [SkippableFact]
+    public async Task Windows_real_runner_reports_a_start_failure_for_a_missing_sc_exe_as_a_fatal_error()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Exercises the real Windows process start path.");
+
+        WindowsDaemonManager manager = new(
+            DaemonProcessRunner.Default,
+            Path.Combine(_directory, "missing-sc.exe"));
+
+        Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+    }
+
+    [Fact]
     public async Task MacOs_install_fails_when_the_pre_bootstrap_bootout_fails_for_another_reason()
     {
         string plist = Path.Combine(_directory, "LaunchAgents", "com.retrodownfall.arcanum.plist");
