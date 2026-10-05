@@ -1006,31 +1006,80 @@ internal sealed class InstallationResetService(
         IFullInstallationResetTerminalContinuation terminal =
             deferredServices.ResolveTerminalContinuation();
 
-        return await ContinueApplyAsync(
-            writer,
-            new InstallationResetApplyProgress(active),
-            ReproduceAcceptedPlan(active),
-            cancellationToken,
-            async token =>
-            {
-                Result<FullInstallationResetTerminalOutcome> completed =
-                    await terminal.CompleteAsync(
-                        heldInstallationLock,
-                        writer.Publication ?? publication,
-                        token).ConfigureAwait(false);
+        InstallationResetApplyProgress progress = new(active);
 
-                if (completed.IsFailure)
+        try
+        {
+            return await ContinueApplyAsync(
+                writer,
+                progress,
+                ReproduceAcceptedPlan(active),
+                cancellationToken,
+                async token =>
                 {
-                    return Result<InstallationResetActiveRecord>.Failure(completed.Error);
-                }
+                    Result<FullInstallationResetTerminalOutcome> completed =
+                        await terminal.CompleteAsync(
+                            heldInstallationLock,
+                            writer.Publication ?? publication,
+                            token).ConfigureAwait(false);
 
-                // Whatever it published is now the current record, and the next thing this writer does
-                // is publish verification on top of it.
-                writer.Adopt(completed.Value.Publication);
+                    if (completed.IsFailure)
+                    {
+                        return Result<InstallationResetActiveRecord>.Failure(completed.Error);
+                    }
 
-                return Result<InstallationResetActiveRecord>.Success(
-                    completed.Value.Publication.Payload.ToRecord());
-            }).ConfigureAwait(false);
+                    // Whatever it published is now the current record, and the next thing this writer does
+                    // is publish verification on top of it.
+                    writer.Adopt(completed.Value.Publication);
+
+                    return Result<InstallationResetActiveRecord>.Success(
+                        completed.Value.Publication.Payload.ToRecord());
+                }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The same answer the ordinary arms give: this arm reaches the credential sweep and the
+            // terminal step, so a cancellation here is routinely past the point of no return, and the
+            // operator is owed a resumable result rather than a raw exception.
+            InstallationResetActiveRecord current = progress.Active;
+
+            // The terminal step publishes straight through the store, so a cancellation that reached it
+            // after one of those publications leaves this writer holding an envelope the store has moved
+            // past, and progress holding a record without the step's evidence. Reread what is durable and
+            // carry only the fields this method owns onto it - the same overlay the step's own outcome
+            // gets - because checkpointing the older record would write that evidence out of existence.
+            Result<InstallationResetActiveRecord?> durable = await writer
+                .RereadAsync(CancellationToken.None).ConfigureAwait(false);
+
+            if (durable.IsSuccess && durable.Value is { } published)
+            {
+                current = published with
+                {
+                    Phase = current.Phase,
+                    PointOfNoReturn = current.PointOfNoReturn,
+                    RowsDeleted = current.RowsDeleted,
+                    FilesDeleted = current.FilesDeleted,
+                    EstimatedBytesDeleted = current.EstimatedBytesDeleted,
+                    CredentialResults = current.CredentialResults,
+                    LastErrorCode = current.LastErrorCode,
+                };
+            }
+
+            InstallationResetActiveRecord cancelled = current with
+            {
+                PointOfNoReturn = current.PointOfNoReturn
+                    || current.Phase is not InstallationResetPhase.Prepared,
+                LastErrorCode = ErrorCodes.Data.RecoveryRequired,
+            };
+
+            Result checkpoint = await writer.WriteAsync(
+                cancelled,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return checkpoint.IsFailure
+                ? Resumable(cancelled, checkpoint.Error)
+                : ResumableAfterCancellation(cancelled);
+        }
     }
 
     /// <summary>

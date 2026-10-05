@@ -4091,12 +4091,30 @@ public sealed partial class InstallationResetServiceTests
 
         public InstallationResetCredentialResult[]? DeleteResults { get; set; }
 
+        /// <summary>
+        /// Cancelled once the deletion has happened. The call itself takes no token, so this is the one
+        /// way for a test to land a real cancellation immediately after an irreversible effect.
+        /// </summary>
+        public CancellationTokenSource? CancelAfterDelete { get; set; }
+
         public InstallationResetCredentialSummary[] Probe() => inventory;
 
         public InstallationResetCredentialResult[] DeleteAndVerify(string[] accounts)
         {
             DeleteRequests.Add([.. accounts]);
 
+            try
+            {
+                return DeleteAndVerifyCore(accounts);
+            }
+            finally
+            {
+                CancelAfterDelete?.Cancel();
+            }
+        }
+
+        private InstallationResetCredentialResult[] DeleteAndVerifyCore(string[] accounts)
+        {
             return DeleteResults ??
                 [.. accounts.Select(account =>
                 {
