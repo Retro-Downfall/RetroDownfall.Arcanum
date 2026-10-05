@@ -429,10 +429,91 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         Assert.Equal(original, output.ToArray());
     }
 
+    // The streaming writer publishes the same way WriteAsync does. On Windows a plain
+    // File.Move(overwrite: true) fails against a reader holding the destination with
+    // FileShare.Delete; on macOS this is a characterization of the rename that always permitted it.
+    [Fact]
+    public async Task Streaming_writer_replaces_destination_held_open_by_reader()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "streaming-replace-while-open");
+        byte[] original = RandomNumberGenerator.GetBytes(200);
+        byte[] replacement = RandomNumberGenerator.GetBytes(150);
+        await store.WriteAsync(
+            path,
+            new MemoryStream(original),
+            EncryptedBlobPurpose.BatchArtifact);
+
+        await using Stream reader = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+
+        await using (EncryptedBlobWriter writer = await store.CreateWriterAsync(
+                         path,
+                         EncryptedBlobPurpose.BatchArtifact))
+        {
+            await writer.WriteAsync(replacement);
+            await writer.CompleteAsync();
+        }
+
+        using MemoryStream held = new();
+        await reader.CopyToAsync(held);
+        Assert.Equal(original, held.ToArray());
+
+        await using Stream reopened = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+        using MemoryStream current = new();
+        await reopened.CopyToAsync(current);
+        Assert.Equal(replacement, current.ToArray());
+        Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
+    }
+
+    // Pins on any host that the streaming writer publishes through the same replace-or-move step as
+    // WriteAsync, which is the Windows-safe path the test above can only fail on a Windows runner.
+    [Fact]
+    public async Task Streaming_writer_publishes_through_the_replace_or_move_step()
+    {
+        List<(string Temporary, string Destination)> published = [];
+        EncryptedBlobStore store = new(
+            new FixedFileEncryptionKeyProvider(
+                Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray()),
+            new EncryptedBlobStoreOptions { ChunkSize = 32 })
+        {
+            PublishTemporary = (temporary, destination) =>
+            {
+                published.Add((temporary, destination));
+                EncryptedBlobStore.ReplaceOrMove(temporary, destination);
+            },
+        };
+        string path = Path.Combine(_root, "streaming-publish-step");
+
+        await using (EncryptedBlobWriter writer = await store.CreateWriterAsync(
+                         path,
+                         EncryptedBlobPurpose.BatchArtifact))
+        {
+            await writer.WriteAsync(RandomNumberGenerator.GetBytes(40));
+            await writer.CompleteAsync();
+        }
+
+        (string temporary, string destination) = Assert.Single(published);
+        Assert.Equal(Path.GetFullPath(path), destination);
+        Assert.StartsWith("." + Path.GetFileName(path) + ".tmp.", Path.GetFileName(temporary));
+        Assert.True(File.Exists(path));
+        Assert.False(File.Exists(temporary));
+    }
+
+    [SkippableFact]
+    public async Task Windows_streaming_writer_replaces_destination_held_open_by_reader()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: File.Replace against a FileShare.Delete reader.");
+
+        await Streaming_writer_replaces_destination_held_open_by_reader();
+    }
+
     [Fact]
     public async Task Inspection_loads_a_cold_key_without_persistent_credential_mutation()
     {
-
         string encodedKey = Convert.ToBase64String(
             Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray());
 
@@ -441,7 +522,6 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         using (FileEncryptionKeyProvider writerKeys = new(
                    new MigrationSensitiveSecretStore(encodedKey)))
         {
-
             EncryptedBlobStore writer = new(
                 writerKeys,
                 new EncryptedBlobStoreOptions { ChunkSize = 32 });
@@ -450,7 +530,6 @@ public sealed class EncryptedBlobStoreTests : IDisposable
                 path,
                 new MemoryStream(Encoding.UTF8.GetBytes("diagnostic payload")),
                 EncryptedBlobPurpose.UploadedFile);
-
         }
 
         MigrationSensitiveSecretStore diagnosticSecrets = new(encodedKey);
@@ -471,7 +550,6 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         Assert.Equal(0, diagnosticSecrets.PersistentMutationCount);
 
         Assert.Equal(1, diagnosticSecrets.PeekCount);
-
     }
 
     private static EncryptedBlobStore CreateStore(int chunkSize, byte[]? key = null)
@@ -508,7 +586,6 @@ public sealed class EncryptedBlobStoreTests : IDisposable
 
     private sealed class MigrationSensitiveSecretStore(string encodedKey) : ISecretStore
     {
-
         public int PersistentMutationCount { get; private set; }
 
         public int PeekCount { get; private set; }
@@ -528,24 +605,19 @@ public sealed class EncryptedBlobStoreTests : IDisposable
 
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync()
         {
-
             PersistentMutationCount++;
 
             return Task.FromResult(SecretStoreReadResult.Ok(encodedKey));
-
         }
 
         public Task<SecretStoreReadResult> PeekFileEncryptionSecretReadResultAsync()
         {
-
             PeekCount++;
 
             return Task.FromResult(SecretStoreReadResult.Ok(encodedKey));
-
         }
 
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 }

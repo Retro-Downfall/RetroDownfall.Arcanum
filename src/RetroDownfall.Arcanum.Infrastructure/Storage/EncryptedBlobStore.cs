@@ -76,20 +76,43 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
     /// hence the plain move for a first write. On Unix both arms are a rename, which has always
     /// permitted this; the behaviour there is unchanged.</para>
     /// </remarks>
-    private static void ReplaceOrMove(string temporaryPath, string destinationPath)
+    internal static void ReplaceOrMove(string temporaryPath, string destinationPath)
     {
-
         if (!File.Exists(destinationPath))
         {
-
             File.Move(temporaryPath, destinationPath);
 
             return;
-
         }
 
         File.Replace(temporaryPath, destinationPath, destinationBackupFileName: null);
+    }
 
+    /// <summary>
+    /// The step that puts a finished temporary in place of its destination; <see cref="ReplaceOrMove"/>
+    /// in production. Every publishing path goes through it, so a test on any host can pin that the
+    /// Windows-safe replacement is the one used.
+    /// </summary>
+    internal Action<string, string> PublishTemporary { get; init; } = ReplaceOrMove;
+
+    /// <summary>
+    /// Re-applies the owner-only posture after a publish. The temporary already carried it, so a
+    /// failure here never turns a published blob into a failed write.
+    /// </summary>
+    private static void ApplyOwnerOnlyBestEffort(string path)
+    {
+        try
+        {
+            SecureFilePermissions.ApplyOwnerOnlyFile(path);
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or InvalidOperationException
+                or PlatformNotSupportedException)
+        {
+            Serilog.Log.Warning(exception, "Owner-only posture could not be re-applied to {Path}.", path);
+        }
     }
 
     public bool HasEnvelope(string path)
@@ -170,8 +193,9 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
 
             await VerifyEnvelopeAsync(tempPath, purpose, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            ReplaceOrMove(tempPath, fullDestinationPath);
-            SecureFilePermissions.ApplyOwnerOnlyFile(fullDestinationPath);
+            SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
+            PublishTemporary(tempPath, fullDestinationPath);
+            ApplyOwnerOnlyBestEffort(fullDestinationPath);
 
             return ParseDescriptor(header);
         }
@@ -224,8 +248,8 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                 Mode = FileMode.Open,
                 Access = FileAccess.Read,
                 // FileShare.Delete is required: migration and key rotation replace this very path
-                // with File.Move(overwrite: true) while the reader is still open, and on Windows
-                // MOVEFILE_REPLACE_EXISTING needs DELETE access the destination handle must share.
+                // through ReplaceOrMove while the reader is still open, and on Windows ReplaceFile
+                // needs DELETE access the destination handle must share.
                 Share = FileShare.Read | FileShare.Delete,
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
             });
@@ -1079,16 +1103,19 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                 await _store.VerifyEnvelopeAsync(_tempPath, _purpose, cancellationToken)
                     .ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
-                File.Move(_tempPath, _destinationPath, overwrite: true);
-                SecureFilePermissions.ApplyOwnerOnlyFile(_destinationPath);
-                _completed = true;
-                return ParseDescriptor(_header);
+                SecureFilePermissions.ApplyOwnerOnlyFile(_tempPath);
+                _store.PublishTemporary(_tempPath, _destinationPath);
             }
             catch
             {
                 await AbortAsync().ConfigureAwait(false);
                 throw;
             }
+
+            // Published: the descriptor is the caller's, and the posture repair is best-effort.
+            _completed = true;
+            ApplyOwnerOnlyBestEffort(_destinationPath);
+            return ParseDescriptor(_header);
         }
 
         private void EncryptBufferedChunk(bool isFinal)
