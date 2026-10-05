@@ -251,6 +251,108 @@ public sealed partial class WizardIntelligenceProviderTests
     }
 
     /// <summary>
+    /// R-273: the run status follows how the turn ended, not the token state the iterator finds on
+    /// its way out. Here the provider refused the call and the turn was already reporting that
+    /// failure — resolving its assistant entry, which is where the caller cancels — so the run stays
+    /// <c>Failed</c>; only a turn the cancellation itself ended is <c>Abandoned</c>.
+    /// </summary>
+    [Fact]
+    public async Task ExecutePromptAsync_ProviderFailureThenCallerCancels_CompletesRunAsFailed()
+    {
+        using CancellationTokenSource caller = new();
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueException(new InvalidOperationException("the provider refused the request"));
+
+        FakeGrimoireRepository grimoire = new() { OnDiscard = caller.Cancel };
+
+        RecordingTurnRunWriter runs = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            grimoire: grimoire,
+            turnRunWriter: runs,
+            budgetReservationService: new RecordingBudgetReservationService());
+
+        try
+        {
+            _ = await wizard.ExecutePromptAsync(
+                BaseRequest() with { Prompt = "fail", SkipSpellRouting = true, DisableMcpTools = true },
+                InvocationContexts.AttendedSession(),
+                caller.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Whether the caller sees the failure or its own cancellation is not the point; the run is.
+        }
+
+        Assert.True(caller.IsCancellationRequested);
+
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Failed, status);
+    }
+
+    /// <summary>
+    /// R-052 follow-up: a provider timeout (a cancellation the caller did not ask for) takes the
+    /// generic failure path so the turn can fall back, but the round had already streamed real
+    /// provider usage. That spend is recorded and reconciled, exactly as when the caller cancels,
+    /// rather than released as though the call had cost nothing.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_ProviderTimeoutAfterUsage_RecordsThePartialUsage()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueUpdatesThenStreamFailure(
+            [
+                new ChatResponseUpdate
+                {
+                    Role = ChatRole.Assistant,
+                    Contents =
+                    [
+                        new UsageContent(new UsageDetails
+                        {
+                            InputTokenCount = 100,
+                            OutputTokenCount = 20,
+                        }),
+                    ],
+                },
+            ],
+            new TaskCanceledException("the provider timed out", new TimeoutException()));
+
+        RecordingTurnRunWriter runs = new();
+
+        RecordingBudgetReservationService reservations = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: runs,
+            budgetReservationService: reservations);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "timeout", SkipSpellRouting = true, DisableMcpTools = true });
+
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Error);
+
+        BillableOperationRecord operation = Assert.Single(runs.Operations);
+
+        Assert.Equal(100, operation.InputTokens);
+
+        Assert.Equal(20, operation.OutputTokens);
+
+        Assert.Equal(1, reservations.ReconcileCount);
+
+        Assert.False(reservations.WasReleased);
+
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Failed, status);
+    }
+
+    /// <summary>
     /// R-273: a turn that answers records its run as <c>Completed</c>.
     /// </summary>
     [Fact]
@@ -335,6 +437,152 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.Equal(toolName, recorded.ToolName);
 
         Assert.Contains("tool effect done", recorded.Result, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-271 residual: the caller cancels while the tool is still running. The turn stops pumping
+    /// at once and waits out <c>ToolTaskAbandonmentGrace</c> for the tool, and a tool that finishes
+    /// its effect inside that window has had its effect all the same, so the call is recorded. The
+    /// wait used to end without the append, leaving an effect with no ToolCall/ToolResult record.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_ClientCancelsWhileToolRuns_RecordsAToolThatFinishesInsideTheGrace()
+    {
+        const string toolName = "finish_after_disconnect";
+
+        Guid sessionId = Guid.Parse("27100000-0000-0000-0000-000000000003");
+
+        using CancellationTokenSource caller = new();
+
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            ThrowWhenCancelled = true,
+        };
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamToolCall(toolName, "call-271-grace");
+
+        chat.EnqueueStreamTokens("never reached");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(AIFunctionFactory.Create(
+            async () =>
+            {
+                await caller.CancelAsync();
+
+                // Still running when the turn sees the cancellation, and done well inside the grace.
+                await Task.Delay(TimeSpan.FromMilliseconds(300), CancellationToken.None);
+
+                return "tool effect done late";
+            },
+            toolName,
+            "is still running when the client disconnects, then completes its effect"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire, mcp: mcp);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (IntelligenceEvent _ in wizard.StreamPromptAsync(
+                BaseRequest() with { Prompt = "run the slow tool", SkipSpellRouting = true },
+                InvocationContexts.AttendedSession(),
+                caller.Token))
+            {
+            }
+        });
+
+        FakeGrimoireRepository.RecordedToolInteraction recorded = Assert.Single(grimoire.ToolInteractions);
+
+        Assert.Equal(sessionId, recorded.SessionId);
+
+        Assert.Equal(toolName, recorded.ToolName);
+
+        Assert.Contains("tool effect done late", recorded.Result, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-271: a streamed <c>ask_human</c> call with no live channel is denied, and the model has been
+    /// handed that denial, so recording it is bookkeeping that outlives the caller: a caller that
+    /// disconnects right after the model asked still leaves the denied call recorded.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_ClientCancelsAfterAskHumanIsDenied_StillRecordsTheDenial()
+    {
+        Guid sessionId = Guid.Parse("27100000-0000-0000-0000-000000000004");
+
+        using CancellationTokenSource caller = new();
+
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            ThrowWhenCancelled = true,
+        };
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamResponder(_ => AskHumanThenCallerCancels("call-271-denied", caller));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire);
+
+        await DrainExpectingCancellationAsync(wizard.StreamPromptAsync(
+            BaseRequest() with { Prompt = "ask me", SkipSpellRouting = true, UnattendedMode = true },
+            InvocationContexts.AttendedSession(),
+            caller.Token));
+
+        FakeGrimoireRepository.RecordedToolInteraction recorded = Assert.Single(grimoire.ToolInteractions);
+
+        Assert.Equal(sessionId, recorded.SessionId);
+
+        Assert.Equal("ask_human", recorded.ToolName);
+    }
+
+    /// <summary>
+    /// R-271: the buffered route has no live channel at all, so every <c>ask_human</c> call is
+    /// denied; the denial the model was handed is recorded even when the caller cancels right after
+    /// the provider answered.
+    /// </summary>
+    [Fact]
+    public async Task ExecutePromptAsync_ClientCancelsAfterAskHumanIsDenied_StillRecordsTheDenial()
+    {
+        Guid sessionId = Guid.Parse("27100000-0000-0000-0000-000000000005");
+
+        using CancellationTokenSource caller = new();
+
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            ThrowWhenCancelled = true,
+        };
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueBufferedResponder(async _ =>
+        {
+            await caller.CancelAsync();
+
+            return new ChatResponse(new MeAiChatMessage(
+                ChatRole.Assistant,
+                [new FunctionCallContent("call-271-buffered-denied", "ask_human", new Dictionary<string, object?>())]));
+        });
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire);
+
+        try
+        {
+            _ = await wizard.ExecutePromptAsync(
+                BaseRequest() with { Prompt = "ask me", SkipSpellRouting = true },
+                InvocationContexts.AttendedSession(),
+                caller.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // The caller is gone; what matters is what the turn left behind.
+        }
+
+        FakeGrimoireRepository.RecordedToolInteraction recorded = Assert.Single(grimoire.ToolInteractions);
+
+        Assert.Equal(sessionId, recorded.SessionId);
+
+        Assert.Equal("ask_human", recorded.ToolName);
     }
 
     /// <summary>
@@ -470,6 +718,47 @@ public sealed partial class WizardIntelligenceProviderTests
             CancellationToken.None));
     }
 
+    private static async IAsyncEnumerable<ChatResponseUpdate> AskHumanThenCallerCancels(
+        string callId,
+        CancellationTokenSource caller)
+    {
+        yield return new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [new FunctionCallContent(callId, "ask_human", new Dictionary<string, object?>())]);
+
+        await caller.CancelAsync();
+    }
+
+    /// <summary>
+    /// Drains a turn whose caller cancels part-way: it ends either on the caller's cancellation or,
+    /// when the cancellation lands after the last frame, normally.
+    /// </summary>
+    private static async Task DrainExpectingCancellationAsync(IAsyncEnumerable<IntelligenceEvent> stream)
+    {
+        try
+        {
+            await foreach (IntelligenceEvent _ in stream)
+            {
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The caller is gone; what matters is what the turn left behind.
+        }
+    }
+
+    /// <summary>
+    /// Streams one token, cancels the caller, then blocks on its own token the way a provider's
+    /// HTTP read does, so it throws only once the caller's cancellation has actually reached the
+    /// provider call.
+    /// </summary>
+    /// <remarks>
+    /// Checking the token straight after <c>CancelAsync</c> raced: the turn's tokens are linked
+    /// through the coordinator and the engine, and under load the provider's token occasionally
+    /// still read uncancelled at that instant, so the stream ended normally and the turn finalized
+    /// as Completed. Waiting on the token removes the instant; the bound turns a turn that never
+    /// propagated the cancellation into a failure instead of a hang.
+    /// </remarks>
     private static async IAsyncEnumerable<ChatResponseUpdate> TokenThenCallerCancels(
         string token,
         CancellationTokenSource caller,
@@ -479,6 +768,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await caller.CancelAsync();
 
-        cancellationToken.ThrowIfCancellationRequested();
+        await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+
+        throw new InvalidOperationException("The provider call never observed the caller's cancellation.");
     }
 }

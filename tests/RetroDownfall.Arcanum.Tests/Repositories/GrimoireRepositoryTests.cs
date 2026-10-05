@@ -160,6 +160,65 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadWrite));
     }
 
+    /// <summary>
+    /// The Wizard keeps the protected finalize (the Covenant arm of a turn's finalization) on its
+    /// cancellable inference token because the commit is one atomic transaction: a cancellation that
+    /// lands before COMMIT rolls it back, and nothing after COMMIT observes the token. This pins the
+    /// second half — a caller that cancels the instant the transaction commits gets the committed
+    /// receipt, not an exception that would make the turn look unfinalized.
+    /// </summary>
+    [SkippableFact]
+    public async Task CommitTurnAsync_a_cancellation_after_commit_still_returns_the_committed_turn()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "What is the ward sigil?",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        using CancellationTokenSource caller = new();
+
+        using IDisposable cancelAfterCommit = GrimoireScopedConsumerTestSeam.Override(
+            "GrimoireRepository.CommitWithinImmediateTransactionAsync",
+            (finalUse, _) =>
+            {
+                if (finalUse.Kind == GrimoireScopedConsumerFinalUseKind.TransactionCommitted)
+                {
+                    caller.Cancel();
+                }
+
+                return ValueTask.CompletedTask;
+            });
+
+        Result<TurnCommitReceipt> committed = await repository.CommitTurnAsync(
+            new TurnCommitRequest(
+                assistantEntryId,
+                sessionId,
+                AssistantFinalizationOutcome.Committed,
+                "The sigil is cobalt.",
+                CovenantTask6Fixture.D(32),
+                ContentSensitivity.None,
+                GenerationProvenance.CreateExact([])),
+            caller.Token);
+
+        Assert.True(caller.IsCancellationRequested);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : null);
+
+        Assert.False(committed.Value.Replayed);
+
+        GrimoireEntryDto? assistantEntry = await repository.GetEntryByIdAsync(
+            sessionId,
+            assistantEntryId,
+            CancellationToken.None);
+
+        Assert.Equal("The sigil is cobalt.", assistantEntry?.Content);
+    }
+
     [SkippableFact]
     public async Task BeginAssistantReplyAsync_and_FinalizeAssistantEntryAsync_persist_exchange()
     {

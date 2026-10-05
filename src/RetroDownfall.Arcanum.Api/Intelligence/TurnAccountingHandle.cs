@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Threading;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -158,19 +159,37 @@ internal sealed class TurnAccountingHandle
             reservationHighWaterUsd: 0m,
             accountingOwner: AccountingRoot);
 
+    /// <summary>
+    /// The pre-call budget admission for one provider call: raise the reservation when the call's
+    /// estimate grew, recheck the daily limit when it did not (or when delegated spend is known), and
+    /// renew the reservation's expiry.
+    /// </summary>
+    /// <remarks>
+    /// A nested handle (a batch line) never raises or rechecks the batch's shared aggregate
+    /// reservation; it only renews it. Renewal is bookkeeping for an expiry sweep, so a renewal that
+    /// fails is logged and the call goes ahead; only the caller's cancellation propagates from it.
+    /// </remarks>
     public async Task<Result> EnsureReservationForContextAsync(
         IBudgetReservationService? budgetReservations,
         PricingSettings pricing,
-        BudgetSettings? budget,
+        IExternalSpendLedger? delegatedSpend,
         string? model,
         ContextTokenBreakdown breakdown,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
-        if (!OwnsLifecycle
-            || !ReservationActive
+        if (!ReservationActive
             || ReservationId is not Guid reservationId
             || budgetReservations is null)
         {
+            return Result.Success();
+        }
+
+        if (!OwnsLifecycle)
+        {
+            await RenewReservationAsync(budgetReservations, reservationId, logger, cancellationToken)
+                .ConfigureAwait(false);
+
             return Result.Success();
         }
 
@@ -191,7 +210,7 @@ internal sealed class TurnAccountingHandle
                 raise = reservedUsd > root._reservationHighWaterUsd;
             }
 
-            Result admitted;
+            Result admitted = Result.Success();
 
             if (raise)
             {
@@ -209,13 +228,27 @@ internal sealed class TurnAccountingHandle
                     }
                 }
             }
-            else
+
+            if (admitted.IsSuccess)
             {
-                // The estimate plateaued, so nothing is raised — but the spend earlier rounds
-                // committed still counts, and without this check N rounds could each spend what one
-                // admission was sized for.
-                admitted = await CheckAccumulatedSpendAsync(budgetReservations, budget, cancellationToken)
-                    .ConfigureAwait(false);
+                decimal delegatedUsd = delegatedSpend is null
+                    ? 0m
+                    : (await delegatedSpend.GetTodayAsync(cancellationToken).ConfigureAwait(false)).KnownCostUsd;
+
+                // The estimate plateaued, so nothing was raised, but the spend earlier rounds
+                // committed still counts: without this N rounds could each spend what one admission
+                // was sized for. A raise has already judged the local ledger, so after one this runs
+                // only to add the delegated work a raise cannot see. The days judged (the
+                // reservation's own and, once UTC midnight has passed, today) hold every earlier
+                // round's committed spend and the reservation is sized for the next call alone, so
+                // this checks accumulated actual spend and never multiplies an estimate by a call
+                // count.
+                if (!raise || delegatedUsd > 0m)
+                {
+                    admitted = await budgetReservations
+                        .RecheckDailyLimitAsync(reservationId, delegatedUsd, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
 
             if (admitted.IsFailure)
@@ -223,11 +256,7 @@ internal sealed class TurnAccountingHandle
                 return admitted;
             }
 
-            await budgetReservations
-                .ExtendExpiryAsync(
-                    reservationId,
-                    DateTimeOffset.UtcNow.Add(ReservationLifetime),
-                    cancellationToken)
+            await RenewReservationAsync(budgetReservations, reservationId, logger, cancellationToken)
                 .ConfigureAwait(false);
 
             return Result.Success();
@@ -239,44 +268,34 @@ internal sealed class TurnAccountingHandle
     }
 
     /// <summary>
-    /// The plateau-round budget check: today's committed spend plus outstanding reservations, this
-    /// turn's own included, against the daily limit.
+    /// Moves the reservation's expiry to <see cref="ReservationLifetime"/> from now, best-effort.
     /// </summary>
     /// <remarks>
-    /// A cheap read on the same non-immediate path <see cref="BudgetMonitor"/> takes, rather than a
-    /// write transaction per round. Committed spend already holds every earlier round of this turn and
-    /// the outstanding reservation is sized for the next call alone, so this checks accumulated actual
-    /// spend and never multiplies an estimate by a call count.
+    /// Nothing sweeps an expired reservation in production today, so a lost renewal costs nothing a
+    /// turn can observe, and failing the provider call over it would turn bookkeeping into a refusal.
     /// </remarks>
-    private static async Task<Result> CheckAccumulatedSpendAsync(
+    private static async Task RenewReservationAsync(
         IBudgetReservationService budgetReservations,
-        BudgetSettings? budget,
+        Guid reservationId,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
-        if (budget is not { Enabled: true } || budget.DailyLimitUsd <= 0m)
+        try
         {
-            return Result.Success();
+            await budgetReservations
+                .ExtendExpiryAsync(
+                    reservationId,
+                    DateTimeOffset.UtcNow.Add(ReservationLifetime),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
-
-        decimal dailyLimit = ArcanumSettingClamps.BudgetDailyLimitUsd(budget.DailyLimitUsd);
-
-        decimal committed = await budgetReservations
-            .GetTodayCommittedSpendAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        decimal outstanding = await budgetReservations
-            .GetTodayOutstandingReservationsAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        decimal spend = SaturatingCostAdd(committed, outstanding);
-
-        return spend > dailyLimit
-            ? Result.Failure(new Error(
-                ErrorCodes.Budget.Exceeded,
-                string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"Daily budget limit of ${dailyLimit:0.00} USD would be exceeded (committed+reserved: ${spend:0.00} USD).")))
-            : Result.Success();
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Budget reservation {ReservationId} could not be renewed; the call goes ahead (exception type {ExceptionType}).",
+                reservationId,
+                ex.GetType().FullName);
+        }
     }
 
     public async Task CompleteAsync(

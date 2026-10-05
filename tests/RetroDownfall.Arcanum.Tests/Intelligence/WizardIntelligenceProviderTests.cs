@@ -10322,9 +10322,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public void EnqueueStreamResponder(Func<CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> respond) =>
             _streaming.Enqueue(respond);
 
-        public void EnqueueSlowStream(TimeSpan delay, string token) =>
-            _streaming.Enqueue(ct => SlowStream(delay, token, ct));
-
         /// <summary>
         /// Yields one usage-bearing update, then blocks until the caller's own token is cancelled
         /// (rather than completing or throwing on its own) — models a provider that reports usage
@@ -10552,16 +10549,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 #pragma warning restore CS0162
         }
 
-        private static async IAsyncEnumerable<ChatResponseUpdate> SlowStream(
-            TimeSpan delay,
-            string token,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-
-            yield return new ChatResponseUpdate(ChatRole.Assistant, token);
-        }
-
         private static async IAsyncEnumerable<ChatResponseUpdate> UsageThenBlock(
             UsageDetails usage,
             TaskCompletionSource? aboutToBlock,
@@ -10660,6 +10647,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public int AppendToolInteractionCallCount { get; private set; }
 
         public Action? OnFinalize { get; set; }
+
+        public Action? OnDiscard { get; init; }
 
         public Func<CancellationToken, Task>?
             AppendToolInteractionHandler { get; init; }
@@ -10760,6 +10749,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default)
         {
             DiscardCallCount++;
+
+            OnDiscard?.Invoke();
 
             return Task.CompletedTask;
         }
@@ -11235,6 +11226,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             DateTimeOffset expiresAt,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        public Task<Result> RecheckDailyLimitAsync(
+            Guid reservationId,
+            decimal delegatedSpendUsd,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
 
         public Task<int> SweepExpiredAsync(
             DateTimeOffset utcNow,

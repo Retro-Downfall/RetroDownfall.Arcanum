@@ -24,6 +24,12 @@ internal sealed class BudgetReservationService(
     /// </summary>
     internal Func<CancellationToken, Task>? AfterSumsBeforeReserveInsertForTesting { get; set; }
 
+    /// <summary>
+    /// Replaces the system clock wherever the service decides which UTC day is today, so a test can
+    /// stand a reservation admitted on one day against spend completed on the next.
+    /// </summary>
+    internal Func<DateTimeOffset>? UtcNowForTesting { get; set; }
+
     public async Task<Result<BudgetReservation>> ReserveAsync(
         BudgetReservationRequest request,
         CancellationToken cancellationToken = default)
@@ -211,6 +217,34 @@ internal sealed class BudgetReservationService(
                             ExactUsdText.CheckedAdd(committed, outstanding));
                     }
 
+                    string today = TodayBudgetPeriod();
+
+                    // After UTC midnight the raised amount is what the next call may spend, and that
+                    // spend lands in today, whose ledger does not hold this reservation.
+                    if (!string.Equals(today, budgetPeriod, StringComparison.Ordinal))
+                    {
+                        decimal todayCommitted = await SumCommittedAsync(
+                                connection,
+                                transaction,
+                                today,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        decimal todayOutstanding = await SumOutstandingAsync(
+                                connection,
+                                transaction,
+                                today,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        decimal todayCommittedAndOutstanding = ExactUsdText.CheckedAdd(todayCommitted, todayOutstanding);
+
+                        if (ExactUsdText.CheckedAdd(todayCommittedAndOutstanding, requested) > dailyLimit)
+                        {
+                            throw new BudgetExceededException(
+                                dailyLimit,
+                                ExactUsdText.CheckedAdd(todayCommittedAndOutstanding, currentReserved));
+                        }
+                    }
+
                     await using DbCommand update = connection.CreateCommand();
                     update.Transaction = transaction;
                     update.CommandText =
@@ -237,6 +271,117 @@ internal sealed class BudgetReservationService(
                 $"Daily budget limit of ${ex.DailyLimit:0.00} USD would be exceeded (committed+reserved: ${ex.Current:0.00} USD)."));
         }
     }
+
+    public async Task<Result> RecheckDailyLimitAsync(
+        Guid reservationId,
+        decimal delegatedSpendUsd,
+        CancellationToken cancellationToken = default)
+    {
+        BudgetSettings budget = settings.CurrentValue.ResolveBudget();
+        if (!budget.Enabled || budget.DailyLimitUsd <= 0)
+        {
+            return Result.Success();
+        }
+
+        decimal dailyLimit = ArcanumSettingClamps.BudgetDailyLimitUsd(budget.DailyLimitUsd);
+        decimal delegatedUsd = Math.Max(0m, delegatedSpendUsd);
+
+        // No write transaction: a plain read on the scoped connection, the path the spend queries take.
+        RecheckSpend? spend = await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    string? budgetPeriod = null;
+                    decimal reservationOutstanding = 0m;
+                    await using (DbCommand read = connection.CreateCommand())
+                    {
+                        read.CommandText =
+                            """
+                            SELECT "BudgetPeriod", "ReservedUsd", "ReconciledUsd"
+                            FROM "BudgetReservations"
+                            WHERE "Id" = @id AND "Status" = @reserved
+                            """;
+                        AddParameter(read, "@id", reservationId.ToString("N"));
+                        AddParameter(read, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+                        await using DbDataReader reader = await read
+                            .ExecuteReaderAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                        {
+                            budgetPeriod = reader.GetString(0);
+                            reservationOutstanding = checked(ExactUsdText.Read(reader, 1) - ExactUsdText.Read(reader, 2));
+                        }
+                    }
+
+                    if (budgetPeriod is null)
+                    {
+                        return (RecheckSpend?)null;
+                    }
+
+                    decimal committed = await SumCommittedAsync(connection, transaction: null, budgetPeriod, cancellationToken)
+                        .ConfigureAwait(false);
+                    decimal outstanding = await SumOutstandingAsync(connection, transaction: null, budgetPeriod, cancellationToken)
+                        .ConfigureAwait(false);
+                    decimal reservationPeriodSpend = ExactUsdText.CheckedAdd(committed, outstanding);
+                    string today = TodayBudgetPeriod();
+
+                    if (string.Equals(today, budgetPeriod, StringComparison.Ordinal))
+                    {
+                        return new RecheckSpend(reservationPeriodSpend, TodaySpend: null);
+                    }
+
+                    // A turn admitted before UTC midnight: its reservation stays in the admitted day,
+                    // but every round it finishes now is committed to today, and so is the next call.
+                    decimal todayCommitted = await SumCommittedAsync(connection, transaction: null, today, cancellationToken)
+                        .ConfigureAwait(false);
+                    decimal todayOutstanding = await SumOutstandingAsync(connection, transaction: null, today, cancellationToken)
+                        .ConfigureAwait(false);
+                    decimal todaySpend = ExactUsdText.CheckedAdd(
+                        ExactUsdText.CheckedAdd(todayCommitted, todayOutstanding),
+                        reservationOutstanding);
+
+                    return new RecheckSpend(reservationPeriodSpend, todaySpend);
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (spend is not { } local)
+        {
+            return Result.Success();
+        }
+
+        // Delegated spend is today's, so it counts toward the day the next call lands in: the
+        // reservation's own day until midnight, the new day after it.
+        decimal reservationPeriodTotal = local.TodaySpend is null
+            ? ExactUsdText.CheckedAdd(local.ReservationPeriodSpend, delegatedUsd)
+            : local.ReservationPeriodSpend;
+
+        if (reservationPeriodTotal > dailyLimit)
+        {
+            return DailyLimitRecheckFailure(dailyLimit, reservationPeriodTotal);
+        }
+
+        if (local.TodaySpend is { } todaySpend)
+        {
+            decimal todayTotal = ExactUsdText.CheckedAdd(todaySpend, delegatedUsd);
+
+            if (todayTotal > dailyLimit)
+            {
+                return DailyLimitRecheckFailure(dailyLimit, todayTotal);
+            }
+        }
+
+        return Result.Success();
+    }
+
+    private static Result DailyLimitRecheckFailure(decimal dailyLimit, decimal total) =>
+        Result.Failure(new Error(
+            ErrorCodes.Budget.Exceeded,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"Daily budget limit of ${dailyLimit:0.00} USD would be exceeded (committed+reserved+delegated: ${total:0.00} USD).")));
 
     public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default)
     {
@@ -322,7 +467,7 @@ internal sealed class BudgetReservationService(
 
     public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default)
     {
-        string period = UtcBudgetPeriod(DateTimeOffset.UtcNow);
+        string period = TodayBudgetPeriod();
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
@@ -337,7 +482,7 @@ internal sealed class BudgetReservationService(
 
     public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default)
     {
-        string period = UtcBudgetPeriod(DateTimeOffset.UtcNow);
+        string period = TodayBudgetPeriod();
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
@@ -378,6 +523,10 @@ internal sealed class BudgetReservationService(
 
     public static string UtcBudgetPeriod(DateTimeOffset utcNow) =>
         utcNow.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    /// <summary>The budget period a provider call made now lands its spend in.</summary>
+    private string TodayBudgetPeriod() =>
+        UtcBudgetPeriod(UtcNowForTesting?.Invoke() ?? DateTimeOffset.UtcNow);
 
     /// <summary>Worst-case reservation estimate for the current provider call.</summary>
     public static decimal EstimateWorstCaseTurnUsd(
@@ -533,6 +682,12 @@ internal sealed class BudgetReservationService(
         p.Value = value;
         cmd.Parameters.Add(p);
     }
+
+    /// <summary>
+    /// What a recheck judges: the reservation's own budget period, and today when that is another
+    /// day (null on the reservation's own day). Today's figure already holds this reservation.
+    /// </summary>
+    private readonly record struct RecheckSpend(decimal ReservationPeriodSpend, decimal? TodaySpend);
 
     private sealed class BudgetExceededException(decimal dailyLimit, decimal current) : Exception
     {

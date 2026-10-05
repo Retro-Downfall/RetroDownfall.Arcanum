@@ -96,6 +96,9 @@ internal sealed class FakeBudgetReservationService : IBudgetReservationService
     public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
+    public Task<Result> RecheckDailyLimitAsync(Guid reservationId, decimal delegatedSpendUsd, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result.Success());
+
     public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) =>
         Task.FromResult(0);
 }

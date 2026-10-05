@@ -90,9 +90,15 @@ public sealed class DocumentationCodeContradictionTests
             ReadSource("Cli", "Infrastructure", "CliCommandTree.Memory.cs"),
             StringComparison.Ordinal);
 
+        // A turn stages Covenant material per provider round through its captured ambient set.
+        Assert.Contains(
+            "streamTurnAmbients.StageCovenantRound(",
+            ReadSource("Api", "Intelligence", "WizardIntelligenceProvider.cs"),
+            StringComparison.Ordinal);
+
         Assert.Contains(
             "CovenantToolStagingAmbient.Push(",
-            ReadSource("Api", "Intelligence", "WizardIntelligenceProvider.cs"),
+            ReadSource("Api", "Intelligence", "TurnAmbientSet.cs"),
             StringComparison.Ordinal);
 
         string design = ReadDocument("Arcanum.DESIGN.md");
