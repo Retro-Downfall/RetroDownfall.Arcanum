@@ -465,6 +465,67 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
     }
 
     /// <summary>
+    /// A pre-swap restore whose own rollback recorded secrets it could not reinstate is rolled back and
+    /// its anchor closed, but its staging and plain journal are kept and startup stops, so the next
+    /// start's plain-journal sweep still reports the failure.
+    /// </summary>
+    /// <remarks>
+    /// On the Covenant arm such a journal survives an active anchor only when the restore's reversal
+    /// could not be verified either. Physical convergence then finishes the reversal, and this phase
+    /// used to read the converged tree as an ordinary pre-swap rollback, discard staging with the plain
+    /// journal in it, and report the installation ready over secrets the restore had left behind.
+    /// </remarks>
+    [Fact]
+    public async Task Authority_recovery_keeps_staging_and_stops_when_the_rollback_left_secrets_unreinstated()
+    {
+        const string failure =
+            "The prior installation's local secrets could not all be reinstated: the file-encryption key "
+            + "ring (IOException).";
+
+        Interrupted interrupted = Interrupt(
+            RestoreCrashPoint.AfterLiveRootRenamedToRollback,
+            ImmutableArray<Guid>.Empty,
+            BackupRestorePhase.Commit,
+            failure);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        FakeCampaignPathMarkerLifecycle markers = new();
+
+        BackupRestoreRecovery recovery = Recovery(gate, markers);
+
+        Assert.Equal(
+            BackupRestorePhysicalRecoveryOutcome.TopologyReady,
+            Value(await recovery.RecoverPhysicalTopologyBeforeDatabaseAsync(_lock, Token)));
+
+        Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
+            .RecoverAuthorityBeforeReadinessAsync(_lock, Token);
+
+        Assert.Equal(BackupRestoreStartupRecoveryOutcome.ReconciliationRequired, Value(recovered));
+
+        // The tree is back and the rollback was spent: the anchor is a tombstone, as for any rollback.
+        Assert.Equal("live", File.ReadAllText(Path.Combine(_guarded, "marker.txt")));
+
+        Assert.Equal(BackupRestoreJournalAnchorState.Closed, ReadAnchor(interrupted).State);
+
+        Assert.False(File.Exists(interrupted.JournalPath));
+
+        // The plain journal is what carries the failure now, so it and its staging stay.
+        Assert.True(Directory.Exists(interrupted.StagingRoot));
+
+        Assert.Equal(
+            failure,
+            Assert.IsType<BackupRestoreJournalRecord>(BackupRestoreJournal.TryRead(interrupted.StagingRoot))
+                .SecretReinstatementFailure);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_guarded));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.Contains("file-encryption key ring (IOException)", report.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A startup cancelled once the lease disposition has already committed still closes the anchor
     /// and removes staging, because the disposition it would otherwise strand cannot be taken back.
     /// </summary>
@@ -631,15 +692,36 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
     private Interrupted Interrupt(RestoreCrashPoint crash) =>
         Interrupt(crash, ImmutableArray<Guid>.Empty);
 
+    private Interrupted Interrupt(RestoreCrashPoint crash, ImmutableArray<Guid> children) =>
+        Interrupt(crash, children, LegacyPhaseAt(crash));
+
+    /// <summary>
+    /// The phase <c>BackupRestoreService</c>'s plain journal holds at each crash point.
+    /// </summary>
+    /// <remarks>
+    /// It reaches <see cref="BackupRestorePhase.Commit"/> before the first rename and
+    /// <see cref="BackupRestorePhase.Reconcile"/> only once both renames have landed and local secret
+    /// protection was rebuilt, so a pre-swap crash point can never carry a <c>Reconcile</c> journal.
+    /// After the swap the default is a restore that died after the rebuild.
+    /// </remarks>
+    private static BackupRestorePhase LegacyPhaseAt(RestoreCrashPoint crash) =>
+        crash is RestoreCrashPoint.BeforeLiveRootDisplacement
+            or RestoreCrashPoint.AfterLiveRootRenamedToRollback
+            ? BackupRestorePhase.Commit
+            : BackupRestorePhase.Reconcile;
+
     /// <param name="legacyPhase">
     /// The phase of the plain journal <c>BackupRestoreService</c> writes beside the envelope, or null
-    /// for none. It reaches <see cref="BackupRestorePhase.Reconcile"/> only once local secret
-    /// protection was rebuilt, which is the default here: a restore that died after doing so.
+    /// for none.
+    /// </param>
+    /// <param name="secretReinstatementFailure">
+    /// What that plain journal records its restore's own rollback could not reinstate, or null.
     /// </param>
     private Interrupted Interrupt(
         RestoreCrashPoint crash,
         ImmutableArray<Guid> children,
-        BackupRestorePhase? legacyPhase = BackupRestorePhase.Reconcile)
+        BackupRestorePhase? legacyPhase,
+        string? secretReinstatementFailure = null)
     {
         BackupRestoreProfileNamespace profile = Value(
             BackupRestoreJournalAuthenticator.ResolveProfileNamespace(_guarded));
@@ -723,7 +805,8 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
                     SafetyBackupPath: null,
                     Path.Combine(_root, "source.arcbackup"),
                     staging.Identity.VolumeId,
-                    staging.Identity.FileId));
+                    staging.Identity.FileId,
+                    secretReinstatementFailure));
         }
 
         if (crash is not RestoreCrashPoint.BeforeLiveRootDisplacement)
