@@ -10,8 +10,7 @@ internal static partial class CliCommandTree
 {
     private static Command BuildUse(IServiceProvider serviceProvider)
     {
-        ContextCommands handler =
-            serviceProvider.GetRequiredService<ContextCommands>();
+        DeferredHandler<ContextCommands> handler = new(serviceProvider);
 
         Command use = new(
             "use",
@@ -45,11 +44,11 @@ internal static partial class CliCommandTree
                     parseResult.GetValue(scope),
                     out CliContextScope parsedScope))
             {
-                return handler.InvalidClearScope(
+                return handler.Value.InvalidClearScope(
                     parseResult.GetValue(scope));
             }
 
-            return await handler
+            return await handler.Value
                 .Clear(parsedScope, cancellationToken)
                 .ConfigureAwait(false);
         });
@@ -61,8 +60,7 @@ internal static partial class CliCommandTree
 
     private static Command BuildContext(IServiceProvider serviceProvider)
     {
-        ContextCommands handler =
-            serviceProvider.GetRequiredService<ContextCommands>();
+        DeferredHandler<ContextCommands> handler = new(serviceProvider);
 
         Command context = new(
             "context",
@@ -74,7 +72,7 @@ internal static partial class CliCommandTree
 
         current.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.Current(cancellationToken).ConfigureAwait(false));
+                await handler.Value.Current(cancellationToken).ConfigureAwait(false));
 
         context.Add(current);
 
@@ -92,7 +90,7 @@ internal static partial class CliCommandTree
     private static Command BuildContextPreview(
         IServiceProvider serviceProvider,
 
-        ContextCommands handler,
+        DeferredHandler<ContextCommands> handler,
 
         string name,
 
@@ -171,7 +169,7 @@ internal static partial class CliCommandTree
 
                 RejectedPromptOption(serviceProvider, parseResult, prompt)
 
-                ?? await handler.Preview(
+                ?? await handler.Value.Preview(
                     view,
 
                     string.Join(' ', parseResult.GetValue(prompt) ?? []),
@@ -194,7 +192,7 @@ internal static partial class CliCommandTree
     }
 
     private static Command BuildUseResource(
-        ContextCommands handler,
+        DeferredHandler<ContextCommands> handler,
         string name,
         CliContextScope scope,
         string description)
@@ -210,7 +208,7 @@ internal static partial class CliCommandTree
 
         command.SetAction(
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
-                await handler.Use(
+                await handler.Value.Use(
                     scope,
                     parseResult.GetValue(identifier)!,
                     cancellationToken).ConfigureAwait(false));

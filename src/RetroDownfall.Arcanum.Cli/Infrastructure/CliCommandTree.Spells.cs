@@ -10,14 +10,14 @@ internal static partial class CliCommandTree
 {
     private static Command BuildSpell(IServiceProvider sp)
     {
-        SpellCommands handler = sp.GetRequiredService<SpellCommands>();
+        DeferredHandler<SpellCommands> handler = new(sp);
         Command spell = new("spell", "Spell utilities (requires arcanum serve).");
 
         Command list = new("list", "List spells.");
         Option<string?> listWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         list.Add(listWorkspace);
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.List(ActiveWorkspace(sp, pr.GetValue(listWorkspace)), ct).ConfigureAwait(false));
+            await handler.Value.List(ActiveWorkspace(sp, pr.GetValue(listWorkspace)), ct).ConfigureAwait(false));
         spell.Add(list);
 
         Command show = new("show", "Show spell detail.");
@@ -29,7 +29,7 @@ internal static partial class CliCommandTree
         Option<string?> showWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         show.Add(showName); show.Add(showWorkspace);
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(showName), ActiveWorkspace(sp, pr.GetValue(showWorkspace)), ct).ConfigureAwait(false));
+            await handler.Value.Get(pr.GetValue(showName), ActiveWorkspace(sp, pr.GetValue(showWorkspace)), ct).ConfigureAwait(false));
         spell.Add(show);
 
         Command create = new("create", "Create a spell.");
@@ -44,7 +44,7 @@ internal static partial class CliCommandTree
         create.Add(createBody); create.Add(createTag); create.Add(createDeclaredTool);
         create.Add(createDependency);
         create.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Create(
+            await handler.Value.Create(
                 pr.GetValue(createName),
                 ActiveWorkspace(sp, pr.GetValue(createWorkspace)),
                 pr.GetValue(createDescription),
@@ -62,7 +62,7 @@ internal static partial class CliCommandTree
         Option<string[]> updateTag = new("--tag") { AllowMultipleArgumentsPerToken = true, Description = "Replacement tag; repeatable." };
         update.Add(updateName); update.Add(updateWorkspace); update.Add(updateDescription); update.Add(updateTag);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Update(
+            await handler.Value.Update(
                 pr.GetValue(updateName)!,
                 ActiveWorkspace(sp, pr.GetValue(updateWorkspace)),
                 pr.GetValue(updateDescription),
@@ -75,7 +75,7 @@ internal static partial class CliCommandTree
         Option<string?> deleteWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         delete.Add(deleteName); delete.Add(deleteWorkspace);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Delete(pr.GetValue(deleteName)!, ActiveWorkspace(sp, pr.GetValue(deleteWorkspace)), ct).ConfigureAwait(false));
+            await handler.Value.Delete(pr.GetValue(deleteName)!, ActiveWorkspace(sp, pr.GetValue(deleteWorkspace)), ct).ConfigureAwait(false));
         spell.Add(delete);
 
         Command search = new("search", "Search spells by query, tag, tool, or source.");
@@ -87,7 +87,7 @@ internal static partial class CliCommandTree
         search.Add(searchQuery); search.Add(searchTag); search.Add(searchTool);
         search.Add(searchSource); search.Add(searchWorkspace);
         search.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Search(
+            await handler.Value.Search(
                 pr.GetValue(searchQuery),
                 pr.GetValue(searchTag),
                 pr.GetValue(searchTool),
@@ -101,7 +101,7 @@ internal static partial class CliCommandTree
         Option<string?> validateWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         validate.Add(validateName); validate.Add(validateWorkspace);
         validate.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Validate(pr.GetValue(validateName)!, ActiveWorkspace(sp, pr.GetValue(validateWorkspace)), ct).ConfigureAwait(false));
+            await handler.Value.Validate(pr.GetValue(validateName)!, ActiveWorkspace(sp, pr.GetValue(validateWorkspace)), ct).ConfigureAwait(false));
         spell.Add(validate);
 
         Command execute = new("execute", "Execute a spell and print the assistant response.");
@@ -111,7 +111,7 @@ internal static partial class CliCommandTree
         Option<string?> executeInput = new("--input") { Description = "Input text passed to the spell." };
         execute.Add(executeName); execute.Add(executeWorkspace); execute.Add(executeVersion); execute.Add(executeInput);
         execute.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Execute(
+            await handler.Value.Execute(
                 pr.GetValue(executeName)!,
                 ActiveWorkspace(sp, pr.GetValue(executeWorkspace)),
                 pr.GetValue(executeVersion),
@@ -124,7 +124,7 @@ internal static partial class CliCommandTree
         Option<string?> versionsWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         versions.Add(versionsName); versions.Add(versionsWorkspace);
         versions.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Versions(pr.GetValue(versionsName)!, ActiveWorkspace(sp, pr.GetValue(versionsWorkspace)), ct).ConfigureAwait(false));
+            await handler.Value.Versions(pr.GetValue(versionsName)!, ActiveWorkspace(sp, pr.GetValue(versionsWorkspace)), ct).ConfigureAwait(false));
         spell.Add(versions);
 
         Command export = new("export", "Export a spell as portable JSON.");
@@ -133,7 +133,7 @@ internal static partial class CliCommandTree
         Option<string?> exportOutput = new("--output") { Description = "Destination file path; omit to write the JSON to stdout." };
         export.Add(exportName); export.Add(exportWorkspace); export.Add(exportOutput);
         export.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Export(pr.GetValue(exportName)!, ActiveWorkspace(sp, pr.GetValue(exportWorkspace)), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
+            await handler.Value.Export(pr.GetValue(exportName)!, ActiveWorkspace(sp, pr.GetValue(exportWorkspace)), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
         spell.Add(export);
 
         Command import = new("import", "Import a spell from portable JSON.");
@@ -141,7 +141,7 @@ internal static partial class CliCommandTree
         Option<string?> importWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         import.Add(importFile); import.Add(importWorkspace);
         import.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Import(pr.GetValue(importFile), ActiveWorkspace(sp, pr.GetValue(importWorkspace)), ct).ConfigureAwait(false));
+            await handler.Value.Import(pr.GetValue(importFile), ActiveWorkspace(sp, pr.GetValue(importWorkspace)), ct).ConfigureAwait(false));
         spell.Add(import);
 
         Command cast = new("cast", "Dry-run preview of a spell's assembled system prompt.");
@@ -151,7 +151,7 @@ internal static partial class CliCommandTree
         Option<string?> castCampaign = new("--campaign") { Description = "Campaign GUID, exact name, or unique prefix used for the preview." };
         cast.Add(castName); cast.Add(castWorkspace); cast.Add(castSession); cast.Add(castCampaign);
         cast.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Cast(
+            await handler.Value.Cast(
                 pr.GetValue(castName)!,
                 ActiveWorkspace(sp, pr.GetValue(castWorkspace)),
                 ActiveSession(sp, pr.GetValue(castSession)),
@@ -165,7 +165,7 @@ internal static partial class CliCommandTree
         Option<string?> cloneWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         clone.Add(cloneName); clone.Add(cloneNewName); clone.Add(cloneWorkspace);
         clone.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Clone(pr.GetValue(cloneName)!, pr.GetValue(cloneNewName), ActiveWorkspace(sp, pr.GetValue(cloneWorkspace)), ct).ConfigureAwait(false));
+            await handler.Value.Clone(pr.GetValue(cloneName)!, pr.GetValue(cloneNewName), ActiveWorkspace(sp, pr.GetValue(cloneWorkspace)), ct).ConfigureAwait(false));
         spell.Add(clone);
 
         return spell;
@@ -173,7 +173,7 @@ internal static partial class CliCommandTree
 
     private static Command BuildSpellVersion(IServiceProvider sp)
     {
-        SpellVersionCommands handler = sp.GetRequiredService<SpellVersionCommands>();
+        DeferredHandler<SpellVersionCommands> handler = new(sp);
         Command version = new("version", "Manage named spell file versions.");
 
         Command create = new("create", "Create a new spell version.");
@@ -183,7 +183,7 @@ internal static partial class CliCommandTree
         Option<string?> createWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         create.Add(createName); create.Add(createVersion); create.Add(createBody); create.Add(createWorkspace);
         create.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Create(
+            await handler.Value.Create(
                 pr.GetValue(createName)!,
                 pr.GetValue(createVersion),
                 pr.GetValue(createBody),
@@ -198,7 +198,7 @@ internal static partial class CliCommandTree
         Option<string?> updateWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         update.Add(updateName); update.Add(updateVersion); update.Add(updateBody); update.Add(updateWorkspace);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Update(
+            await handler.Value.Update(
                 pr.GetValue(updateName)!,
                 pr.GetValue(updateVersion),
                 pr.GetValue(updateBody),
@@ -212,7 +212,7 @@ internal static partial class CliCommandTree
         Option<string?> activateWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         activate.Add(activateName); activate.Add(activateVersion); activate.Add(activateWorkspace);
         activate.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Activate(
+            await handler.Value.Activate(
                 pr.GetValue(activateName)!,
                 pr.GetValue(activateVersion),
                 ActiveWorkspace(sp, pr.GetValue(activateWorkspace)),
@@ -224,8 +224,8 @@ internal static partial class CliCommandTree
 
     private static Command BuildCampaign(IServiceProvider sp)
     {
-        CampaignCommands handler = sp.GetRequiredService<CampaignCommands>();
-        CampaignCodexCommands codexHandler = sp.GetRequiredService<CampaignCodexCommands>();
+        DeferredHandler<CampaignCommands> handler = new(sp);
+        DeferredHandler<CampaignCodexCommands> codexHandler = new(sp);
 
         Command campaign = new(
             "campaign",
@@ -235,7 +235,7 @@ internal static partial class CliCommandTree
         Option<string?> listType = new("--type") { Description = "Restrict the listing to campaigns of this type." };
         list.Add(listType);
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.List(pr.GetValue(listType), ct).ConfigureAwait(false));
+            await handler.Value.List(pr.GetValue(listType), ct).ConfigureAwait(false));
         campaign.Add(list);
 
         Command show = new("show", "Show campaign detail.");
@@ -246,7 +246,7 @@ internal static partial class CliCommandTree
         };
         show.Add(showId);
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(showId), ct).ConfigureAwait(false));
+            await handler.Value.Get(pr.GetValue(showId), ct).ConfigureAwait(false));
         campaign.Add(show);
 
         Command create = new("create", "Register a new campaign.");
@@ -256,7 +256,7 @@ internal static partial class CliCommandTree
         Option<string?> createDescription = new("--description") { Description = "Short campaign description." };
         create.Add(createName); create.Add(createPath); create.Add(createType); create.Add(createDescription);
         create.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Create(
+            await handler.Value.Create(
                 pr.GetValue(createName),
                 pr.GetValue(createPath),
                 pr.GetValue(createType),
@@ -269,14 +269,14 @@ internal static partial class CliCommandTree
         Option<string?> updateName = new("--name") { Description = "New campaign name." };
         update.Add(updateId); update.Add(updateName);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Update(pr.GetValue(updateId), pr.GetValue(updateName), ct).ConfigureAwait(false));
+            await handler.Value.Update(pr.GetValue(updateId), pr.GetValue(updateName), ct).ConfigureAwait(false));
         campaign.Add(update);
 
         Command delete = new("delete", "Remove a campaign.");
         Argument<string?> deleteId = OptionalResourceArgument("id", "campaign GUID or name");
         delete.Add(deleteId);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Delete(pr.GetValue(deleteId), ct).ConfigureAwait(false));
+            await handler.Value.Delete(pr.GetValue(deleteId), ct).ConfigureAwait(false));
         campaign.Add(delete);
 
         Command export = new("export", "Export a campaign's spells and prompts as JSON.");
@@ -284,7 +284,7 @@ internal static partial class CliCommandTree
         Option<string?> exportOutput = new("--output") { Description = "Destination file path; omit to write the JSON to stdout." };
         export.Add(exportId); export.Add(exportOutput);
         export.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Export(pr.GetValue(exportId), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
+            await handler.Value.Export(pr.GetValue(exportId), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
         campaign.Add(export);
 
         Command import = new("import", "Import spells and prompts into a campaign.");
@@ -292,7 +292,7 @@ internal static partial class CliCommandTree
         Option<string?> importFile = new("--file") { Description = "Portable campaign JSON file to import." };
         import.Add(importId); import.Add(importFile);
         import.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Import(pr.GetValue(importId), pr.GetValue(importFile), ct).ConfigureAwait(false));
+            await handler.Value.Import(pr.GetValue(importId), pr.GetValue(importFile), ct).ConfigureAwait(false));
         campaign.Add(import);
 
         Command spells = new("spells", "List spells scoped to a campaign, shadowing built-ins.");
@@ -302,7 +302,7 @@ internal static partial class CliCommandTree
         Option<string?> spellsTool = new("--tool") { Description = "Restrict results to spells declaring this tool." };
         spells.Add(spellsId); spells.Add(spellsQuery); spells.Add(spellsTag); spells.Add(spellsTool);
         spells.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Spells(
+            await handler.Value.Spells(
                 pr.GetValue(spellsId),
                 pr.GetValue(spellsQuery),
                 pr.GetValue(spellsTag),
@@ -316,7 +316,7 @@ internal static partial class CliCommandTree
         Option<string?> promptsTag = new("--tag") { Description = "Restrict results to prompts carrying this tag." };
         prompts.Add(promptsId); prompts.Add(promptsQuery); prompts.Add(promptsTag);
         prompts.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Prompts(pr.GetValue(promptsId), pr.GetValue(promptsQuery), pr.GetValue(promptsTag), ct).ConfigureAwait(false));
+            await handler.Value.Prompts(pr.GetValue(promptsId), pr.GetValue(promptsQuery), pr.GetValue(promptsTag), ct).ConfigureAwait(false));
         campaign.Add(prompts);
 
         Command sessions = new("sessions", "List sessions scoped to a campaign.");
@@ -328,7 +328,7 @@ internal static partial class CliCommandTree
         sessions.Add(sessionsId); sessions.Add(sessionsStatus); sessions.Add(sessionsSearch);
         sessions.Add(sessionsLimit); sessions.Add(sessionsBeforeUpdatedAt);
         sessions.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Sessions(
+            await handler.Value.Sessions(
                 pr.GetValue(sessionsId),
                 pr.GetValue(sessionsStatus),
                 pr.GetValue(sessionsSearch),
@@ -343,7 +343,7 @@ internal static partial class CliCommandTree
         Argument<string?> codexGetId = OptionalResourceArgument("id", "campaign GUID or name");
         codexGet.Add(codexGetId);
         codexGet.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await codexHandler.Get(pr.GetValue(codexGetId), ct).ConfigureAwait(false));
+            await codexHandler.Value.Get(pr.GetValue(codexGetId), ct).ConfigureAwait(false));
         codex.Add(codexGet);
 
         Command codexPut = new("put", "Write CODEX.md from a file.");
@@ -351,14 +351,14 @@ internal static partial class CliCommandTree
         Option<string?> codexPutFile = new("--file") { Description = "File whose contents replace CODEX.md." };
         codexPut.Add(codexPutId); codexPut.Add(codexPutFile);
         codexPut.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await codexHandler.Put(pr.GetValue(codexPutId), pr.GetValue(codexPutFile), ct).ConfigureAwait(false));
+            await codexHandler.Value.Put(pr.GetValue(codexPutId), pr.GetValue(codexPutFile), ct).ConfigureAwait(false));
         codex.Add(codexPut);
 
         Command codexDelete = new("delete", "Delete CODEX.md.");
         Argument<string?> codexDeleteId = OptionalResourceArgument("id", "campaign GUID or name");
         codexDelete.Add(codexDeleteId);
         codexDelete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await codexHandler.Delete(pr.GetValue(codexDeleteId), ct).ConfigureAwait(false));
+            await codexHandler.Value.Delete(pr.GetValue(codexDeleteId), ct).ConfigureAwait(false));
         codex.Add(codexDelete);
 
         campaign.Add(codex);
@@ -368,9 +368,9 @@ internal static partial class CliCommandTree
 
     private static Command BuildSession(IServiceProvider sp)
     {
-        SessionCommands handler = sp.GetRequiredService<SessionCommands>();
+        DeferredHandler<SessionCommands> handler = new(sp);
 
-        AttachmentCommands attachmentHandler = sp.GetRequiredService<AttachmentCommands>();
+        DeferredHandler<AttachmentCommands> attachmentHandler = new(sp);
 
         Command session = new("session", "Manage and continue sessions through the Arcanum API.");
 
@@ -405,7 +405,7 @@ internal static partial class CliCommandTree
         list.Add(listLimit);
 
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.List(
+            await handler.Value.List(
                 ActiveCampaign(sp, pr.GetValue(listCampaign)),
                 pr.GetValue(listStatus),
                 pr.GetValue(listSearch),
@@ -424,7 +424,7 @@ internal static partial class CliCommandTree
         show.Add(showIdentifier);
 
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Show(pr.GetValue(showIdentifier), ct).ConfigureAwait(false));
+            await handler.Value.Show(pr.GetValue(showIdentifier), ct).ConfigureAwait(false));
 
         session.Add(show);
 
@@ -443,7 +443,7 @@ internal static partial class CliCommandTree
         entries.Add(entriesLimit);
 
         entries.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Entries(
+            await handler.Value.Entries(
                 pr.GetValue(entriesIdentifier),
                 pr.GetValue(entriesOffset),
                 pr.GetValue(entriesLimit),
@@ -470,7 +470,7 @@ internal static partial class CliCommandTree
         fork.Add(forkCampaign);
 
         fork.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Fork(
+            await handler.Value.Fork(
                 pr.GetValue(forkIdentifier),
                 pr.GetValue(forkTitle),
                 pr.GetValue(forkUpToEntry),
@@ -490,7 +490,7 @@ internal static partial class CliCommandTree
         rename.Add(renameTitle);
 
         rename.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Rename(
+            await handler.Value.Rename(
                 pr.GetValue(renameIdentifier),
                 pr.GetValue(renameTitle),
                 ct).ConfigureAwait(false));
@@ -504,7 +504,7 @@ internal static partial class CliCommandTree
         archive.Add(archiveIdentifier);
 
         archive.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Archive(pr.GetValue(archiveIdentifier), ct).ConfigureAwait(false));
+            await handler.Value.Archive(pr.GetValue(archiveIdentifier), ct).ConfigureAwait(false));
 
         session.Add(archive);
 
@@ -519,7 +519,7 @@ internal static partial class CliCommandTree
         export.Add(exportFormat);
 
         export.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Export(
+            await handler.Value.Export(
                 pr.GetValue(exportIdentifier),
                 pr.GetValue(exportFormat),
                 ct).ConfigureAwait(false));
@@ -533,7 +533,7 @@ internal static partial class CliCommandTree
         rest.Add(restIdentifier);
 
         rest.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Rest(pr.GetValue(restIdentifier), ct).ConfigureAwait(false));
+            await handler.Value.Rest(pr.GetValue(restIdentifier), ct).ConfigureAwait(false));
 
         session.Add(rest);
 
@@ -544,7 +544,7 @@ internal static partial class CliCommandTree
         attachments.Add(attachmentsIdentifier);
 
         attachments.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await attachmentHandler
+            await attachmentHandler.Value
                 .List(pr.GetValue(attachmentsIdentifier), ct)
                 .ConfigureAwait(false));
 
@@ -554,19 +554,19 @@ internal static partial class CliCommandTree
             session,
             "delete-entry",
             "Delete an entry after confirmation.",
-            handler.DeleteEntry);
+            (first, second, cancellationToken) => handler.Value.DeleteEntry(first, second, cancellationToken));
 
         AddEntryMutation(
             session,
             "pin-entry",
             "Pin an entry when memory management is enabled.",
-            handler.PinEntry);
+            (first, second, cancellationToken) => handler.Value.PinEntry(first, second, cancellationToken));
 
         AddEntryMutation(
             session,
             "unpin-entry",
             "Unpin an entry when memory management is enabled.",
-            handler.UnpinEntry);
+            (first, second, cancellationToken) => handler.Value.UnpinEntry(first, second, cancellationToken));
 
         Command compact = new("compact", "Compact session context when memory management is enabled.");
 
@@ -575,7 +575,7 @@ internal static partial class CliCommandTree
         compact.Add(compactIdentifier);
 
         compact.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Compact(pr.GetValue(compactIdentifier), ct).ConfigureAwait(false));
+            await handler.Value.Compact(pr.GetValue(compactIdentifier), ct).ConfigureAwait(false));
 
         session.Add(compact);
 
@@ -598,7 +598,7 @@ internal static partial class CliCommandTree
         divine.Add(divineStatus);
 
         divine.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Divine(
+            await handler.Value.Divine(
                 pr.GetValue(divineQuery)!,
                 pr.GetValue(divineLimit),
                 ActiveCampaign(sp, pr.GetValue(divineCampaign)),

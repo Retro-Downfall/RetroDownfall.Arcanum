@@ -1048,7 +1048,7 @@ internal static class GrimoireConnectionAcquisitionScanner
         BindProofEvidence(
         [
         new(
-            new("src/RetroDownfall.Arcanum.Cli/Infrastructure/CliCommandTree.Configuration.cs", "CliCommandTree", "BuildConfig(1)", AcquisitionConstructKind.ProviderOpen, "handler.Open", 0, "handler.Open()"),
+            new("src/RetroDownfall.Arcanum.Cli/Infrastructure/CliCommandTree.Configuration.cs", "CliCommandTree", "BuildConfig(1)", AcquisitionConstructKind.ProviderOpen, "handler.Value.Open", 0, "handler.Value.Open()"),
             GrimoirePathAuthority.NotGrimoire,
             GrimoireAcquisitionKind.NonGrimoireCandidate,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,

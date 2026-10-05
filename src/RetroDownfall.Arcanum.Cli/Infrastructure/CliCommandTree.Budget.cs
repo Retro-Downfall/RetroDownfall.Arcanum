@@ -8,21 +8,17 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildBudget(IServiceProvider serviceProvider)
     {
-
-        BudgetCommands handler = serviceProvider.GetRequiredService<BudgetCommands>();
+        DeferredHandler<BudgetCommands> handler = new(serviceProvider);
 
         Command budget = new(
             "budget",
             "Show today's spend against the daily budget, separating local from delegated (A2A) cost.");
 
         budget.SetAction(async (ParseResult result, CancellationToken cancellationToken) =>
-            await handler.Show(cancellationToken).ConfigureAwait(false));
+            await handler.Value.Show(cancellationToken).ConfigureAwait(false));
 
         return budget;
-
     }
-
 }

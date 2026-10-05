@@ -354,6 +354,25 @@ internal static class CliApplicationFactory
         };
 
     /// <summary>
+    /// Runs one invocation on a provider the caller built for it and disposes that provider when the
+    /// invocation ends, so the singletons it created (pooled HTTP handlers, monitors) are released by
+    /// the code that owns them rather than by process exit.
+    /// </summary>
+    internal static async Task<int> RunAndDisposeProviderAsync(
+        string[] args,
+        ServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        ArgumentNullException.ThrowIfNull(provider);
+
+        await using (provider.ConfigureAwait(false))
+        {
+            return await RunAsync(args, provider).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Runs the CLI end-to-end with System.CommandLine 2.0.
     /// Keeps the empty-args Command Center branch intact; non-empty args invoke CliCommandTree.
     /// </summary>

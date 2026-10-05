@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Cli;
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
@@ -450,6 +451,150 @@ public sealed class CliOperatorSurfaceTests
         Assert.Equal(
             CliApplicationFactory.ProcessTerminationGrace,
             CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
+    }
+
+    /// <summary>
+    /// Every invocation builds the whole tree, so a handler resolved at build time is a handler
+    /// constructed for nothing: ~45 of them, each with its own dependency graph, before the one
+    /// command the operator typed even runs. Resolution belongs inside the action delegates.
+    /// </summary>
+    [Fact]
+    public void Building_the_tree_does_not_construct_command_handlers()
+    {
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        ResolutionRecordingProvider recording = new(provider);
+
+        RootCommand root = CliCommandTree.Build(recording, out _);
+
+        Assert.NotEmpty(root.Subcommands);
+
+        Assert.Empty(recording.Requested);
+
+        _ = root.Parse("context current");
+
+        Assert.Empty(recording.Requested);
+    }
+
+    /// <summary>
+    /// The deferred resolution still happens: running a command constructs its own handler when the
+    /// action executes, and no other command's.
+    /// </summary>
+    [Fact]
+    public async Task Running_a_command_resolves_its_handler_when_the_action_executes()
+    {
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.RemoveAll<ICliContextStore>();
+
+        services.AddSingleton<ICliContextStore>(
+            new FaultingContextStore(new InvalidOperationException("probe")));
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        ResolutionRecordingProvider recording = new(provider);
+
+        RootCommand root = CliCommandTree.Build(recording, out _);
+
+        TextWriter originalOut = Console.Out;
+
+        TextWriter originalError = Console.Error;
+
+        try
+        {
+            Console.SetOut(new StringWriter());
+
+            Console.SetError(new StringWriter());
+
+            // The framework's default handler turns the store fault into a non-zero exit code. The
+            // fault only proves the action ran far enough to read the store; it is not under test.
+            int exitCode = await root.Parse("context current").InvokeAsync();
+
+            Assert.NotEqual(0, exitCode);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+
+            Console.SetError(originalError);
+        }
+
+        Assert.Contains(typeof(ContextCommands), recording.Requested);
+
+        Assert.DoesNotContain(typeof(SessionCommands), recording.Requested);
+
+        Assert.DoesNotContain(typeof(RunCommand), recording.Requested);
+    }
+
+    /// <summary>
+    /// The production provider owns singletons that hold pooled or unmanaged resources, and nothing
+    /// disposed it: process exit was the only cleanup. The code that builds it disposes it once the
+    /// invocation has finished.
+    /// </summary>
+    [Fact]
+    public async Task Run_and_dispose_disposes_the_provider_after_the_invocation()
+    {
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<DisposalProbe>();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        DisposalProbe probe = provider.GetRequiredService<DisposalProbe>();
+
+        TextWriter originalOut = Console.Out;
+
+        TextWriter originalError = Console.Error;
+
+        try
+        {
+            Console.SetOut(new StringWriter());
+
+            Console.SetError(new StringWriter());
+
+            await CliApplicationFactory.RunAndDisposeProviderAsync(["--version"], provider);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+
+            Console.SetError(originalError);
+        }
+
+        Assert.True(probe.Disposed);
+    }
+
+    private sealed class ResolutionRecordingProvider(IServiceProvider inner) : IServiceProvider
+    {
+        public List<Type> Requested { get; } = [];
+
+        public object? GetService(Type serviceType)
+        {
+            Requested.Add(serviceType);
+
+            return inner.GetService(serviceType);
+        }
+    }
+
+    private sealed class DisposalProbe : IDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public void Dispose() => Disposed = true;
     }
 
     private static RootCommand BuildProductionRoot()

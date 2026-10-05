@@ -8,12 +8,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildSearch(IServiceProvider services)
     {
-
-        WebWorkflowCommands handler = services
-            .GetRequiredService<WebWorkflowCommands>();
+        DeferredHandler<WebWorkflowCommands> handler = new(services);
 
         Command command = new(
             "search",
@@ -21,41 +18,31 @@ internal static partial class CliCommandTree
 
         Argument<string> query = new("query")
         {
-
             Description = "Search query. Quote multi-word queries.",
-
         };
 
         Option<int?> count = new("--count")
         {
-
             Description = "Maximum results/citations (1-20; default 5).",
-
         };
 
         Option<string?> freshness = new("--freshness")
         {
-
             Description = "Freshness filter: day, week, month, or year.",
-
         };
 
         Option<string[]> includeDomain = new("--include-domain")
         {
-
             AllowMultipleArgumentsPerToken = true,
 
             Description = "Restrict search to a domain; repeat for several.",
-
         };
 
         Option<string[]> excludeDomain = new("--exclude-domain")
         {
-
             AllowMultipleArgumentsPerToken = true,
 
             Description = "Exclude a domain; repeat for several.",
-
         };
 
         Option<string?> save = SaveOption();
@@ -78,7 +65,7 @@ internal static partial class CliCommandTree
 
         command.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Search(
+                await handler.Value.Search(
                     result.GetValue(query)!,
                     result.GetValue(count) ?? 5,
                     result.GetValue(freshness),
@@ -89,14 +76,11 @@ internal static partial class CliCommandTree
                     cancellationToken).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Command BuildBrowse(IServiceProvider services)
     {
-
-        WebWorkflowCommands handler = services
-            .GetRequiredService<WebWorkflowCommands>();
+        DeferredHandler<WebWorkflowCommands> handler = new(services);
 
         Command command = new(
             "browse",
@@ -104,16 +88,12 @@ internal static partial class CliCommandTree
 
         Argument<string> url = new("url")
         {
-
             Description = "Absolute HTTP or HTTPS URL.",
-
         };
 
         Option<string?> render = new("--render")
         {
-
             Description = "Rendering mode: static (default) or javascript.",
-
         };
 
         Option<string?> save = SaveOption();
@@ -130,7 +110,7 @@ internal static partial class CliCommandTree
 
         command.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Browse(
+                await handler.Value.Browse(
                     result.GetValue(url)!,
                     result.GetValue(render) ?? "static",
                     result.GetValue(save),
@@ -138,14 +118,11 @@ internal static partial class CliCommandTree
                     cancellationToken).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Command BuildResearch(IServiceProvider services)
     {
-
-        WebWorkflowCommands handler = services
-            .GetRequiredService<WebWorkflowCommands>();
+        DeferredHandler<WebWorkflowCommands> handler = new(services);
 
         Command command = new(
             "research",
@@ -153,51 +130,37 @@ internal static partial class CliCommandTree
 
         Argument<string> question = new("question")
         {
-
             Description = "Research question. Quote multi-word questions.",
-
         };
 
         Option<int?> sourceTarget = new("--sources")
         {
-
             Description = "Optional positive target for unique sources; otherwise continue until source exhaustion.",
-
         };
 
         Option<string?> model = new("--model")
         {
-
             Description = "Server-configured model for final synthesis.",
-
         };
 
         Option<int?> tokenBudget = new("--token-budget")
         {
-
             Description = "Explicit positive synthesis output-token budget (default 2000).",
-
         };
 
         Option<decimal?> costBudget = new("--cost-budget")
         {
-
             Description = "Maximum reported search-provider cost in USD.",
-
         };
 
         Option<string?> continueSession = new("--continue-session")
         {
-
             Description = "Continue an existing session by GUID, exact title, or unique prefix.",
-
         };
 
         Option<string?> format = new("--format")
         {
-
             Description = "Final output: terminal (default), markdown, or json.",
-
         };
 
         Option<string?> save = SaveOption();
@@ -224,7 +187,7 @@ internal static partial class CliCommandTree
 
         command.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Research(
+                await handler.Value.Research(
                     result.GetValue(question)!,
                     result.GetValue(sourceTarget),
                     result.GetValue(model),
@@ -243,23 +206,17 @@ internal static partial class CliCommandTree
                     cancellationToken).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Option<string?> SaveOption() =>
         new("--save")
         {
-
             Description = "Atomically save the final Markdown content to a local path.",
-
         };
 
     private static Option<string?> AttachSessionOption() =>
         new("--attach-to-session")
         {
-
             Description = "Persist the final Markdown as an attachment on a session.",
-
         };
-
 }

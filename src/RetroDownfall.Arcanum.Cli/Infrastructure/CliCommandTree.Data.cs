@@ -10,15 +10,11 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildData(IServiceProvider serviceProvider)
     {
+        DeferredHandler<DataEncryptionCommands> encryptionHandler = new(serviceProvider);
 
-        DataEncryptionCommands encryptionHandler = serviceProvider
-            .GetRequiredService<DataEncryptionCommands>();
-
-        DataRetentionCommands retentionHandler = serviceProvider
-            .GetRequiredService<DataRetentionCommands>();
+        DeferredHandler<DataRetentionCommands> retentionHandler = new(serviceProvider);
 
         Command data = new(
             "data",
@@ -39,24 +35,24 @@ internal static partial class CliCommandTree
 
         encryptionStatus.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await encryptionHandler
+                await encryptionHandler.Value
                     .Status(cancellationToken)
                     .ConfigureAwait(false));
 
         Command migrate = BuildWorkerCommand(
             "migrate",
             "Resumably encrypt every verified legacy plaintext blob.",
-            encryptionHandler.Migrate);
+            (first, second, cancellationToken) => encryptionHandler.Value.Migrate(first, second, cancellationToken));
 
         Command verify = BuildWorkerCommand(
             "verify",
             "Verify metadata, envelope authentication, plaintext length, and SHA-256.",
-            encryptionHandler.Verify);
+            (first, second, cancellationToken) => encryptionHandler.Value.Verify(first, second, cancellationToken));
 
         Command rotate = BuildWorkerCommand(
             "rotate-key",
             "Create a new key, incrementally re-encrypt, verify, then retire unreferenced prior keys.",
-            encryptionHandler.RotateKey);
+            (first, second, cancellationToken) => encryptionHandler.Value.RotateKey(first, second, cancellationToken));
 
         encryption.Add(encryptionStatus);
 
@@ -69,22 +65,20 @@ internal static partial class CliCommandTree
         data.Add(encryption);
 
         return data;
-
     }
 
     private static void AddDataLifecycleCommands(
         Command data,
-        DataRetentionCommands handler,
+        DeferredHandler<DataRetentionCommands> handler,
         IServiceProvider serviceProvider)
     {
-
         Command status = new(
             "status",
             "Show retained rows, files, estimated bytes, policies, and provenance by data class.");
 
         status.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .Status(cancellationToken)
                     .ConfigureAwait(false));
 
@@ -100,7 +94,7 @@ internal static partial class CliCommandTree
 
         retentionShow.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .RetentionShow(cancellationToken)
                     .ConfigureAwait(false));
 
@@ -110,16 +104,12 @@ internal static partial class CliCommandTree
 
         Argument<string> retentionClass = new("class")
         {
-
             Description = "Retention class, for example archived-sessions.",
-
         };
 
         Argument<string> retentionValue = new("days|disabled")
         {
-
             Description = "Integer retention days, or 'disabled'.",
-
         };
 
         retentionSet.Add(retentionClass);
@@ -128,7 +118,7 @@ internal static partial class CliCommandTree
 
         retentionSet.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .RetentionSet(
                         result.GetValue(retentionClass)!,
                         result.GetValue(retentionValue)!,
@@ -147,16 +137,12 @@ internal static partial class CliCommandTree
 
         Option<bool> dryRun = new("--dry-run")
         {
-
             Description = "Return the deletion plan without mutating data.",
-
         };
 
         Option<bool> apply = new("--apply")
         {
-
             Description = "Apply the retention policy after confirmation.",
-
         };
 
         prune.Add(dryRun);
@@ -165,7 +151,7 @@ internal static partial class CliCommandTree
 
         prune.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .Prune(
                         result.GetValue(dryRun),
                         result.GetValue(apply),
@@ -180,16 +166,14 @@ internal static partial class CliCommandTree
 
         Argument<Guid> sessionId = new("id")
         {
-
             Description = "Session ID.",
-
         };
 
         deleteSession.Add(sessionId);
 
         deleteSession.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .DeleteSession(
                         result.GetValue(sessionId),
                         cancellationToken)
@@ -203,16 +187,14 @@ internal static partial class CliCommandTree
 
         Argument<Guid> attachmentId = new("id")
         {
-
             Description = "Attachment ID.",
-
         };
 
         deleteAttachment.Add(attachmentId);
 
         deleteAttachment.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .DeleteAttachment(
                         result.GetValue(attachmentId),
                         cancellationToken)
@@ -226,20 +208,16 @@ internal static partial class CliCommandTree
 
         Option<string> memoryScope = new("--scope")
         {
-
             Description =
                 "Required scope: entry, attachments, workspace, saga, lexicon, or covenant.",
 
             Required = true,
-
         };
 
         Option<string?> memoryCampaign = new("--campaign")
         {
-
             Description =
                 "Optional Campaign GUID. Saga and Lexicon only; other Campaigns' memories are untouched.",
-
         };
 
         resetMemory.Add(memoryScope);
@@ -248,7 +226,7 @@ internal static partial class CliCommandTree
 
         resetMemory.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .ResetMemory(
                         result.GetValue(memoryScope)!,
                         result.GetValue(memoryCampaign),
@@ -263,53 +241,39 @@ internal static partial class CliCommandTree
 
         Option<bool> workspaceReset = new("--workspace")
         {
-
             Description = "Reset the most-specific registered Campaign containing the current directory.",
-
         };
 
         Option<bool> globalReset = new("--global")
         {
-
             Description = "Reset installation-wide Arcanum state and credentials.",
-
         };
 
         Option<bool> allReset = new("--all")
         {
-
             Description = "Reset global state plus the current registered Campaign.",
-
         };
 
         Option<bool> factoryDryRun = new("--dry-run")
         {
-
             Description = "Preview the exact reset plan without mutation.",
-
         };
 
         Option<bool> factoryApply = new("--apply")
         {
-
             Description = "Apply or resume the accepted reset plan.",
-
         };
 
         Option<bool> factoryForce = new("--force")
         {
-
             Description = "Required with global --yes for noninteractive apply.",
-
         };
 
         Option<string?> externalRemediationAttestation = new(
             "--external-remediation-attestation")
         {
-
             Description =
                 "Read an externally signed full-reset remediation attestation from a file.",
-
         };
 
         factoryReset.Add(workspaceReset);
@@ -342,7 +306,6 @@ internal static partial class CliCommandTree
                     .ConfigureAwait(false));
 
         data.Add(factoryReset);
-
     }
 
     private static Command BuildWorkerCommand(
@@ -350,21 +313,16 @@ internal static partial class CliCommandTree
         string description,
         Func<int, long, CancellationToken, Task<int>> action)
     {
-
         Command command = new(name, description);
 
         Option<int> concurrency = new("--max-concurrency")
         {
-
             Description = "Bounded worker count (1-8; default 2).",
-
         };
 
         Option<long> bytesPerSecond = new("--max-bytes-per-second")
         {
-
             Description = "Aggregate I/O throttle in bytes/second (default 67108864).",
-
         };
 
         command.Add(concurrency);
@@ -380,7 +338,6 @@ internal static partial class CliCommandTree
                     .ConfigureAwait(false));
 
         return command;
-
     }
 
     private static int NormalizeConcurrency(int value) =>
@@ -388,5 +345,4 @@ internal static partial class CliCommandTree
 
     private static long NormalizeRate(long value) =>
         value <= 0 ? 64L * 1024 * 1024 : value;
-
 }
