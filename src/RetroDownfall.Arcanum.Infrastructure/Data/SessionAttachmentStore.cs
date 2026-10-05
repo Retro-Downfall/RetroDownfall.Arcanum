@@ -79,6 +79,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// </summary>
     internal Func<CancellationToken, Task>? AfterBytesCommittedBeforeDbForTesting { get; set; }
 
+    /// <summary>
+    /// Test seam: replaces the per-session byte budget, which is otherwise clamped to at least 1 MiB, so the
+    /// refusal that crosses it can be driven with a few bytes.
+    /// </summary>
+    internal long? SessionByteLimitForTesting { get; set; }
+
     internal Func<CancellationToken, Task>?
         AfterWriterLockBeforeBlobValidationForTesting
     { get; set; }
@@ -385,7 +391,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         AttachmentsSettings attachments = _options.Value.ResolveAttachments();
 
-        long maxBytes = ArcanumSettingClamps.AttachmentsMaxBytesPerSession(attachments.MaxBytesPerSession);
+        long maxBytes = SessionByteLimitForTesting
+            ?? ArcanumSettingClamps.AttachmentsMaxBytesPerSession(attachments.MaxBytesPerSession);
 
         SessionAttachmentRecord? latest = await FindLatestAsync(sessionId, validatedPendingTurnId, logicalKey, cancellationToken)
             .ConfigureAwait(false);
@@ -414,7 +421,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         if (latest?.Version == int.MaxValue)
         {
-            throw new InvalidOperationException(
+            throw new AttachmentLimitExceededException(
                 $"Attachment version protocol boundary reached for logical key '{logicalKey}': "
                 + $"measured version {latest.Version}; limit {int.MaxValue}. Existing versions remain saved. "
                 + "Use a new logical attachment name to continue.");
@@ -426,7 +433,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         if (existingBytes + bytes.Length > maxBytes)
         {
-            throw new InvalidOperationException(
+            throw new AttachmentLimitExceededException(
                 "Physical session-attachment storage boundary reached: "
                 + $"measured {existingBytes + bytes.Length} bytes; limit {maxBytes} bytes. "
                 + "Existing attachment versions remain saved; delete unneeded versions, use a new session, "

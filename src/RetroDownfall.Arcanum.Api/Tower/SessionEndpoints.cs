@@ -556,7 +556,7 @@ internal static class SessionEndpoints
 
                         .ConfigureAwait(false);
                 }
-                catch (InvalidOperationException)
+                catch (AttachmentLimitExceededException)
 
                 {
                     return AttachmentFailure(
@@ -907,7 +907,7 @@ internal static class SessionEndpoints
 
                         .ConfigureAwait(false);
                 }
-                catch (InvalidOperationException)
+                catch (AttachmentLimitExceededException)
 
                 {
                     return AttachmentFailure(
