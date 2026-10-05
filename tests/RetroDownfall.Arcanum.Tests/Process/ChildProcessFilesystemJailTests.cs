@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
@@ -230,12 +231,23 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         using IDisposable brokerOverride = ChildProcessFilesystemJail.UseWindowsBrokerExecutableForTests(
             Path.Combine(_outsideDir, "missing-broker.exe"));
 
+        TestCapturingLogger<ChildProcessFilesystemJailTests> logger = new();
+
         ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
             startInfo,
             request,
-            NullLogger.Instance);
+            logger);
 
         Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
+
+        // The escape is also what an early refusal produces — a workspace the AppContainer policy will not
+        // accept is turned away before TMP/TEMP are touched — and then the assertions below hold for
+        // nothing. The prepare failure's own log line is what shows the run got past the redirect and
+        // into the catch that restores the entries.
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Error
+                && entry.Message.Contains("Failed to prepare Windows AppContainer broker", StringComparison.Ordinal));
 
         Assert.Equal(@"C:\operator\original-tmp", startInfo.Environment["TMP"]);
 

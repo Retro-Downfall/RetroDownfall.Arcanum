@@ -375,6 +375,14 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
                 return "run_spell_script: the invocation was blocked because OS-level resource limits could not be applied.";
 
+            case CappedChildProcessOutcome.MemoryMonitorStopped:
+
+                _logger?.LogError(
+                    runResult.FaultException,
+                    "run_spell_script: the memory monitor stopped while the script was running; the process tree was killed.");
+
+                return ChildProcessMemoryMonitorMessages.Describe("run_spell_script");
+
             case CappedChildProcessOutcome.ResourceLimitExceeded when _sanctumGuard is not null:
 
                 return await ResourceLimitDenialFormatter.RecordAndDescribeAsync(
