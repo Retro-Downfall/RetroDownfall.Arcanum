@@ -547,6 +547,15 @@ public static class ErrorCodes
     public static class CommLink
     {
         public const string Suppressed = "CommLink.Suppressed";
+
+        /// <summary>The webhook receiver answered with a non-success status.</summary>
+        public const string WebhookHttpError = "CommLink.WebhookHttpError";
+
+        /// <summary>The webhook POST failed before a status was read; the detail stays in the log.</summary>
+        public const string WebhookException = "CommLink.WebhookException";
+
+        /// <summary>A Comm Link sink threw unexpectedly; the detail stays in the log.</summary>
+        public const string DispatcherException = "CommLink.DispatcherException";
     }
 
     /// <summary>Api — HTTP surface and streaming admission.</summary>

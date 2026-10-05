@@ -217,6 +217,51 @@ public sealed class CommLinkMultiplexerTests
         Assert.Empty(later.Calls);
     }
 
+    /// <summary>
+    /// An earlier sink already carried the alert, so a caller that cancels afterwards cannot un-send it.
+    /// The delivered verdict is the true one: an <see cref="OperationCanceledException"/> here would tell
+    /// the caller nothing was sent, and a retry would deliver the alert to that sink twice. Later sinks
+    /// are still not tried once the caller has cancelled.
+    /// </summary>
+    [Fact]
+    public async Task DispatchAsync_reports_delivered_when_the_caller_cancels_after_a_sink_delivered()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        RecordingDispatcher delivered = RecordingDispatcher.Returning(
+            Result<CommLinkDeliveryResult>.Success(
+                new CommLinkDeliveryResult(CommLinkDeliveryStatus.Delivered)));
+
+        RecordingDispatcher cancelling = new((_, token) =>
+        {
+            cancellation.Cancel();
+
+            token.ThrowIfCancellationRequested();
+
+            return Task.FromResult(
+                Result<CommLinkDeliveryResult>.Success(
+                    new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed)));
+        });
+
+        RecordingDispatcher later = RecordingDispatcher.Returning(
+            Result<CommLinkDeliveryResult>.Success(
+                new CommLinkDeliveryResult(CommLinkDeliveryStatus.Delivered)));
+
+        CommLinkMultiplexer multiplexer = new([delivered, cancelling, later]);
+
+        Result<CommLinkDeliveryResult> result = await multiplexer.DispatchAsync(Message, cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(CommLinkDeliveryStatus.Delivered, result.Value.Status);
+
+        Assert.Single(delivered.Calls);
+
+        Assert.Single(cancelling.Calls);
+
+        Assert.Empty(later.Calls);
+    }
+
     private sealed class RecordingDispatcher(
         Func<CommLinkMessage, CancellationToken, Task<Result<CommLinkDeliveryResult>>> dispatch)
         : ICommLinkDispatcher
