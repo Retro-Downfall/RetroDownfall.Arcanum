@@ -11236,6 +11236,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+        public Task<Result> RecheckDailyLimitAsync(
+            Guid reservationId,
+            decimal delegatedSpendUsd,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
+
         public Task<int> SweepExpiredAsync(
             DateTimeOffset utcNow,
             CancellationToken cancellationToken = default) =>

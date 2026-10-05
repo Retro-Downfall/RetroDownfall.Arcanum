@@ -28,12 +28,31 @@ public interface IBudgetReservationService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Rechecks the daily limit for a still-<see cref="BudgetReservationStatus.Reserved"/> reservation
+    /// without raising it: committed spend plus outstanding reservations (this one included) in the
+    /// reservation's own budget period, plus <paramref name="delegatedSpendUsd"/>, must not exceed the
+    /// limit. Fails with <c>Budget.Exceeded</c> when it would.
+    /// </summary>
+    /// <remarks>
+    /// The same ledger and the same limit source <see cref="AdjustAsync"/> judges a raise on, so a
+    /// round that raises and a round that does not are held to one figure; a cheap read rather than a
+    /// write transaction. A reservation that is missing or no longer <c>Reserved</c> has nothing
+    /// outstanding to check and succeeds, as a raise of it would.
+    /// </remarks>
+    Task<Result> RecheckDailyLimitAsync(
+        Guid reservationId,
+        decimal delegatedSpendUsd,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Moves a still-<see cref="BudgetReservationStatus.Reserved"/> reservation's expiry forward to
     /// <paramref name="expiresAt"/>. Never shortens it, and never touches a settled reservation.
     /// </summary>
     /// <remarks>
-    /// An owning turn renews before every provider call, so a turn that runs past the lifetime it was
-    /// admitted with still reconciles a reservation that is <c>Reserved</c> rather than expired.
+    /// Renewed before every provider call that ledgers against the reservation, an owning turn's and a
+    /// batch line's alike, so work that runs past the lifetime it was admitted with still reconciles a
+    /// reservation that is <c>Reserved</c> rather than expired. Callers treat a failed renewal as
+    /// bookkeeping lost, not as a refused call.
     /// </remarks>
     Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default);
 

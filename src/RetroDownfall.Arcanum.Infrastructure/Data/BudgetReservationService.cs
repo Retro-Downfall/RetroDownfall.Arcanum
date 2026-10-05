@@ -238,6 +238,77 @@ internal sealed class BudgetReservationService(
         }
     }
 
+    public async Task<Result> RecheckDailyLimitAsync(
+        Guid reservationId,
+        decimal delegatedSpendUsd,
+        CancellationToken cancellationToken = default)
+    {
+        BudgetSettings budget = settings.CurrentValue.ResolveBudget();
+        if (!budget.Enabled || budget.DailyLimitUsd <= 0)
+        {
+            return Result.Success();
+        }
+
+        decimal dailyLimit = ArcanumSettingClamps.BudgetDailyLimitUsd(budget.DailyLimitUsd);
+
+        // No write transaction: a plain read on the scoped connection, the path the spend queries take.
+        decimal? spend = await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    string? budgetPeriod = null;
+                    await using (DbCommand read = connection.CreateCommand())
+                    {
+                        read.CommandText =
+                            """
+                            SELECT "BudgetPeriod"
+                            FROM "BudgetReservations"
+                            WHERE "Id" = @id AND "Status" = @reserved
+                            """;
+                        AddParameter(read, "@id", reservationId.ToString("N"));
+                        AddParameter(read, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+                        await using DbDataReader reader = await read
+                            .ExecuteReaderAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                        {
+                            budgetPeriod = reader.GetString(0);
+                        }
+                    }
+
+                    if (budgetPeriod is null)
+                    {
+                        return (decimal?)null;
+                    }
+
+                    decimal committed = await SumCommittedAsync(connection, transaction: null, budgetPeriod, cancellationToken)
+                        .ConfigureAwait(false);
+                    decimal outstanding = await SumOutstandingAsync(connection, transaction: null, budgetPeriod, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    return (decimal?)ExactUsdText.CheckedAdd(committed, outstanding);
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (spend is not { } local)
+        {
+            return Result.Success();
+        }
+
+        decimal total = ExactUsdText.CheckedAdd(local, Math.Max(0m, delegatedSpendUsd));
+
+        return total > dailyLimit
+            ? Result.Failure(new Error(
+                ErrorCodes.Budget.Exceeded,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Daily budget limit of ${dailyLimit:0.00} USD would be exceeded (committed+reserved+delegated: ${total:0.00} USD).")))
+            : Result.Success();
+    }
+
     public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default)
     {
         return SqliteBusyRetry.ExecuteAsync(

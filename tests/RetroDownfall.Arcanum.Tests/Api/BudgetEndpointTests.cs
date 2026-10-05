@@ -208,6 +208,9 @@ internal static class BudgetEndpointTestFactoryExtensions
         public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<Result> RecheckDailyLimitAsync(Guid reservationId, decimal delegatedSpendUsd, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }

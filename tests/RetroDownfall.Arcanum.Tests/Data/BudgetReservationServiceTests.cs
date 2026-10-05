@@ -488,6 +488,60 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.Equal(UtcInstantText.Format(admitted), await ReadExpiresAtAsync(settled.Id));
     }
 
+    /// <summary>
+    /// The per-call recheck of a reservation that was not raised judges the ledger a raise judges:
+    /// committed spend and outstanding reservations of the reservation's own budget period, this one
+    /// included, against the limit configured now. A turn admitted on one UTC day and still running
+    /// on the next is held to the day its reservation and its earlier rounds belong to, not to an
+    /// empty new day; known delegated spend is added on top; a settled reservation has nothing left
+    /// to check.
+    /// </summary>
+    [SkippableFact]
+    public async Task RecheckDailyLimitAsync_JudgesTheReservationsOwnPeriodAgainstTheLiveLimit()
+    {
+        RequireSqlCipher();
+
+        DateTimeOffset admittedDay = new(2035, 2, 3, 0, 0, 0, TimeSpan.Zero);
+        string period = BudgetReservationService.UtcBudgetPeriod(admittedDay);
+        TurnRunWriter runs = new(_db!);
+        Guid runId = await runs.StartRunAsync(new InferenceRunStart(
+            RequestId: "budget-recheck",
+            SessionId: null,
+            Surface: "test",
+            Purpose: "coverage",
+            IdempotencyClaimId: null,
+            StartedAt: admittedDay));
+
+        await InsertBillableOperationAsync(runId, admittedDay.AddHours(23), 0.85m);
+
+        BudgetPolicySettings policy = new()
+        {
+            Enabled = true,
+            DailyLimitUsd = 1m,
+        };
+        BudgetReservationService service = CreateService(policy);
+        BudgetReservation reservation = await ReserveAsync(service, 0.10m, admittedDay.AddDays(1), period);
+
+        Result withinLimit = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
+        Result withDelegated = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0.10m);
+
+        policy.DailyLimitUsd = 0.90m;
+        Result underLoweredLimit = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
+
+        await service.ReconcileAsync(reservation.Id, actualCostUsd: 0.10m);
+        Result settled = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 5m);
+
+        Assert.True(withinLimit.IsSuccess, withinLimit.IsFailure ? withinLimit.Error.Message : null);
+        Assert.True(withDelegated.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, withDelegated.Error.Code);
+        Assert.Equal(
+            "Daily budget limit of $1.00 USD would be exceeded (committed+reserved+delegated: $1.05 USD).",
+            withDelegated.Error.Message);
+        Assert.True(underLoweredLimit.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, underLoweredLimit.Error.Code);
+        Assert.True(settled.IsSuccess);
+    }
+
     private async Task ArrangeCancelOnWriteAsync(string triggerScope, CancellationTokenSource cancellation)
     {
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();

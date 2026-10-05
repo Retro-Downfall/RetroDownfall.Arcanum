@@ -2959,9 +2959,10 @@ public sealed partial class WizardIntelligenceProvider(
                             .EnsureReservationForContextAsync(
                                 budgetReservationService,
                                 settings.Value.ResolvePricing(),
-                                settings.Value.ResolveBudget(),
+                                serviceProvider.GetService<IExternalSpendLedger>(),
                                 targetModel,
                                 callBreakdown,
+                                logger,
                                 inferenceToken)
                             .ConfigureAwait(false);
                     }
@@ -3993,9 +3994,10 @@ public sealed partial class WizardIntelligenceProvider(
                                 .EnsureReservationForContextAsync(
                                     budgetReservationService,
                                     settings.Value.ResolvePricing(),
-                                    settings.Value.ResolveBudget(),
+                                    serviceProvider.GetService<IExternalSpendLedger>(),
                                     targetModel,
                                     retryContextBreakdown,
+                                    logger,
                                     ct)
                                 .ConfigureAwait(false);
                             if (retryReservation.IsFailure)
