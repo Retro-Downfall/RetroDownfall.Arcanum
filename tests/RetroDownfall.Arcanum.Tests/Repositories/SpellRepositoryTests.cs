@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -819,6 +820,341 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Equal("Spell.NameCollision", result.Error.Code);
     }
 
+    /// <summary>
+    /// A workspace spell shadows a built-in one of the same name, so import has to refuse that name exactly
+    /// as create does rather than let a bundle replace a built-in spell's behavior.
+    /// </summary>
+    [SkippableFact]
+    public async Task ImportAsync_rejects_a_name_that_matches_a_builtin()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using ArcanumTestHomeScope home = new("arcanum-spell-import-builtin");
+
+        string builtinDir = Path.Combine(ArcanumPaths.GlobalSpellsDirectory, "builtin-import");
+
+        Directory.CreateDirectory(builtinDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(builtinDir, "SPELL.md"),
+            """
+            ---
+            name: builtin-import
+            description: builtin
+            ---
+            builtin body
+            """);
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto payload = new(
+            null,
+            """
+            ---
+            name: builtin-import
+            description: impostor
+            ---
+            impostor body
+            """,
+            []);
+
+        Result<SpellSummary> result = await repository.ImportAsync(
+            new SpellImportRequest(payload, _workspaceRoot, null),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Spell.NameCollision", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "builtin-import")));
+    }
+
+    /// <summary>
+    /// Import takes back no more than export would emit: a script over the per-file cap, scripts that together
+    /// pass the aggregate cap, more scripts than a bundle may carry, and a spell file over the per-file cap
+    /// are all refused as an invalid body before anything is written.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("script")]
+    [InlineData("aggregate")]
+    [InlineData("count")]
+    [InlineData("content")]
+    public async Task ImportAsync_oversized_script_returns_validation_error(string shape)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
+
+        long aggregateCap = ArcanumSettingClamps.MaxFileReadSizeBytes(
+            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
+
+        string content =
+            """
+            ---
+            name: too-big
+            description: oversized import
+            ---
+            body
+            """;
+
+        List<SpellExportScriptDto> scripts = [];
+
+        switch (shape)
+        {
+            case "script":
+                scripts.Add(new SpellExportScriptDto("big.sh", Convert.ToBase64String(new byte[checked((int)perFileCap + 1)])));
+
+                break;
+
+            case "aggregate":
+                foreach (int index in Enumerable.Range(0, checked((int)(aggregateCap / perFileCap)) + 1))
+                {
+                    scripts.Add(new SpellExportScriptDto($"part-{index}.sh", Convert.ToBase64String(new byte[checked((int)perFileCap)])));
+                }
+
+                break;
+
+            case "count":
+                foreach (int index in Enumerable.Range(0, SpellRepository.MaxSpellScriptCount + 1))
+                {
+                    scripts.Add(new SpellExportScriptDto($"tiny-{index}.sh", Convert.ToBase64String("x"u8.ToArray())));
+                }
+
+                break;
+
+            case "content":
+                content += new string('x', checked((int)perFileCap));
+
+                break;
+        }
+
+        SpellRepository repository = CreateRepository();
+
+        Result<SpellSummary> result = await repository.ImportAsync(
+            new SpellImportRequest(new SpellExportDto(null, content, scripts), _workspaceRoot, null),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Validation.InvalidBody", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "too-big")));
+    }
+
+    [SkippableFact]
+    public async Task ImportAsync_script_that_is_not_base64_returns_InvalidBody_error()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto payload = new(
+            null,
+            """
+            ---
+            name: not-base64
+            description: malformed script
+            ---
+            body
+            """,
+            [new SpellExportScriptDto("run.sh", "this is !!! not base64")]);
+
+        Result<SpellSummary> result = await repository.ImportAsync(
+            new SpellImportRequest(payload, _workspaceRoot, null),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Validation.InvalidBody", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "not-base64")));
+    }
+
+    [SkippableFact]
+    public async Task ExportAsync_stops_at_the_script_count_cap()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("many-scripts");
+
+        string scriptsDir = Path.Combine(spellDir, "scripts");
+
+        Directory.CreateDirectory(scriptsDir);
+
+        foreach (int index in Enumerable.Range(0, SpellRepository.MaxSpellScriptCount + 5))
+        {
+            await File.WriteAllBytesAsync(Path.Combine(scriptsDir, $"tiny-{index:D3}.sh"), "x"u8.ToArray());
+        }
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto? exported = await repository.ExportAsync("many-scripts", _workspaceRoot, CancellationToken.None);
+
+        Assert.NotNull(exported);
+
+        Assert.Equal(SpellRepository.MaxSpellScriptCount, exported!.Scripts.Count);
+    }
+
+    /// <summary>
+    /// Each update reads the spell and writes it back, so two that run together and read the same snapshot would
+    /// keep only the later write's field. Reading under the write lock makes each build on the last.
+    /// </summary>
+    [SkippableFact]
+    public async Task UpdateAsync_concurrent_field_updates_both_survive()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SpellRepository repository = CreateRepository();
+
+        foreach (int round in Enumerable.Range(0, 5))
+        {
+            string name = $"concurrent-{round}";
+
+            Assert.True(
+                (await repository.CreateAsync(
+                    _workspaceRoot,
+                    new CreateSpellRequest(name, "original", ["seed"], null, null, null, null, [], [], Body: "body"),
+                    CancellationToken.None)).IsSuccess);
+
+            UpdateSpellRequest[] updates =
+            [
+                new(Description: "changed-description", Tags: null, SystemPrompt: null, Template: null, Model: null, Provider: null, Tools: null, RequiredMcpServers: null),
+                new(Description: null, Tags: ["changed-tag"], SystemPrompt: null, Template: null, Model: null, Provider: null, Tools: null, RequiredMcpServers: null),
+                new(Description: null, Tags: null, SystemPrompt: "changed-system-prompt", Template: null, Model: null, Provider: null, Tools: null, RequiredMcpServers: null),
+                new(Description: null, Tags: null, SystemPrompt: null, Template: null, Model: "changed-model", Provider: null, Tools: null, RequiredMcpServers: null),
+                new(Description: null, Tags: null, SystemPrompt: null, Template: null, Model: null, Provider: "changed-provider", Tools: null, RequiredMcpServers: null),
+            ];
+
+            using ManualResetEventSlim start = new(false);
+
+            Task<Result>[] running = updates
+                .Select(update => Task.Run(
+                    () =>
+                    {
+                        start.Wait();
+
+                        return repository.UpdateAsync(name, _workspaceRoot, update, CancellationToken.None);
+                    }))
+                .ToArray();
+
+            start.Set();
+
+            Result[] results = await Task.WhenAll(running);
+
+            Assert.All(results, static result => Assert.True(result.IsSuccess));
+
+            SpellDetail? detail = await repository.GetAsync(name, _workspaceRoot, CancellationToken.None);
+
+            Assert.NotNull(detail);
+
+            Assert.Equal("changed-description", detail!.Description);
+
+            Assert.Contains("changed-tag", detail.Tags);
+
+            Assert.Equal("changed-system-prompt", detail.SystemPrompt);
+
+            Assert.Equal("changed-model", detail.Model);
+
+            Assert.Equal("changed-provider", detail.Provider);
+        }
+    }
+
+    /// <summary>
+    /// The clone is on disk the moment its directory is moved into place, so a caller that cancels after that
+    /// is told what happened rather than that the write failed. The summary read-back does not run on the
+    /// caller's token, and nothing logs an error for a spell that exists.
+    /// </summary>
+    [SkippableFact]
+    public async Task CloneAsync_CancelledAfterMove_ReturnsSuccessOrRethrowsCancellation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
+
+        Assert.True(
+            (await repository.CreateAsync(
+                _workspaceRoot,
+                new CreateSpellRequest("clone-source", "source", [], null, null, null, null, [], [], Body: "body"),
+                CancellationToken.None)).IsSuccess);
+
+        using CancellationTokenSource callerAborted = new();
+
+        repository.AfterSpellDirectoryPublishedForTests = callerAborted.Cancel;
+
+        Result<SpellSummary> result;
+
+        try
+        {
+            result = await repository.CloneAsync(
+                "clone-source",
+                _workspaceRoot,
+                new CloneSpellRequest("clone-copy"),
+                callerAborted.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Assert.True(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "clone-copy")));
+
+            return;
+        }
+
+        Assert.True(callerAborted.IsCancellationRequested);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : null);
+
+        Assert.Equal("clone-copy", result.Value!.Name);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    [SkippableFact]
+    public async Task ImportAsync_cancelled_after_move_does_not_report_a_write_failure()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
+
+        using CancellationTokenSource callerAborted = new();
+
+        repository.AfterSpellDirectoryPublishedForTests = callerAborted.Cancel;
+
+        SpellExportDto payload = new(
+            null,
+            """
+            ---
+            name: import-cancelled
+            description: imported
+            ---
+            body
+            """,
+            []);
+
+        Result<SpellSummary> result;
+
+        try
+        {
+            result = await repository.ImportAsync(
+                new SpellImportRequest(payload, _workspaceRoot, null),
+                callerAborted.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Assert.True(Directory.Exists(Path.Combine(_workspaceRoot, "spells", "import-cancelled")));
+
+            return;
+        }
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : null);
+
+        Assert.Equal("import-cancelled", result.Value!.Name);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
     [SkippableFact]
     public async Task ImportAsync_invalid_script_path_returns_InvalidScriptPath_error()
     {
@@ -1416,7 +1752,8 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     private SpellRepository CreateRepository(
         ICampaignRepository? campaignRepository = null,
         IMcpConnectionManager? mcp = null,
-        ArcanumSettings? settings = null)
+        ArcanumSettings? settings = null,
+        ILogger<SpellRepository>? logger = null)
     {
         IOptionsMonitor<ArcanumSettings> optionsMonitor = settings is not null
             ? new TestOptionsMonitor<ArcanumSettings>(settings)
@@ -1425,7 +1762,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         if (campaignRepository is not null)
         {
             return new SpellRepository(
-                NullLogger<SpellRepository>.Instance,
+                logger ?? NullLogger<SpellRepository>.Instance,
                 new FixedCampaignRepositoryScopeFactory(campaignRepository),
                 mcp ?? new FakeMcpConnectionManager(),
                 optionsMonitor);
@@ -1444,7 +1781,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         ServiceProvider provider = services.BuildServiceProvider(validateScopes: true);
 
         return new SpellRepository(
-            NullLogger<SpellRepository>.Instance,
+            logger ?? NullLogger<SpellRepository>.Instance,
             provider.GetRequiredService<IServiceScopeFactory>(),
             mcp ?? new FakeMcpConnectionManager(),
             optionsMonitor);
