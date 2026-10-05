@@ -896,9 +896,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         string? safetyBackupPath = null;
 
         // The Covenant arm's own state. `durablyDisplaced` is filesystem evidence rather than a
-        // success flag: it turns true the moment the two renames land and false again only when a
-        // reversal is verified, and it is the single input that decides whether an abort may reopen
-        // admission or must leave it closed for the next start.
+        // success flag: it turns true the moment the two renames begin, stays true when they land, and
+        // turns false again only when the commit reports a verified undo or a reversal is verified. It
+        // is the single input that decides whether an abort may reopen admission or must leave it closed
+        // for the next start.
         BackupRestoreCovenantSession? covenant = null;
 
         BackupRestoreCovenantTopology covenantTopology = new(
@@ -908,6 +909,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             plan.ArchivePath);
 
         bool durablyDisplaced = false;
+
+        // True only while the two renames run. A fault the commit's own catch does not name escapes it
+        // with no outcome recorded, and this is what tells the general catch below that a rename may
+        // have landed.
+        bool commitInFlight = false;
 
         // Whether the Covenant arm's anchor was closed, which is what stops it naming the journal inside
         // staging. A spent disposition alone does not prove it: the anchor closes after the roots are
@@ -1163,12 +1169,22 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 return Rejected(operationId, effectivePlan, phases, [Issue(advanced.Error)]);
             }
 
+            // Displaced until the commit's own outcome proves otherwise. The commit catches only I/O and
+            // permission faults, so anything else escapes it with no outcome to read, possibly after a
+            // rename has landed; it must then neither claim a pre-swap abort nor let the cleanup below
+            // delete previous/.
+            durablyDisplaced = true;
+
+            commitInFlight = true;
+
             commit = Commit(
                 request.ConflictMode,
                 liveRoot,
                 effectivePlan.DestinationRoot,
                 stagedRoot,
                 displacedRoot);
+
+            commitInFlight = false;
 
             durablyDisplaced = commit.Succeeded || commit.Reversal is { Restored: false };
 
@@ -1488,7 +1504,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     exception);
             }
 
-            if (commit is { Succeeded: true })
+            // A commit that escaped with no outcome may have landed either rename, so it is reversed from the
+            // same filesystem evidence as one that finished; the reversal moves nothing where neither did.
+            if (commit is { Succeeded: true } || commitInFlight)
             {
                 ReversalOutcome reversal = Reverse(
                     request.ConflictMode,
@@ -1530,8 +1548,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     safetyBackupPath,
                     new BackupVerifyIssue(
                         "backup.restore_commit_failed",
-                        "The restore failed after commit and the prior installation was returned to "
-                        + "its original state. Diagnostics: " + exception.GetType().Name));
+                        (commitInFlight
+                            ? "The restored generation could not be committed atomically"
+                            : "The restore failed after commit")
+                        + " and the prior installation was returned to its original state. Diagnostics: "
+                        + exception.GetType().Name));
             }
 
             return Rejected(
@@ -1566,7 +1587,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 covenantAnchorClosed = aborted.IsSuccess && covenant.Dispositioned;
             }
 
-            // Retention is the default once the installation is displaced. Staging — the journal and
+            // Retention is the default once the installation may be displaced, which is from the moment the
+            // commit begins. Staging — the journal and
             // previous/ with it — is deleted only where the evidence proves it is no longer needed:
             // nothing was displaced, a reversal was verified, the restore reached Cleanup, or its Covenant
             // CommitAndReopen disposition was spent, which is as final as Cleanup (§10.19.9; with the

@@ -1071,6 +1071,62 @@ public sealed class BackupRestoreServiceTests : IDisposable
     }
 
     /// <summary>
+    /// The other side of that window: a fault no catch names before the <c>Reconcile</c> advance — here a
+    /// secret-store exception escaping the rewrap — leaves the journal at <c>Commit</c>, so the next start
+    /// cannot read the restore as finished. It finds the committed shape with the displaced installation
+    /// beside it, reports it as unverified, and keeps staging and <c>previous/</c> for an operator.
+    /// </summary>
+    [Fact]
+    public async Task A_non_io_fault_before_the_reconcile_advance_keeps_the_displaced_installation_at_the_next_start()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unlisted-rewrap-fault.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        RecordingSecretStore store = new()
+        {
+            FailingGrimoireSecretWrite = 1,
+            FailingGrimoireSecretWriteFault = new ArgumentException("injected secret store fault"),
+        };
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(
+            () => Restore(store)
+                .RestoreAsync(
+                    new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                    Passphrase.AsMemory(),
+                    CancellationToken.None));
+
+        string staging = Assert.Single(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+        Assert.Equal(
+            BackupRestorePhase.Commit,
+            Assert.IsType<BackupRestoreJournalRecord>(BackupRestoreJournal.TryRead(staging)).Phase);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_installation));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.True(Directory.Exists(staging));
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(
+                Path.Combine(staging, BackupRestoreJournal.DisplacedDirectoryName, "CODEX.md")));
+
+        Assert.Equal(
+            "# the archived codex",
+            await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+    }
+
+    /// <summary>
     /// A rollback whose directories went back but whose prior Grimoire secret did not is reported as
     /// unfinished, with its staging retained, rather than as a clean return to the original state.
     /// </summary>
@@ -1951,6 +2007,150 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Path.GetDirectoryName(_installation)!,
                 ".arcanum-restore-*",
                 SearchOption.TopDirectoryOnly));
+    }
+
+    /// <summary>
+    /// The same fault, of a type the commit's own catch does not name but the restore's does, is still a
+    /// fault after the first rename: it is reversed from the filesystem's evidence rather than reported
+    /// as a restore that failed before any destructive step.
+    /// </summary>
+    /// <remarks>
+    /// The commit catches only I/O and permission faults. Anything else escaped it with no outcome
+    /// recorded, so the restore read the installation as never displaced: it told the operator nothing
+    /// had changed, and its cleanup deleted staging with the backups still inside the displaced tree.
+    /// </remarks>
+    [Fact]
+    public async Task A_non_io_fault_inside_the_commit_is_reversed_rather_than_reported_as_untouched()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("non-io-preserve.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        string keyRing = Path.Combine(_installation, "keys", "key-local.xml");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(keyRing)!);
+
+        await File.WriteAllTextAsync(keyRing, "<key/>");
+
+        string existingBackup = Path.Combine(_installation, "backups", "older.arcbackup");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(existingBackup)!);
+
+        await File.WriteAllTextAsync(existingBackup, "older");
+
+        bool faulted = false;
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore(),
+                new BackupRestoreServiceOptions
+                {
+                    BeforePreservedEntryMoveForTests = name =>
+                    {
+                        if (name == "backups" && !faulted)
+                        {
+                            faulted = true;
+
+                            throw new InvalidOperationException("injected preserve fault");
+                        }
+                    },
+                })
+            .RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.True(faulted);
+
+        Assert.Equal(BackupRestoreStatus.RolledBack, result.Status);
+
+        Assert.Equal("backup.restore_commit_failed", Assert.Single(result.Issues).Code);
+
+        Assert.Equal("<key/>", await File.ReadAllTextAsync(keyRing));
+
+        Assert.Equal("older", await File.ReadAllTextAsync(existingBackup));
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+
+        Assert.Empty(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+    }
+
+    /// <summary>
+    /// A fault no catch names, partway through the commit, propagates with the displaced installation
+    /// retained, and the next start keeps it too: the journal is at <c>Commit</c> over the committed shape
+    /// with <c>previous/</c> beside it, which reads as committed but unverified.
+    /// </summary>
+    /// <remarks>
+    /// The commit had recorded no outcome, so the restore read the installation as never displaced and
+    /// its cleanup deleted staging — <c>previous/</c> and the backups still inside it with it.
+    /// </remarks>
+    [Fact]
+    public async Task A_fault_no_catch_names_inside_the_commit_keeps_the_displaced_installation_for_the_next_start()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("unlisted-preserve.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        string existingBackup = Path.Combine(_installation, "backups", "older.arcbackup");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(existingBackup)!);
+
+        await File.WriteAllTextAsync(existingBackup, "older");
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(
+            () => Restore(
+                    new RecordingSecretStore(),
+                    new BackupRestoreServiceOptions
+                    {
+                        BeforePreservedEntryMoveForTests = name =>
+                        {
+                            if (name == "backups")
+                            {
+                                throw new ArgumentException("injected preserve fault");
+                            }
+                        },
+                    })
+                .RestoreAsync(
+                    new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                    Passphrase.AsMemory(),
+                    CancellationToken.None));
+
+        string staging = Assert.Single(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+        Assert.Equal(
+            BackupRestorePhase.Commit,
+            Assert.IsType<BackupRestoreJournalRecord>(BackupRestoreJournal.TryRead(staging)).Phase);
+
+        string displaced = Path.Combine(staging, BackupRestoreJournal.DisplacedDirectoryName);
+
+        Assert.Equal(
+            "older",
+            await File.ReadAllTextAsync(Path.Combine(displaced, "backups", "older.arcbackup")));
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_installation));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.ReconciliationRequired, report.Outcome);
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(displaced, "CODEX.md")));
     }
 
     /// <summary>
@@ -4164,13 +4364,17 @@ public sealed class BackupRestoreServiceTests : IDisposable
         /// </summary>
         public int? FailingGrimoireSecretWrite { get; set; }
 
+        /// <summary>What that failing write throws, when not the unwritable store's I/O fault.</summary>
+        public Exception? FailingGrimoireSecretWriteFault { get; set; }
+
         private int _grimoireSecretWrites;
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
             if (++_grimoireSecretWrites == FailingGrimoireSecretWrite)
             {
-                throw new IOException("The Grimoire secret store is not writable.");
+                throw FailingGrimoireSecretWriteFault
+                    ?? new IOException("The Grimoire secret store is not writable.");
             }
 
             GrimoireSecret = encryptionSecret;

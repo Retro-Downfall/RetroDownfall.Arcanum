@@ -360,6 +360,44 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Equal(0, harness.Markers.ReconcileCalls);
     }
 
+    /// <summary>
+    /// A fault no catch names, escaping the commit after its first rename, is not proof that nothing was
+    /// displaced: admission stays closed and staging, with the displaced installation in it, is kept.
+    /// </summary>
+    /// <remarks>
+    /// The commit had recorded no outcome, so the abort was told the restore never began its renames. It
+    /// spent <c>RollbackAndReopen</c> over a live root holding the unfinished replacement, closed the
+    /// anchor, and the cleanup then deleted staging with the prior installation inside it.
+    /// </remarks>
+    [Fact]
+    public async Task A_fault_no_catch_names_inside_the_commit_keeps_admission_closed_and_staging()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string existingBackup = Path.Combine(_installation, "backups", "older.arcbackup");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(existingBackup)!);
+
+        await File.WriteAllTextAsync(existingBackup, "older");
+
+        harness.Options = harness.Options with
+        {
+            FailBeforePreservedEntry = "backups",
+        };
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(() => harness.RestoreAsync());
+
+        // Disposed without a disposition, which is exactly KeepClosed.
+        Assert.Empty(harness.Gate.Dispositions);
+
+        string staging = Assert.Single(harness.StagingRoots());
+
+        Assert.Equal(
+            "older",
+            await File.ReadAllTextAsync(
+                Path.Combine(staging, BackupRestoreJournal.DisplacedDirectoryName, "backups", "older.arcbackup")));
+    }
+
     [Fact]
     public async Task An_unprovable_marker_child_after_the_swap_keeps_admission_closed()
     {
@@ -853,6 +891,16 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                             "The harness failed this restore at " + phase + ".");
                     }
                 },
+
+                // A type no catch in the restore names, so the fault escapes the commit itself.
+                BeforePreservedEntryMoveForTests = name =>
+                {
+                    if (Options.FailBeforePreservedEntry == name)
+                    {
+                        throw new ArgumentException(
+                            "The harness failed this restore while preserving " + name + ".");
+                    }
+                },
             };
 
             Markers.Published = Published;
@@ -1086,7 +1134,8 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         BackupRestoreConflictMode ConflictMode = BackupRestoreConflictMode.ReplaceInstallation,
         string? DestinationRoot = null,
         BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
-        bool ProtectedStateConfirmed = false);
+        bool ProtectedStateConfirmed = false,
+        string? FailBeforePreservedEntry = null);
 
     private sealed class HarnessSecretReader(string grimoireSecret) : IBackupSecretSnapshotReader
     {
