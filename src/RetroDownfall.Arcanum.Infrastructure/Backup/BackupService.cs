@@ -147,10 +147,41 @@ public sealed class BackupService : IBackupService
         return inventory.Plan;
     }
 
-    public async Task<BackupCreateResult> CreateAsync(
+    public Task<BackupCreateResult> CreateAsync(
         BackupCreateRequest request,
         ReadOnlyMemory<char> recoveryPassphrase,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        CreateCoreAsync(
+            request,
+            recoveryPassphrase,
+            enforcePassphraseFloor: true,
+            cancellationToken);
+
+    /// <summary>
+    /// Writes the pre-restore safety backup under the passphrase of the archive being restored.
+    /// </summary>
+    /// <remarks>
+    /// The one create path that skips <see cref="BackupPassphrasePolicy"/>, and internal so that only
+    /// the restore service in this assembly can reach it. That passphrase was chosen when the archive
+    /// was written, possibly before the floor existed, and cannot be changed now; holding it to the
+    /// floor would turn the restore of an older archive into a refusal. Everything else about the
+    /// backup, including its Covenant disclosure receipts, is the ordinary create.
+    /// </remarks>
+    internal Task<BackupCreateResult> CreateSafetyBackupAsync(
+        BackupCreateRequest request,
+        ReadOnlyMemory<char> existingArchivePassphrase,
+        CancellationToken cancellationToken = default) =>
+        CreateCoreAsync(
+            request,
+            existingArchivePassphrase,
+            enforcePassphraseFloor: false,
+            cancellationToken);
+
+    private async Task<BackupCreateResult> CreateCoreAsync(
+        BackupCreateRequest request,
+        ReadOnlyMemory<char> recoveryPassphrase,
+        bool enforcePassphraseFloor,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -158,7 +189,7 @@ public sealed class BackupService : IBackupService
         // passphrase must cost nothing. Applied here, at creation, because this is where a passphrase
         // is chosen; opening, verifying and restoring an archive written under a shorter one is not
         // touched by it (see BackupPassphrasePolicy).
-        if (!request.ReusesExistingPassphrase
+        if (enforcePassphraseFloor
             && !BackupPassphrasePolicy.MeetsCreateMinimum(recoveryPassphrase.Span))
         {
             throw new ArgumentException(
@@ -467,12 +498,9 @@ public sealed class BackupService : IBackupService
             sources.Sort(static (left, right) =>
                 StringComparer.Ordinal.Compare(left.ArchivePath, right.ArchivePath));
 
-            BackupManifestEntry[] entries = durableOperation is null
-                ? BuildEntries(sources, cancellationToken)
-                : await RunWithDurableLeaseAsync(
-                    durableOperation,
-                    token => Task.FromResult(BuildEntries(sources, token)),
-                    cancellationToken).ConfigureAwait(false);
+            // In memory and without I/O: sizes and checksums come from the inventory capture, so there
+            // is no long read here for a durable lease to protect.
+            BackupManifestEntry[] entries = BuildEntries(sources, cancellationToken);
 
             effectivePlan = RecalculatePlan(effectivePlan, entries);
 
@@ -1251,7 +1279,13 @@ public sealed class BackupService : IBackupService
             request.SessionId,
             [.. request.Include.Distinct().Order()],
             [.. request.Exclude.Distinct().Order()],
-            [.. plan.SecurityWarnings],
+            [
+                .. plan.SecurityWarnings.Where(
+                    static warning => !string.Equals(
+                        warning,
+                        BackupPassphrasePolicy.CreateWarning,
+                        StringComparison.Ordinal)),
+            ],
             plan.Components
                 .Select(static component => new BackupManifestComponent(
                     component.Component,

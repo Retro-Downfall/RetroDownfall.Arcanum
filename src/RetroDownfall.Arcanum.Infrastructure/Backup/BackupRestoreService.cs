@@ -577,7 +577,14 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     BackupArchivePaths.PortableRecoveryKeys));
             }
 
-            warnings.AddRange(manifest.SecurityWarnings);
+            // Without the creation-time passphrase advice: that is guidance for choosing a passphrase,
+            // and a restore opens an archive whose passphrase was chosen long ago, under no floor.
+            warnings.AddRange(
+                manifest.SecurityWarnings.Where(
+                    static warning => !string.Equals(
+                        warning,
+                        BackupPassphrasePolicy.CreateWarning,
+                        StringComparison.Ordinal)));
         }
 
         long displacedBytes = request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
@@ -2453,15 +2460,19 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             _paths.BackupsDirectory,
             $"arcanum-pre-restore-{_timeProvider.GetUtcNow():yyyyMMddTHHmmssfffZ}{BackupArchiveFormat.Extension}");
 
-        return await _safetyBackupFactory()
-            .CreateAsync(
-                new BackupCreateRequest(
-                    new BackupPlanRequest(BackupScope.Full, SessionId: null, Include: [], Exclude: []),
-                    path,
-                    Overwrite: false,
-                    ReusesExistingPassphrase: true),
-                recoveryPassphrase,
-                cancellationToken)
+        BackupCreateRequest request = new(
+            new BackupPlanRequest(BackupScope.Full, SessionId: null, Include: [], Exclude: []),
+            path,
+            Overwrite: false);
+
+        IBackupService safetyBackups = _safetyBackupFactory();
+
+        // The passphrase is the restored archive's own, chosen before any creation floor and not the
+        // operator's to change now, so the physical service takes it through its internal safety path.
+        // Any other IBackupService is a stand-in and takes the ordinary, floor-enforcing one.
+        return await (safetyBackups is BackupService physical
+                ? physical.CreateSafetyBackupAsync(request, recoveryPassphrase, cancellationToken)
+                : safetyBackups.CreateAsync(request, recoveryPassphrase, cancellationToken))
             .ConfigureAwait(false);
     }
 

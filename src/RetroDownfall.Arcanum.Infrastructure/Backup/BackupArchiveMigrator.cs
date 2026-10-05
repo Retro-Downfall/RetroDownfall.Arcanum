@@ -51,13 +51,16 @@ internal static class BackupArchiveMigrator
 
         string outputPath = Path.GetFullPath(request.OutputPath);
 
-        if (string.Equals(
+        OutputIdentity identity = string.Equals(
                 archivePath,
                 outputPath,
                 OperatingSystem.IsWindows()
                     ? StringComparison.OrdinalIgnoreCase
                     : StringComparison.Ordinal)
-            || NamesTheSameFile(archivePath, outputPath))
+            ? OutputIdentity.TheSource
+            : CompareWithSource(archivePath, outputPath);
+
+        if (identity == OutputIdentity.TheSource)
         {
             return Failed(
                 request,
@@ -65,6 +68,17 @@ internal static class BackupArchiveMigrator
                 new BackupVerifyIssue(
                     "backup.migrate_output_is_source",
                     "The migrated archive must be written to a different path than the source archive.",
+                    outputPath));
+        }
+
+        if (identity == OutputIdentity.Unverifiable)
+        {
+            return Failed(
+                request,
+                0,
+                new BackupVerifyIssue(
+                    "backup.migrate_output_unverifiable",
+                    "The migrated archive destination exists, but it could not be confirmed to be a different file from the source archive, so nothing was written.",
                     outputPath));
         }
 
@@ -162,40 +176,74 @@ internal static class BackupArchiveMigrator
     }
 
     /// <summary>
-    /// Whether two paths that both exist are one file: a case variant on a volume that folds case, a
-    /// hard link, or a symbolic link to it.
+    /// Whether an output that exists is the source: a case variant on a volume that folds case, a hard
+    /// link, or a symbolic link to it.
     /// </summary>
     /// <remarks>
     /// Spelling cannot answer this. The default macOS volume folds case although the platform check
     /// above treats paths as case-sensitive, and a hard link has a different name for the same
     /// bytes, so the comparison is on the no-follow volume and file identity of what each path
     /// finally resolves to. An output that does not exist cannot be the source.
+    ///
+    /// <para>An output that exists and whose identity cannot be established is neither assumed
+    /// different nor reported as the source: that is <see cref="OutputIdentity.Unverifiable"/>, which
+    /// refuses with its own code, because "different unless proven otherwise" is how a link to the
+    /// source would be written over by <c>--overwrite</c>.</para>
     /// </remarks>
-    private static bool NamesTheSameFile(
+    private static OutputIdentity CompareWithSource(
         string archivePath,
         string outputPath)
     {
-        return File.Exists(outputPath)
-            && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
-                ResolveFinalTarget(archivePath),
+        if (!File.Exists(outputPath))
+        {
+            return OutputIdentity.Different;
+        }
+
+        if (!TryResolveFinalTarget(archivePath, out string archiveTarget)
+            || !TryResolveFinalTarget(outputPath, out string outputTarget)
+            || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                archiveTarget,
                 out FileHandleMetadata archive)
-            && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
-                ResolveFinalTarget(outputPath),
-                out FileHandleMetadata output)
-            && FileHandleIdentity.IdentitiesMatch(archive.Identity, output.Identity);
+            || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                outputTarget,
+                out FileHandleMetadata output))
+        {
+            return OutputIdentity.Unverifiable;
+        }
+
+        return FileHandleIdentity.IdentitiesMatch(archive.Identity, output.Identity)
+            ? OutputIdentity.TheSource
+            : OutputIdentity.Different;
     }
 
-    private static string ResolveFinalTarget(string path)
+    private static bool TryResolveFinalTarget(
+        string path,
+        out string finalTarget)
     {
         try
         {
-            return new FileInfo(path).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+            finalTarget = new FileInfo(path).ResolveLinkTarget(returnFinalTarget: true)?.FullName
                 ?? path;
+
+            return true;
         }
-        catch (IOException)
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException)
         {
-            return path;
+            finalTarget = path;
+
+            return false;
         }
+    }
+
+    private enum OutputIdentity
+    {
+        Different,
+
+        TheSource,
+
+        Unverifiable,
     }
 
     private static BackupMigrateResult Failed(

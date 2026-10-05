@@ -10,6 +10,10 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using Serilog.Core;
+
+using Serilog.Events;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 [Collection("WorkspacePathPolicy")]
@@ -203,7 +207,14 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 overwrite: false,
                 CancellationToken.None));
 
+        // An identity failure is reported as one: the destination is no longer the staged file, which
+        // says nothing about whether its permissions could be verified.
         Assert.Contains(
+            "changed",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
             "owner-only",
             error.Message,
             StringComparison.OrdinalIgnoreCase);
@@ -213,6 +224,141 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
             await File.ReadAllTextAsync(archive));
 
         Assert.True(File.Exists(movedArchive));
+    }
+
+    /// <summary>
+    /// The destination is checked against the staged file's identity before permissions are
+    /// re-applied to it, so a path swapped the instant after publication is neither touched nor
+    /// deleted and the refusal names the swap rather than a permission problem.
+    /// </summary>
+    [Fact]
+    public async Task Write_refuses_without_touching_a_destination_replaced_immediately_after_publication()
+    {
+        byte[] content = "swap after publication payload"u8.ToArray();
+
+        BackupManifestEntry entry = Entry(content);
+
+        string archive = Path.Combine(
+            _root,
+            "swap-after-publication.arcbackup");
+
+        string movedArchive = archive + ".owned";
+
+        int permissionChecksOfTheDestination = 0;
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
+            (path, isDirectory) =>
+            {
+                if (!isDirectory
+                    && string.Equals(
+                        Path.GetFullPath(path),
+                        archive,
+                        StringComparison.Ordinal))
+                {
+                    permissionChecksOfTheDestination++;
+                }
+
+                return true;
+            };
+
+        BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
+        {
+            KdfIterations = 10_000,
+
+            AfterArchivePublishedForTests = published =>
+            {
+                File.Move(published, movedArchive);
+
+                File.WriteAllText(published, "replacement destination");
+            },
+        });
+
+        IOException error = await Assert.ThrowsAsync<IOException>(
+            () => codec.WriteAsync(
+                archive,
+                Manifest(entry),
+                [BackupArchiveSource.FromMemory(entry.Path, content)],
+                Passphrase.AsMemory(),
+                overwrite: false,
+                CancellationToken.None));
+
+        Assert.Contains(
+            "changed",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            "owner-only",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(
+            "replacement destination",
+            await File.ReadAllTextAsync(archive));
+
+        Assert.True(File.Exists(movedArchive));
+
+        // The re-apply never ran against the swapped file.
+        Assert.Equal(0, permissionChecksOfTheDestination);
+    }
+
+    /// <summary>
+    /// A permission re-apply that fails after publication leaves the archive in place, and says so in
+    /// the log: the helper that re-applies them is silent when the apply succeeds and the verification
+    /// that follows it does not, so the warning is the codec's to give.
+    /// </summary>
+    [Fact]
+    public async Task Write_warns_when_the_published_archive_cannot_be_verified_owner_only()
+    {
+        byte[] content = "post-publication warning payload"u8.ToArray();
+
+        BackupManifestEntry entry = Entry(content);
+
+        string archive = Path.Combine(
+            _root,
+            "permission-warning.arcbackup");
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
+            (path, isDirectory) =>
+                isDirectory
+                || !string.Equals(
+                    Path.GetFullPath(path),
+                    archive,
+                    StringComparison.Ordinal);
+
+        CapturingSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        try
+        {
+            _ = await CreateCodec().WriteAsync(
+                archive,
+                Manifest(entry),
+                [BackupArchiveSource.FromMemory(entry.Path, content)],
+                Passphrase.AsMemory(),
+                overwrite: false,
+                CancellationToken.None);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        LogEvent warning = Assert.Single(
+            sink.Events,
+            static logEvent => logEvent.Level == LogEventLevel.Warning
+                && logEvent.MessageTemplate.Text.Contains(
+                    "owner-only",
+                    StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal(
+            archive,
+            ((ScalarValue)warning.Properties["Path"]).Value);
+
+        Assert.True(File.Exists(archive));
     }
 
     [Fact]
@@ -1153,4 +1299,28 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         int PathOffset,
         int PathLength,
         int TotalLength);
+
+    private sealed class CapturingSink : ILogEventSink
+    {
+        private readonly List<LogEvent> _events = [];
+
+        public IReadOnlyList<LogEvent> Events
+        {
+            get
+            {
+                lock (_events)
+                {
+                    return [.. _events];
+                }
+            }
+        }
+
+        public void Emit(LogEvent logEvent)
+        {
+            lock (_events)
+            {
+                _events.Add(logEvent);
+            }
+        }
+    }
 }

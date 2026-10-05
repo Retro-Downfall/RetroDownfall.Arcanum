@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </remarks>
 public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
 {
-
     private const string GrimoireSecret = "grimoire-secret";
 
     /// <summary>
@@ -36,7 +35,6 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
     [Fact]
     public async Task A_full_backup_commits_the_snapshot_receipt_then_the_archive_receipt()
     {
-
         RecordingBoundary boundary = new();
 
         RecordingGate gate = new();
@@ -65,13 +63,11 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
         // Neither receipt names where the archive went, only a digest of it. Storing the destination
         // itself would recreate inside the journal the exposure the journal exists to account for.
         Assert.All(boundary.Destinations, static digest => Assert.True(digest.IsValid));
-
     }
 
     [Fact]
     public async Task A_full_backup_uses_one_installation_read_lease_and_no_nested_scoped_lease()
     {
-
         RecordingBoundary boundary = new();
 
         RecordingGate gate = new();
@@ -99,13 +95,11 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
         Assert.Equal(1, gate.Releases);
 
         Assert.True(File.Exists(archive));
-
     }
 
     [Fact]
     public async Task A_refused_snapshot_acknowledgement_produces_no_snapshot_and_no_archive()
     {
-
         RecordingBoundary boundary = new() { RefuseSnapshotRead = true };
 
         RecordingGate gate = new();
@@ -131,13 +125,11 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
 
         // And the lease it acquired was still released.
         Assert.Equal(1, gate.Releases);
-
     }
 
     [Fact]
     public async Task A_refused_archive_acknowledgement_produces_no_archive()
     {
-
         RecordingBoundary boundary = new() { RefuseArchiveWrite = true };
 
         RecordingGate gate = new();
@@ -162,13 +154,59 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
         Assert.Contains(CovenantBackupDisclosureEffect.SnapshotRead, boundary.Effects);
 
         Assert.Equal(1, gate.Releases);
+    }
 
+    /// <summary>
+    /// The archive-write receipt precedes the archive pass, and the archive pass is where a source that
+    /// no longer matches its inventory capture is refused, so a drifted source is refused after the
+    /// receipt has been committed. That order is deliberate: the receipt has to exist before the first
+    /// output byte can, and a receipt for an attempt that then published nothing overstates the
+    /// disclosure instead of understating it.
+    /// </summary>
+    [Fact]
+    public async Task A_source_that_changes_after_inventory_is_refused_after_the_archive_receipt_and_publishes_nothing()
+    {
+        string configuration = Path.Combine(_root, "arcanum.json");
+
+        await File.WriteAllTextAsync(configuration, "{\"a\":1}");
+
+        RecordingBoundary boundary = new();
+
+        RecordingGate gate = new();
+
+        BackupService service = await CreateServiceAsync(
+            gate,
+            boundary,
+            _ => File.WriteAllText(configuration, "{\"a\":2,\"drifted\":true}"));
+
+        string archive = Path.Combine(_root, "drifted.arcbackup");
+
+        _ = await Assert.ThrowsAsync<IOException>(
+            async () => await service.CreateAsync(
+                new BackupCreateRequest(
+                    new BackupPlanRequest(BackupScope.Full, null, [], []),
+                    archive,
+                    Overwrite: false),
+                "recovery passphrase".AsMemory(),
+                CancellationToken.None));
+
+        Assert.False(File.Exists(archive));
+
+        Assert.Equal(
+            [
+                CovenantBackupDisclosureEffect.SnapshotRead,
+                CovenantBackupDisclosureEffect.ArchiveWrite,
+            ],
+            boundary.Effects);
+
+        Assert.Equal(1, gate.Releases);
+
+        Assert.Empty(Directory.GetFileSystemEntries(_root, ".arcanum-backup-stage-*"));
     }
 
     [Fact]
     public async Task With_the_gate_off_a_backup_acknowledges_and_leases_nothing()
     {
-
         RecordingBoundary boundary = new();
 
         RecordingGate gate = new();
@@ -191,12 +229,10 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
 
         Assert.Empty(boundary.Effects);
         Assert.Equal(0, gate.InstallationReadAcquisitions);
-
     }
 
     public void Dispose()
     {
-
         try
         {
             Directory.Delete(_root, recursive: true);
@@ -205,17 +241,18 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
         {
             // A leftover scratch directory is not worth failing a suite over.
         }
-
     }
 
     private Task<BackupService> CreateServiceAsync(
         RecordingGate gate,
-        RecordingBoundary boundary) =>
-        CreateServiceAsync(new CovenantBackupServices(gate, boundary));
+        RecordingBoundary boundary,
+        Action<BackupInventory>? afterInventoryBuilt = null) =>
+        CreateServiceAsync(new CovenantBackupServices(gate, boundary), afterInventoryBuilt);
 
-    private async Task<BackupService> CreateServiceAsync(CovenantBackupServices? covenant)
+    private async Task<BackupService> CreateServiceAsync(
+        CovenantBackupServices? covenant,
+        Action<BackupInventory>? afterInventoryBuilt = null)
     {
-
         BackupStatePaths paths = new(
             _root,
             _root,
@@ -226,9 +263,7 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
 
         if (!File.Exists(paths.DatabasePath))
         {
-
             await CreateGrimoireAsync(paths.DatabasePath);
-
         }
 
         return new BackupService(
@@ -237,19 +272,19 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
             new BackupDatabaseSnapshotter(),
             new BackupArchiveCodec(new BackupArchiveCodecOptions
             {
-
                 KdfIterations = 10_000,
 
                 ChunkSize = 64 * 1024,
-
             }),
             new FixedSecretReader(),
             TimeProvider.System,
             passphraseSource: null,
             operationCoordinator: null,
             operationStore: null,
-            covenant);
-
+            covenant)
+        {
+            AfterInventoryBuiltForTests = afterInventoryBuilt,
+        };
     }
 
     /// <summary>
@@ -257,7 +292,6 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
     /// </summary>
     private static async Task CreateGrimoireAsync(string path)
     {
-
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
 
         GrimoireKdfSidecarFile.Write(path, sidecar);
@@ -306,12 +340,10 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
             """;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private sealed class FixedSecretReader : IBackupSecretSnapshotReader
     {
-
         public Task<SecretStoreReadResult> ReadGrimoireSecretAsync() =>
             Task.FromResult(SecretStoreReadResult.Ok(GrimoireSecret));
 
@@ -323,7 +355,6 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
 
         public Task<SecretStoreReadResult> ReadMasterApiKeyAsync() =>
             Task.FromResult(SecretStoreReadResult.Ok("scratch-master-key"));
-
     }
 
     /// <summary>
@@ -331,7 +362,6 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
     /// </summary>
     private sealed class RecordingBoundary : ICovenantBackupDisclosureBoundary
     {
-
         internal List<CovenantBackupDisclosureEffect> Effects { get; } = [];
 
         internal List<CovenantDigest> Destinations { get; } = [];
@@ -368,14 +398,11 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
             CovenantDigest destinationIdentity,
             bool refuse)
         {
-
             if (refuse)
             {
-
                 return Task.FromResult(
                     Result<CovenantBackupDisclosureAcknowledgement>.Failure(
                         new Error(ErrorCodes.Covenant.MaintenanceFailed, "The journal refused.")));
-
             }
 
             Effects.Add(effect);
@@ -390,11 +417,9 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
                         (ulong)Effects.Count,
                         Digest(1),
                         Digest(2))));
-
         }
 
         private static CovenantDigest Digest(byte seed) => new([.. Enumerable.Repeat(seed, 32)]);
-
     }
 
     /// <summary>
@@ -407,7 +432,6 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
     /// </remarks>
     private sealed class RecordingGate : ICovenantOperationGate
     {
-
         internal int InstallationReadAcquisitions { get; private set; }
 
         internal int Releases { get; private set; }
@@ -415,13 +439,11 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
         public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
             CancellationToken cancellationToken)
         {
-
             InstallationReadAcquisitions++;
 
             return ValueTask.FromResult(
                 Result<CovenantInstallationReadLease>.Success(
                     new CovenantInstallationReadLease(new Registration(this))));
-
         }
 
         public ValueTask<Result<CovenantReadLease>> AcquireReadAsync(
@@ -501,7 +523,6 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
 
         private sealed class Registration(RecordingGate gate) : ICovenantLeaseRegistration
         {
-
             public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
                 Guid.NewGuid(),
                 1,
@@ -526,15 +547,10 @@ public sealed class CovenantBackupDisclosureOrderingTests : IDisposable
 
             public ValueTask ReleaseAsync()
             {
-
                 gate.Releases++;
 
                 return ValueTask.CompletedTask;
-
             }
-
         }
-
     }
-
 }

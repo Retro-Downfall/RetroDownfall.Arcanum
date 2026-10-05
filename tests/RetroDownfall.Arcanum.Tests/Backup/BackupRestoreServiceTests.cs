@@ -288,6 +288,35 @@ public sealed class BackupRestoreServiceTests : IDisposable
     }
 
     /// <summary>
+    /// A file and a directory cannot share a name either: Windows drops the trailing dot from the
+    /// directory <c>note.bin.</c>, which is then the file <c>note.bin</c>, and the restore refuses the
+    /// pair on every platform for the same reason it refuses two files with one name.
+    /// </summary>
+    [Fact]
+    public async Task An_archive_whose_file_shares_a_trailing_dot_name_with_another_entrys_directory_is_refused()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateArchiveWithDuplicatedEntryAsync(
+            "file-directory-collision.arcbackup",
+            "attachments/session/note.bin",
+            "attachments/session/note.bin./inner.bin");
+
+        WipeInstallation();
+
+        BackupRestoreResult result = await Restore(new RecordingSecretStore()).RestoreAsync(
+            new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(result.Issues, static issue => issue.Code == "backup.invalid_archive");
+
+        Assert.False(File.Exists(Path.Combine(_installation, "arcanum.db")));
+    }
+
+    /// <summary>
     /// A backup whose planned attachment paths differ only in case is reported incomplete and writes no
     /// archive, rather than verifying cleanly and then failing to restore.
     /// </summary>
@@ -2249,6 +2278,59 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.True(File.Exists(safety));
     }
 
+    /// <summary>
+    /// The passphrase-length advice is for the moment a passphrase is chosen, so a restore plan does
+    /// not repeat it: the operator is opening an archive whose passphrase was already chosen, and the
+    /// floor never applies to them.
+    /// </summary>
+    /// <remarks>
+    /// Two archives: one this build wrote, whose manifest no longer carries the advice, and one an
+    /// earlier build wrote with the advice recorded in its manifest, which the restore still has to
+    /// leave out.
+    /// </remarks>
+    [Fact]
+    public async Task A_restore_plan_does_not_repeat_the_creation_passphrase_warning()
+    {
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("restore-warning.arcbackup");
+
+        BackupInspectResult inspected = await Codec().InspectAsync(
+            archive,
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(
+            BackupPassphrasePolicy.CreateWarning,
+            inspected.Manifest!.SecurityWarnings);
+
+        string older = await fixture.RewriteArchiveUnderPassphraseAsync(
+            archive,
+            "restore-warning-older.arcbackup",
+            Passphrase,
+            manifest => manifest with
+            {
+                SecurityWarnings =
+                [
+                    .. manifest.SecurityWarnings,
+
+                    BackupPassphrasePolicy.CreateWarning,
+                ],
+            });
+
+        foreach (string candidate in new[] { archive, older })
+        {
+            BackupRestorePlan plan = await Restore(
+                    new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret })
+                .PlanAsync(
+                    new BackupRestoreRequest(candidate, Confirmed: false),
+                    Passphrase.AsMemory(),
+                    CancellationToken.None);
+
+            Assert.DoesNotContain(BackupPassphrasePolicy.CreateWarning, plan.Warnings);
+        }
+    }
+
     [Fact]
     public async Task A_pre_restore_safety_backup_that_does_not_complete_stops_the_restore_before_the_destructive_step()
     {
@@ -2361,13 +2443,8 @@ public sealed class BackupRestoreServiceTests : IDisposable
     /// A path that names the source through another spelling or another link is the source, and
     /// <c>--overwrite</c> must not turn it into permission to replace the archive being migrated.
     /// </summary>
-    /// <remarks>
-    /// The case-variant arm only has something to prove on a volume that folds case, which is the
-    /// default on macOS and Windows; on a case-sensitive volume the two spellings are two files and
-    /// that arm is not exercised. The hard-link arm runs everywhere.
-    /// </remarks>
     [Fact]
-    public async Task Migrating_onto_the_source_through_a_case_variant_or_hard_link_is_refused()
+    public async Task Migrating_onto_the_source_through_a_hard_link_is_refused()
     {
         Fixture fixture = await CreateFixtureAsync();
 
@@ -2393,24 +2470,43 @@ public sealed class BackupRestoreServiceTests : IDisposable
         Assert.Equal(before, await File.ReadAllBytesAsync(archive));
 
         Assert.Equal(before, await File.ReadAllBytesAsync(hardLink));
+    }
 
-        string caseVariant = Path.Combine(_archives, "MIGRATE-ALIAS.ARCBACKUP");
+    /// <summary>
+    /// The case variant of the source's own name is the source on a volume that folds case, which is
+    /// the default on macOS and Windows.
+    /// </summary>
+    /// <remarks>
+    /// Skipped, loudly, on a case-sensitive volume, where the two spellings are two files and there is
+    /// nothing for the guard to prove; the hard-link case above runs everywhere.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Migrating_onto_the_source_through_a_case_variant_is_refused()
+    {
+        Fixture fixture = await CreateFixtureAsync();
 
-        if (File.Exists(caseVariant))
-        {
-            BackupMigrateResult throughVariant = await Restore(new RecordingSecretStore()).MigrateAsync(
-                new BackupMigrateRequest(archive, caseVariant, Overwrite: true),
-                Passphrase.AsMemory(),
-                CancellationToken.None);
+        string archive = await fixture.CreateBackupAsync("migrate-variant.arcbackup");
 
-            Assert.False(throughVariant.Migrated);
+        byte[] before = await File.ReadAllBytesAsync(archive);
 
-            Assert.Contains(
-                throughVariant.Issues,
-                static issue => issue.Code == "backup.migrate_output_is_source");
+        string caseVariant = Path.Combine(_archives, "MIGRATE-VARIANT.ARCBACKUP");
 
-            Assert.Equal(before, await File.ReadAllBytesAsync(archive));
-        }
+        Skip.IfNot(
+            File.Exists(caseVariant),
+            "This volume is case-sensitive, so the case variant names a different file.");
+
+        BackupMigrateResult throughVariant = await Restore(new RecordingSecretStore()).MigrateAsync(
+            new BackupMigrateRequest(archive, caseVariant, Overwrite: true),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.False(throughVariant.Migrated);
+
+        Assert.Contains(
+            throughVariant.Issues,
+            static issue => issue.Code == "backup.migrate_output_is_source");
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(archive));
     }
 
     [Fact]
@@ -2998,7 +3094,8 @@ public sealed class BackupRestoreServiceTests : IDisposable
         public async Task<string> RewriteArchiveUnderPassphraseAsync(
             string original,
             string name,
-            string passphrase)
+            string passphrase,
+            Func<BackupManifest, BackupManifest>? rewriteManifest = null)
         {
             string extractRoot = Path.Combine(archives, "extract-" + Guid.NewGuid().ToString("N"));
 
@@ -3031,7 +3128,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
             _ = await codec.WriteAsync(
                 archive,
-                manifest,
+                rewriteManifest is null ? manifest : rewriteManifest(manifest),
                 sources,
                 passphrase.AsMemory(),
                 overwrite: true,
