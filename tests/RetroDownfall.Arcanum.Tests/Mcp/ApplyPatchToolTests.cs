@@ -13,16 +13,13 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 [Collection("WorkspacePathPolicy")]
 public sealed class ApplyPatchToolTests : IAsyncLifetime
 {
-
     private TempWorkspace _workspace = null!;
 
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
-
     }
 
     public Task DisposeAsync() => _workspace.DisposeAsync();
@@ -30,7 +27,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     [Fact]
     public void Parser_accepts_create_modify_rename_delete_and_normalizes_manifest()
     {
-
         const string patch =
             """
             diff --git "a/src/old name.txt" "b/src/new name.txt"
@@ -103,7 +99,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             | UnixFileMode.OtherExecute,
             manifest.Files[2].NewFileUnixMode);
         Assert.True(manifest.Files[3].Hunks[0].Lines[0].OldHasNoFinalNewline);
-
     }
 
     [Theory]
@@ -115,7 +110,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         string path,
         string expectedCode)
     {
-
         string patch =
             $"""
              --- /dev/null
@@ -131,7 +125,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.False(result.Success);
         Assert.Equal(expectedCode, result.Code);
         Assert.Null(result.Manifest);
-
     }
 
     [Theory]
@@ -145,7 +138,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         string metadata,
         string expectedCode)
     {
-
         string patch =
             $"""
              diff --git a/item.txt b/item.txt
@@ -162,13 +154,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         Assert.False(result.Success);
         Assert.Equal(expectedCode, result.Code);
-
     }
 
     [Fact]
     public void Parser_rejects_duplicate_destination_aliases_and_rename_cycles()
     {
-
         const string duplicateDestination =
             """
             --- /dev/null
@@ -205,13 +195,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         Assert.False(cycle.Success);
         Assert.Equal("rename_cycle", cycle.Code);
-
     }
 
     [Fact]
     public void Parser_rejects_duplicate_and_out_of_order_git_metadata()
     {
-
         const string duplicate =
             """
             diff --git a/item.txt b/item.txt
@@ -242,13 +230,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal("invalid_metadata", duplicateResult.Code);
         Assert.False(outOfOrderResult.Success);
         Assert.Equal("invalid_metadata", outOfOrderResult.Code);
-
     }
 
     [Fact]
     public void Parser_rejects_ancestor_descendant_path_topology_collisions()
     {
-
         const string patch =
             """
             --- /dev/null
@@ -267,20 +253,17 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         Assert.False(result.Success);
         Assert.Equal("path_topology", result.Code);
-
     }
 
     [Fact]
     public void Parser_validates_path_topology_without_rescanning_every_earlier_path()
     {
-
         const int fileCount = 40_000;
 
         System.Text.StringBuilder patch = new();
 
         for (int index = 0; index < fileCount; index++)
         {
-
             _ = patch.AppendLine("--- /dev/null");
 
             _ = index % 2 == 0
@@ -298,7 +281,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             _ = patch
                 .AppendLine("@@ -0,0 +1 @@")
                 .AppendLine("+value");
-
         }
 
         string text = patch.ToString();
@@ -316,13 +298,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.True(
             stopwatch.Elapsed < TimeSpan.FromSeconds(10),
             $"Parsing {fileCount} file records took {stopwatch.Elapsed.TotalSeconds:F1}s; path-topology validation is not linear in file count.");
-
     }
 
     [Fact]
     public void Parser_honors_cancellation_before_and_during_parse()
     {
-
         using CancellationTokenSource cancellation = new();
         cancellation.Cancel();
 
@@ -336,13 +316,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 """,
                 DefaultPatchSettings(),
                 cancellation.Token));
-
     }
 
     [Fact]
     public void Parser_retains_single_request_patch_byte_allocation_boundary()
     {
-
         const string patch =
             """
             --- a/file.txt
@@ -357,13 +335,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             UnifiedDiffParser.Parse(
                 patch,
                 DefaultPatchSettings() with { MaxPatchBytes = 8 }).Code);
-
     }
 
     [Fact]
     public void Parser_accepts_work_beyond_former_file_hunk_and_line_totals()
     {
-
         const int fileCount = 129;
 
         const int hunkCount = 1_025;
@@ -374,7 +350,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         for (int index = 0; index < fileCount; index++)
         {
-
             _ = files
                 .AppendLine("--- /dev/null")
                 .Append("+++ b/files/")
@@ -382,7 +357,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 .AppendLine(".txt")
                 .AppendLine("@@ -0,0 +1 @@")
                 .AppendLine("+value");
-
         }
 
         System.Text.StringBuilder hunks = new();
@@ -393,13 +367,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         for (int index = 0; index < hunkCount; index++)
         {
-
             _ = hunks
                 .Append("@@ -0,0 +")
                 .Append(index + 1)
                 .AppendLine(" @@")
                 .AppendLine("+value");
-
         }
 
         System.Text.StringBuilder lines = new();
@@ -413,9 +385,7 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         for (int index = 0; index < lineCount; index++)
         {
-
             _ = lines.AppendLine("+value");
-
         }
 
         Assert.True(
@@ -432,7 +402,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             UnifiedDiffParser.Parse(
                 lines.ToString(),
                 DefaultPatchSettings()).Success);
-
     }
 
     [Fact]
@@ -494,7 +463,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             UnifiedDiffManifest manifest,
             WorkspacePatchSettings settings)
         {
-
             WorkspacePatchPlanResult result = await new WorkspacePatchPlanner(
                 settings)
                 .PlanAsync(
@@ -505,7 +473,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             Assert.False(result.Success);
 
             return result.Code;
-
         }
 
         WorkspacePatchSettings defaults = DefaultPatchSettings();
@@ -546,13 +513,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal(
             stagingTotalBefore + "\n",
             await ReadTextAsync("staging-total-b.txt"));
-
     }
 
     [Fact]
     public async Task Planner_processes_all_inputs_when_each_file_fits_its_allocation_boundary()
     {
-
         string before = new('i', 600);
 
         _workspace.WriteFile("input-a.txt", before + "\n");
@@ -586,13 +551,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.True(result.Success, result.Message);
 
         Assert.Equal(2, result.Plan!.Files.Count);
-
     }
 
     [Fact]
     public async Task Planner_validates_every_file_and_builds_one_reversible_transaction()
     {
-
         _workspace.WriteFile("modify.txt", "keep\nbefore\n");
         _workspace.WriteFile("rename-old.txt", "rename before\n");
         _workspace.WriteFile("delete.txt", "gone");
@@ -671,13 +634,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal("gone", await ReadTextAsync("delete.txt"));
         Assert.False(File.Exists(Path.Combine(_workspace.Root, "create.txt")));
         Assert.False(File.Exists(Path.Combine(_workspace.Root, "rename-new.txt")));
-
     }
 
     [Fact]
     public async Task Planner_preserves_bom_unicode_mixed_untouched_delimiters_and_no_final_newline()
     {
-
         string path = Path.Combine(_workspace.Root, "mixed.txt");
         byte[] original =
         [
@@ -722,13 +683,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             ],
             operation.OutputBytes!.Value.ToArray());
         Assert.Equal(original, await File.ReadAllBytesAsync(path));
-
     }
 
     [Fact]
     public async Task Planner_relocates_only_a_unique_best_match_with_exact_deletions()
     {
-
         _workspace.WriteFile(
             "relocate.txt",
             "zero\ncontext   one\ndelete-me\ncontext\ttwo\nlast\n");
@@ -782,13 +741,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         Assert.False(deletionMismatch.Success);
         Assert.Equal("hunk_conflict", deletionMismatch.Code);
-
     }
 
     [Fact]
     public async Task Planner_rejects_tied_fuzzy_matches_and_respects_the_window()
     {
-
         _workspace.WriteFile(
             "ambiguous.txt",
             "start\ncontext\ndelete\nmiddle\nother\ncontext\ndelete\nend\n");
@@ -829,13 +786,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal([2, 6], diagnostic.CandidateLines);
         Assert.False(bounded.Success);
         Assert.Equal("hunk_conflict", bounded.Code);
-
     }
 
     [Fact]
     public async Task Planner_honors_cancellation_during_fuzzy_candidate_scan()
     {
-
         string[] lines = Enumerable.Range(0, 256)
             .Select(static index => index == 180 ? "needle" : $"line-{index}")
             .ToArray();
@@ -868,13 +823,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         Assert.True(checkpoints > 0);
         Assert.Equal(string.Join('\n', lines) + "\n", await ReadTextAsync("cancel-fuzzy.txt"));
-
     }
 
     [Fact]
     public async Task Planner_honors_cancellation_before_exact_hunk_match()
     {
-
         _workspace.WriteFile("cancel-exact.txt", "before\n");
 
         using CancellationTokenSource cancellation = new();
@@ -900,7 +853,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 cancellation.Token));
 
         Assert.Equal("before\n", await ReadTextAsync("cancel-exact.txt"));
-
     }
 
     [Fact]
@@ -965,7 +917,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     [Fact]
     public async Task Executor_allows_progress_across_former_wall_clock_deadline()
     {
-
         _workspace.WriteFile("absolute-deadline.txt", "before\n");
 
         ManualPatchTimeProvider time = new();
@@ -997,13 +948,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             await ReadTextAsync("absolute-deadline.txt"));
 
         Assert.True(sink.PreflightCalled);
-
     }
 
     [Fact]
     public async Task Planner_dry_plan_captures_fingerprints_without_creating_destinations()
     {
-
         UnifiedDiffManifest manifest = ParseManifest(
             """
             --- /dev/null
@@ -1026,13 +975,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.False(operation.ExpectedFingerprint.Exists);
         Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "new")));
         Assert.False(File.Exists(Path.Combine(_workspace.Root, "new", "deep", "file.txt")));
-
     }
 
     [Fact]
     public async Task Planner_rejects_binary_symlink_and_hard_link_mutation_targets()
     {
-
         await File.WriteAllBytesAsync(
             Path.Combine(_workspace.Root, "binary.txt"),
             [0x61, 0x00, 0x62]);
@@ -1082,13 +1029,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             Assert.False(symlink.Success);
             Assert.Equal("symlink", symlink.Code);
         }
-
     }
 
     [Fact]
     public async Task Planner_fails_closed_when_source_path_is_replaced_after_handle_open()
     {
-
         string target = Path.Combine(_workspace.Root, "race.txt");
         string displaced = Path.Combine(_workspace.Root, "race.displaced.txt");
         await File.WriteAllTextAsync(target, "before\n");
@@ -1123,13 +1068,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal("concurrent_edit", result.Code);
         Assert.Equal("before\n", await File.ReadAllTextAsync(target));
         Assert.Equal("before\n", await File.ReadAllTextAsync(displaced));
-
     }
 
     [Fact]
     public async Task Planner_fails_closed_when_source_becomes_symlink_after_handle_open()
     {
-
         string target = Path.Combine(_workspace.Root, "symlink-race.txt");
         string displaced = Path.Combine(
             _workspace.Root,
@@ -1183,13 +1126,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Contains(result.Code, new[] { "symlink", "concurrent_edit" });
         Assert.Equal("before\n", await File.ReadAllTextAsync(target));
         Assert.Equal("before\n", await File.ReadAllTextAsync(displaced));
-
     }
 
     [Fact]
     public async Task Planner_rejects_a_partial_multi_file_hunk_set_before_mutation()
     {
-
         _workspace.WriteFile("good.txt", "before\n");
         _workspace.WriteFile("bad.txt", "different\n");
 
@@ -1224,13 +1165,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 _workspace.Root,
                 "*.arcanum-*",
                 SearchOption.AllDirectories));
-
     }
 
     [Fact]
     public async Task Executor_dry_run_plans_and_fingerprints_without_mutation_or_receipt()
     {
-
         RecordingPendingReceiptSink sink = new();
         ApplyPatchToolExecutionService executor = CreateExecutor();
         ApplyPatchParams request = new(
@@ -1251,13 +1190,246 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal("dry_run", payload.RootElement.GetProperty("status").GetString());
         Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "new")));
         Assert.Empty(sink.Receipts);
+    }
 
+    [Fact]
+    public async Task Create_under_dot_git_hooks_is_rejected_and_nothing_is_written()
+    {
+        OutcomePendingReceiptSink sink = new(
+            MandatoryToolInteractionAppendOutcome.NewlyCommitted);
+
+        ApplyPatchParams request = new(
+            """
+            --- /dev/null
+            +++ b/.git/hooks/pre-commit
+            @@ -0,0 +1,2 @@
+            +#!/bin/sh
+            +echo planted
+            """,
+            DryRun: false);
+
+        ApplyPatchToolExecutionResponse response = await CreateExecutor()
+            .ExecuteAsync(
+                request,
+                InvocationContext(
+                    sink,
+                    serializedArguments: JsonSerializer.Serialize(
+                        request,
+                        McpJsonSerializerContext.Default.ApplyPatchParams)),
+                CancellationToken.None);
+
+        Assert.Equal("protected_path", ResultCode(response));
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
+
+        Assert.False(File.Exists(Path.Combine(_workspace.Root, ".git", "hooks", "pre-commit")));
+    }
+
+    [Theory]
+    [InlineData(".git/config")]
+    [InlineData(".GIT/hooks/post-checkout")]
+    [InlineData(".arcanum/campaign.json")]
+    [InlineData("vendored/checkout/.git/hooks/pre-push")]
+    public async Task Modify_delete_and_rename_of_protected_paths_are_rejected_before_any_change(
+        string protectedPath)
+    {
+        _workspace.WriteFile(protectedPath, "before\n");
+        _workspace.WriteFile("plain.txt", "plain\n");
+
+        WorkspacePatchPlanResult modify = await PlanSingleModifyAsync(
+            protectedPath,
+            "before",
+            "after");
+
+        WorkspacePatchPlanResult delete = await new WorkspacePatchPlanner(DefaultPatchSettings())
+            .PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     --- a/{protectedPath}
+                     +++ /dev/null
+                     @@ -1 +0,0 @@
+                     -before
+                     """),
+                CancellationToken.None);
+
+        WorkspacePatchPlanResult renameInto = await new WorkspacePatchPlanner(DefaultPatchSettings())
+            .PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     diff --git a/plain.txt b/{protectedPath}-moved
+                     similarity index 100%
+                     rename from plain.txt
+                     rename to {protectedPath}-moved
+                     """),
+                CancellationToken.None);
+
+        WorkspacePatchPlanResult renameOut = await new WorkspacePatchPlanner(DefaultPatchSettings())
+            .PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     diff --git a/{protectedPath} b/moved-out.txt
+                     similarity index 100%
+                     rename from {protectedPath}
+                     rename to moved-out.txt
+                     """),
+                CancellationToken.None);
+
+        foreach (WorkspacePatchPlanResult result in new[] { modify, delete, renameInto, renameOut })
+        {
+            Assert.False(result.Success);
+
+            Assert.Equal("protected_path", result.Code);
+        }
+
+        Assert.Equal("before\n", await ReadTextAsync(protectedPath));
+
+        Assert.Equal("plain\n", await ReadTextAsync("plain.txt"));
+
+        Assert.False(File.Exists(Path.Combine(_workspace.Root, "moved-out.txt")));
+    }
+
+    /// <summary>
+    /// Unlike <c>write_file</c> and the file API, apply_patch never accepts a symbolic-link path
+    /// component, so a committed <c>docs/hooks -> ../.git/hooks</c> cannot be the way into <c>.git</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task Create_through_an_in_workspace_link_into_dot_git_hooks_is_rejected_and_nothing_is_written()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX symbolic-link behaviour and runs on macOS and Linux only.");
+
+        Directory.CreateDirectory(Path.Combine(_workspace.Root, ".git", "hooks"));
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(_workspace.CreateSubdir("docs"), "linked"),
+            Path.Combine("..", ".git", "hooks"));
+
+        WorkspacePatchPlanResult result = await new WorkspacePatchPlanner(DefaultPatchSettings())
+            .PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    """
+                    --- /dev/null
+                    +++ b/docs/linked/pre-commit
+                    @@ -0,0 +1,2 @@
+                    +#!/bin/sh
+                    +echo planted
+                    """),
+                CancellationToken.None);
+
+        Assert.False(result.Success);
+
+        Assert.Contains(result.Code, new[] { "symlink", "protected_path" });
+
+        Assert.False(File.Exists(Path.Combine(_workspace.Root, ".git", "hooks", "pre-commit")));
+    }
+
+    [Fact]
+    public async Task Create_under_dot_git_hooks_is_applied_when_the_operator_allows_protected_path_writes()
+    {
+        OutcomePendingReceiptSink sink = new(
+            MandatoryToolInteractionAppendOutcome.NewlyCommitted);
+
+        ApplyPatchParams request = new(
+            """
+            --- /dev/null
+            +++ b/.git/hooks/pre-commit
+            @@ -0,0 +1,2 @@
+            +#!/bin/sh
+            +echo operator-approved
+            """,
+            DryRun: false);
+
+        ApplyPatchToolExecutionResponse response = await CreateExecutor(allowProtectedPathWrites: true)
+            .ExecuteAsync(
+                request,
+                InvocationContext(
+                    sink,
+                    serializedArguments: JsonSerializer.Serialize(
+                        request,
+                        McpJsonSerializerContext.Default.ApplyPatchParams)),
+                CancellationToken.None);
+
+        using JsonDocument payload = JsonDocument.Parse(response.SerializedResult);
+
+        Assert.False(payload.RootElement.TryGetProperty("code", out _), response.SerializedResult);
+
+        Assert.Equal(
+            "#!/bin/sh\necho operator-approved\n",
+            await ReadTextAsync(".git/hooks/pre-commit"));
+    }
+
+    [Theory]
+    [InlineData(".git/config")]
+    [InlineData(".GIT/hooks/post-checkout")]
+    [InlineData(".arcanum/campaign.json")]
+    [InlineData("vendored/checkout/.git/hooks/pre-push")]
+    public async Task Planner_admits_modify_delete_and_rename_of_protected_paths_when_the_operator_allows_them(
+        string protectedPath)
+    {
+        _workspace.WriteFile(protectedPath, "before\n");
+        _workspace.WriteFile("plain.txt", "plain\n");
+
+        WorkspacePatchPlannerOptions allow = new() { AllowProtectedPathWrites = true };
+
+        WorkspacePatchPlanResult[] results =
+        [
+            await new WorkspacePatchPlanner(DefaultPatchSettings(), allow).PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     --- a/{protectedPath}
+                     +++ b/{protectedPath}
+                     @@ -1 +1 @@
+                     -before
+                     +after
+                     """),
+                CancellationToken.None),
+            await new WorkspacePatchPlanner(DefaultPatchSettings(), allow).PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     --- a/{protectedPath}
+                     +++ /dev/null
+                     @@ -1 +0,0 @@
+                     -before
+                     """),
+                CancellationToken.None),
+            await new WorkspacePatchPlanner(DefaultPatchSettings(), allow).PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     diff --git a/plain.txt b/{protectedPath}-moved
+                     similarity index 100%
+                     rename from plain.txt
+                     rename to {protectedPath}-moved
+                     """),
+                CancellationToken.None),
+            await new WorkspacePatchPlanner(DefaultPatchSettings(), allow).PlanAsync(
+                _workspace.Root,
+                ParseManifest(
+                    $"""
+                     diff --git a/{protectedPath} b/moved-out.txt
+                     similarity index 100%
+                     rename from {protectedPath}
+                     rename to moved-out.txt
+                     """),
+                CancellationToken.None),
+        ];
+
+        foreach (WorkspacePatchPlanResult result in results)
+        {
+            Assert.True(result.Success, result.Message);
+        }
     }
 
     [Fact]
     public async Task Executor_applies_create_modify_delete_rename_and_new_file_mode_end_to_end()
     {
-
         _workspace.WriteFile("modify.txt", "before\n");
         _workspace.WriteFile("delete.txt", "gone\n");
         _workspace.WriteFile("rename-old.txt", "old\n");
@@ -1322,13 +1494,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 Path.Combine(_workspace.Root, "create.sh"));
             Assert.True(mode.HasFlag(UnixFileMode.UserExecute));
         }
-
     }
 
     [Fact]
     public async Task Executor_commits_then_hands_off_one_immutable_result_while_still_reversible()
     {
-
         _workspace.WriteFile("pending.txt", "before\n");
         RecordingPendingReceiptSink sink = new();
         ApplyPatchParams request = ModifyRequest(
@@ -1366,13 +1536,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         Assert.True(rollback.Complete);
         Assert.Equal("before\n", await ReadTextAsync("pending.txt"));
-
     }
 
     [Fact]
     public async Task Executor_replays_exact_committed_receipt_before_parsing_or_mutation()
     {
-
         const string committedResult =
             """{"status":"ok","files":[],"totalFileCount":0,"omittedFileCount":0,"affectedPaths":[],"totalAffectedPathCount":0,"omittedAffectedPathCount":0,"recoveryArtifactPaths":[],"totalRecoveryArtifactPathCount":0,"omittedRecoveryArtifactPathCount":0,"truncated":false}""";
 
@@ -1389,11 +1557,9 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         ApplyPatchToolExecutionResponse response = await CreateExecutor(
             coordinatorFactory: root =>
             {
-
                 coordinatorCreated = true;
 
                 return new MultiFileCommitCoordinator(root);
-
             })
             .ExecuteAsync(
                 new ApplyPatchParams("not a patch", DryRun: false),
@@ -1409,13 +1575,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal(0, sink.PreflightCount);
 
         Assert.Empty(sink.Receipts);
-
     }
 
     [Fact]
     public async Task Executor_rejects_mismatched_retry_payload_before_planning()
     {
-
         _workspace.WriteFile("retry.txt", "before\n");
 
         PreflightPendingReceiptSink sink = new(
@@ -1441,13 +1605,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal(0, sink.PreflightCount);
 
         Assert.Empty(sink.Receipts);
-
     }
 
     [Fact]
     public async Task Executor_preflights_exact_receipt_capacity_before_commit()
     {
-
         _workspace.WriteFile("capacity.txt", "before\n");
 
         PreflightPendingReceiptSink sink = new(
@@ -1463,11 +1625,9 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         ApplyPatchToolExecutionResponse response = await CreateExecutor(
             coordinatorFactory: root =>
             {
-
                 coordinatorCreated = true;
 
                 return new MultiFileCommitCoordinator(root);
-
             })
             .ExecuteAsync(
                 ModifyRequest("capacity.txt", "before", "after"),
@@ -1492,7 +1652,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             exactResult.RootElement.GetProperty("status").GetString());
 
         Assert.Empty(sink.Receipts);
-
     }
 
     [Theory]
@@ -1501,7 +1660,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     public async Task Executor_committed_handoff_marks_receipt_handled_and_keeps_patch(
         MandatoryToolInteractionAppendOutcome outcome)
     {
-
         _workspace.WriteFile("committed.txt", "before\n");
         OutcomePendingReceiptSink sink = new(outcome);
         ApplyPatchInvocationContext context = InvocationContext(sink);
@@ -1516,13 +1674,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal(outcome, context.HandoffOutcome);
         Assert.Equal("after\n", await ReadTextAsync("committed.txt"));
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Executor_failed_handoff_rolls_back_and_returns_structured_failure()
     {
-
         _workspace.WriteFile("failed.txt", "before\n");
         OutcomePendingReceiptSink sink = new(
             MandatoryToolInteractionAppendOutcome.Failed);
@@ -1541,13 +1697,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.False(context.RequiresTurnFailure);
         Assert.Equal("before\n", await ReadTextAsync("failed.txt"));
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Executor_failed_handoff_returns_rollback_incomplete_with_relative_recovery_paths()
     {
-
         _workspace.WriteFile("failed-incomplete.txt", "before\n");
         FailedAfterExternalEditSink sink = new(
             _workspace.Root,
@@ -1581,13 +1735,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             "external-after-handoff\n",
             await ReadTextAsync("failed-incomplete.txt"));
         Assert.NotEmpty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Executor_ambiguous_handoff_retains_applied_patch_and_recovery_artifacts()
     {
-
         _workspace.WriteFile("ambiguous.txt", "before\n");
         OutcomePendingReceiptSink sink = new(
             MandatoryToolInteractionAppendOutcome.Ambiguous);
@@ -1612,13 +1764,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.True(context.RequiresTurnFailure);
         Assert.Equal("after\n", await ReadTextAsync("ambiguous.txt"));
         Assert.NotEmpty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Executor_post_commit_user_cancellation_propagates_ambiguous_handoff()
     {
-
         _workspace.WriteFile("handoff-timeout.txt", "before\n");
 
         using CancellationTokenSource cancellation = new();
@@ -1645,13 +1795,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             "after\n",
             await ReadTextAsync("handoff-timeout.txt"));
         Assert.NotEmpty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Executor_keeps_multiple_patches_in_one_turn_as_independent_transactions()
     {
-
         _workspace.WriteFile("first.txt", "one\n");
         _workspace.WriteFile("second.txt", "two\n");
         RecordingPendingReceiptSink sink = new();
@@ -1689,13 +1837,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.True(secondRollback.Complete);
         Assert.Equal("ONE\n", await ReadTextAsync("first.txt"));
         Assert.Equal("two\n", await ReadTextAsync("second.txt"));
-
     }
 
     [Fact]
     public async Task Executor_returns_normal_structured_parse_conflict_and_concurrent_edit_outcomes()
     {
-
         _workspace.WriteFile("concurrent.txt", "before\n");
         RecordingPendingReceiptSink sink = new();
 
@@ -1737,13 +1883,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal("concurrent_edit", ResultCode(concurrent));
         Assert.Equal("external\n", await ReadTextAsync("concurrent.txt"));
         Assert.Empty(sink.Receipts);
-
     }
 
     [Fact]
     public async Task Executor_cancellation_rolls_back_and_propagates_without_handoff()
     {
-
         _workspace.WriteFile("cancel.txt", "before\n");
         using CancellationTokenSource cancellation = new();
         RecordingPendingReceiptSink sink = new();
@@ -1766,13 +1910,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal("before\n", await ReadTextAsync("cancel.txt"));
         Assert.Empty(sink.Receipts);
         Assert.Empty(ArcanumArtifacts());
-
     }
 
     [Fact]
     public async Task Executor_cancellation_reports_relative_recovery_when_cleanup_cannot_restore()
     {
-
         _workspace.WriteFile("cancel-recovery.txt", "before\n");
         using CancellationTokenSource cancellation = new();
         CancellingAfterExternalEditSink sink = new(
@@ -1798,13 +1940,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal(
             "external-after-handoff\n",
             await ReadTextAsync("cancel-recovery.txt"));
-
     }
 
     [Fact]
     public async Task Executor_reports_relative_recovery_when_rollback_is_incomplete()
     {
-
         _workspace.WriteFile("first.txt", "one\n");
         _workspace.WriteFile("second.txt", "two\n");
         RecordingPendingReceiptSink sink = new();
@@ -1863,13 +2003,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal("external\n", await ReadTextAsync("first.txt"));
         Assert.Equal("two\n", await ReadTextAsync("second.txt"));
         Assert.Empty(sink.Receipts);
-
     }
 
     [Fact]
     public async Task Executor_independently_caps_recovery_arrays_without_losing_status_or_counts()
     {
-
         const int committedBeforeFailure = 8;
         const int fileCount = 10;
         System.Text.StringBuilder patch = new();
@@ -1938,13 +2076,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.NotEmpty(
             payload.RootElement.GetProperty("recoveryArtifactPaths")
                 .EnumerateArray());
-
     }
 
     [Fact]
     public async Task Pending_receipt_classifies_post_irreversible_backup_cleanup_without_changing_result()
     {
-
         _workspace.WriteFile("cleanup.txt", "before\n");
         RecordingPendingReceiptSink sink = new();
 
@@ -1971,13 +2107,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal(resultBeforeCleanup, pending.SerializedResult);
         Assert.Equal(response.SerializedResult, pending.SerializedResult);
         Assert.Equal("after\n", await ReadTextAsync("cleanup.txt"));
-
     }
 
     [Fact]
     public async Task Executor_bounds_file_results_as_valid_json_before_handoff()
     {
-
         const int fileCount = 24;
         System.Text.StringBuilder patch = new();
 
@@ -2016,20 +2150,17 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             await pending.RollbackAsync(CancellationToken.None);
 
         Assert.True(rollback.Complete);
-
     }
 
     [Fact]
     public async Task Executor_reports_every_file_when_the_output_page_has_capacity()
     {
-
         const int fileCount = 257;
 
         System.Text.StringBuilder patch = new();
 
         for (int index = 0; index < fileCount; index++)
         {
-
             _ = patch
                 .AppendLine("--- /dev/null")
                 .Append("+++ b/result-page/file-")
@@ -2037,7 +2168,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 .AppendLine(".txt")
                 .AppendLine("@@ -0,0 +1 @@")
                 .AppendLine("+value");
-
         }
 
         ApplyPatchToolExecutionResponse response = await CreateExecutor(
@@ -2062,21 +2192,22 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         Assert.False(
             payload.RootElement.GetProperty("truncated").GetBoolean());
-
     }
 
     private ApplyPatchToolExecutionService CreateExecutor(
         long outputBudgetBytes = 1024 * 1024,
         Func<string, MultiFileCommitCoordinator>? coordinatorFactory = null,
         WorkspacePatchSettings? settings = null,
-        TimeProvider? timeProvider = null) =>
+        TimeProvider? timeProvider = null,
+        bool allowProtectedPathWrites = false) =>
         new(
             _workspace.Root,
             settings ?? DefaultPatchSettings(),
             outputBudgetBytes,
             McpJsonSerializerContext.Default,
             coordinatorFactory,
-            timeProvider);
+            timeProvider,
+            allowProtectedPathWrites);
 
     private static ApplyPatchInvocationContext InvocationContext(
         IApplyPatchPendingReceiptSink sink,
@@ -2116,11 +2247,9 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     private static string ResultCode(
         ApplyPatchToolExecutionResponse response)
     {
-
         using JsonDocument payload = JsonDocument.Parse(response.SerializedResult);
 
         return payload.RootElement.GetProperty("code").GetString()!;
-
     }
 
     private string[] ArcanumArtifacts() =>
@@ -2131,11 +2260,9 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
     private static void AssertRelativeRecoveryPath(string path)
     {
-
         Assert.False(Path.IsPathRooted(path));
         Assert.DoesNotContain("..", path, StringComparison.Ordinal);
         Assert.DoesNotContain('\\', path);
-
     }
 
     private abstract class AdmittingPendingReceiptSink
@@ -2145,28 +2272,24 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             ApplyPatchReceiptProbe probe,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return ValueTask.FromResult(
                 new ApplyPatchReceiptProbeResult(
                     ApplyPatchReceiptProbeOutcome.NotFound,
                     SerializedResult: null));
-
         }
 
         public virtual ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
             ApplyPatchReceiptPreflight preflight,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return ValueTask.FromResult(
                 new ApplyPatchReceiptPreflightResult(
                     ApplyPatchReceiptPreflightOutcome.Admitted,
                     SerializedResult: null));
-
         }
 
         public virtual ValueTask<MandatoryToolInteractionAppendOutcome>
@@ -2174,12 +2297,10 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 ApplyPatchRecoveryReceipt receipt,
                 CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return ValueTask.FromResult(
                 MandatoryToolInteractionAppendOutcome.NewlyCommitted);
-
         }
 
         public abstract ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
@@ -2198,29 +2319,24 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             ApplyPatchReceiptProbe probe,
             CancellationToken cancellationToken)
         {
-
             timeProvider.Advance(advanceBy);
 
             return base.ProbeAsync(probe, cancellationToken);
-
         }
 
         public override ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
             ApplyPatchReceiptPreflight preflight,
             CancellationToken cancellationToken)
         {
-
             PreflightCalled = true;
 
             return base.PreflightAsync(preflight, cancellationToken);
-
         }
 
         public override async ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
             PendingApplyPatchReceipt receipt,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             WorkspaceArtifactCleanupResult cleanup =
@@ -2231,7 +2347,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 MandatoryToolInteractionAppendOutcome.NewlyCommitted,
                 cleanup,
                 Rollback: null);
-
         }
     }
 
@@ -2244,7 +2359,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             PendingApplyPatchReceipt receipt,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
             Receipts.Add(receipt);
 
@@ -2253,7 +2367,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                     MandatoryToolInteractionAppendOutcome.NewlyCommitted,
                     Cleanup: null,
                     Rollback: null));
-
         }
     }
 
@@ -2274,20 +2387,17 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             ApplyPatchReceiptProbe probe,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             ProbeCount++;
 
             return ValueTask.FromResult(probeResult);
-
         }
 
         public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
             ApplyPatchReceiptPreflight preflight,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             PreflightCount++;
@@ -2295,7 +2405,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             Preflight = preflight;
 
             return ValueTask.FromResult(preflightResult);
-
         }
 
         public ValueTask<MandatoryToolInteractionAppendOutcome>
@@ -2303,19 +2412,16 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 ApplyPatchRecoveryReceipt receipt,
                 CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return ValueTask.FromResult(
                 MandatoryToolInteractionAppendOutcome.NewlyCommitted);
-
         }
 
         public ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
             PendingApplyPatchReceipt receipt,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             Receipts.Add(receipt);
@@ -2325,7 +2431,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                     MandatoryToolInteractionAppendOutcome.NewlyCommitted,
                     Cleanup: null,
                     Rollback: null));
-
         }
     }
 
@@ -2337,7 +2442,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             PendingApplyPatchReceipt receipt,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             WorkspaceArtifactCleanupResult? cleanup = null;
@@ -2357,7 +2461,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 outcome,
                 cleanup,
                 rollback);
-
         }
     }
 
@@ -2370,7 +2473,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 PendingApplyPatchReceipt receipt,
                 CancellationToken cancellationToken)
         {
-
             cancellation.Cancel();
 
             await Task.Delay(
@@ -2392,7 +2494,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             PendingApplyPatchReceipt receipt,
             CancellationToken cancellationToken)
         {
-
             File.WriteAllText(
                 Path.Combine(workspaceRoot, relativePath),
                 "external-after-handoff\n");
@@ -2400,7 +2501,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
             return ValueTask.FromException<ApplyPatchPendingReceiptHandoffResult>(
                 new OperationCanceledException(cancellation.Token));
-
         }
     }
 
@@ -2413,7 +2513,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             PendingApplyPatchReceipt receipt,
             CancellationToken cancellationToken)
         {
-
             File.WriteAllText(
                 Path.Combine(workspaceRoot, relativePath),
                 "external-after-handoff\n");
@@ -2425,7 +2524,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 MandatoryToolInteractionAppendOutcome.Failed,
                 Cleanup: null,
                 rollback);
-
         }
     }
 
@@ -2434,7 +2532,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         string oldText,
         string newText)
     {
-
         UnifiedDiffManifest manifest = ParseManifest(
             $"""
              --- a/{path}
@@ -2449,12 +2546,10 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 _workspace.Root,
                 manifest,
                 CancellationToken.None);
-
     }
 
     private static UnifiedDiffManifest ParseManifest(string patch)
     {
-
         UnifiedDiffParseResult parsed = UnifiedDiffParser.Parse(
             patch,
             DefaultPatchSettings());
@@ -2462,7 +2557,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.True(parsed.Success, parsed.Message);
 
         return Assert.IsType<UnifiedDiffManifest>(parsed.Manifest);
-
     }
 
     private Task<string> ReadTextAsync(string relativePath) =>
@@ -2491,5 +2585,4 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             MaxPatchBytes = 4L * 1024L * 1024L,
             FuzzyMatchWindowLines = 100,
         };
-
 }

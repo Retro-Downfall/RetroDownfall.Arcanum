@@ -40,6 +40,8 @@ internal static class InternalCodingToolSettingsFingerprint
         fingerprint.Append(patch.RecoveryTimeoutMilliseconds);
         fingerprint.Append(patch.FuzzyMatchWindowLines);
 
+        fingerprint.Append(settings.AllowProtectedPathWrites);
+
         AppendWorkspaceCheck(fingerprint, check);
         return fingerprint.ToString();
     }

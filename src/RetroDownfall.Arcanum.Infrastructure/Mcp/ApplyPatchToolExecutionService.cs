@@ -14,7 +14,6 @@ internal sealed record ApplyPatchToolExecutionResponse(
 
 internal sealed class ApplyPatchToolExecutionService
 {
-
     private readonly string _workspaceRoot;
 
     private readonly WorkspacePatchSettings _settings;
@@ -27,15 +26,17 @@ internal sealed class ApplyPatchToolExecutionService
 
     private readonly TimeProvider _timeProvider;
 
+    private readonly bool _allowProtectedPathWrites;
+
     internal ApplyPatchToolExecutionService(
         string workspaceRoot,
         WorkspacePatchSettings settings,
         long outputBudgetBytes,
         McpJsonSerializerContext json,
         Func<string, MultiFileCommitCoordinator>? coordinatorFactory = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        bool allowProtectedPathWrites = false)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
 
         ArgumentNullException.ThrowIfNull(settings);
@@ -59,6 +60,8 @@ internal sealed class ApplyPatchToolExecutionService
 
         _timeProvider = timeProvider ?? TimeProvider.System;
 
+        _allowProtectedPathWrites = allowProtectedPathWrites;
+
         _coordinatorFactory = coordinatorFactory
             ?? (root => new MultiFileCommitCoordinator(
                 root,
@@ -71,7 +74,6 @@ internal sealed class ApplyPatchToolExecutionService
                     CleanupTimeout = TimeSpan.FromMilliseconds(
                         _settings.RecoveryTimeoutMilliseconds),
                 }));
-
     }
 
     internal async Task<ApplyPatchToolExecutionResponse> ExecuteAsync(
@@ -79,13 +81,11 @@ internal sealed class ApplyPatchToolExecutionService
         ApplyPatchInvocationContext context,
         CancellationToken cancellationToken)
     {
-
         return await ExecuteCoreAsync(
             request,
             context,
             cancellationToken,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<ApplyPatchToolExecutionResponse> ExecuteCoreAsync(
@@ -94,7 +94,6 @@ internal sealed class ApplyPatchToolExecutionService
         CancellationToken cancellationToken,
         CancellationToken handoffCancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(context);
@@ -120,39 +119,31 @@ internal sealed class ApplyPatchToolExecutionService
 
         if (probe.Outcome == ApplyPatchReceiptProbeOutcome.Replayed)
         {
-
             if (probe.SerializedResult is null)
             {
-
                 throw new ApplyPatchReceiptHandoffException(
                     MandatoryToolInteractionAppendOutcome.Ambiguous);
-
             }
 
             context.RecordHandoffOutcome(
                 MandatoryToolInteractionAppendOutcome.RecoveredCommitted);
 
             return Normal(probe.SerializedResult);
-
         }
 
         if (probe.Outcome == ApplyPatchReceiptProbeOutcome.Mismatched)
         {
-
             return Normal(
                 SerializeBounded(
                     ReceiptPreflightFailure(
                         "receipt_mismatch",
                         "This logical apply_patch invocation was already used with a different immutable payload.")));
-
         }
 
         if (probe.Outcome != ApplyPatchReceiptProbeOutcome.NotFound)
         {
-
             throw new ApplyPatchReceiptHandoffException(
                 MandatoryToolInteractionAppendOutcome.Ambiguous);
-
         }
 
         UnifiedDiffParseResult parsed = UnifiedDiffParser.Parse(
@@ -174,7 +165,11 @@ internal sealed class ApplyPatchToolExecutionService
 
         WorkspacePatchPlanResult planning =
             await new WorkspacePatchPlanner(
-                _settings).PlanAsync(
+                _settings,
+                new WorkspacePatchPlannerOptions
+                {
+                    AllowProtectedPathWrites = _allowProtectedPathWrites,
+                }).PlanAsync(
                 _workspaceRoot,
                 parsed.Manifest!,
                 cancellationToken).ConfigureAwait(false);
@@ -225,50 +220,40 @@ internal sealed class ApplyPatchToolExecutionService
 
         if (preflight.Outcome == ApplyPatchReceiptPreflightOutcome.Replayed)
         {
-
             if (preflight.SerializedResult is null)
             {
-
                 throw new ApplyPatchReceiptHandoffException(
                     MandatoryToolInteractionAppendOutcome.Ambiguous);
-
             }
 
             context.RecordHandoffOutcome(
                 MandatoryToolInteractionAppendOutcome.RecoveredCommitted);
 
             return Normal(preflight.SerializedResult);
-
         }
 
         if (preflight.Outcome == ApplyPatchReceiptPreflightOutcome.Rejected)
         {
-
             return Normal(
                 SerializeBounded(
                     ReceiptPreflightFailure(
                         "receipt_capacity",
                         "The exact mandatory apply_patch receipt exceeds the current session entry capacity.")));
-
         }
 
         if (preflight.Outcome == ApplyPatchReceiptPreflightOutcome.Mismatched)
         {
-
             return Normal(
                 SerializeBounded(
                     ReceiptPreflightFailure(
                         "receipt_mismatch",
                         "This logical apply_patch invocation was already used with a different immutable payload.")));
-
         }
 
         if (preflight.Outcome != ApplyPatchReceiptPreflightOutcome.Admitted)
         {
-
             throw new ApplyPatchReceiptHandoffException(
                 MandatoryToolInteractionAppendOutcome.Ambiguous);
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -440,7 +425,6 @@ internal sealed class ApplyPatchToolExecutionService
         throw new ApplyPatchReceiptHandoffException(
             handoff.Outcome,
             recovery: pending.Recovery);
-
     }
 
     private async Task PersistCancellationRecoveryReceiptAsync(
@@ -450,7 +434,6 @@ internal sealed class ApplyPatchToolExecutionService
         WorkspaceCommitRecovery recovery,
         OperationCanceledException cancellation)
     {
-
         try
         {
             MandatoryToolInteractionAppendOutcome outcome =
@@ -471,7 +454,6 @@ internal sealed class ApplyPatchToolExecutionService
                 nameof(MandatoryToolInteractionAppendOutcome)] =
                 handoff.Outcome;
         }
-
     }
 
     private async Task<MandatoryToolInteractionAppendOutcome>
@@ -481,7 +463,6 @@ internal sealed class ApplyPatchToolExecutionService
             string serializedResult,
             WorkspaceCommitRecovery? recovery)
     {
-
         using CancellationTokenSource persistenceDeadline = new(
             TimeSpan.FromMilliseconds(
                 Math.Max(1, _settings.RecoveryTimeoutMilliseconds)),
@@ -531,7 +512,6 @@ internal sealed class ApplyPatchToolExecutionService
         throw new ApplyPatchReceiptHandoffException(
             outcome,
             recovery: recovery);
-
     }
 
     private static ApplyPatchToolExecutionResponse Normal(string result) =>
@@ -552,7 +532,6 @@ internal sealed class ApplyPatchToolExecutionService
         string status,
         string fileStatus)
     {
-
         WorkspacePatchToolResultItem[] files = plan.Files
             .Select(file =>
                 new WorkspacePatchToolResultItem(
@@ -574,14 +553,12 @@ internal sealed class ApplyPatchToolExecutionService
             OmittedFileCount = plan.Files.Count - files.Length,
             Truncated = files.Length != plan.Files.Count,
         };
-
     }
 
     private WorkspacePatchToolResultEnvelope BuildCommitFailureResult(
         WorkspacePatchPlan plan,
         WorkspaceCommitResult commit)
     {
-
         string code = commit.Status == WorkspaceCommitStatus.RollbackIncomplete
             ? "rollback_incomplete"
             : commit.Failure switch
@@ -623,7 +600,6 @@ internal sealed class ApplyPatchToolExecutionService
             RecoveryArtifactPaths = artifactPaths,
             TotalRecoveryArtifactPathCount = artifactPaths.Length,
         };
-
     }
 
     private WorkspacePatchToolResultEnvelope BuildRollbackIncompleteResult(
@@ -632,7 +608,6 @@ internal sealed class ApplyPatchToolExecutionService
         string message =
             "The pending receipt handoff failed and rollback could not safely restore every path.")
     {
-
         WorkspacePatchToolResultEnvelope result = BuildResult(
             plan,
             status: "rollback_incomplete",
@@ -654,7 +629,6 @@ internal sealed class ApplyPatchToolExecutionService
             RecoveryArtifactPaths = artifactPaths,
             TotalRecoveryArtifactPathCount = artifactPaths.Length,
         };
-
     }
 
     private WorkspacePatchToolResultEnvelope BuildReceiptFailureResult(
@@ -672,20 +646,17 @@ internal sealed class ApplyPatchToolExecutionService
     private static MandatoryToolInteractionAppendOutcome?
         TryReadCancellationOutcome(OperationCanceledException cancellation)
     {
-
         object? value =
             cancellation.Data[nameof(MandatoryToolInteractionAppendOutcome)];
 
         return value is MandatoryToolInteractionAppendOutcome outcome
             ? outcome
             : null;
-
     }
 
     private string SerializeBounded(
         WorkspacePatchToolResultEnvelope result)
     {
-
         string serialized = JsonSerializer.Serialize(
             result,
             _json.WorkspacePatchToolResultEnvelope);
@@ -780,7 +751,6 @@ internal sealed class ApplyPatchToolExecutionService
         return JsonSerializer.Serialize(
             new MinimalStructuredToolResultEnvelope(),
             _json.MinimalStructuredToolResultEnvelope);
-
     }
 
     private string? SerializeLargestFittingFilePrefix(
@@ -822,7 +792,6 @@ internal sealed class ApplyPatchToolExecutionService
     private static void ValidateInvocationContext(
         ApplyPatchInvocationContext context)
     {
-
         if (context.SessionId == Guid.Empty
             || context.AssistantEntryId == Guid.Empty
             || string.IsNullOrWhiteSpace(context.SerializedArguments)
@@ -836,7 +805,6 @@ internal sealed class ApplyPatchToolExecutionService
             throw new InvalidOperationException(
                 "apply_patch requires a bound persisted invocation context.");
         }
-
     }
 
     private static string OperationName(

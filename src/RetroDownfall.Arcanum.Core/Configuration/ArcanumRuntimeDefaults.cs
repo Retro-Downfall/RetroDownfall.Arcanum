@@ -233,6 +233,9 @@ public static class ArcanumRuntimeSettings
         ArcanumRuntimeDefaults.CodingTools with
         {
             WorkspaceCheck = settings.ResolveWorkspaceChecks(),
+            AllowProtectedPathWrites =
+                settings.Workspaces?.AllowProtectedPathWrites
+                ?? new WorkspaceSettings().AllowProtectedPathWrites,
         };
 
     public static ApprenticeSettings ResolveApprentices(this ArcanumSettings settings)

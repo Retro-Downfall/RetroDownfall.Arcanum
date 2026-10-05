@@ -411,11 +411,12 @@ internal sealed partial class ArcanumInternalToolServer
             ArcanumSettingClamps.MaxFileReadSizeBytes(
                 _maxFileReadSizeBytes));
 
-        (string? content, McpToolsCallResultWire? readError) = await SandboxedFileIo.TryReadAllTextAsync(
-            _workspaceRoot!,
-            absolutePath,
-            maxReadBytes,
-            cancellationToken).ConfigureAwait(false);
+        (string? content, McpToolsCallResultWire? readError, FileContentBaseline? readBaseline) =
+            await SandboxedFileIo.TryReadAllTextForEditAsync(
+                _workspaceRoot!,
+                absolutePath,
+                maxReadBytes,
+                cancellationToken).ConfigureAwait(false);
 
         if (content is null)
         {
@@ -449,7 +450,13 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
-            .TryWriteAllTextAtomicallyAsync(_workspaceRoot!, absolutePath, updated, cancellationToken)
+            .TryWriteAllTextAtomicallyAsync(
+                _workspaceRoot!,
+                absolutePath,
+                updated,
+                cancellationToken,
+                readBaseline,
+                _allowProtectedPathWrites)
             .ConfigureAwait(false);
 
         if (!writeSuccess)
@@ -533,7 +540,13 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
-            .TryWriteAllTextAtomicallyAsync(_workspaceRoot!, absolutePath, args.Content, cancellationToken)
+            .TryWriteAllTextAtomicallyAsync(
+                _workspaceRoot!,
+                absolutePath,
+                args.Content,
+                cancellationToken,
+                expectedExistingContent: null,
+                _allowProtectedPathWrites)
             .ConfigureAwait(false);
 
         if (!writeSuccess)

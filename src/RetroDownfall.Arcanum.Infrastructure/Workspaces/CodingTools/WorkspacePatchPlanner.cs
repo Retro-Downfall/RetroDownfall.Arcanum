@@ -32,6 +32,11 @@ internal sealed class WorkspacePatchPlannerOptions
 
     internal Action? FuzzyMatchCheckpoint { get; init; }
 
+    /// <summary>
+    /// The operator's <c>Arcanum:Workspaces:AllowProtectedPathWrites</c> opt-out. Default <c>false</c>:
+    /// a manifest path under <c>.git</c> or <c>.arcanum</c> fails planning with <c>protected_path</c>.
+    /// </summary>
+    internal bool AllowProtectedPathWrites { get; init; }
 }
 
 /// <summary>
@@ -41,7 +46,6 @@ internal sealed class WorkspacePatchPlannerOptions
 /// </summary>
 internal sealed class WorkspacePatchPlanner
 {
-
     private readonly WorkspacePatchSettings _settings;
 
     private readonly WorkspacePatchPlannerOptions _options;
@@ -50,14 +54,12 @@ internal sealed class WorkspacePatchPlanner
         WorkspacePatchSettings settings,
         WorkspacePatchPlannerOptions? options = null)
     {
-
         _settings =
             ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
                 settings
                 ?? throw new ArgumentNullException(nameof(settings)));
 
         _options = options ?? new WorkspacePatchPlannerOptions();
-
     }
 
     internal Task<WorkspacePatchPlanResult> PlanAsync(
@@ -74,7 +76,6 @@ internal sealed class WorkspacePatchPlanner
         UnifiedDiffManifest manifest,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
 
         ArgumentNullException.ThrowIfNull(manifest);
@@ -96,6 +97,8 @@ internal sealed class WorkspacePatchPlanner
             foreach (UnifiedDiffFile file in manifest.Files)
             {
                 Checkpoint(budget, cancellationToken);
+
+                RejectProtectedPaths(file);
 
                 switch (file.Operation)
                 {
@@ -208,7 +211,29 @@ internal sealed class WorkspacePatchPlanner
                 "workspace_read_failed",
                 "A patch target could not be safely read and fingerprinted.");
         }
+    }
 
+    /// <summary>
+    /// Refuses a create, modify, rename (source or destination) or delete under <c>.git</c> or
+    /// <c>.arcanum</c> before anything is captured or staged, unless the operator opted out through
+    /// <c>Arcanum:Workspaces:AllowProtectedPathWrites</c>.
+    /// </summary>
+    private void RejectProtectedPaths(UnifiedDiffFile file)
+    {
+        if (_options.AllowProtectedPathWrites)
+        {
+            return;
+        }
+
+        if (file.SourcePath is not null)
+        {
+            WorkspaceFileFingerprintService.RejectProtectedPath(file.SourcePath);
+        }
+
+        if (file.DestinationPath is not null)
+        {
+            WorkspaceFileFingerprintService.RejectProtectedPath(file.DestinationPath);
+        }
     }
 
     private static WorkspacePatchPlanResult Failure(
@@ -230,7 +255,6 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         string destination = file.DestinationPath!;
 
         WorkspaceFileFingerprint destinationFingerprint =
@@ -267,7 +291,6 @@ internal sealed class WorkspacePatchPlanner
                 file.NewFileUnixMode));
 
         plannedFiles.Add(ToPlannedFile(file, applied));
-
     }
 
     private async Task PlanModifyAsync(
@@ -279,7 +302,6 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         string path = file.SourcePath!;
 
         LoadedWorkspaceText loaded = await LoadExistingTextAsync(
@@ -310,7 +332,6 @@ internal sealed class WorkspacePatchPlanner
                 output));
 
         plannedFiles.Add(ToPlannedFile(file, applied));
-
     }
 
     private async Task PlanDeleteAsync(
@@ -322,7 +343,6 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         string source = file.SourcePath!;
 
         LoadedWorkspaceText loaded = await LoadExistingTextAsync(
@@ -359,7 +379,6 @@ internal sealed class WorkspacePatchPlanner
                 OutputBytes: null));
 
         plannedFiles.Add(ToPlannedFile(file, applied));
-
     }
 
     private async Task PlanRenameAsync(
@@ -371,7 +390,6 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         string source = file.SourcePath!;
 
         string destination = file.DestinationPath!;
@@ -424,7 +442,6 @@ internal sealed class WorkspacePatchPlanner
                 OutputBytes: null));
 
         plannedFiles.Add(ToPlannedFile(file, applied));
-
     }
 
     private async Task<LoadedWorkspaceText> LoadExistingTextAsync(
@@ -433,14 +450,12 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         Checkpoint(budget, cancellationToken);
 
         WorkspaceMutationRead source;
 
         try
         {
-
             source = await WorkspaceFileFingerprintService.ReadForMutationAsync(
                     root,
                     relativePath,
@@ -448,15 +463,12 @@ internal sealed class WorkspacePatchPlanner
                     () => _options.AfterSourceHandleOpened?.Invoke(relativePath),
                     _settings.MaxInputBytesPerFile)
                 .ConfigureAwait(false);
-
         }
         catch (WorkspaceMutationReadLimitExceededException exception)
         {
-
             throw PlanningFailure(
                 "input_file_too_large",
                 $"Physical resource boundary: patch source '{relativePath}' is {exception.ObservedLength} bytes; the per-file allocation limit is {exception.MaximumLength} bytes. No workspace changes were made. Split or reduce that file before applying the patch.");
-
         }
 
         if (!source.Fingerprint.Exists)
@@ -475,7 +487,6 @@ internal sealed class WorkspacePatchPlanner
         return new LoadedWorkspaceText(
             document,
             source.Fingerprint);
-
     }
 
     private AppliedDocument ApplyHunks(
@@ -485,7 +496,6 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         List<WorkspaceTextLine> lines = [.. source.Lines];
 
         List<int> matchedLines = [];
@@ -575,7 +585,6 @@ internal sealed class WorkspacePatchPlanner
             relocatedHunks,
             Array.AsReadOnly(matchedLines.ToArray()),
             Array.AsReadOnly(diagnostics.ToArray()));
-
     }
 
     private HunkMatch FindMatch(
@@ -586,7 +595,6 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         int maximumStart = lines.Count - hunk.OldCount;
 
         if (maximumStart < 0)
@@ -689,7 +697,6 @@ internal sealed class WorkspacePatchPlanner
             Ambiguous: bestCandidates.Count > 1,
             Index: bestIndex,
             CandidateIndexes: Array.AsReadOnly(bestCandidates.ToArray()));
-
     }
 
     private static WorkspacePatchHunkDiagnostic CreateHunkDiagnostic(
@@ -699,7 +706,6 @@ internal sealed class WorkspacePatchPlanner
         int expectedIndex,
         HunkMatch match)
     {
-
         const int maxCandidateLines = 64;
 
         int[] allCandidates = match.CandidateIndexes
@@ -729,7 +735,6 @@ internal sealed class WorkspacePatchPlanner
             retainedCandidates,
             allCandidates.Length,
             allCandidates.Length - retainedCandidates.Length);
-
     }
 
     private static string FormatHunkRange(int start, int count) =>
@@ -747,7 +752,6 @@ internal sealed class WorkspacePatchPlanner
         Action checkpoint,
         out int exactContextCount)
     {
-
         exactContextCount = 0;
 
         int sourceIndex = candidate;
@@ -816,7 +820,6 @@ internal sealed class WorkspacePatchPlanner
         }
 
         return true;
-
     }
 
     private static List<WorkspaceTextLine> BuildReplacement(
@@ -826,7 +829,6 @@ internal sealed class WorkspacePatchPlanner
         string dominantNewline,
         Action checkpoint)
     {
-
         List<WorkspaceTextLine> replacement = [];
 
         int sourceIndex = matchIndex;
@@ -878,7 +880,6 @@ internal sealed class WorkspacePatchPlanner
         }
 
         return replacement;
-
     }
 
     private static void ValidateTouchedDelimiterBoundaries(
@@ -887,7 +888,6 @@ internal sealed class WorkspacePatchPlanner
         int replacementCount,
         Action checkpoint)
     {
-
         if (lines.Count <= 1)
         {
             return;
@@ -903,9 +903,7 @@ internal sealed class WorkspacePatchPlanner
         {
             if ((index & 0xFF) == 0)
             {
-
                 checkpoint();
-
             }
 
             if (lines[index].Delimiter.Length == 0)
@@ -915,7 +913,6 @@ internal sealed class WorkspacePatchPlanner
                     "A no-final-newline marker would occur before the final logical line.");
             }
         }
-
     }
 
     private static int ExpectedIndex(UnifiedDiffHunk hunk) =>
@@ -928,7 +925,6 @@ internal sealed class WorkspacePatchPlanner
         string right,
         Action checkpoint)
     {
-
         int leftIndex = 0;
 
         int rightIndex = 0;
@@ -942,9 +938,7 @@ internal sealed class WorkspacePatchPlanner
         {
             if (((leftIndex + rightIndex) & 0xFF) == 0)
             {
-
                 checkpoint();
-
             }
 
             bool leftWhitespace =
@@ -983,7 +977,6 @@ internal sealed class WorkspacePatchPlanner
 
         return leftIndex == left.Length
             && rightIndex == right.Length;
-
     }
 
     private static void SkipHorizontalWhitespace(
@@ -991,20 +984,16 @@ internal sealed class WorkspacePatchPlanner
         ref int index,
         Action checkpoint)
     {
-
         while (index < value.Length
             && value[index] is ' ' or '\t')
         {
             if ((index & 0xFF) == 0)
             {
-
                 checkpoint();
-
             }
 
             index++;
         }
-
     }
 
     private byte[] EncodeOutput(
@@ -1013,60 +1002,47 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         Checkpoint(budget, cancellationToken);
 
         long outputBytes;
 
         try
         {
-
             outputBytes = document.GetEncodedByteCount(
                 () => Checkpoint(budget, cancellationToken));
-
         }
         catch (OverflowException)
         {
-
             throw PlanningFailure(
                 "output_file_too_large",
                 "Physical resource boundary: the patched file cannot be represented within the per-file output allocation. No workspace changes were made. Split or reduce that file before applying the patch.");
-
         }
 
         if (outputBytes > _settings.MaxOutputBytesPerFile)
         {
-
             throw PlanningFailure(
                 "output_file_too_large",
                 $"Physical resource boundary: a patched file is {outputBytes} bytes; the per-file output allocation limit is {_settings.MaxOutputBytesPerFile} bytes. No workspace changes were made. Split or reduce that file before applying the patch.");
-
         }
 
         if (outputBytes > _settings.MaxTotalOutputBytes - budget.TotalOutputBytes)
         {
-
             throw PlanningFailure(
                 "output_total_too_large",
                 $"Physical resource boundary: this patch would retain {budget.TotalOutputBytes + outputBytes} output bytes in one reversible plan; the per-request in-memory limit is {_settings.MaxTotalOutputBytes} bytes. No workspace changes were made. Split the diff into smaller apply_patch calls.");
-
         }
 
         long stagingBytes;
 
         try
         {
-
             stagingBytes = checked(stagingInputBytes + outputBytes);
-
         }
         catch (OverflowException)
         {
-
             throw PlanningFailure(
                 "staging_file_too_large",
                 "Physical resource boundary: one patch file exceeds the representable staging allocation. No workspace changes were made. Split or reduce that file before applying the patch.");
-
         }
 
         ValidateStaging(stagingBytes, budget);
@@ -1075,10 +1051,8 @@ internal sealed class WorkspacePatchPlanner
 
         if (encoded.LongLength != outputBytes)
         {
-
             throw new InvalidOperationException(
                 "Patch output byte preflight did not match exact encoding.");
-
         }
 
         budget.TotalOutputBytes += outputBytes;
@@ -1088,7 +1062,6 @@ internal sealed class WorkspacePatchPlanner
         Checkpoint(budget, cancellationToken);
 
         return encoded;
-
     }
 
     private void RegisterStaging(
@@ -1096,48 +1069,38 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         Checkpoint(budget, cancellationToken);
 
         ValidateStaging(stagingBytes, budget);
 
         budget.TotalStagingBytes += stagingBytes;
-
     }
 
     private void ValidateStaging(
         long stagingBytes,
         PatchPlanningBudget budget)
     {
-
         if (stagingBytes > _settings.MaxStagingBytesPerFile)
         {
-
             throw PlanningFailure(
                 "staging_file_too_large",
                 $"Physical resource boundary: one patch file requires {stagingBytes} staging bytes; the per-file reversible staging limit is {_settings.MaxStagingBytesPerFile} bytes. No workspace changes were made. Split or reduce that file before applying the patch.");
-
         }
 
         if (stagingBytes
             > _settings.MaxTotalStagingBytes - budget.TotalStagingBytes)
         {
-
             throw PlanningFailure(
                 "staging_total_too_large",
                 $"Transaction-integrity boundary: this patch requires {budget.TotalStagingBytes + stagingBytes} staging bytes before mutation; the reversible transaction limit is {_settings.MaxTotalStagingBytes} bytes. No workspace changes were made. Split the diff into smaller apply_patch calls.");
-
         }
-
     }
 
     private static void Checkpoint(
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
-
     }
 
     private static WorkspacePatchPlannedFile ToPlannedFile(
@@ -1156,7 +1119,6 @@ internal sealed class WorkspacePatchPlanner
         PatchPlanningBudget budget,
         CancellationToken cancellationToken)
     {
-
         for (int left = 0; left < inputs.Count; left++)
         {
             Checkpoint(budget, cancellationToken);
@@ -1165,9 +1127,7 @@ internal sealed class WorkspacePatchPlanner
             {
                 if ((right & 0x3F) == 0)
                 {
-
                     Checkpoint(budget, cancellationToken);
-
                 }
 
                 if (!WorkspaceRelativePath.Comparer.Equals(
@@ -1183,7 +1143,6 @@ internal sealed class WorkspacePatchPlanner
                 }
             }
         }
-
     }
 
     private static string MapMutationRejection(
@@ -1197,6 +1156,7 @@ internal sealed class WorkspacePatchPlanner
             WorkspaceMutationRejection.MetadataUnavailable => "metadata_unavailable",
             WorkspaceMutationRejection.HardLinkedFile => "hard_link",
             WorkspaceMutationRejection.ConcurrentModification => "concurrent_edit",
+            WorkspaceMutationRejection.ProtectedPath => "protected_path",
             _ => "validation_failed",
         };
 
@@ -1210,6 +1170,8 @@ internal sealed class WorkspacePatchPlanner
                 "Patch targets with multiple hard links are rejected.",
             WorkspaceMutationRejection.ConcurrentModification =>
                 "A patch target changed during validation.",
+            WorkspaceMutationRejection.ProtectedPath =>
+                "Patch targets under .git or .arcanum are protected workspace metadata and cannot be created, modified, renamed or deleted.",
             _ =>
                 "A patch target failed workspace containment or metadata validation.",
         };

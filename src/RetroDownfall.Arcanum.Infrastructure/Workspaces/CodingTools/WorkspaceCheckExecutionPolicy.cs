@@ -29,12 +29,10 @@ internal static class WorkspaceCheckExecutionPolicy
         bool pinnedExecutableValid,
         bool mandatoryJailAvailable)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(platform);
 
         if (!enabled)
         {
-
             return new WorkspaceCheckExecutionStatus(
                 IsEligible: false,
                 IsHealthDegraded: false,
@@ -43,19 +41,16 @@ internal static class WorkspaceCheckExecutionPolicy
 
         if (string.Equals(platform, "Linux", StringComparison.OrdinalIgnoreCase))
         {
-
             return new WorkspaceCheckExecutionStatus(false, true, LinuxUnavailableReason);
         }
 
         if (string.Equals(platform, "Windows", StringComparison.OrdinalIgnoreCase))
         {
-
             return new WorkspaceCheckExecutionStatus(false, true, WindowsUnavailableReason);
         }
 
         if (!string.Equals(platform, "macOS", StringComparison.OrdinalIgnoreCase))
         {
-
             return new WorkspaceCheckExecutionStatus(
                 false,
                 true,
@@ -64,7 +59,6 @@ internal static class WorkspaceCheckExecutionPolicy
 
         if (!mandatoryJailAvailable)
         {
-
             return new WorkspaceCheckExecutionStatus(
                 false,
                 true,
@@ -73,7 +67,6 @@ internal static class WorkspaceCheckExecutionPolicy
 
         if (!pinnedExecutableValid)
         {
-
             return new WorkspaceCheckExecutionStatus(
                 false,
                 true,
@@ -86,60 +79,17 @@ internal static class WorkspaceCheckExecutionPolicy
             ExplicitRiskReason);
     }
 
-    /// <summary>Test hook: count of real sandbox-exec probe evaluations since the last reset. The
-    /// process-lifetime cache in <see cref="IsMandatoryJailAvailableForCurrentHost"/> keeps this at 1
-    /// across repeated calls.</summary>
-    internal static int MandatoryJailProbeCountForTests { get; private set; }
+    private static readonly MandatoryJailProbeCache s_mandatoryJailProbeCache =
+        new(ProbeMandatoryJail);
 
-    private static readonly Lock s_mandatoryJailGate = new();
-
-    private static bool? s_mandatoryJailAvailable;
-
-    /// <summary>Test seam: restore the mandatory-jail probe cache and its counter to production
-    /// defaults. Call from test teardown to avoid cross-test leakage.</summary>
-    internal static void ResetTestSeams()
-    {
-
-        lock (s_mandatoryJailGate)
-        {
-
-            s_mandatoryJailAvailable = null;
-
-            MandatoryJailProbeCountForTests = 0;
-
-        }
-
-    }
-
-    internal static bool IsMandatoryJailAvailableForCurrentHost()
-    {
-
-        lock (s_mandatoryJailGate)
-        {
-
-            if (s_mandatoryJailAvailable is { } cached)
-            {
-
-                return cached;
-            }
-
-            MandatoryJailProbeCountForTests++;
-
-            s_mandatoryJailAvailable = ProbeMandatoryJail();
-
-            return s_mandatoryJailAvailable.Value;
-
-        }
-
-    }
+    internal static bool IsMandatoryJailAvailableForCurrentHost() =>
+        s_mandatoryJailProbeCache.IsAvailable();
 
     private static bool ProbeMandatoryJail()
     {
-
         if (!OperatingSystem.IsMacOS()
             || !File.Exists("/usr/bin/sandbox-exec"))
         {
-
             return false;
         }
 
@@ -158,10 +108,8 @@ internal static class WorkspaceCheckExecutionPolicy
         IReadOnlyList<string> arguments,
         TimeSpan timeout)
     {
-
         try
         {
-
             using System.Diagnostics.Process probe = new()
             {
                 StartInfo = new System.Diagnostics.ProcessStartInfo
@@ -176,13 +124,11 @@ internal static class WorkspaceCheckExecutionPolicy
 
             foreach (string argument in arguments)
             {
-
                 probe.StartInfo.ArgumentList.Add(argument);
             }
 
             if (!probe.Start())
             {
-
                 return false;
             }
 
@@ -191,17 +137,13 @@ internal static class WorkspaceCheckExecutionPolicy
                     1,
                     int.MaxValue)))
             {
-
                 try
                 {
-
                     probe.Kill(entireProcessTree: true);
                     _ = probe.WaitForExit(1_000);
-
                 }
                 catch (Exception)
                 {
-
                 }
 
                 return false;
@@ -215,32 +157,68 @@ internal static class WorkspaceCheckExecutionPolicy
                 or InvalidOperationException
                 or System.ComponentModel.Win32Exception)
         {
-
             return false;
         }
     }
 
     internal static string DetectPlatform()
     {
-
         if (OperatingSystem.IsMacOS())
         {
-
             return "macOS";
         }
 
         if (OperatingSystem.IsLinux())
         {
-
             return "Linux";
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return "Windows";
         }
 
         return "Unknown";
+    }
+}
+
+/// <summary>
+/// Caches a healthy mandatory-jail probe result (a <c>sandbox-exec</c> spawn) for the process lifetime.
+/// A failed result is never cached: a transient failure (a timeout, a momentary resource shortage) must
+/// not report the jail as unavailable until the host restarts, so the next call probes again.
+/// </summary>
+internal sealed class MandatoryJailProbeCache(Func<bool> probe)
+{
+    private readonly Lock _gate = new();
+
+    private bool _available;
+
+    internal int ProbeCount { get; private set; }
+
+    internal bool IsAvailable()
+    {
+        lock (_gate)
+        {
+            if (_available)
+            {
+                return true;
+            }
+
+            ProbeCount++;
+
+            _available = probe();
+
+            return _available;
+        }
+    }
+
+    internal void Reset()
+    {
+        lock (_gate)
+        {
+            _available = false;
+
+            ProbeCount = 0;
+        }
     }
 }

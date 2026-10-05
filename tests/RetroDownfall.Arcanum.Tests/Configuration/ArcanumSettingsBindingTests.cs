@@ -14,11 +14,9 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 /// </summary>
 public sealed class ArcanumSettingsBindingTests
 {
-
     [Fact]
     public void Configure_binds_providers_and_default_model_via_source_generator()
     {
-
         string json = """
             {
               "Arcanum": {
@@ -85,7 +83,6 @@ public sealed class ArcanumSettingsBindingTests
 
         Assert.Equal(ReasoningWireDialect.OpenRouter, settings.Providers[0].Models[0].Reasoning?.WireDialect);
         Assert.Equal(32768, settings.Providers[0].Models[0].Reasoning?.MaxBudgetTokens);
-
     }
 
     [Fact]
@@ -218,31 +215,39 @@ public sealed class ArcanumSettingsBindingTests
     [Fact]
     public void Covenant_feature_defaults_false_and_binds_true_through_generated_configuration()
     {
-
         Assert.False(new FeatureSettings().Covenant);
 
         Assert.True(BindArcanum("""{"Arcanum":{"features":{"covenant":true}}}""").Features.Covenant);
 
         Assert.False(BindArcanum("""{"Arcanum":{"features":{}}}""").Features.Covenant);
-
     }
 
     [Fact]
     public void Annals_feature_defaults_true_and_binds_explicit_false_through_generated_configuration()
     {
-
         Assert.True(new FeatureSettings().Annals);
 
         Assert.True(BindArcanum("""{"Arcanum":{"features":{}}}""").Features.Annals);
 
         Assert.False(
             BindArcanum("""{"Arcanum":{"features":{"annals":false}}}""").Features.Annals);
+    }
 
+    [Fact]
+    public void Protected_path_write_opt_out_defaults_false_and_binds_explicit_true_through_generated_configuration()
+    {
+        Assert.False(new WorkspaceSettings().AllowProtectedPathWrites);
+
+        Assert.False(
+            BindArcanum("""{"Arcanum":{"workspaces":{}}}""").Workspaces.AllowProtectedPathWrites);
+
+        Assert.True(
+            BindArcanum("""{"Arcanum":{"workspaces":{"allowProtectedPathWrites":true}}}""")
+                .Workspaces.AllowProtectedPathWrites);
     }
 
     private static ArcanumSettings BindArcanum(string json)
     {
-
         using MemoryStream stream = new(System.Text.Encoding.UTF8.GetBytes(json));
 
         IConfigurationRoot configuration = new ConfigurationBuilder().AddJsonStream(stream).Build();
@@ -254,7 +259,5 @@ public sealed class ArcanumSettingsBindingTests
         using ServiceProvider provider = services.BuildServiceProvider();
 
         return provider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
-
     }
-
 }

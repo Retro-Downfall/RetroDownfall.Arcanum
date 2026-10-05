@@ -4,12 +4,10 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ConfigurationPathAccessorTests
 {
-
     [Fact]
 
     public void Set_resolves_generated_descriptor_path_and_parses_integer()
     {
-
         ArcanumSettings settings = new();
 
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
@@ -22,29 +20,23 @@ public sealed class ConfigurationPathAccessorTests
         Assert.Equal(6123, result.Settings!.Host.Port);
 
         Assert.Equal("6123", ConfigurationPathAccessor.GetDisplayValue(result.Settings, "host.port"));
-
     }
 
     [Fact]
 
     public void Set_supports_indexed_collection_paths_and_redacts_sensitive_values()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers =
             [
                 new ProviderSettings
                 {
-
                     Name = "OpenAI",
 
                     Endpoint = "https://old.example/v1",
-
                 },
             ],
-
         };
 
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
@@ -59,7 +51,6 @@ public sealed class ConfigurationPathAccessorTests
         Assert.True(ConfigurationPathAccessor.IsSensitive("providers.0.endpoint"));
 
         Assert.Equal("***", ConfigurationPathAccessor.GetDisplayValue(result.Settings, "providers.0.endpoint"));
-
     }
 
     [Theory]
@@ -72,14 +63,12 @@ public sealed class ConfigurationPathAccessorTests
 
     public void Set_parses_supported_typed_values(string key, string value)
     {
-
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
             new ArcanumSettings(),
             key,
             value);
 
         Assert.True(result.IsSuccess, result.Error);
-
     }
 
     [Theory]
@@ -91,7 +80,6 @@ public sealed class ConfigurationPathAccessorTests
         string value,
         string expected)
     {
-
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
             new ArcanumSettings(),
             key,
@@ -100,14 +88,12 @@ public sealed class ConfigurationPathAccessorTests
         Assert.True(result.IsSuccess, result.Error);
 
         Assert.Equal(expected, ConfigurationPathAccessor.GetCanonicalValue(result.Settings!, key));
-
     }
 
     [Fact]
 
     public void Set_parses_comma_separated_values_for_guid_collection_paths()
     {
-
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
             new ArcanumSettings(),
             "retention.protectedSessionIds",
@@ -121,14 +107,12 @@ public sealed class ConfigurationPathAccessorTests
                 new Guid("22222222-2222-2222-2222-222222222222"),
             ],
             result.Settings!.Retention.ProtectedSessionIds);
-
     }
 
     [Fact]
 
     public void Set_rejects_a_malformed_guid_collection_entry_with_actionable_guidance()
     {
-
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
             new ArcanumSettings(),
             "retention.protectedSessionIds",
@@ -137,14 +121,12 @@ public sealed class ConfigurationPathAccessorTests
         Assert.False(result.IsSuccess);
 
         Assert.Contains("not-a-guid", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Set_rejects_unknown_paths_without_mutating_snapshot()
     {
-
         ArcanumSettings settings = new();
 
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
@@ -157,14 +139,12 @@ public sealed class ConfigurationPathAccessorTests
         Assert.Same(settings, result.Settings);
 
         Assert.Contains("Unknown configuration key", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Set_rejects_invalid_typed_value()
     {
-
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
             new ArcanumSettings(),
             "host.port",
@@ -173,14 +153,12 @@ public sealed class ConfigurationPathAccessorTests
         Assert.False(result.IsSuccess);
 
         Assert.Contains("integer", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Set_rejects_invalid_json_array_without_throwing()
     {
-
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
             new ArcanumSettings(),
             "security.allowedImageMimeTypes",
@@ -189,14 +167,12 @@ public sealed class ConfigurationPathAccessorTests
         Assert.False(result.IsSuccess);
 
         Assert.Contains("valid JSON", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Set_resolves_model_descriptor_paths_under_an_indexed_provider()
     {
-
         ArcanumSettings settings = NewSettingsWithOneModel();
 
         ConfigurationPathUpdate vision = ConfigurationPathAccessor.Set(
@@ -236,14 +212,12 @@ public sealed class ConfigurationPathAccessorTests
         Assert.True(budget.IsSuccess, budget.Error);
 
         Assert.Equal(4096, budget.Settings!.Providers[0].Models[0].Reasoning!.MaxBudgetTokens);
-
     }
 
     [Fact]
 
     public void Get_reads_model_descriptor_paths_under_an_indexed_provider()
     {
-
         ArcanumSettings settings = NewSettingsWithOneModel();
 
         Assert.True(ConfigurationPathAccessor.Exists(settings, "providers.0.models.0.supportsVision"));
@@ -255,14 +229,12 @@ public sealed class ConfigurationPathAccessorTests
         Assert.Equal(
             "false",
             ConfigurationPathAccessor.GetDisplayValue(settings, "providers.0.models.0.supportsVision"));
-
     }
 
     [Fact]
 
     public void Set_rejects_an_out_of_range_model_index()
     {
-
         ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
             NewSettingsWithOneModel(),
             "providers.0.models.3.supportsVision",
@@ -271,27 +243,42 @@ public sealed class ConfigurationPathAccessorTests
         Assert.False(result.IsSuccess);
 
         Assert.Contains("collection index", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
 
+    [Fact]
+
+    public void Set_resolves_the_protected_path_write_opt_out_and_round_trips_it()
+    {
+        ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
+            new ArcanumSettings(),
+            "workspaces.allowProtectedPathWrites",
+            "true");
+
+        Assert.True(result.IsSuccess, result.Error);
+
+        Assert.True(result.Settings!.Workspaces.AllowProtectedPathWrites);
+
+        Assert.Equal(
+            "True",
+            ConfigurationPathAccessor.GetDisplayValue(
+                result.Settings,
+                "workspaces.allowProtectedPathWrites"),
+            ignoreCase: true);
     }
 
     private static ArcanumSettings NewSettingsWithOneModel() =>
         new()
         {
-
             Providers =
             [
                 new ProviderSettings
                 {
-
                     Name = "OpenAI",
 
                     Endpoint = "https://api.example/v1",
 
                     Models = [new ModelEntry("gpt-4o")],
-
                 },
             ],
-
         };
-
 }

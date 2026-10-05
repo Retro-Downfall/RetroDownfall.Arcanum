@@ -66,6 +66,7 @@ public static class SettingDescriptors
         // Workspaces
         new("workspaces.defaultRoot", ConfigSection.Workspaces, "Default workspace folder", "The main folder where projects and files are stored.", SettingKind.Path, Placeholder: "/home/me/projects"),
         new("workspaces.enableFileWrite", ConfigSection.Workspaces, "Allow file modifications", "Let the AI create, edit, and delete files in the workspace.", SettingKind.Bool),
+        new("workspaces.allowProtectedPathWrites", ConfigSection.Workspaces, "Allow edits to Git and Arcanum folders", "Let the AI tools and the file API change the .git and .arcanum folders. A Git hook written there runs with your own permissions the next time you use Git, so leave this off unless you need it.", SettingKind.Bool),
 
         // Feature opt-ins
         new("features.enterpriseTelemetry", ConfigSection.Features, "Send usage statistics", "Share anonymous usage data to help improve the software.", SettingKind.Bool),

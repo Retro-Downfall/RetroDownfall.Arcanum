@@ -14,24 +14,20 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 [Collection("EnvVarSensitive")]
 public sealed class GenericSettingsPreservationTests : IDisposable
 {
-
     private readonly ArcanumTestHomeScope _home;
 
     private readonly string _tempRoot;
 
     public GenericSettingsPreservationTests()
     {
-
         _home = new ArcanumTestHomeScope("compendium-generic");
 
         _tempRoot = _home.Root;
-
     }
 
     [Fact]
     public async Task Editing_polished_host_preserves_every_generic_minimal_section()
     {
-
         await SeedAsync(new ArcanumSettings
         {
             Host = new HostSettings { Port = 5001 },
@@ -44,6 +40,7 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             {
                 DefaultRoot = "/workspace",
                 EnableFileWrite = true,
+                AllowProtectedPathWrites = true,
             },
             Features = new FeatureSettings
             {
@@ -82,6 +79,7 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.True(built.Security.Ward.UnattendedMode);
         Assert.Equal("/workspace", built.Workspaces.DefaultRoot);
         Assert.True(built.Workspaces.EnableFileWrite);
+        Assert.True(built.Workspaces.AllowProtectedPathWrites);
         Assert.True(built.Features.WebBrowsing);
         Assert.True(built.Features.Apprentices);
         Assert.Equal(["localhost"], built.Integrations.Mcp.AllowedHttpHosts);
@@ -89,13 +87,11 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.Equal(80, built.Execution.MaxSseConnections);
         Assert.True(built.Cost.Budget.Enabled);
         Assert.Equal(25m, built.Cost.Budget.DailyLimitUsd);
-
     }
 
     [Fact]
     public async Task Editing_generic_fields_updates_new_sections()
     {
-
         await SeedAsync(new ArcanumSettings());
 
         ConfigurationViewModel vm = CreateViewModel();
@@ -115,14 +111,12 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.Equal(["C:\\campaigns", "D:\\archives"], built.Security.CampaignRoots);
         Assert.Equal(9, built.Execution.MaxConcurrentApprentices);
         Assert.Equal("local-embeddings", built.Integrations.Embeddings.Provider);
-
     }
 
     [Fact]
 
     public void Advertised_a2a_skill_keys_are_collection_templates_and_never_overwrite_a_declared_skill()
     {
-
         ArcanumSettings settings = new()
         {
             Integrations = new IntegrationSettings
@@ -147,7 +141,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         foreach (string key in templateKeys)
         {
-
             SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
                 SettingDescriptors.Find(key));
 
@@ -162,7 +155,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             field.StringValue = "typed-into-a-template";
 
             fields.Add(field);
-
         }
 
         ArcanumSettings updated = GenericSettingsUpdater.ApplyFields(settings, fields);
@@ -172,14 +164,12 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.Equal("code-review", skill.Id);
 
         Assert.Null(skill.Name);
-
     }
 
     [Fact]
 
     public void Protected_session_ids_use_the_string_array_editor_without_losing_guid_values()
     {
-
         Guid protectedId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
         Guid addedId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -210,14 +200,12 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         ArcanumSettings updated = GenericSettingsUpdater.ApplyFields(settings, [field]);
 
         Assert.Equal([protectedId, addedId], updated.Retention.ProtectedSessionIds);
-
     }
 
     [Fact]
 
     public void Protected_session_ids_validate_each_guid_before_save()
     {
-
         SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
             SettingDescriptors.Find("retention.protectedSessionIds"));
 
@@ -237,27 +225,21 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             "11111111-1111-1111-1111-111111111111, 22222222-2222-2222-2222-222222222222";
 
         Assert.False(field.HasError);
-
     }
 
     [Fact]
 
     public void Malformed_protected_session_id_does_not_throw_or_replace_saved_ids()
     {
-
         Guid protectedId = Guid.Parse(
             "11111111-1111-1111-1111-111111111111");
 
         ArcanumSettings settings = new()
         {
-
             Retention = new RetentionSettings
             {
-
                 ProtectedSessionIds = [protectedId],
-
             },
-
         };
 
         SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
@@ -278,13 +260,11 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.Equal(
             [protectedId],
             updated.Retention.ProtectedSessionIds);
-
     }
 
     [Fact]
     public async Task Nullable_reasoning_price_preserves_null_and_can_set_then_clear_zero()
     {
-
         await SeedAsync(new ArcanumSettings
         {
             Cost = new CostSettings
@@ -333,7 +313,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
 
         Assert.Null(saved.Cost.Pricing.DefaultPricing.ReasoningPer1M);
-
     }
 
     [Fact]
@@ -409,13 +388,11 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             savedProvider.CredentialEnvironmentVariable);
-
     }
 
     [Fact]
     public async Task Authored_dictionary_editors_use_source_generated_contracts_and_round_trip()
     {
-
         WorkspaceCheckProfileSettings original = new()
         {
             ExecutableId = "dotnet",
@@ -506,14 +483,12 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.Equal(
             2m,
             saved.Cost.Pricing.ModelPricing["reasoner"].OutputPer1M);
-
     }
 
     [Fact]
 
     public void Dictionary_setter_failure_names_the_field_that_could_not_be_applied()
     {
-
         SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
             SettingDescriptors.Find("cost.pricing.modelPricing"));
 
@@ -544,7 +519,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             "same key",
             failure.Message,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     private static GenericSettingFieldViewModel Field(
@@ -557,7 +531,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
     private static ConfigurationViewModel CreateViewModel()
     {
-
         ArcanumConfigurationStore store = new(enableWatcher: true);
 
         return new ConfigurationViewModel(
@@ -566,12 +539,10 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             new SynchronousUiDispatcher(),
             NullLogger<ConfigurationViewModel>.Instance,
             ImmediateArcanumClientMutationBoundary.Instance);
-
     }
 
     private static async Task SeedAsync(ArcanumSettings settings)
     {
-
         _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
         string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
@@ -581,36 +552,28 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             JsonSerializer.Serialize(
                 new ArcanumConfigurationFile { Arcanum = settings },
                 ConfigurationJsonContext.Default.ArcanumConfigurationFile));
-
     }
 
     private static async Task WaitForLoadAsync(ConfigurationViewModel vm)
     {
-
         for (int i = 0; i < 50; i++)
         {
-
             if (!string.IsNullOrEmpty(vm.StatusMessage)
                 && vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal))
             {
-
                 return;
-
             }
 
             await Task.Delay(50);
-
         }
 
         Assert.Fail($"Timed out waiting for load. Status={vm.StatusMessage}");
-
     }
 
     public void Dispose() => _home.Dispose();
 
     private sealed class NoopDialogService : IDialogService
     {
-
         public Task ShowAlertAsync(
             string title,
             string message,
@@ -623,7 +586,5 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             string accept = "Yes",
             string cancel = "No") =>
             Task.FromResult(true);
-
     }
-
 }

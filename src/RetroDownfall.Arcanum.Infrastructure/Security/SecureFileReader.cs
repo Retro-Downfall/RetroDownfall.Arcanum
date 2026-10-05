@@ -74,7 +74,8 @@ internal readonly record struct SecureUtf8FileReadResult(
     SecureFileReadStatus Status,
     string? Text,
     int ByteLength,
-    FileHandleMetadata Metadata);
+    FileHandleMetadata Metadata,
+    FileContentBaseline? Baseline = null);
 
 /// <summary>
 /// Opens a path once with link-following disabled, proves the opened handle is an
@@ -408,10 +409,15 @@ internal static partial class SecureFileReader
         return DecodeUtf8(bytes);
     }
 
+    /// <param name="captureBaseline">
+    /// Also report the length and SHA-256 of the exact bytes read (BOM included), for a read-modify-write
+    /// caller that must prove the destination is unchanged before it replaces it.
+    /// </param>
     internal static async Task<SecureUtf8FileReadResult> ReadUtf8TextAsync(
         FileStream stream,
         int maxBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool captureBaseline = false)
     {
         using SecureFileReadResult bytes = await ReadBytesAsync(
                 stream,
@@ -419,11 +425,12 @@ internal static partial class SecureFileReader
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return DecodeUtf8(bytes);
+        return DecodeUtf8(bytes, captureBaseline);
     }
 
     private static SecureUtf8FileReadResult DecodeUtf8(
-        SecureFileReadResult bytes)
+        SecureFileReadResult bytes,
+        bool captureBaseline = false)
     {
         if (bytes.Status is not SecureFileReadStatus.Success)
         {
@@ -449,7 +456,10 @@ internal static partial class SecureFileReader
                 SecureFileReadStatus.Success,
                 StrictUtf8.GetString(textBytes),
                 bytes.Bytes.Length,
-                bytes.Metadata);
+                bytes.Metadata,
+                captureBaseline
+                    ? FileContentBaseline.Of(bytes.Bytes.Span)
+                    : null);
         }
         catch (DecoderFallbackException)
         {
