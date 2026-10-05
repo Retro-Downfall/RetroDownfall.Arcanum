@@ -4,17 +4,23 @@ using System.Text;
 
 using System.Text.RegularExpressions;
 
+using Microsoft.Extensions.Logging;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+
+using RetroDownfall.Arcanum.Infrastructure.Memory;
 
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -401,6 +407,41 @@ public sealed class NullableInterfaceConstructorDefaultTests
             constructor => Assert.Contains(
                 constructor.GetParameters(),
                 parameter => parameter.ParameterType == typeof(IMemoryErasureKeyProvider) && !parameter.HasDefaultValue));
+
+    /// <summary>
+    /// The types whose fault logging is the only trace of a storage failure mapped to a typed write
+    /// failure or of a contained revocation callback.
+    /// </summary>
+    /// <remarks>
+    /// Closed on purpose, and read from the compiled constructors because the source inventory above
+    /// cannot see a generic interface: its pattern needs an identifier directly before the question
+    /// mark, which <c>ILogger&lt;T&gt;?</c> never has. An owner built without its logger drops the one
+    /// line that says a Saga or Covenant review write failed, which is every hand-built instance in a
+    /// test and any factory that leaves the argument out.
+    /// </remarks>
+    public static TheoryData<Type> FaultLoggingOwners => new()
+    {
+        typeof(SagaMemoryReviewService),
+        typeof(CovenantMemoryReviewService),
+        typeof(CovenantOperationGate),
+    };
+
+    /// <summary>
+    /// Every constructor of a fault-logging owner takes its own <c>ILogger&lt;T&gt;</c>, and none lets a
+    /// caller leave it out.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(FaultLoggingOwners))]
+    public void Every_fault_logging_owner_requires_its_logger(Type owner)
+    {
+        Type logger = typeof(ILogger<>).MakeGenericType(owner);
+
+        Assert.All(
+            owner.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            constructor => Assert.Contains(
+                constructor.GetParameters(),
+                parameter => parameter.ParameterType == logger && !parameter.HasDefaultValue));
+    }
 }
 
 /// <summary>

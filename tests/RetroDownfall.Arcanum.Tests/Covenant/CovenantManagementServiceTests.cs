@@ -53,11 +53,20 @@ public sealed class CovenantManagementServiceTests
 
         Assert.True(page.IsSuccess, page.IsFailure ? $"{page.Error.Code}: {page.Error.Message}" : null);
 
-        Assert.Equal(HitCount, page.Value.Items.Length);
+        // The heads come back with the ranked page, in its snapshot, so the store is not asked for any
+        // of them at all: not once per hit, and not once for the page.
+        Assert.Equal(0, store.HeadReads);
 
-        // The heads come back with the ranked page, in its snapshot: at most one store read serves the
-        // whole page, never one per hit.
-        Assert.True(store.HeadReads <= 1, $"A {HitCount}-hit page read heads {store.HeadReads} times.");
+        // And what the page carries is exactly the ranked hits, in rank order, not some other set of heads.
+        CovenantHeadItem[] hits = [.. Enumerable.Range(0, HitCount).Select(HeadFor)];
+
+        Assert.Equal(hits.Select(static hit => hit.EntryId), page.Value.Items.Select(static item => item.EntryId));
+
+        Assert.Equal(hits.Select(static hit => hit.VersionId), page.Value.Items.Select(static item => item.VersionId));
+
+        Assert.Equal(
+            hits.Select(static hit => hit.NormalizedKey),
+            page.Value.Items.Select(static item => item.Key));
     }
 
     internal static CovenantHeadItem HeadFor(int index) =>

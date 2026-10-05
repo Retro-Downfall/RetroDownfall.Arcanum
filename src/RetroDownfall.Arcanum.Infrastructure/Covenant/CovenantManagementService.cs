@@ -91,7 +91,7 @@ internal sealed class CovenantManagementService(
             Result continued = CheckContinuation(CovenantCursorBodyValidator.Validate(
                 continuation,
                 filterDigest,
-                Sources(page.Value),
+                SnapshotOf(page.Value),
                 codec.KeySnapshot.MasterKeyVersion));
 
             if (continued.IsFailure)
@@ -304,7 +304,7 @@ internal sealed class CovenantManagementService(
             Result continued = CheckContinuation(CovenantCursorBodyValidator.Validate(
                 continuation,
                 filterDigest,
-                Sources(page.Value),
+                SnapshotOf(page.Value),
                 codec.KeySnapshot.MasterKeyVersion));
 
             if (continued.IsFailure)
@@ -793,7 +793,7 @@ internal sealed class CovenantManagementService(
     /// <summary>
     /// The dataset facts a canonical list page was read under, in the shape the cursor validator compares.
     /// </summary>
-    private static CovenantSearchSourceSnapshot Sources(CovenantListPage page) =>
+    private static CovenantSearchSourceSnapshot SnapshotOf(CovenantListPage page) =>
         new(
             page.DatasetGeneration,
             page.CanonicalSearchSequence,
@@ -806,7 +806,7 @@ internal sealed class CovenantManagementService(
     /// <summary>
     /// The same, for a version page, whose cursors never bind a Campaign deletion sequence.
     /// </summary>
-    private static CovenantSearchSourceSnapshot Sources(CovenantVersionPage page) =>
+    private static CovenantSearchSourceSnapshot SnapshotOf(CovenantVersionPage page) =>
         new(
             page.DatasetGeneration,
             page.CanonicalSearchSequence,

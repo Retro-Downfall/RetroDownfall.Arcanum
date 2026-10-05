@@ -29,7 +29,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposable
 {
-
     private static readonly byte[] RootIdentityKey = Convert.FromHexString(
         "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
 
@@ -49,7 +48,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
     public async Task InitializeAsync()
     {
-
         _database = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
         await _database.InstallCoreObjectsAsync(
@@ -62,13 +60,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             CancellationToken.None);
 
         _lifecycle = CreateLifecycle();
-
     }
 
     [Fact]
     public async Task A_zero_seed_preparation_returns_the_frozen_receipt_without_touching_storage()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         // No connection and no transaction: a zero inventory must not need either, because the whole
@@ -88,13 +84,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(CampaignPathRestoreCleanupIntentVector.EmptyDigest, prepared.Value.IntentVectorDigest);
 
         Assert.Equal(0, await CountIntentsAsync());
-
     }
 
     [Fact]
     public async Task An_uninitialized_seed_vector_is_not_a_proven_empty_inventory()
     {
-
         Result<CampaignPathRestoreCleanupPreparationReceipt> prepared =
             await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
                 new CampaignPathRestoreCleanupPreparation(Owner(), default),
@@ -104,13 +98,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(prepared.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, prepared.Error.Code);
-
     }
 
     [Fact]
     public async Task A_non_restore_owner_can_never_journal_a_restore_cleanup_child()
     {
-
         CovenantExclusiveRecoveryOwner wrongOperation = new(
             Guid.NewGuid(),
             CovenantExclusiveOperation.CovenantReset,
@@ -127,13 +119,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(prepared.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, prepared.Error.Code);
-
     }
 
     [Fact]
     public async Task Preparation_commits_one_child_per_marked_campaign_inside_the_caller_transaction()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot first = await CreateMarkedRootAsync("alpha", 3);
@@ -163,13 +153,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         await transaction.RollbackAsync(CancellationToken.None);
 
         Assert.Equal(0, await CountIntentsAsync());
-
     }
 
     [Fact]
     public async Task Owner_release_covers_restore_and_full_reset_maps_and_continues_after_disposal_fault()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot restoreRoot = await CreateMarkedRootAsync("release-restore", 16);
@@ -232,13 +220,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(1, recording.DisposeCalls);
 
         await transaction.RollbackAsync(CancellationToken.None);
-
     }
 
     [Fact]
     public async Task Scoped_lifecycle_disposal_drains_both_retained_authority_maps_exactly_once()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot restoreRoot = await CreateMarkedRootAsync("scope-restore", 18);
@@ -303,13 +289,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
                 CancellationToken.None));
 
         await transaction.RollbackAsync(CancellationToken.None);
-
     }
 
     [Fact]
     public async Task Scoped_lifecycle_disposal_atomically_refuses_new_root_retention()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         ServiceCollection services = new();
@@ -336,7 +320,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         try
         {
-
             Result<CampaignPathRestoreCleanupPreparationReceipt> prepared =
                 await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
                     new CampaignPathRestoreCleanupPreparation(owner, [root.Seed]),
@@ -353,23 +336,18 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                 await authority.OpenMarkerOrProveAbsentNoFollowAsync(
                     CancellationToken.None));
-
         }
         finally
         {
-
             await _lifecycle.ReleaseRetainedRootsAsync(owner.OperationId);
 
             await transaction.RollbackAsync(CancellationToken.None);
-
         }
-
     }
 
     [Fact]
     public async Task A_campaign_whose_marker_is_already_absent_contributes_no_child()
     {
-
         CampaignRoot marked = await CreateMarkedRootAsync("present", 2);
 
         CampaignRoot bare = await CreateRootAsync("absent", 4);
@@ -393,13 +371,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         await transaction.CommitAsync(CancellationToken.None);
 
         Assert.Equal(1, await CountIntentsAsync());
-
     }
 
     [Fact]
     public async Task A_seed_whose_root_is_blocked_refuses_the_whole_preparation()
     {
-
         CampaignRoot marked = await CreateMarkedRootAsync("open", 2);
 
         CampaignPathRestoreCleanupSeed blocked = marked.Seed with
@@ -422,13 +398,131 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(prepared.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, prepared.Error.Code);
+    }
 
+    /// <summary>
+    /// R-175: a restore's cleanup preparation is handed one opened root authority per Campaign, each holding
+    /// two directory handles, and it retains only the ones it makes a child for. The rest were never
+    /// released: not the root whose marker was already absent, not the roots a refusal never reached, and not
+    /// the root that failed the loop part-way. Every authority the preparation does not retain is now
+    /// disposed by the preparation, and the one it retained is left alone for the restore to release.
+    /// </summary>
+    [Fact]
+    public async Task Restore_preparation_disposes_every_unretained_seed_authority()
+    {
+        // The proven-absent arm: one child retained, the bare root's authority released.
+        CampaignRoot marked = await CreateMarkedRootAsync("kept", 2);
+
+        CampaignRoot bare = await CreateRootAsync("absent-marker", 4);
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        await using (SqliteTransaction transaction = await BeginAsync())
+        {
+            Result<CampaignPathRestoreCleanupPreparationReceipt> prepared =
+                await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
+                    new CampaignPathRestoreCleanupPreparation(owner, [marked.Seed, bare.Seed]),
+                    _database.Connection,
+                    transaction,
+                    CancellationToken.None);
+
+            Assert.True(prepared.IsSuccess, Describe(prepared));
+
+            Assert.True(await IsDisposedAsync(bare.Seed), "A proven-absent marker's root authority was leaked.");
+
+            Assert.False(await IsDisposedAsync(marked.Seed), "A retained root authority was disposed under the restore.");
+
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+
+        await _lifecycle.ReleaseRetainedRootsAsync(owner.OperationId);
+
+        // The refusal arm: a blocked seed refuses the whole preparation before anything is retained, so
+        // every opened authority it was handed is released.
+        CampaignRoot refusedOpen = await CreateMarkedRootAsync("refused-open", 6);
+
+        CampaignRoot refusedOther = await CreateMarkedRootAsync("refused-other", 8);
+
+        CampaignPathRestoreCleanupSeed blocked = refusedOpen.Seed with
+        {
+            CampaignId = Guid.NewGuid(),
+
+            Observation = new CampaignPathCleanupRootObservation.Unavailable(
+                new CampaignPathCleanupRootBlockerEvidence(
+                    CampaignPathCleanupRootBlocker.RootUnavailable,
+                    Digest(4),
+                    Digest(5))),
+        };
+
+        await using (SqliteTransaction transaction = await BeginAsync())
+        {
+            Result<CampaignPathRestoreCleanupPreparationReceipt> refused =
+                await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
+                    new CampaignPathRestoreCleanupPreparation(Owner(), [refusedOther.Seed, blocked]),
+                    _database.Connection,
+                    transaction,
+                    CancellationToken.None);
+
+            Assert.True(refused.IsFailure);
+
+            Assert.True(await IsDisposedAsync(refusedOther.Seed), "A refused preparation leaked an opened root authority.");
+
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+
+        // The mid-loop arm: the first root is retained, the second fails, and only the second is released.
+        CampaignRoot first = await CreateMarkedRootAsync("first", 10);
+
+        CampaignRoot stranger = await CreateRootAsync("stranger-marker", 12);
+
+        await WriteMarkerAsync(stranger, Guid.NewGuid(), 12);
+
+        CovenantExclusiveRecoveryOwner secondOwner = Owner();
+
+        await using (SqliteTransaction transaction = await BeginAsync())
+        {
+            Result<CampaignPathRestoreCleanupPreparationReceipt> failed =
+                await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
+                    new CampaignPathRestoreCleanupPreparation(secondOwner, [first.Seed, stranger.Seed]),
+                    _database.Connection,
+                    transaction,
+                    CancellationToken.None);
+
+            Assert.True(failed.IsFailure);
+
+            Assert.True(await IsDisposedAsync(stranger.Seed), "The root that failed the loop was leaked.");
+
+            Assert.False(await IsDisposedAsync(first.Seed), "A root retained before the failure was disposed.");
+
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+
+        await _lifecycle.ReleaseRetainedRootsAsync(secondOwner.OperationId);
+
+        Assert.True(await IsDisposedAsync(first.Seed), "Releasing the owner did not release the retained root.");
+    }
+
+    /// <summary>Whether a seed's root authority has been released, observed through the authority itself.</summary>
+    private static async Task<bool> IsDisposedAsync(CampaignPathRestoreCleanupSeed seed)
+    {
+        CampaignPathMarkerRootAuthority authority =
+            ((CampaignPathCleanupRootObservation.Opened)seed.Observation).RootAuthority;
+
+        try
+        {
+            _ = await authority.OpenMarkerOrProveAbsentNoFollowAsync(CancellationToken.None);
+
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            return true;
+        }
     }
 
     [Fact]
     public async Task A_marker_naming_different_ownership_blocks_rather_than_being_removed()
     {
-
         CampaignRoot root = await CreateRootAsync("stranger", 6);
 
         // A well-formed marker for a Campaign this seed does not name. Removing it would destroy a
@@ -446,20 +540,17 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, prepared.Error.Code);
 
         Assert.True(File.Exists(MarkerPath(root)));
-
     }
 
     [Fact]
     public async Task Replay_of_the_same_owner_and_campaign_returns_the_same_child_identity()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("replayed", 7);
 
         await using (SqliteTransaction first = await BeginAsync())
         {
-
             Result<CampaignPathRestoreCleanupPreparationReceipt> once =
                 await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
                     new CampaignPathRestoreCleanupPreparation(owner, [root.Seed]),
@@ -486,17 +577,14 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             Assert.Equal(once.Value.IntentVectorDigest, again.Value.IntentVectorDigest);
 
             await second.CommitAsync(CancellationToken.None);
-
         }
 
         Assert.Equal(1, await CountIntentsAsync());
-
     }
 
     [Fact]
     public async Task The_verified_zero_request_commits_without_opening_marker_storage()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         Result<CampaignPathMarkerGateCompletion> completed =
@@ -515,13 +603,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         // The frozen singleton itself, not a substitute that merely behaves like one.
         Assert.Same(CovenantNoOpPostDispositionFinalizer.Instance, completed.Value.Finalizer);
-
     }
 
     [Fact]
     public async Task A_zero_request_carrying_any_other_digest_keeps_admission_closed()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         Result<CampaignPathMarkerGateCompletion> completed =
@@ -535,13 +621,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(completed.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, completed.Error.Code);
-
     }
 
     [Fact]
     public async Task A_lease_that_does_not_carry_the_same_owner_reconciles_nothing()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CovenantExclusiveRecoveryOwner other = new(
@@ -560,13 +644,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(completed.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, completed.Error.Code);
-
     }
 
     [Fact]
     public async Task Reconciliation_deletes_each_exact_marker_and_completes_only_after_disposition()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot first = await CreateMarkedRootAsync("one", 3);
@@ -600,13 +682,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             CancellationToken.None)).IsSuccess);
 
         Assert.Equal(2, await CountPhaseAsync(12));
-
     }
 
     [Fact]
     public async Task The_marker_journal_finalizer_runs_exactly_once_and_only_for_a_commit()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("once", 2);
@@ -628,13 +708,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             CancellationToken.None)).IsFailure);
 
         Assert.Equal(0, await CountPhaseAsync(12));
-
     }
 
     [Fact]
     public async Task A_marker_that_changed_after_preparation_is_left_exactly_where_it_is()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("tampered", 3);
@@ -661,13 +739,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
 
         Assert.True(File.Exists(MarkerPath(root)));
-
     }
 
     [Fact]
     public async Task Reconciliation_that_names_a_different_vector_than_it_carries_is_refused()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("mismatch", 3);
@@ -688,13 +764,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, completed.Error.Code);
 
         Assert.True(File.Exists(MarkerPath(root)));
-
     }
 
     [Fact]
     public async Task A_restarted_process_proves_the_reopened_root_from_its_own_marker_and_deletes_it()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("restarted", 3);
@@ -716,13 +790,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             CancellationToken.None)).IsSuccess);
 
         Assert.Equal(1, await CountPhaseAsync(12));
-
     }
 
     [Fact]
     public async Task A_restarted_marker_bound_to_another_directory_is_left_untouched()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot stranger = await CreateRootAsync("stranger-root", 2);
@@ -747,13 +819,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
 
         Assert.True(File.Exists(MarkerPath(root)));
-
     }
 
     [Fact]
     public async Task A_restarted_marker_naming_a_different_campaign_keeps_admission_closed()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("restarted-stranger", 4);
@@ -773,13 +843,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
 
         Assert.True(File.Exists(MarkerPath(root)));
-
     }
 
     [Fact]
     public async Task A_restarted_marker_replaced_under_the_same_identity_is_left_untouched()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("restarted-tampered", 5);
@@ -804,13 +872,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
 
         Assert.True(File.Exists(MarkerPath(root)));
-
     }
 
     [Fact]
     public async Task A_restarted_process_whose_marker_is_already_gone_keeps_admission_closed()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("restarted-absent", 6);
@@ -828,13 +894,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(completed.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
-
     }
 
     [Fact]
     public async Task A_restarted_process_whose_recorded_root_is_gone_keeps_admission_closed()
     {
-
         CovenantExclusiveRecoveryOwner owner = Owner();
 
         CampaignRoot root = await CreateMarkedRootAsync("restarted-vanished", 7);
@@ -854,13 +918,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(completed.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task The_in_process_path_never_reaches_an_impostor_at_the_recorded_display_path()
     {
-
         // This is the in-process path, so the retained capability has to stay held — that is what
         // the test proves reaches its own root and never the name. Windows refuses to rename a
         // directory while a handle on anything beneath it is open, whatever the share mode, so the
@@ -896,24 +958,18 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(File.Exists(
             Path.Combine(root.Directory + "-moved", ".arcanum", "campaign-root.marker")));
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_database is not null)
         {
-
             await _database.DisposeAsync();
-
         }
-
     }
 
     public void Dispose()
     {
-
         try
         {
             Directory.Delete(_parent, recursive: true);
@@ -922,7 +978,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         {
             // A leftover scratch directory is not worth failing a suite over.
         }
-
     }
 
     private static CovenantExclusiveRecoveryOwner Owner() =>
@@ -957,7 +1012,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         CovenantExclusiveRecoveryOwner owner,
         ImmutableArray<CampaignPathRestoreCleanupSeed> seeds)
     {
-
         await using SqliteTransaction transaction = await BeginAsync();
 
         Result<CampaignPathRestoreCleanupPreparationReceipt> prepared =
@@ -972,7 +1026,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         await transaction.CommitAsync(CancellationToken.None);
 
         return prepared.Value;
-
     }
 
     private static async Task<Result<CampaignPathMarkerGateCompletion>> ReconcileAsync(
@@ -1003,7 +1056,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
     private async Task<CampaignRoot> CreateRootAsync(string name, long revision)
     {
-
         string directory = Directory.CreateDirectory(Path.Combine(_parent, name)).FullName;
 
         Guid campaignId = Guid.NewGuid();
@@ -1029,18 +1081,15 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
                 identity,
                 directory,
                 new CampaignPathCleanupRootObservation.Opened(opened.Value)));
-
     }
 
     private async Task<CampaignRoot> CreateMarkedRootAsync(string name, long revision)
     {
-
         CampaignRoot root = await CreateRootAsync(name, revision);
 
         await WriteMarkerAsync(root, root.Seed.CampaignId, revision);
 
         return root;
-
     }
 
     /// <summary>
@@ -1053,7 +1102,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         byte secretSeed = 0x33,
         (ulong VolumeId, ulong FileId)? rootTuple = null)
     {
-
         CampaignPathMarkerRootAuthority authority =
             ((CampaignPathCleanupRootObservation.Opened)root.Seed.Observation).RootAuthority;
 
@@ -1088,7 +1136,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             temporary.PhysicalIdentityDigest,
             encoded.Value,
             CancellationToken.None)).IsSuccess);
-
     }
 
     /// <summary>
@@ -1096,13 +1143,11 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
     /// </summary>
     private static (ulong VolumeId, ulong FileId) ReadRootTuple(string directory)
     {
-
         Assert.True(FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
             directory,
             out FileHandleMetadata metadata));
 
         return (metadata.Identity.VolumeId, metadata.Identity.FileId);
-
     }
 
     private static void AddFullResetRetainedRoot(
@@ -1111,7 +1156,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Guid campaignId,
         CampaignPathMarkerRootAuthority authority)
     {
-
         FieldInfo mapField = typeof(CampaignPathMarkerLifecycle).GetField(
             "_fullResetRetainedRoots",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -1130,14 +1174,12 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         MethodInfo tryAdd = map.GetType().GetMethod("TryAdd")!;
 
         Assert.True((bool)tryAdd.Invoke(map, [key, authority])!);
-
     }
 
     private static int RetainedMapCount(
         CampaignPathMarkerLifecycle lifecycle,
         string fieldName)
     {
-
         FieldInfo mapField = typeof(CampaignPathMarkerLifecycle).GetField(
             fieldName,
             BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -1145,49 +1187,38 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         object map = mapField.GetValue(lifecycle)!;
 
         return (int)map.GetType().GetProperty("Count")!.GetValue(map)!;
-
     }
 
     private sealed record CampaignRoot(string Directory, CampaignPathRestoreCleanupSeed Seed);
 
     private sealed class ThrowingAsyncDisposable : IAsyncDisposable
     {
-
         internal int DisposeCalls { get; private set; }
 
         public ValueTask DisposeAsync()
         {
-
             DisposeCalls++;
 
             throw new IOException("The disposal sentinel diagnostic must not escape.");
-
         }
-
     }
 
     private sealed class RecordingAsyncDisposable : IAsyncDisposable
     {
-
         internal int DisposeCalls { get; private set; }
 
         public ValueTask DisposeAsync()
         {
-
             DisposeCalls++;
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private sealed class StubKeySource(byte[] key) : ICampaignRootIdentityKeyProvider
     {
-
         public bool TryCopyRootIdentityKey(Span<byte> destination)
         {
-
             if (destination.Length < key.Length)
             {
                 return false;
@@ -1196,9 +1227,7 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             key.CopyTo(destination);
 
             return true;
-
         }
-
     }
 
     /// <summary>
@@ -1208,7 +1237,6 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
     private sealed class StubExclusiveLease(CovenantExclusiveRecoveryOwner owner)
         : ICovenantExclusiveOperationLease
     {
-
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             Guid.NewGuid(),
             1,
@@ -1239,7 +1267,5 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
             ValueTask.FromResult(Result.Success());
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
-
 }

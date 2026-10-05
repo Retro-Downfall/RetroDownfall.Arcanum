@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -933,6 +934,195 @@ public sealed class CovenantMemoryReviewServiceTests
             $"SELECT count(*) FROM covenant_heads WHERE CurrentVersionId IN ('{first.VersionId:D}', '{second.VersionId:D}');"));
     }
 
+    /// <summary>
+    /// R-171: Covenant's apply took its write transaction outside any busy retry, so a database another
+    /// writer briefly held surfaced as a raw SQLITE_BUSY exception from the first attempt. The transaction
+    /// now retries busy and, once the bound is spent, answers the store's own stable write-failed error
+    /// with nothing written; the same prepared request then applies cleanly when the writer lets go.
+    /// </summary>
+    [Fact]
+    public async Task Apply_returns_a_stable_error_when_the_database_is_busy()
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync(busyRetryDeadline: TimeSpan.Zero);
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        _ = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "busy.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "content",
+            Token);
+
+        CovenantReviewItemDto observed;
+
+        await using (CovenantReadLease listLease = runtime.ReadLease())
+        {
+            observed = Assert.Single((await runtime.Service.ListAsync(
+                new CovenantReviewListRequest(
+                    CovenantScope.Campaign,
+                    CampaignOne,
+                    CovenantLane.Confirmed,
+                    MemoryReviewLimits.MaxPageSize,
+                    Cursor: null),
+                listLease,
+                Token)).Value.Items);
+        }
+
+        CovenantReviewBulkPrepareRequest confirm = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Campaign,
+            CampaignOne,
+            CovenantLane.Confirmed,
+            MemoryReviewAction.Confirm,
+            [new CovenantReviewDecision(observed.ObservationToken, null)]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        await using (CovenantReadLease prepareLease = runtime.ReadLease())
+        {
+            plan = (await runtime.Service.PrepareAsync(confirm, prepareLease, Token)).Value;
+        }
+
+        // The review's own connection gives up on a held write lock quickly, so the busy answer is prompt.
+        runtime.Fixture.Connection.DefaultTimeout = 1;
+
+        await ExecuteAsync(runtime.Fixture.Connection, "PRAGMA busy_timeout = 50;");
+
+        await using SqliteConnection writer = await runtime.Fixture.OpenAdditionalConnectionAsync(Token);
+
+        await ExecuteAsync(writer, "BEGIN IMMEDIATE;");
+
+        Result<MemoryReviewBulkResultDto> busy;
+
+        await using (CovenantWriteLease writeLease = runtime.WriteLease())
+        {
+            busy = await runtime.Service.ApplyAsync(
+                new CovenantReviewBulkApplyRequest(confirm, plan.PreparedPlanToken),
+                writeLease,
+                Token);
+        }
+
+        Assert.True(busy.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.WriteFailed, busy.Error.Code);
+
+        Assert.DoesNotContain("busy.key", busy.Error.Message, StringComparison.Ordinal);
+
+        // Not swallowed: the exhausted retry leaves exactly one error line, as content-free as the answer.
+        TestLogEntry logged = Assert.Single(runtime.Logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.Null(logged.Exception);
+
+        Assert.DoesNotContain("busy.key", logged.Message, StringComparison.Ordinal);
+
+        await ExecuteAsync(writer, "ROLLBACK;");
+
+        Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_decision_receipts;"));
+
+        await using CovenantWriteLease retryLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> applied = await runtime.Service.ApplyAsync(
+            new CovenantReviewBulkApplyRequest(confirm, plan.PreparedPlanToken),
+            retryLease,
+            Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        Assert.Equal("Confirmed", Assert.Single(applied.Value.Items).Outcome);
+    }
+
+    /// <summary>
+    /// R-171: the retry is real, not just a bound. A writer that holds the database across the first
+    /// attempt and lets go while the apply waits does not fail the apply; the second attempt commits it
+    /// once, and replaying that request answers from the receipts it wrote.
+    /// </summary>
+    [Fact]
+    public async Task Apply_retries_a_busy_database_and_commits_once_the_writer_lets_go()
+    {
+        SqliteConnection? writer = null;
+
+        int waits = 0;
+
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync(
+            busyRetryDeadline: TimeSpan.FromMinutes(1),
+            busyRetryDelay: async (_, _) =>
+            {
+                waits++;
+
+                await ExecuteAsync(writer!, "ROLLBACK;");
+            });
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        _ = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "busy.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "content",
+            Token);
+
+        CovenantReviewItemDto observed;
+
+        await using (CovenantReadLease listLease = runtime.ReadLease())
+        {
+            observed = Assert.Single((await runtime.Service.ListAsync(
+                new CovenantReviewListRequest(
+                    CovenantScope.Campaign,
+                    CampaignOne,
+                    CovenantLane.Confirmed,
+                    MemoryReviewLimits.MaxPageSize,
+                    Cursor: null),
+                listLease,
+                Token)).Value.Items);
+        }
+
+        CovenantReviewBulkPrepareRequest confirm = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Campaign,
+            CampaignOne,
+            CovenantLane.Confirmed,
+            MemoryReviewAction.Confirm,
+            [new CovenantReviewDecision(observed.ObservationToken, null)]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        await using (CovenantReadLease prepareLease = runtime.ReadLease())
+        {
+            plan = (await runtime.Service.PrepareAsync(confirm, prepareLease, Token)).Value;
+        }
+
+        runtime.Fixture.Connection.DefaultTimeout = 1;
+
+        await ExecuteAsync(runtime.Fixture.Connection, "PRAGMA busy_timeout = 50;");
+
+        writer = await runtime.Fixture.OpenAdditionalConnectionAsync(Token);
+
+        await using (writer)
+        {
+            await ExecuteAsync(writer, "BEGIN IMMEDIATE;");
+
+            await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+            Result<MemoryReviewBulkResultDto> applied = await runtime.Service.ApplyAsync(
+                new CovenantReviewBulkApplyRequest(confirm, plan.PreparedPlanToken),
+                writeLease,
+                Token);
+
+            Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+            Assert.False(applied.Value.Replayed);
+
+            Assert.Equal(1, waits);
+        }
+
+        Assert.Equal(1L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_decision_receipts;"));
+    }
+
     [Fact]
     public async Task Retire_uses_the_mutation_kernel_and_leaves_its_new_tombstone_event_reviewable()
     {
@@ -1454,13 +1644,15 @@ public sealed class CovenantMemoryReviewServiceTests
             CovenantMemoryReviewService service,
             MemoryReviewTokenCodec codec,
             Guid datasetGeneration,
-            FakeTimeProvider time)
+            FakeTimeProvider time,
+            TestCapturingLogger<CovenantMemoryReviewService> logger)
         {
             Fixture = fixture;
             Service = service;
             Codec = codec;
             DatasetGeneration = datasetGeneration;
             Time = time;
+            Logger = logger;
         }
 
         internal CovenantCanonicalFixture Fixture { get; }
@@ -1471,13 +1663,18 @@ public sealed class CovenantMemoryReviewServiceTests
 
         internal FakeTimeProvider Time { get; }
 
+        internal TestCapturingLogger<CovenantMemoryReviewService> Logger { get; }
+
         private Guid DatasetGeneration { get; }
 
         /// <param name="withErasureEvidence">
         /// Gives the catalog the erasure fingerprint table and builds the kernel over the fixture's own
         /// keyring, so the review captures the latch the suite drives.
         /// </param>
-        internal static async Task<ReviewRuntime> CreateAsync(bool withErasureEvidence = false)
+        internal static async Task<ReviewRuntime> CreateAsync(
+            bool withErasureEvidence = false,
+            TimeSpan? busyRetryDeadline = null,
+            Func<TimeSpan, CancellationToken, Task>? busyRetryDelay = null)
         {
             CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
                 Token,
@@ -1485,6 +1682,7 @@ public sealed class CovenantMemoryReviewServiceTests
             Guid dataset = await fixture.ReadDatasetGenerationAsync(Token);
             FakeTimeProvider time = new();
             MemoryReviewTokenCodec codec = new(time);
+            TestCapturingLogger<CovenantMemoryReviewService> logger = new();
 
             CovenantMemoryReviewService service = new(
                 new FixedCovenantConnectionSource(fixture.Connection),
@@ -1495,9 +1693,16 @@ public sealed class CovenantMemoryReviewServiceTests
                     withErasureEvidence ? fixture.ErasureKeys : MemoryErasureTestKeys.Isolated()),
                 new CovenantCurationKernel(),
                 time,
-                DetachedAvailabilityRepublisher.Create());
+                DetachedAvailabilityRepublisher.Create(),
+                logger)
+            {
+                // Retrying is real; only the clock it waits on is the test's, so exhausting it is instant.
+                BusyRetryDeadlineForTesting = busyRetryDeadline,
+                BusyRetryDelayForTesting = busyRetryDelay
+                    ?? (busyRetryDeadline is null ? null : static (_, _) => Task.CompletedTask),
+            };
 
-            return new ReviewRuntime(fixture, service, codec, dataset, time);
+            return new ReviewRuntime(fixture, service, codec, dataset, time, logger);
         }
 
         internal CovenantReadLease ReadLease(Guid? campaignId = null) =>

@@ -2021,7 +2021,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(
             static sp => new CovenantOperationGate(
                 sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
-                sp.GetRequiredService<ICovenantCampaignScopeProbe>()));
+                sp.GetRequiredService<ICovenantCampaignScopeProbe>(),
+                sp.GetRequiredService<ILogger<CovenantOperationGate>>()));
 
         services.AddSingleton<ICovenantOperationGate>(
             static sp => sp.GetRequiredService<CovenantOperationGate>());
@@ -2086,7 +2087,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantMutationKernel>(),
             sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<TimeProvider>(),
-            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
+            sp.GetRequiredService<ILogger<CovenantMemoryReviewService>>()));
 
         services.AddScoped<ICovenantContextProvider>(
             static sp => new CovenantContextProvider(

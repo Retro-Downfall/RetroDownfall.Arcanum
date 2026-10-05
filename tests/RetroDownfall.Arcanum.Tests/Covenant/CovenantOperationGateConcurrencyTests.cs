@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantOperationGateConcurrencyTests
 {
-
     private const int Seed = 20260815;
 
     private static CancellationToken Token => CancellationToken.None;
@@ -21,15 +20,21 @@ public sealed class CovenantOperationGateConcurrencyTests
     [Fact]
     public async Task Thirty_two_readers_and_eight_writers_never_overlap_a_close()
     {
-
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
             drainTimeout: TimeSpan.FromSeconds(30));
 
         Random random = new(Seed);
 
-        int[] delays = [.. Enumerable.Range(0, 40).Select(_ => random.Next(0, 5))];
+        // How many scheduler turns each worker spends between steps. Counted in yields rather than
+        // milliseconds so the schedule does not depend on how loaded the machine is: the shared fake clock
+        // has no timers, and a wall-clock delay would make the interleaving a property of the host.
+        int[] turns = [.. Enumerable.Range(0, 40).Select(_ => 1 + random.Next(0, 5) * 8)];
 
+        // Readers that held a live lease while an exclusive operation held its closure. The close drains
+        // every holder first, so this must stay zero; it is asserted at the end.
         int liveDuringClose = 0;
+
+        int exclusivesHeld = 0;
 
         int closesObserved = 0;
 
@@ -39,16 +44,13 @@ public sealed class CovenantOperationGateConcurrencyTests
 
         for (int index = 0; index < 32; index++)
         {
-
             int slot = index;
 
             workers.Add(Task.Run(
                 async () =>
                 {
-
                     while (!stop.IsCancellationRequested)
                     {
-
                         Result<CovenantReadLease> acquired = await gate.AcquireReadAsync(
                             slot % 2 == 0
                                 ? CovenantOperationScope.Global
@@ -57,44 +59,41 @@ public sealed class CovenantOperationGateConcurrencyTests
 
                         if (acquired.IsFailure)
                         {
-
-                            await Task.Delay(delays[slot], Token);
+                            await YieldAsync(turns[slot]);
 
                             continue;
-
                         }
 
                         await using CovenantReadLease lease = acquired.Value;
 
-                        if (Volatile.Read(ref closesObserved) > 0 && lease.Revocation.IsCancellationRequested)
+                        // Checked while this lease is live: an exclusive holder cannot exist yet, because
+                        // its drain is waiting for exactly this registration to release.
+                        if (Volatile.Read(ref exclusivesHeld) > 0)
                         {
-
                             _ = Interlocked.Increment(ref liveDuringClose);
-
                         }
 
-                        await Task.Delay(delays[slot], Token);
+                        await YieldAsync(turns[slot]);
 
+                        if (Volatile.Read(ref exclusivesHeld) > 0)
+                        {
+                            _ = Interlocked.Increment(ref liveDuringClose);
+                        }
                     }
-
                 },
                 Token));
-
         }
 
         for (int index = 0; index < 8; index++)
         {
-
             int slot = 32 + index;
 
             workers.Add(Task.Run(
                 async () =>
                 {
-
                     for (int round = 0; round < 4; round++)
                     {
-
-                        await Task.Delay(delays[slot], Token);
+                        await YieldAsync(turns[slot]);
 
                         Result<CovenantExclusiveLease> exclusive = await gate.AcquireExclusiveAsync(
                             CovenantOperationGateFixture.Owner(
@@ -104,27 +103,30 @@ public sealed class CovenantOperationGateConcurrencyTests
 
                         if (exclusive.IsFailure)
                         {
-
                             continue;
-
                         }
 
                         _ = Interlocked.Increment(ref closesObserved);
 
+                        _ = Interlocked.Increment(ref exclusivesHeld);
+
                         // Nothing else may hold a lease at this instant: the close drained them all.
                         Assert.Equal(0, gate.LiveRegistrationCount);
+
+                        await YieldAsync(turns[slot]);
+
+                        // Released before the disposition reopens admission, so a reader that acquires the
+                        // moment it reopens is never mistaken for one that overlapped the close.
+                        _ = Interlocked.Decrement(ref exclusivesHeld);
 
                         _ = await exclusive.Value.CompleteAsync(
                             CovenantExclusiveLeaseDisposition.CommitAndReopen,
                             Token);
 
                         await exclusive.Value.DisposeAsync();
-
                     }
-
                 },
                 Token));
-
         }
 
         await Task.WhenAll(workers.Skip(32));
@@ -135,14 +137,22 @@ public sealed class CovenantOperationGateConcurrencyTests
 
         Assert.True(Volatile.Read(ref closesObserved) > 0, "No exclusive close ever won the race.");
 
-        Assert.Equal(0, gate.LiveRegistrationCount);
+        Assert.Equal(0, Volatile.Read(ref liveDuringClose));
 
+        Assert.Equal(0, gate.LiveRegistrationCount);
+    }
+
+    private static async Task YieldAsync(int turns)
+    {
+        for (int turn = 0; turn < turns; turn++)
+        {
+            await Task.Yield();
+        }
     }
 
     [Fact]
     public async Task A_campaign_close_leaves_unrelated_scopes_running()
     {
-
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
             drainTimeout: TimeSpan.FromSeconds(30));
 
@@ -158,13 +168,11 @@ public sealed class CovenantOperationGateConcurrencyTests
         Assert.False(unrelated.Revocation.IsCancellationRequested);
 
         Assert.True((await unrelated.RevalidateAsync(Token)).IsSuccess);
-
     }
 
     [Fact]
     public async Task Two_campaign_closes_do_not_deadlock_each_other()
     {
-
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
             drainTimeout: TimeSpan.FromSeconds(30));
 
@@ -186,21 +194,17 @@ public sealed class CovenantOperationGateConcurrencyTests
 
         foreach (Result<CovenantCampaignExclusiveLease> result in results)
         {
-
             _ = await result.Value.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, Token);
 
             await result.Value.DisposeAsync();
-
         }
 
         Assert.Equal(0, gate.LiveRegistrationCount);
-
     }
 
     [Fact]
     public async Task Concurrent_disposal_releases_a_registration_exactly_once()
     {
-
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
         CovenantReadLease lease = (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
@@ -210,7 +214,5 @@ public sealed class CovenantOperationGateConcurrencyTests
         await Task.WhenAll(disposals);
 
         Assert.Equal(0, gate.LiveRegistrationCount);
-
     }
-
 }

@@ -35,7 +35,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class SessionEndpoints
 {
-
     private static readonly byte[] SseDone = "data: [DONE]\n\n"u8.ToArray();
 
     private static readonly byte[] SseLiveSentinel = "data: {\"type\":\"live\"}\n\n"u8.ToArray();
@@ -56,13 +55,11 @@ internal static class SessionEndpoints
 
                 if (request is null)
                 {
-
                     return Results.BadRequest(
                         ApiResponse<SessionDetailDto>.FromResult(
                             Result<SessionDetailDto>.Failure(
                                 new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
-
                 }
 
                 Session session = await repo
@@ -259,11 +256,9 @@ internal static class SessionEndpoints
         .WithName("GetSessionAttachments");
 
         apiGroup.MapPost(
-
             "/sessions/{id:guid}/attachments",
 
             async (
-
                 Guid id,
 
                 ISessionRepository repo,
@@ -277,21 +272,17 @@ internal static class SessionEndpoints
                 HttpContext ctx) =>
 
             {
-
                 ArcanumSettings settings = options.CurrentValue;
 
                 if (!settings.ResolveAttachments().Enabled)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.Disabled,
 
                         "Session attachments are disabled.");
-
                 }
 
                 Session? session = await repo
@@ -303,29 +294,23 @@ internal static class SessionEndpoints
                 if (session is null)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Session.NotFound,
 
                         "Session was not found.");
-
                 }
 
                 if (!ctx.Request.HasFormContentType)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidRequest,
 
                         "A multipart form with a 'file' field is required.");
-
                 }
 
                 long maximumReadBytes = SessionAttachmentContentPolicy
@@ -333,7 +318,6 @@ internal static class SessionEndpoints
                     .ResolveMaximumReadBytes(settings);
 
                 long maximumRequestBytes = ResolveAttachmentMultipartRequestLimit(
-
                     maximumReadBytes);
 
                 if (ctx.Request.ContentLength is { } contentLength
@@ -341,15 +325,12 @@ internal static class SessionEndpoints
                     && contentLength > maximumRequestBytes)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.TooLarge,
 
                         $"The multipart attachment request exceeds the {maximumRequestBytes}-byte aggregate limit.");
-
                 }
 
                 IHttpMaxRequestBodySizeFeature? requestBodySize = ctx.Features
@@ -359,11 +340,9 @@ internal static class SessionEndpoints
                 if (requestBodySize is { IsReadOnly: false })
 
                 {
-
                     requestBodySize.MaxRequestBodySize =
 
                         ResolveAttachmentMultipartTransportLimit(maximumRequestBytes);
-
                 }
 
                 IFormCollection form;
@@ -371,7 +350,6 @@ internal static class SessionEndpoints
                 Stream originalBody = ctx.Request.Body;
 
                 using AttachmentMultipartAggregateReadStream aggregateBody = new(
-
                     originalBody,
 
                     maximumRequestBytes);
@@ -379,28 +357,23 @@ internal static class SessionEndpoints
                 try
 
                 {
-
                     ctx.Request.Body = aggregateBody;
 
                     form = await ctx.Request
 
                         .ReadFormAsync(
-
                             CreateAttachmentFormOptions(maximumReadBytes),
 
                             ctx.RequestAborted)
 
                         .ConfigureAwait(false);
-
                 }
                 catch (Exception exception) when (exception is InvalidDataException or BadHttpRequestException)
 
                 {
-
                     string errorCode = ResolveAttachmentFormErrorCode(exception);
 
                     return AttachmentFailure(
-
                         ctx,
 
                         errorCode,
@@ -410,14 +383,11 @@ internal static class SessionEndpoints
                             ? "The attachment exceeds the multipart read limit."
 
                             : "The multipart attachment request could not be read.");
-
                 }
                 finally
 
                 {
-
                     ctx.Request.Body = originalBody;
-
                 }
 
                 IFormFile? file = form.Files.GetFile("file");
@@ -425,21 +395,17 @@ internal static class SessionEndpoints
                 if (file is null)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidRequest,
 
                         "A multipart 'file' field is required.");
-
                 }
 
                 string submittedFileName = GetSubmittedFileName(file.FileName);
 
                 if (!SessionAttachmentPathSanitizer.TrySanitize(
-
                         submittedFileName,
 
                         out string safeFileName,
@@ -447,15 +413,12 @@ internal static class SessionEndpoints
                         out _))
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidRequest,
 
                         "The attachment filename is invalid.");
-
                 }
 
                 string logicalNameHint = form["logicalName"].ToString();
@@ -463,13 +426,10 @@ internal static class SessionEndpoints
                 if (string.IsNullOrWhiteSpace(logicalNameHint))
 
                 {
-
                     logicalNameHint = safeFileName;
-
                 }
 
                 if (!SessionAttachmentPathSanitizer.TrySanitize(
-
                         logicalNameHint,
 
                         out string safeLogicalName,
@@ -477,49 +437,39 @@ internal static class SessionEndpoints
                         out _))
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidRequest,
 
                         "The attachment logical name is invalid.");
-
                 }
 
                 string declaredMimeType = NormalizeMimeType(file.ContentType);
 
                 if (UploadedFileMimeValidator.IsExtensionMimeMismatch(
-
                         safeFileName,
 
                         declaredMimeType))
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidContent,
 
                         "The attachment filename extension does not match its declared content type.");
-
                 }
 
                 if (file.Length > maximumReadBytes || file.Length > int.MaxValue)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.TooLarge,
 
                         $"The attachment exceeds the {maximumReadBytes}-byte read limit.");
-
                 }
 
                 byte[] bytes;
@@ -527,7 +477,6 @@ internal static class SessionEndpoints
                 await using (Stream source = file.OpenReadStream())
 
                 {
-
                     using MemoryStream buffer = new((int)file.Length);
 
                     await source
@@ -539,25 +488,20 @@ internal static class SessionEndpoints
                     if (buffer.Length > maximumReadBytes)
 
                     {
-
                         return AttachmentFailure(
-
                             ctx,
 
                             ErrorCodes.Attachment.TooLarge,
 
                             $"The attachment exceeds the {maximumReadBytes}-byte read limit.");
-
                     }
 
                     bytes = buffer.ToArray();
-
                 }
 
                 string detectedMimeType = AttachmentMimeDetector.Detect(bytes, safeFileName);
 
                 string mimeType = ResolveSnapshotMimeType(
-
                     declaredMimeType,
 
                     detectedMimeType);
@@ -565,7 +509,6 @@ internal static class SessionEndpoints
                 SessionAttachmentKind kind = SessionAttachmentContentPolicy.Classify(mimeType);
 
                 string? validationError = SessionAttachmentContentPolicy.Validate(
-
                     kind,
 
                     bytes,
@@ -577,9 +520,7 @@ internal static class SessionEndpoints
                 if (validationError is not null)
 
                 {
-
                     string errorCode = validationError.Contains(
-
                         "byte limit",
 
                         StringComparison.OrdinalIgnoreCase)
@@ -589,7 +530,6 @@ internal static class SessionEndpoints
                             : ErrorCodes.Attachment.InvalidContent;
 
                     return AttachmentFailure(ctx, errorCode, validationError);
-
                 }
 
                 SessionAttachmentRecord attachment;
@@ -597,11 +537,9 @@ internal static class SessionEndpoints
                 try
 
                 {
-
                     attachment = await store
 
                         .PersistNewAsync(
-
                             id,
 
                             pendingTurnId: null,
@@ -621,24 +559,19 @@ internal static class SessionEndpoints
                             ctx.RequestAborted)
 
                         .ConfigureAwait(false);
-
                 }
                 catch (InvalidOperationException)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.LimitExceeded,
 
                         "The session attachment storage limit would be exceeded.");
-
                 }
 
                 SessionAttachmentDto dto = await ToAttachmentDtoAsync(
-
                     attachment,
 
                     attachmentRetrieval,
@@ -650,25 +583,20 @@ internal static class SessionEndpoints
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 return Results.Created(
-
                     $"/api/sessions/{id:D}/attachments/{attachment.Id:D}/content",
 
                     ApiResponse<SessionAttachmentDto>.FromResult(
-
                         Result<SessionAttachmentDto>.Success(dto),
 
                         traceId));
-
             })
 
         .WithName("CreateSessionAttachmentSnapshot");
 
         apiGroup.MapPost(
-
             "/sessions/{id:guid}/attachments/reference",
 
             async (
-
                 Guid id,
 
                 ISessionRepository repo,
@@ -688,21 +616,17 @@ internal static class SessionEndpoints
                 HttpContext ctx) =>
 
             {
-
                 ArcanumSettings settings = options.CurrentValue;
 
                 if (!settings.ResolveAttachments().Enabled)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.Disabled,
 
                         "Session attachments are disabled.");
-
                 }
 
                 Session? session = await repo
@@ -714,15 +638,12 @@ internal static class SessionEndpoints
                 if (session is null)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Session.NotFound,
 
                         "Session was not found.");
-
                 }
 
                 CreateSessionAttachmentReferenceRequest? request;
@@ -730,13 +651,11 @@ internal static class SessionEndpoints
                 IResult? jsonError;
 
                 (request, jsonError) = await ApiRequestJson.ReadAsync(
-
                     ctx,
 
                     ArcanumJsonContext.Default.CreateSessionAttachmentReferenceRequest,
 
                     static httpContext => ApiRequestJson.InvalidBodyResult<SessionAttachmentDto>(
-
                         httpContext,
 
                         ApiRequestJson.MalformedJsonMessage,
@@ -750,23 +669,18 @@ internal static class SessionEndpoints
                 if (jsonError is not null)
 
                 {
-
                     return jsonError;
-
                 }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.WorkspacePath))
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidRequest,
 
                         "A workspace path is required.");
-
                 }
 
                 string? workspaceRoot;
@@ -776,7 +690,6 @@ internal static class SessionEndpoints
                 if (!string.IsNullOrWhiteSpace(request.WorkspaceId))
 
                 {
-
                     WorkspaceInfo? workspace = await workspaceRegistry
 
                         .GetAsync(request.WorkspaceId.Trim(), ctx.RequestAborted)
@@ -786,42 +699,33 @@ internal static class SessionEndpoints
                     if (workspace is null)
 
                     {
-
                         return AttachmentFailure(
-
                             ctx,
 
                             ErrorCodes.Workspace.NotFound,
 
                             "No workspace exists with that id.");
-
                     }
 
                     workspaceRoot = workspace.Path;
 
                     explicitRegisteredWorkspace = true;
-
                 }
                 else
 
                 {
-
                     workspaceRoot = settings.ResolveDefaultWorkspace();
-
                 }
 
                 if (string.IsNullOrWhiteSpace(workspaceRoot))
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.SourceUnavailable,
 
                         "No server workspace is available for attachment references.");
-
                 }
 
                 string normalizedRoot;
@@ -831,7 +735,6 @@ internal static class SessionEndpoints
                 try
 
                 {
-
                     normalizedRoot = Path.GetFullPath(workspaceRoot);
 
                     candidate = Path.IsPathRooted(request.WorkspacePath)
@@ -839,26 +742,21 @@ internal static class SessionEndpoints
                         ? Path.GetFullPath(request.WorkspacePath)
 
                         : Path.GetFullPath(Path.Combine(normalizedRoot, request.WorkspacePath));
-
                 }
                 catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidReference,
 
                         "The workspace attachment path is invalid.");
-
                 }
 
                 string submittedFileName = GetSubmittedFileName(request.WorkspacePath);
 
                 if (!SessionAttachmentPathSanitizer.TrySanitize(
-
                         submittedFileName,
 
                         out string safeFileName,
@@ -866,15 +764,12 @@ internal static class SessionEndpoints
                         out _))
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidRequest,
 
                         "The attachment filename is invalid.");
-
                 }
 
                 string logicalNameHint = string.IsNullOrWhiteSpace(request.LogicalName)
@@ -884,7 +779,6 @@ internal static class SessionEndpoints
                     : request.LogicalName;
 
                 if (!SessionAttachmentPathSanitizer.TrySanitize(
-
                         logicalNameHint,
 
                         out string safeLogicalName,
@@ -892,37 +786,29 @@ internal static class SessionEndpoints
                         out _))
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.InvalidRequest,
 
                         "The attachment logical name is invalid.");
-
                 }
 
                 async Task<bool> AuthorizeCanonicalPathAsync(
-
                     string canonicalPath,
 
                     CancellationToken cancellationToken)
 
                 {
-
                     if (session.CampaignId is not { } campaignId)
 
                     {
-
                         return true;
-
                     }
 
                     SanctumResult result = await sanctumGuard
 
                         .ValidatePathAsync(
-
                             campaignId.ToString("D"),
 
                             canonicalPath,
@@ -936,7 +822,6 @@ internal static class SessionEndpoints
                         .ConfigureAwait(false);
 
                     return result.Allowed;
-
                 }
 
                 long maximumReadBytes = SessionAttachmentContentPolicy
@@ -946,9 +831,7 @@ internal static class SessionEndpoints
                 AttachmentSourceResolution resolution = await sourceResolver
 
                     .ResolveForReferenceAsync(
-
                         new AttachmentSourceClaim(
-
                             candidate,
 
                             explicitRegisteredWorkspace ? normalizedRoot : null),
@@ -962,7 +845,6 @@ internal static class SessionEndpoints
                     .ConfigureAwait(false);
 
                 IResult? resolutionError = ResolveAttachmentReferenceError(
-
                     ctx,
 
                     resolution,
@@ -972,9 +854,7 @@ internal static class SessionEndpoints
                 if (resolutionError is not null)
 
                 {
-
                     return resolutionError;
-
                 }
 
                 string mimeType = resolution.DetectedMimeType!;
@@ -982,7 +862,6 @@ internal static class SessionEndpoints
                 SessionAttachmentKind kind = SessionAttachmentContentPolicy.Classify(mimeType);
 
                 string? validationError = SessionAttachmentContentPolicy.Validate(
-
                     kind,
 
                     resolution.VerifiedBytes,
@@ -994,9 +873,7 @@ internal static class SessionEndpoints
                 if (validationError is not null)
 
                 {
-
                     string errorCode = validationError.Contains(
-
                         "byte limit",
 
                         StringComparison.OrdinalIgnoreCase)
@@ -1006,7 +883,6 @@ internal static class SessionEndpoints
                             : ErrorCodes.Attachment.InvalidContent;
 
                     return AttachmentFailure(ctx, errorCode, validationError);
-
                 }
 
                 SessionAttachmentRecord attachment;
@@ -1014,11 +890,9 @@ internal static class SessionEndpoints
                 try
 
                 {
-
                     attachment = await store
 
                         .PersistNewResolvedSourceAsync(
-
                             id,
 
                             pendingTurnId: null,
@@ -1036,24 +910,19 @@ internal static class SessionEndpoints
                             ctx.RequestAborted)
 
                         .ConfigureAwait(false);
-
                 }
                 catch (InvalidOperationException)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.LimitExceeded,
 
                         "The session attachment storage limit would be exceeded.");
-
                 }
 
                 SessionAttachmentDto dto = await ToAttachmentDtoAsync(
-
                     attachment,
 
                     attachmentRetrieval,
@@ -1065,25 +934,20 @@ internal static class SessionEndpoints
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 return Results.Created(
-
                     $"/api/sessions/{id:D}/attachments/{attachment.Id:D}/content",
 
                     ApiResponse<SessionAttachmentDto>.FromResult(
-
                         Result<SessionAttachmentDto>.Success(dto),
 
                         traceId));
-
             })
 
         .WithName("CreateSessionAttachmentReference");
 
         apiGroup.MapGet(
-
             "/sessions/{id:guid}/attachments/{attachmentId:guid}/content",
 
             async (
-
                 Guid id,
 
                 Guid attachmentId,
@@ -1097,19 +961,15 @@ internal static class SessionEndpoints
                 HttpContext ctx) =>
 
             {
-
                 if (!options.CurrentValue.ResolveAttachments().Enabled)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.Disabled,
 
                         "Session attachments are disabled.");
-
                 }
 
                 Session? session = await repo
@@ -1121,15 +981,12 @@ internal static class SessionEndpoints
                 if (session is null)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Session.NotFound,
 
                         "Session was not found.");
-
                 }
 
                 SessionAttachmentRecord? attachment = await store
@@ -1145,15 +1002,12 @@ internal static class SessionEndpoints
                     || attachment.SessionId != id)
 
                 {
-
                     return AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.NotFound,
 
                         "Attachment was not found in this session.");
-
                 }
 
                 Stream plaintext = await store
@@ -1163,7 +1017,6 @@ internal static class SessionEndpoints
                     .ConfigureAwait(false);
 
                 string downloadName = SessionAttachmentPathSanitizer.TrySanitize(
-
                     attachment.OriginalFileName,
 
                     out string safeFileName,
@@ -1185,7 +1038,6 @@ internal static class SessionEndpoints
                 ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
 
                 return Results.Stream(
-
                     plaintext,
 
                     mimeType,
@@ -1193,18 +1045,15 @@ internal static class SessionEndpoints
                     fileDownloadName: downloadName,
 
                     enableRangeProcessing: false);
-
             })
 
         .WithName("DownloadSessionAttachment")
         .WithMetadata(GrimoireStreamRouteMetadata.FiniteDrain);
 
         apiGroup.MapPost(
-
             "/sessions/{id:guid}/attachments/{attachmentId:guid}/refresh",
 
             async (
-
                 Guid id,
 
                 Guid attachmentId,
@@ -1216,7 +1065,6 @@ internal static class SessionEndpoints
                 HttpContext ctx) =>
 
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 Session? session = await repo
@@ -1228,13 +1076,9 @@ internal static class SessionEndpoints
                 if (session is null)
 
                 {
-
                     return Results.Json(
-
                         ApiResponse<AttachmentRefreshEvent>.FromResult(
-
                             Result<AttachmentRefreshEvent>.Failure(
-
                                 new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
 
                             traceId),
@@ -1242,13 +1086,11 @@ internal static class SessionEndpoints
                         ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent,
 
                         statusCode: StatusCodes.Status404NotFound);
-
                 }
 
                 Result<AttachmentRefreshEvent> result = await refreshPipeline
 
                     .RefreshSessionAttachmentAsync(
-
                         id,
 
                         attachmentId,
@@ -1262,21 +1104,16 @@ internal static class SessionEndpoints
                 if (result.IsFailure)
 
                 {
-
                     return Results.Json(
-
                         ApiResponse<AttachmentRefreshEvent>.FromResult(result, traceId),
 
                         ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent,
 
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
                 }
 
                 return Results.Ok(
-
                     ApiResponse<AttachmentRefreshEvent>.FromResult(result, traceId));
-
             })
 
         .WithName("RefreshSessionAttachment");
@@ -1378,13 +1215,11 @@ internal static class SessionEndpoints
 
                 if (request is null)
                 {
-
                     return Results.BadRequest(
                         ApiResponse<EntryDto>.FromResult(
                             Result<EntryDto>.Failure(
                                 new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
-
                 }
 
                 if (string.IsNullOrWhiteSpace(request.Content))
@@ -1408,14 +1243,12 @@ internal static class SessionEndpoints
 
                 if (addResult.IsFailure)
                 {
-
                     return Results.Json(
                         ApiResponse<EntryDto>.FromResult(
                             Result<EntryDto>.Failure(addResult.Error),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseEntryDto,
                         statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(addResult.Error.Code));
-
                 }
 
                 eventHub.Publish(id, addResult.Value);
@@ -1435,13 +1268,11 @@ internal static class SessionEndpoints
 
                 if (request is null)
                 {
-
                     return Results.BadRequest(
                         ApiResponse<SessionDetailDto>.FromResult(
                             Result<SessionDetailDto>.Failure(
                                 new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
-
                 }
 
                 Session? session = await GetSessionForUpdateAsync(repo, id, ctx.RequestAborted).ConfigureAwait(false);
@@ -1639,14 +1470,11 @@ internal static class SessionEndpoints
 
                 if (!sseGate.TryAcquire(SseEventTypes.Session, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
-
                     return SseConnectionResults.FromDenial(httpContext, denial);
-
                 }
 
                 using (sseLease)
                 {
-
                 SseStreamWriter.PrepareResponse(httpContext);
 
                 int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
@@ -1677,7 +1505,6 @@ internal static class SessionEndpoints
                 // the per-session hub entry.
                 try
                 {
-
                     HashSet<Guid> replayIds = [];
 
                     SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
@@ -1724,13 +1551,11 @@ internal static class SessionEndpoints
 
                     if (!quiescence.IsQuiescing)
                     {
-
                         // The replay/live boundary sentinel is a complete frame, so writing one while
                         // the stream has already been told to stop is starting a next frame.
                         await httpContext.Response.Body.WriteAsync(SseLiveSentinel, httpContext.RequestAborted).ConfigureAwait(false);
 
                         await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
-
                     }
 
                     TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
@@ -1741,14 +1566,10 @@ internal static class SessionEndpoints
                         && liveBuffer.Reader.TryRead(out Entry? buffered)
                         && buffered is not null)
                     {
-
                         if (!replayIds.Contains(buffered.Id))
                         {
-
                             await WriteEntrySseAsync(httpContext, buffered, httpContext.RequestAborted).ConfigureAwait(false);
-
                         }
-
                     }
 
                     await SseStreamWriter.StreamAsync(
@@ -1758,21 +1579,16 @@ internal static class SessionEndpoints
                         heartbeatInterval,
                         quiescence,
                         httpContext.RequestAborted).ConfigureAwait(false);
-
                 }
                 catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
                 {
-
                     // The client went away during replay, the buffered drain, or the live stream.
                     // Break silently — no DONE frame to a dead socket. Mirrors the Chronicle stream
                     // in ApprenticeEndpoints; the finally still cancels the pump CTS.
-
                 }
                 catch (OperationCanceledException)
                 {
-
                     await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
-
                 }
                 finally
                 {
@@ -1788,9 +1604,7 @@ internal static class SessionEndpoints
                 }
 
                 return Results.Empty;
-
                 }
-
             })
         .WithName("StreamSession")
         .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
@@ -2040,30 +1854,25 @@ internal static class SessionEndpoints
         ISessionRepository repo,
         HttpContext ctx)
     {
-
         string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
         if (!TryParseExportFormat(requestedFormat, out SessionExportFormat format))
         {
-
             return SessionExportResponse(
                 Result<SessionExportResult>.Failure(
                     new Error(
                         ErrorCodes.Session.InvalidFormat,
                         "format must be 'json' or 'markdown'.")),
                 traceId);
-
         }
 
         ICovenantExportPolicy? policy = ctx.RequestServices.GetService<ICovenantExportPolicy>();
 
         if (policy is null)
         {
-
             return SessionExportResponse(
                 await repo.ExportAsync(id, format, ctx.RequestAborted).ConfigureAwait(false),
                 traceId);
-
         }
 
         // A Session's labels may name any Campaign, or none, so the arm asks for an installation read.
@@ -2073,27 +1882,41 @@ internal static class SessionEndpoints
 
         if (admission.IsFailure)
         {
-
             return SessionExportResponse(
                 Result<SessionExportResult>.Failure(admission.Error),
                 traceId);
-
         }
 
         ICovenantSnapshotReadLease? owned = admission.Value.ReadLease;
 
         if (owned is null)
         {
+            // No arm means the feature is off, not that the ledger is empty: labels and taint written
+            // while it was on outlive the switch. The same two content-free reads run, with no lease
+            // to hold and no response to protect.
+            Result<CovenantSessionExportSensitivity> unleased = await policy
+                .InspectSessionWithoutLeaseAsync(id, ctx.RequestAborted)
+                .ConfigureAwait(false);
+
+            if (unleased.IsFailure)
+            {
+                return SessionExportResponse(
+                    Result<SessionExportResult>.Failure(unleased.Error),
+                    traceId);
+            }
+
+            if (unleased.Value.IsRefused)
+            {
+                return SessionExportResponse(PlaintextExportRefused(), traceId);
+            }
 
             return SessionExportResponse(
                 await repo.ExportAsync(id, format, ctx.RequestAborted).ConfigureAwait(false),
                 traceId);
-
         }
 
         try
         {
-
             Result<CovenantSessionExportSensitivity> sensitivity = await policy
                 .InspectSessionAsync(id, owned, ctx.RequestAborted)
                 .ConfigureAwait(false);
@@ -2102,24 +1925,15 @@ internal static class SessionEndpoints
 
             if (sensitivity.IsFailure)
             {
-
                 result = Result<SessionExportResult>.Failure(sensitivity.Error);
-
             }
             else if (sensitivity.Value.IsRefused)
             {
-
-                result = Result<SessionExportResult>.Failure(
-                    new Error(
-                        ErrorCodes.Covenant.PlaintextExportRefused,
-                        "This session carries Covenant-derived content, so it cannot be exported as plaintext."));
-
+                result = PlaintextExportRefused();
             }
             else
             {
-
                 result = await repo.ExportAsync(id, format, ctx.RequestAborted).ConfigureAwait(false);
-
             }
 
             // Ownership moves to the result, which revalidates before the first byte and disposes in
@@ -2132,21 +1946,21 @@ internal static class SessionEndpoints
             owned = null;
 
             return response;
-
         }
         finally
         {
-
             if (owned is not null)
             {
-
                 await owned.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
+
+    private static Result<SessionExportResult> PlaintextExportRefused() =>
+        Result<SessionExportResult>.Failure(
+            new Error(
+                ErrorCodes.Covenant.PlaintextExportRefused,
+                "This session carries Covenant-derived content, so it cannot be exported as plaintext."));
 
     /// <summary>
     /// Parses the documented <c>format</c> vocabulary rather than the CLR enum spelling.
@@ -2160,34 +1974,26 @@ internal static class SessionEndpoints
     /// </remarks>
     private static bool TryParseExportFormat(string? requested, out SessionExportFormat format)
     {
-
         format = SessionExportFormat.Json;
 
         if (string.IsNullOrWhiteSpace(requested))
         {
-
             return false;
-
         }
 
         if (string.Equals(requested, "json", StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         if (string.Equals(requested, "markdown", StringComparison.OrdinalIgnoreCase))
         {
-
             format = SessionExportFormat.Markdown;
 
             return true;
-
         }
 
         return false;
-
     }
 
     private static IResult SessionExportResponse(Result<SessionExportResult> result, string traceId) =>
@@ -2199,7 +2005,6 @@ internal static class SessionEndpoints
                 statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
 
     private static IResult AttachmentFailure(
-
         HttpContext ctx,
 
         string errorCode,
@@ -2207,13 +2012,10 @@ internal static class SessionEndpoints
         string message)
 
     {
-
         string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
         return Results.Json(
-
             ApiResponse<SessionAttachmentDto>.FromResult(
-
                 Result<SessionAttachmentDto>.Failure(new Error(errorCode, message)),
 
                 traceId),
@@ -2221,19 +2023,15 @@ internal static class SessionEndpoints
             ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto,
 
             statusCode: ArcanumErrorMapper.ResolveStatusCode(errorCode));
-
     }
 
     private static string GetSubmittedFileName(string? input)
 
     {
-
         if (string.IsNullOrWhiteSpace(input))
 
         {
-
             return string.Empty;
-
         }
 
         string normalized = input.Replace('\\', '/');
@@ -2245,19 +2043,15 @@ internal static class SessionEndpoints
             ? normalized[(finalSeparator + 1)..]
 
             : normalized;
-
     }
 
     private static string NormalizeMimeType(string? mimeType)
 
     {
-
         if (string.IsNullOrWhiteSpace(mimeType))
 
         {
-
             return "application/octet-stream";
-
         }
 
         int parameterSeparator = mimeType.IndexOf(';');
@@ -2271,67 +2065,52 @@ internal static class SessionEndpoints
             .Trim()
 
             .ToLowerInvariant();
-
     }
 
     internal static long ResolveAttachmentMultipartRequestLimit(long maximumReadBytes)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumReadBytes);
 
         return checked(
-
             maximumReadBytes + AttachmentMultipartEnvelopeAllowanceBytes);
-
     }
 
     internal static FormOptions CreateAttachmentFormOptions(long maximumReadBytes)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumReadBytes);
 
         return new FormOptions
 
         {
-
             MultipartBodyLengthLimit = maximumReadBytes,
-
         };
-
     }
 
     internal static long ResolveAttachmentMultipartTransportLimit(
-
         long aggregateRequestLimit)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(aggregateRequestLimit);
 
         return checked(aggregateRequestLimit + 1L);
-
     }
 
     internal static string ResolveAttachmentFormErrorCode(Exception exception)
 
     {
-
         ArgumentNullException.ThrowIfNull(exception);
 
         bool payloadTooLarge = exception is BadHttpRequestException
 
             {
-
                 StatusCode: StatusCodes.Status413PayloadTooLarge,
-
             }
 
             || exception is InvalidDataException
 
             && exception.Message.Contains(
-
                 "length limit",
 
                 StringComparison.OrdinalIgnoreCase);
@@ -2341,13 +2120,11 @@ internal static class SessionEndpoints
             ? ErrorCodes.Attachment.TooLarge
 
             : ErrorCodes.Attachment.InvalidRequest;
-
     }
 
     private sealed class AttachmentMultipartAggregateReadStream : Stream
 
     {
-
         private readonly Stream _inner;
 
         private readonly long _maximumBytes;
@@ -2355,13 +2132,11 @@ internal static class SessionEndpoints
         private long _bytesRead;
 
         public AttachmentMultipartAggregateReadStream(
-
             Stream inner,
 
             long maximumBytes)
 
         {
-
             ArgumentNullException.ThrowIfNull(inner);
 
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
@@ -2369,7 +2144,6 @@ internal static class SessionEndpoints
             _inner = inner;
 
             _maximumBytes = maximumBytes;
-
         }
 
         public override bool CanRead => _inner.CanRead;
@@ -2383,21 +2157,17 @@ internal static class SessionEndpoints
         public override long Position
 
         {
-
             get => throw new NotSupportedException();
 
             set => throw new NotSupportedException();
-
         }
 
         public override void Flush()
 
         {
-
         }
 
         public override int Read(
-
             byte[] buffer,
 
             int offset,
@@ -2405,9 +2175,7 @@ internal static class SessionEndpoints
             int count)
 
         {
-
             int read = _inner.Read(
-
                 buffer,
 
                 offset,
@@ -2415,23 +2183,18 @@ internal static class SessionEndpoints
                 ResolveReadCount(count));
 
             return RecordRead(read);
-
         }
 
         public override int Read(Span<byte> buffer)
 
         {
-
             int read = _inner.Read(
-
                 buffer[..ResolveReadCount(buffer.Length)]);
 
             return RecordRead(read);
-
         }
 
         public override async Task<int> ReadAsync(
-
             byte[] buffer,
 
             int offset,
@@ -2441,11 +2204,9 @@ internal static class SessionEndpoints
             CancellationToken cancellationToken)
 
         {
-
             int read = await _inner
 
                 .ReadAsync(
-
                     buffer,
 
                     offset,
@@ -2457,21 +2218,17 @@ internal static class SessionEndpoints
                 .ConfigureAwait(false);
 
             return RecordRead(read);
-
         }
 
         public override async ValueTask<int> ReadAsync(
-
             Memory<byte> buffer,
 
             CancellationToken cancellationToken = default)
 
         {
-
             int read = await _inner
 
                 .ReadAsync(
-
                     buffer[..ResolveReadCount(buffer.Length)],
 
                     cancellationToken)
@@ -2479,7 +2236,6 @@ internal static class SessionEndpoints
                 .ConfigureAwait(false);
 
             return RecordRead(read);
-
         }
 
         public override long Seek(long offset, SeekOrigin origin) =>
@@ -2497,67 +2253,50 @@ internal static class SessionEndpoints
         protected override void Dispose(bool disposing)
 
         {
-
             base.Dispose(disposing);
-
         }
 
         private int ResolveReadCount(int requestedCount)
 
         {
-
             if (requestedCount <= 0)
 
             {
-
                 return requestedCount;
-
             }
 
             long remainingWithSentinel = checked(
-
                 _maximumBytes - _bytesRead + 1L);
 
             return checked((int)Math.Min(
-
                 requestedCount,
 
                 remainingWithSentinel));
-
         }
 
         private int RecordRead(int read)
 
         {
-
             _bytesRead = checked(_bytesRead + read);
 
             if (_bytesRead > _maximumBytes)
 
             {
-
                 throw new InvalidDataException(
-
                     $"Multipart aggregate length limit {_maximumBytes} exceeded.");
-
             }
 
             return read;
-
         }
-
     }
 
     internal static string ResolveSnapshotMimeType(
-
         string declaredMimeType,
 
         string detectedMimeType)
 
     {
-
         if (!string.Equals(
-
                 detectedMimeType,
 
                 "application/octet-stream",
@@ -2565,9 +2304,7 @@ internal static class SessionEndpoints
                 StringComparison.OrdinalIgnoreCase))
 
         {
-
             return detectedMimeType;
-
         }
 
         return declaredMimeType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
@@ -2577,11 +2314,9 @@ internal static class SessionEndpoints
                 ? declaredMimeType
 
                 : detectedMimeType;
-
     }
 
     private static IResult? ResolveAttachmentReferenceError(
-
         HttpContext ctx,
 
         AttachmentSourceResolution resolution,
@@ -2589,7 +2324,6 @@ internal static class SessionEndpoints
         long maximumReadBytes)
 
     {
-
         if (resolution.Metadata.Kind == AttachmentSourceKind.WorkspaceFile
 
             && resolution.Metadata.Status == AttachmentSourceStatus.Refreshable
@@ -2597,17 +2331,13 @@ internal static class SessionEndpoints
             && !string.IsNullOrWhiteSpace(resolution.DetectedMimeType))
 
         {
-
             return null;
-
         }
 
         return resolution.Metadata.Status switch
 
         {
-
             AttachmentSourceStatus.Missing or AttachmentSourceStatus.Moved => AttachmentFailure(
-
                 ctx,
 
                 ErrorCodes.Attachment.SourceNotFound,
@@ -2617,11 +2347,9 @@ internal static class SessionEndpoints
             AttachmentSourceStatus.Inaccessible
 
                 when resolution.Metadata.DiagnosticReason?.Contains(
-
                     "exceeds",
 
                     StringComparison.OrdinalIgnoreCase) is true => AttachmentFailure(
-
                         ctx,
 
                         ErrorCodes.Attachment.TooLarge,
@@ -2631,7 +2359,6 @@ internal static class SessionEndpoints
             AttachmentSourceStatus.Inaccessible
 
                 or AttachmentSourceStatus.WorkspaceUnavailable => AttachmentFailure(
-
                     ctx,
 
                     ErrorCodes.Attachment.SourceUnavailable,
@@ -2639,19 +2366,15 @@ internal static class SessionEndpoints
                     "The workspace attachment source could not be read."),
 
             _ => AttachmentFailure(
-
                 ctx,
 
                 ErrorCodes.Attachment.InvalidReference,
 
                 "The workspace attachment reference is unsafe or no longer valid."),
-
         };
-
     }
 
     private static async Task<SessionAttachmentDto> ToAttachmentDtoAsync(
-
         SessionAttachmentRecord attachment,
 
         ISessionAttachmentRetrievalService attachmentRetrieval,
@@ -2659,7 +2382,6 @@ internal static class SessionEndpoints
         CancellationToken cancellationToken)
 
     {
-
         IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus> statuses = await attachmentRetrieval
 
             .GetStatusesAsync([attachment.Id], cancellationToken)
@@ -2667,15 +2389,12 @@ internal static class SessionEndpoints
             .ConfigureAwait(false);
 
         return SessionMapping.ToAttachmentDto(
-
             attachment,
 
             statuses.GetValueOrDefault(
-
                 attachment.Id,
 
                 SessionAttachmentIndexStatus.NotEligible));
-
     }
 
     private static SessionContextPinDto ToContextPinDto(SessionContextPinRecord pin) => new(
@@ -2713,7 +2432,6 @@ internal static class SessionEndpoints
 
     private static async Task WriteEntrySseAsync(HttpContext httpContext, Entry entry, CancellationToken cancellationToken)
     {
-
         EntryDto dto = SessionMapping.ToEntryDto(entry);
 
         ArrayBufferWriter<byte> buffer = new(SseDataPrefix.Length + 512 + SseLineBreak.Length);
@@ -2724,7 +2442,6 @@ internal static class SessionEndpoints
 
         try
         {
-
             JsonSerializer.Serialize(jsonWriter, dto, ArcanumJsonContext.Default.EntryDto);
 
             jsonWriter.Flush();
@@ -2734,15 +2451,10 @@ internal static class SessionEndpoints
             await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
             await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
-
         }
         finally
         {
-
             jsonWriter.Dispose();
-
         }
-
     }
-
 }

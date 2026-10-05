@@ -697,7 +697,8 @@ internal sealed class CorrectionFixture : IAsyncDisposable
         GrimoireFixture fixture,
         bool annals = false,
         RetroDownfall.Arcanum.Core.Memory.IMemoryReviewTokenCodec? reviewTokenCodec = null,
-        RetroDownfall.Arcanum.Core.Memory.IMemoryErasureKeyProvider? erasureKeys = null)
+        RetroDownfall.Arcanum.Core.Memory.IMemoryErasureKeyProvider? erasureKeys = null,
+        TimeProvider? timeProvider = null)
     {
         Path = fixture.CopyDatabase();
 
@@ -708,7 +709,8 @@ internal sealed class CorrectionFixture : IAsyncDisposable
         ErasureKeys = erasureKeys ?? MemoryErasureTestKeys.Isolated();
 
         Concrete = new LexiconService(_db, Logger,
-            new TestOptionsMonitor<ArcanumSettings>(Settings), ErasureKeys, reviewTokenCodec: reviewTokenCodec);
+            new TestOptionsMonitor<ArcanumSettings>(Settings), ErasureKeys, reviewTokenCodec: reviewTokenCodec,
+            timeProvider: timeProvider);
     }
 
     internal async Task<LexiconEntryDetail> SeedAsync()

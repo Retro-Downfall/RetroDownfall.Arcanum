@@ -754,19 +754,10 @@ public sealed class MemoryCrossStoreIsolationTests
 
         Assert.False(result.Replayed);
 
-        // Each store names its own outcomes: the Lexicon spells them in lower case and acknowledges what
-        // the other two confirm.
-        string expected = (action, store) switch
-        {
-            (MemoryReviewAction.Confirm, MemoryReviewStore.Lexicon) => "acknowledged",
-            (MemoryReviewAction.Confirm, _) => "Confirmed",
-            (MemoryReviewAction.Correct, _) => "Corrected",
-            (MemoryReviewAction.Retire, _) => "Retired",
-            (MemoryReviewAction.Pin, _) => "Pinned",
-            _ => "Unpinned",
-        };
+        // One closed vocabulary for every store, spelled exactly (API 8.34).
+        string expected = MemoryReviewOutcomes.Applied(action);
 
-        Assert.Equal(expected, Assert.Single(result.Items).Outcome, ignoreCase: true);
+        Assert.Equal(expected, Assert.Single(result.Items).Outcome);
     }
 
     /// <summary>

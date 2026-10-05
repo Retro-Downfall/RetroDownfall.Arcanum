@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public readonly record struct CovenantOperationScope
 {
-
     private readonly bool _initialized;
 
     private readonly CovenantScope _kind;
@@ -27,13 +26,11 @@ public readonly record struct CovenantOperationScope
 
     private CovenantOperationScope(CovenantScope kind, Guid? campaignId)
     {
-
         _initialized = true;
 
         _kind = kind;
 
         _campaignId = campaignId;
-
     }
 
     public static CovenantOperationScope Global => new(CovenantScope.Global, null);
@@ -43,30 +40,22 @@ public readonly record struct CovenantOperationScope
 
     public CovenantScope Kind
     {
-
         get
         {
-
             EnsureInitialized();
 
             return _kind;
-
         }
-
     }
 
     public Guid? CampaignId
     {
-
         get
         {
-
             EnsureInitialized();
 
             return _campaignId;
-
         }
-
     }
 
     /// <summary>
@@ -76,16 +65,11 @@ public readonly record struct CovenantOperationScope
 
     private void EnsureInitialized()
     {
-
         if (!_initialized)
         {
-
             throw new InvalidOperationException("An uninitialized Covenant operation scope has no coverage.");
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -96,7 +80,6 @@ public readonly record struct CovenantOperationScope
 /// </summary>
 public readonly record struct ProtectedTransferScope
 {
-
     private readonly bool _initialized;
 
     private readonly CovenantScope _kind;
@@ -105,13 +88,11 @@ public readonly record struct ProtectedTransferScope
 
     private ProtectedTransferScope(CovenantScope kind, Guid? campaignId)
     {
-
         _initialized = true;
 
         _kind = kind;
 
         _campaignId = campaignId;
-
     }
 
     public static ProtectedTransferScope Global => new(CovenantScope.Global, null);
@@ -121,30 +102,22 @@ public readonly record struct ProtectedTransferScope
 
     public CovenantScope Kind
     {
-
         get
         {
-
             EnsureInitialized();
 
             return _kind;
-
         }
-
     }
 
     public Guid? CampaignId
     {
-
         get
         {
-
             EnsureInitialized();
 
             return _campaignId;
-
         }
-
     }
 
     public bool IsInitialized => _initialized;
@@ -159,16 +132,11 @@ public readonly record struct ProtectedTransferScope
 
     private void EnsureInitialized()
     {
-
         if (!_initialized)
         {
-
             throw new InvalidOperationException("An uninitialized protected-transfer scope has no coverage.");
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -181,11 +149,9 @@ public readonly record struct ProtectedTransferScope
 /// </remarks>
 public enum CovenantLeaseCoverage : byte
 {
-
     Installation = 1,
 
     Scoped = 2,
-
 }
 
 /// <summary>
@@ -194,7 +160,6 @@ public enum CovenantLeaseCoverage : byte
 /// </summary>
 public enum CovenantLeaseKind : byte
 {
-
     InstallationRead = 1,
 
     Read = 2,
@@ -216,7 +181,6 @@ public enum CovenantLeaseKind : byte
     Exclusive = 10,
 
     EntryErasure = 11,
-
 }
 
 /// <summary>
@@ -236,7 +200,6 @@ public enum CovenantLeaseKind : byte
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantExclusiveOperation>))]
 public enum CovenantExclusiveOperation : byte
 {
-
     CampaignPathMutation = 1,
 
     CampaignDelete = 2,
@@ -254,7 +217,6 @@ public enum CovenantExclusiveOperation : byte
     HealthyCatalogFactoryErasure = 8,
 
     CovenantEntryErasure = 9,
-
 }
 
 /// <summary>
@@ -268,13 +230,11 @@ public enum CovenantExclusiveOperation : byte
 /// </remarks>
 public enum CovenantExclusiveLeaseDisposition : byte
 {
-
     RollbackAndReopen = 1,
 
     CommitAndReopen = 2,
 
     KeepClosed = 3,
-
 }
 
 /// <summary>
@@ -287,13 +247,11 @@ public enum CovenantExclusiveLeaseDisposition : byte
 /// </remarks>
 public readonly record struct CovenantExclusiveRecoveryOwner
 {
-
     public CovenantExclusiveRecoveryOwner(
         Guid operationId,
         CovenantExclusiveOperation operation,
         CovenantDigest effectDigest)
     {
-
         OperationId = CovenantValidation.RequireNonEmpty(operationId, nameof(operationId));
 
         Operation = operation is >= CovenantExclusiveOperation.CampaignPathMutation
@@ -302,7 +260,6 @@ public readonly record struct CovenantExclusiveRecoveryOwner
             : throw new ArgumentOutOfRangeException(nameof(operation));
 
         EffectDigest = CovenantValidation.RequireDigest(effectDigest, nameof(effectDigest));
-
     }
 
     public Guid OperationId { get; }
@@ -315,7 +272,6 @@ public readonly record struct CovenantExclusiveRecoveryOwner
     /// Whether this value carries a real owner rather than being default-initialized.
     /// </summary>
     public bool IsValid => OperationId != Guid.Empty && EffectDigest.IsValid;
-
 }
 
 /// <summary>
@@ -342,11 +298,9 @@ public sealed record CovenantOperationLeaseSnapshot(
     CovenantExclusiveRecoveryOwner? RecoveryOwner,
     bool CleanupOnlyHistoricalCampaign)
 {
-
     public long RuntimeAuthorityGeneration { get; init; } = CovenantValidation.RequirePositive(
         RuntimeAuthorityGeneration,
         nameof(RuntimeAuthorityGeneration));
-
 }
 
 /// <summary>
@@ -359,7 +313,6 @@ public sealed record CovenantOperationLeaseSnapshot(
 /// </remarks>
 public interface ICovenantLeaseRegistration
 {
-
     CovenantOperationLeaseSnapshot Snapshot { get; }
 
     CancellationToken Revocation { get; }
@@ -367,7 +320,6 @@ public interface ICovenantLeaseRegistration
     ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken);
 
     ValueTask ReleaseAsync();
-
 }
 
 /// <summary>
@@ -375,13 +327,11 @@ public interface ICovenantLeaseRegistration
 /// </summary>
 public interface ICovenantExclusiveLeaseRegistration : ICovenantLeaseRegistration
 {
-
     Result ExecuteWhileHeld(Func<Result> callback);
 
     ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -389,13 +339,11 @@ public interface ICovenantExclusiveLeaseRegistration : ICovenantLeaseRegistratio
 /// </summary>
 public interface ICovenantOperationLease : IAsyncDisposable
 {
-
     CovenantOperationLeaseSnapshot Snapshot { get; }
 
     CancellationToken Revocation { get; }
 
     ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -410,13 +358,11 @@ public interface ICovenantSnapshotReadLease : ICovenantOperationLease
 /// </summary>
 public interface ICovenantExclusiveOperationLease : ICovenantOperationLease
 {
-
     Result ExecuteWhileHeld(Func<Result> callback);
 
     ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -427,15 +373,15 @@ public interface ICovenantExclusiveOperationLease : ICovenantOperationLease
 /// One-shot and nonserializable. It runs only after the exact lease returns success from its
 /// disposition and before the lease is disposed, so a journal can never advance past a disposition
 /// that did not happen. A failure here leaves the journal nonterminal on purpose: the operation is
-/// then resumable, which is strictly safer than recording a terminal phase nobody proved.
+/// then resumable, which is strictly safer than recording a terminal phase nobody proved. The lease
+/// turns a fault thrown from here into that same failure, because by then the gate has acted and
+/// "it threw" must not be readable as "the disposition did not happen".
 /// </remarks>
 public interface ICovenantExclusivePostDispositionFinalizer
 {
-
     ValueTask<Result> FinalizeAfterSuccessfulDispositionAsync(
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -448,7 +394,6 @@ public interface ICovenantExclusivePostDispositionFinalizer
 /// </remarks>
 public sealed class CovenantNoOpPostDispositionFinalizer : ICovenantExclusivePostDispositionFinalizer
 {
-
     private CovenantNoOpPostDispositionFinalizer()
     {
     }
@@ -459,7 +404,6 @@ public sealed class CovenantNoOpPostDispositionFinalizer : ICovenantExclusivePos
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken) =>
         ValueTask.FromResult(Result.Success());
-
 }
 
 /// <summary>
@@ -467,18 +411,15 @@ public sealed class CovenantNoOpPostDispositionFinalizer : ICovenantExclusivePos
 /// </summary>
 public abstract class CovenantOperationLease : ICovenantOperationLease
 {
-
     private readonly ICovenantLeaseRegistration _registration;
 
     private int _disposed;
 
     private protected CovenantOperationLease(ICovenantLeaseRegistration registration)
     {
-
         ArgumentNullException.ThrowIfNull(registration);
 
         _registration = registration;
-
     }
 
     public CovenantOperationLeaseSnapshot Snapshot => _registration.Snapshot;
@@ -495,22 +436,17 @@ public abstract class CovenantOperationLease : ICovenantOperationLease
 
     public async ValueTask DisposeAsync()
     {
-
         // Exchange rather than a read-then-write: sixteen concurrent disposals must produce exactly
         // one release, or a delayed cleanup could remove a registration slot another lease now owns.
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-
             return;
-
         }
 
         await _registration.ReleaseAsync().ConfigureAwait(false);
 
         GC.SuppressFinalize(this);
-
     }
-
 }
 
 /// <summary>
@@ -519,7 +455,6 @@ public abstract class CovenantOperationLease : ICovenantOperationLease
 public abstract class CovenantExclusiveOperationLease
     : CovenantOperationLease, ICovenantExclusiveOperationLease
 {
-
     private readonly ICovenantExclusiveLeaseRegistration _exclusive;
 
     private int _dispositionClaimed;
@@ -530,31 +465,25 @@ public abstract class CovenantExclusiveOperationLease
 
     public Result ExecuteWhileHeld(Func<Result> callback)
     {
-
         ArgumentNullException.ThrowIfNull(callback);
 
         if (IsDisposed)
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "This Covenant lease has already been released."));
-
         }
 
         if (Volatile.Read(ref _dispositionClaimed) != 0)
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "This exclusive Covenant lease has already used its one disposition."));
-
         }
 
         return _exclusive.ExecuteWhileHeld(callback);
-
     }
 
     public ValueTask<Result> CompleteAsync(
@@ -565,51 +494,79 @@ public abstract class CovenantExclusiveOperationLease
     /// <summary>
     /// Completes this lease and, only on success, invokes the caller's durable journal finalizer.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="cancellationToken"/> is observed exactly once, before anything is claimed: a token
+    /// that is already cancelled throws and spends nothing, so the one disposition is still available. After
+    /// the claim the operation's durable state depends on this disposition reaching the gate and on the
+    /// finalizer running, so neither is given the caller's token again. A cancel that lands after the claim
+    /// would otherwise strand the scope closed behind work that already happened, or leave the journal
+    /// behind a disposition the gate had already acted on.
+    ///
+    /// <para>A fault the finalizer throws must not look like a disposition that did not happen. It (a full
+    /// disk failing the journal's commit, say) comes back as a
+    /// <see cref="ErrorCodes.Covenant.ManualRecoveryRequired"/> failure after the gate has already acted,
+    /// the same shape as a finalizer that answers with a failure, so a caller has one rule for "the
+    /// disposition was spent and the journal did not advance".</para>
+    /// </remarks>
     public async ValueTask<Result> CompleteAsync(
         CovenantExclusiveLeaseDisposition disposition,
         ICovenantExclusivePostDispositionFinalizer finalizer,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(finalizer);
 
         if (disposition is not CovenantExclusiveLeaseDisposition.RollbackAndReopen
             and not CovenantExclusiveLeaseDisposition.CommitAndReopen
             and not CovenantExclusiveLeaseDisposition.KeepClosed)
         {
-
             throw new ArgumentOutOfRangeException(nameof(disposition));
-
         }
+
+        // The only moment cancellation may stop this: nothing has been claimed, so nothing is lost.
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Claimed before the attempt, not after it. A disposition that fails must not be retried
         // with a different code: the operation's durable state is then unknown, and guessing again
         // is how a rollback silently becomes a commit.
         if (Interlocked.Exchange(ref _dispositionClaimed, 1) != 0)
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "This exclusive Covenant lease has already used its one disposition."));
-
         }
 
-        Result disposed = await _exclusive.CompleteAsync(disposition, cancellationToken).ConfigureAwait(false);
+        Result disposed = await _exclusive.CompleteAsync(disposition, CancellationToken.None).ConfigureAwait(false);
 
         if (disposed.IsFailure)
         {
-
             return disposed;
-
         }
 
-        return await finalizer
-            .FinalizeAfterSuccessfulDispositionAsync(disposition, cancellationToken)
-            .ConfigureAwait(false);
-
+        try
+        {
+            return await finalizer
+                .FinalizeAfterSuccessfulDispositionAsync(disposition, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // The disposition above has already reached the gate, so a fault here is a failed finalizer,
+            // exactly as if it had answered with a failure: the journal stays nonterminal and the
+            // operation stays resumable. Letting it escape would tell a caller that "the completion
+            // threw", which reads as "the disposition did not happen" about a decision the rest of the
+            // system may already be acting on. No exception family is named: Core may not know a storage
+            // provider's types (a full disk is a driver exception), and a caller's own cancellation
+            // handler is just as wrong a reader of this window as its storage handler. Only the exception
+            // type is reported, because a driver's message can carry paths or content.
+            return Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "The exclusive disposition was applied, but its journal finalizer failed with "
+                    + exception.GetType().Name
+                    + "; the journal stays nonterminal so the operation can be resumed."));
+        }
     }
-
 }
 
 /// <summary>
@@ -714,13 +671,11 @@ public sealed class CovenantExclusiveLease(ICovenantExclusiveLeaseRegistration r
 public sealed class CovenantEntryErasureLease(ICovenantExclusiveLeaseRegistration registration)
     : CovenantExclusiveOperationLease(registration), ICovenantSnapshotReadLease
 {
-
     /// <summary>
     /// Whether this lease closed and drained the whole installation rather than one Campaign. Only
     /// such a lease may reclaim a key.
     /// </summary>
     public bool CoversInstallation => Snapshot.Coverage == CovenantLeaseCoverage.Installation;
-
 }
 
 /// <summary>
@@ -728,13 +683,11 @@ public sealed class CovenantEntryErasureLease(ICovenantExclusiveLeaseRegistratio
 /// </summary>
 public enum CovenantCampaignScopeState : byte
 {
-
     Live = 1,
 
     Deleted = 2,
 
     Unknown = 3,
-
 }
 
 /// <summary>
@@ -747,9 +700,7 @@ public enum CovenantCampaignScopeState : byte
 /// </remarks>
 public interface ICovenantCampaignScopeProbe
 {
-
     ValueTask<Result<CovenantCampaignScopeState>> ResolveAsync(
         Guid campaignId,
         CancellationToken cancellationToken);
-
 }

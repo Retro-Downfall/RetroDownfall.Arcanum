@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// </remarks>
 internal partial interface ICampaignPathMarkerLifecycle
 {
-
     /// <summary>
     /// Opens every Campaign root this destination has registered, so a restore can see what it owes.
     /// </summary>
@@ -83,11 +82,31 @@ internal partial interface ICampaignPathMarkerLifecycle
     /// so one release covers both arms and a caller never has to know which one ran.</para>
     /// </remarks>
     ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId);
-
 }
 
 /// <summary>
 /// The Campaign identities a restore observed as still owning a marker on the destination.
 /// </summary>
+/// <remarks>
+/// Owns the opened root authority of every <see cref="CampaignPathCleanupRootObservation.Opened"/> seed until
+/// <see cref="ICampaignPathMarkerLifecycle.PrepareRestoreCleanupInStagedDatabaseAsync"/> takes the seeds,
+/// which then owns them. A caller that never reaches preparation disposes the inventory instead; one that did
+/// reach it must not, because preparation has already released what it did not retain.
+/// </remarks>
 internal sealed record CampaignPathRestoreCleanupInventory(
-    ImmutableArray<CampaignPathRestoreCleanupSeed> OrderedSeeds);
+    ImmutableArray<CampaignPathRestoreCleanupSeed> OrderedSeeds) : IAsyncDisposable
+{
+    public async ValueTask DisposeAsync()
+    {
+        if (OrderedSeeds.IsDefault)
+        {
+            return;
+        }
+
+        await CampaignPathRetainedRootRelease.DisposeAllAsync(
+            OrderedSeeds
+                .Select(static seed => seed.Observation)
+                .OfType<CampaignPathCleanupRootObservation.Opened>()
+                .Select(static opened => opened.RootAuthority)).ConfigureAwait(false);
+    }
+}

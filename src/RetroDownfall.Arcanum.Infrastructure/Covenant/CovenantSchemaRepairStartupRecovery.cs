@@ -17,13 +17,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// </remarks>
 internal enum CovenantSchemaRepairStartupRecoveryOutcome : byte
 {
-
     NoActiveJournal = 1,
 
     RecoveredReady = 2,
 
     KeptClosed = 3,
-
 }
 
 /// <summary>
@@ -43,7 +41,6 @@ internal sealed record CovenantSchemaRepairStartupRecoveryPreparation(
 /// </remarks>
 internal interface ICovenantSchemaRepairStartupRecovery
 {
-
     Task<Result<CovenantSchemaRepairStartupRecoveryPreparation>> PrepareBeforeEffectsAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
@@ -56,7 +53,6 @@ internal interface ICovenantSchemaRepairStartupRecovery
         SqliteConnection connection,
         CovenantSchemaRepairStartupRecoveryPreparation preparation,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -80,7 +76,6 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
     ICovenantSqliteConnectionInitializer initializer,
     TimeProvider timeProvider) : ICovenantSchemaRepairStartupRecovery
 {
-
     private readonly CovenantOperationGate _gate = gate ?? throw new ArgumentNullException(nameof(gate));
 
     private readonly ICovenantSchemaRepairExecutor _executor =
@@ -97,7 +92,6 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(connection);
@@ -110,17 +104,13 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (active.IsFailure)
         {
-
             return Result<CovenantSchemaRepairStartupRecoveryPreparation>.Failure(active.Error);
-
         }
 
         if (active.Value is not { } intent)
         {
-
             return Result<CovenantSchemaRepairStartupRecoveryPreparation>.Success(
                 new CovenantSchemaRepairStartupRecoveryPreparation(Intent: null));
-
         }
 
         // The gate holds no journal and cannot re-read one, so the owner this journal proves has to be
@@ -128,26 +118,19 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         // which is exactly why this pass runs before it.
         try
         {
-
             _gate.AdoptDurableRecoveryOwner(intent.Owner, scope: null, cleanupOnlyHistoricalCampaign: false);
-
         }
         catch (InvalidOperationException)
         {
-
             return PreparationFailure();
-
         }
         catch (ArgumentException refused)
         {
-
             return PreparationFailure(refused.Message);
-
         }
 
         return Result<CovenantSchemaRepairStartupRecoveryPreparation>.Success(
             new CovenantSchemaRepairStartupRecoveryPreparation(intent));
-
     }
 
     public async Task<Result<CovenantSchemaRepairStartupRecoveryOutcome>> RecoverPreparedAsync(
@@ -157,7 +140,6 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         CovenantSchemaRepairStartupRecoveryPreparation preparation,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(connection);
@@ -166,20 +148,16 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (connection.GetType() != typeof(SqliteConnection))
         {
-
             throw new InvalidOperationException(
                 "Schema repair recovery requires an exact SQLite connection.");
-
         }
 
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
         if (preparation.Intent is not { } intent)
         {
-
             return Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
                 CovenantSchemaRepairStartupRecoveryOutcome.NoActiveJournal);
-
         }
 
         Result<CovenantExclusiveLease> resumed = await _gate
@@ -188,9 +166,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (resumed.IsFailure)
         {
-
             return Kept();
-
         }
 
         await using CovenantExclusiveLease lease = resumed.Value;
@@ -201,9 +177,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (inspected.IsFailure)
         {
-
             return Kept();
-
         }
 
         CovenantSchemaRepairIntent current = intent;
@@ -212,15 +186,12 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (current.Phase == CovenantSchemaRepairPhase.Prepared)
         {
-
             // The catalog this journal describes is the only one it may repair. A digest that has
             // moved means somebody else changed the schema, and the journal no longer describes
             // reality.
             if (inspected.Value.CatalogDigest != current.InspectedCatalogDigest)
             {
-
                 return Kept();
-
             }
 
             Result<bool> repaired = await _executor
@@ -229,16 +200,13 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (repaired.IsFailure)
             {
-
                 return Kept();
-
             }
 
             durablyMutated = repaired.Value;
 
             if (durablyMutated)
             {
-
                 // The health gate below decides whether admission may reopen, and the snapshot taken
                 // above is the catalog the repair was needed for — it says "invalid" for every repair
                 // that had anything to do. Re-inspect so the gate reads what the repair actually wrote,
@@ -250,13 +218,10 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
                 if (verified.IsFailure)
                 {
-
                     return Kept();
-
                 }
 
                 inspected = verified;
-
             }
 
             Result<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
@@ -269,23 +234,17 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (advanced.IsFailure || advanced.Value is not { } afterRepair)
             {
-
                 return Kept();
-
             }
 
             current = afterRepair;
-
         }
 
         if (current.Phase == CovenantSchemaRepairPhase.CatalogCommitted)
         {
-
             if (!inspected.Value.CanonicalValid)
             {
-
                 return Kept();
-
             }
 
             Result<CovenantSchemaRepairIntent?> verified = await AdvanceAsync(
@@ -296,18 +255,14 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (verified.IsFailure || verified.Value is not { } afterHealth)
             {
-
                 return Kept();
-
             }
 
             current = afterHealth;
-
         }
 
         if (current.Phase == CovenantSchemaRepairPhase.HealthVerified)
         {
-
             Result<CovenantSchemaRepairIntent?> pending = await AdvanceAsync(
                 connection,
                 current,
@@ -316,13 +271,10 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (pending.IsFailure || pending.Value is not { } afterPending)
             {
-
                 return Kept();
-
             }
 
             current = afterPending;
-
         }
 
         CovenantExclusiveLeaseDisposition disposition = CovenantExclusiveDisposition.Select(
@@ -337,13 +289,13 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         CovenantSchemaRepairPostDispositionFinalizer finalizer = new(
             (phase, token) => AdvanceToTerminalAsync(connection, terminal, phase, token));
 
-        Result closed = await lease.CompleteAsync(disposition, finalizer, cancellationToken).ConfigureAwait(false);
+        // The repair is over and its evidence selected this disposition, so completing it takes no token.
+        Result closed = await lease.CompleteAsync(disposition, finalizer, CancellationToken.None).ConfigureAwait(false);
 
         return closed.IsFailure || disposition == CovenantExclusiveLeaseDisposition.KeepClosed
             ? Kept()
             : Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
                 CovenantSchemaRepairStartupRecoveryOutcome.RecoveredReady);
-
     }
 
     /// <summary>
@@ -356,7 +308,6 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantSchemaRepairStartupRecoveryPreparation> prepared = await PrepareBeforeEffectsAsync(
             heldInstallationLock,
             guardedDirectory,
@@ -371,7 +322,6 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
                 connection,
                 prepared.Value,
                 cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<Result<CovenantSchemaRepairIntent?>> AdvanceAsync(
@@ -380,7 +330,6 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         CovenantSchemaRepairPhase next,
         CancellationToken cancellationToken)
     {
-
         Result<bool> advanced = await CovenantSchemaRepairJournal.TryAdvanceAsync(
             connection,
             _initializer,
@@ -392,16 +341,13 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (advanced.IsFailure)
         {
-
             return Result<CovenantSchemaRepairIntent?>.Failure(advanced.Error);
-
         }
 
         return Result<CovenantSchemaRepairIntent?>.Success(
             advanced.Value
                 ? intent with { Phase = next, Revision = intent.Revision + 1 }
                 : null);
-
     }
 
     private async Task<Result> AdvanceToTerminalAsync(
@@ -410,7 +356,6 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         CovenantSchemaRepairPhase terminal,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
             connection,
             intent,
@@ -419,9 +364,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (advanced.IsFailure)
         {
-
             return Result.Failure(advanced.Error);
-
         }
 
         return advanced.Value is null
@@ -430,7 +373,6 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
                     ErrorCodes.Covenant.RevisionConflict,
                     "The schema repair journal moved before its finalizer ran."))
             : Result.Success();
-
     }
 
     private static Result<CovenantSchemaRepairStartupRecoveryOutcome> Kept() =>
@@ -451,5 +393,4 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
                 refusedInvariant is null
                     ? "Covenant schema-repair ownership could not be reconstructed safely."
                     : $"Covenant schema-repair ownership could not be reconstructed safely: {refusedInvariant}"));
-
 }

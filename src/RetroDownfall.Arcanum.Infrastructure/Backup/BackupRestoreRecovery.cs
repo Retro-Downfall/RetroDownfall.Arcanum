@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 internal enum BackupRestoreRecoveryOutcome
 {
-
     /// <summary>Staging was found before any destructive step and was simply removed.</summary>
     Discarded = 0,
 
@@ -26,7 +25,6 @@ internal enum BackupRestoreRecoveryOutcome
 
     /// <summary>The commit landed but post-commit work is unverifiable; an operator must decide.</summary>
     ReconciliationRequired = 3,
-
 }
 
 internal sealed record BackupRestoreRecoveryReport(
@@ -60,7 +58,6 @@ internal sealed record BackupRestoreRecoveryReport(
 /// </remarks>
 internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 {
-
     private readonly string _guardedDirectory;
 
     private readonly BackupRestoreJournalAnchorStore _anchors;
@@ -83,7 +80,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         CovenantOperationGate? gate,
         ICampaignPathMarkerLifecycle? markers)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
 
         ArgumentNullException.ThrowIfNull(anchors);
@@ -95,7 +91,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         _gate = gate;
 
         _markers = markers;
-
     }
 
     /// <inheritdoc />
@@ -103,7 +98,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -116,18 +110,14 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (evidence.IsFailure)
         {
-
             return Task.FromResult(KeptPhysical(evidence.Error));
-
         }
 
         if (evidence.Value is not { } active)
         {
-
             return Task.FromResult(
                 Result<BackupRestorePhysicalRecoveryOutcome>.Success(
                     BackupRestorePhysicalRecoveryOutcome.NoActiveJournal));
-
         }
 
         Result<BackupRestoreTopologyState> converged = BackupRestorePhysicalTopology.Reconcile(
@@ -142,7 +132,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 ? KeptPhysical(converged.Error)
                 : Result<BackupRestorePhysicalRecoveryOutcome>.Success(
                     BackupRestorePhysicalRecoveryOutcome.TopologyReady));
-
     }
 
     /// <inheritdoc />
@@ -150,7 +139,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -161,35 +149,27 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (evidence.IsFailure)
         {
-
             return Kept(evidence.Error);
-
         }
 
         if (evidence.Value is not { } active)
         {
-
             return BackupRestoreStartupRecoveryOutcome.NoActiveJournal;
-
         }
 
         Result<CovenantExclusiveRecoveryOwner> owner = active.Publication.Payload.RecoveryOwner();
 
         if (owner.IsFailure)
         {
-
             return Kept(owner.Error);
-
         }
 
         if (_gate is null || _markers is null)
         {
-
             return Kept(new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "An interrupted restore cannot be resumed by a process that composed no Covenant "
                 + "operation gate."));
-
         }
 
         // Re-derived rather than remembered. The first phase converged the tree and then a database was
@@ -201,28 +181,22 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (topology.IsFailure)
         {
-
             return Kept(topology.Error);
-
         }
 
         try
         {
-
             _gate.AdoptDurableRecoveryOwner(
                 owner.Value,
                 scope: null,
                 cleanupOnlyHistoricalCampaign: false);
-
         }
         catch (Exception exception) when (
             exception is InvalidOperationException or ArgumentException)
         {
-
             return Kept(new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This restore's exclusive owner could not be reconstructed before readiness."));
-
         }
 
         Result<CovenantExclusiveLease> resumed = await _gate
@@ -231,9 +205,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (resumed.IsFailure)
         {
-
             return Kept(resumed.Error);
-
         }
 
         // Disposal without a disposition is exactly KeepClosed: the closure survives, the owner stays
@@ -249,16 +221,13 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (outcome.IsSuccess && outcome.Value is BackupRestoreStartupRecoveryOutcome.KeptClosed)
         {
-
             // The restart proof of §10.19.7 may have reopened roots for children this pass could not
             // finish. Nothing else in this process will adopt them and startup is about to stop, so the
             // one release that covers both arms runs here too.
             await _markers.ReleaseRetainedRootsAsync(owner.Value.OperationId).ConfigureAwait(false);
-
         }
 
         return outcome;
-
     }
 
     /// <summary>
@@ -277,24 +246,21 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         CovenantExclusiveLease lease,
         CancellationToken cancellationToken)
     {
-
         Result reopened = await lease
             .CompleteAsync(
                 CovenantExclusiveLeaseDisposition.RollbackAndReopen,
                 CovenantNoOpPostDispositionFinalizer.Instance,
-                cancellationToken)
+                CancellationToken.None)
             .ConfigureAwait(false);
 
         if (reopened.IsFailure)
         {
-
             return Kept(reopened.Error);
-
         }
 
-        return await TerminateAsync(heldInstallationLock, active, owner, cancellationToken)
+        // The disposition is spent, so closing the anchor is bookkeeping for a decision already made.
+        return await TerminateAsync(heldInstallationLock, active, owner, CancellationToken.None)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -314,14 +280,11 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         CovenantExclusiveLease lease,
         CancellationToken cancellationToken)
     {
-
         if (active.Publication.Payload.MarkerCleanup is not { } checkpoint)
         {
-
             return Kept(new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "A restore that displaced the installation carries no marker cleanup checkpoint."));
-
         }
 
         Result<CampaignPathMarkerGateCompletion> completion = await _markers!
@@ -336,35 +299,29 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (completion.IsFailure)
         {
-
             return Kept(completion.Error);
-
         }
 
         if (completion.Value.Outcome is not CampaignPathMarkerAggregateOutcome.Committed
             || completion.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen)
         {
-
             return Kept(new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "An interrupted restore's marker children did not reach a committed disposition."));
-
         }
 
+        // Children proven; the disposition and its finalizer are the point of no return.
         Result committed = await lease
-            .CompleteAsync(completion.Value.Disposition, completion.Value.Finalizer, cancellationToken)
+            .CompleteAsync(completion.Value.Disposition, completion.Value.Finalizer, CancellationToken.None)
             .ConfigureAwait(false);
 
         if (committed.IsFailure)
         {
-
             return Kept(committed.Error);
-
         }
 
-        return await TerminateAsync(heldInstallationLock, active, owner, cancellationToken)
+        return await TerminateAsync(heldInstallationLock, active, owner, CancellationToken.None)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -381,7 +338,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         await _markers!.ReleaseRetainedRootsAsync(owner.OperationId).ConfigureAwait(false);
@@ -394,15 +350,12 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (closed.IsFailure)
         {
-
             return Kept(closed.Error);
-
         }
 
         DiscardStaging(active.Publication.Payload);
 
         return BackupRestoreStartupRecoveryOutcome.RecoveredReady;
-
     }
 
     /// <summary>
@@ -415,7 +368,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </remarks>
     private void DiscardStaging(BackupRestoreJournalPayloadV2 payload)
     {
-
         string stagingRoot = payload.StagedRoot.CanonicalParentPath;
 
         if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
@@ -427,16 +379,13 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 metadata.Identity.FileId)
                 == payload.StagedRoot.ParentPhysicalIdentityDigest)
         {
-
             _ = OwnedTemporaryDirectory.TryDelete(
                 stagingRoot,
                 metadata.Identity.VolumeId,
                 metadata.Identity.FileId);
-
         }
 
         PruneStagingIndex(_guardedDirectory);
-
     }
 
     /// <summary>
@@ -444,16 +393,13 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </summary>
     private Result<BackupRestoreEvidence?> Authenticate(ArcanumMaintenanceLock heldInstallationLock)
     {
-
         string? parent = TryParentOf(_guardedDirectory);
 
         // No parent directory means no staging beside it, no profile namespace to derive, and no
         // installation to have restored. That is proven absence rather than an unreadable answer.
         if (parent is null || !Directory.Exists(parent))
         {
-
             return Result<BackupRestoreEvidence?>.Success(null);
-
         }
 
         Result<BackupRestoreProfileNamespace> profile =
@@ -461,9 +407,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (profile.IsFailure)
         {
-
             return Result<BackupRestoreEvidence?>.Failure(profile.Error);
-
         }
 
         Result<BackupRestoreJournalRecoveryState> state = _anchors.Recover(
@@ -474,16 +418,13 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (state.IsFailure)
         {
-
             return Result<BackupRestoreEvidence?>.Failure(state.Error);
-
         }
 
         return state.Value.Outcome is BackupRestoreJournalRecoveryOutcome.NoActiveJournal
             || state.Value.Publication is not { } publication
                 ? Result<BackupRestoreEvidence?>.Success(null)
                 : new BackupRestoreEvidence(profile.Value, publication);
-
     }
 
     /// <summary>
@@ -496,90 +437,67 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </remarks>
     private IReadOnlyList<string> CandidateStagingRoots(string parent)
     {
-
         List<string> candidates = [];
 
         try
         {
-
             foreach (string candidate in Directory.EnumerateDirectories(
                          parent,
                          BackupRestoreJournal.StagingPrefix + "*",
                          SearchOption.TopDirectoryOnly))
             {
-
                 string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
 
                 if (BackupRestoreJournal.IsCanonicalStagingName(Path.GetFileName(full)))
                 {
-
                     candidates.Add(full);
-
                 }
-
             }
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
         }
 
         foreach (string indexed in BackupRestoreStagingIndex.Read(_guardedDirectory))
         {
-
             if (TryNormalize(indexed) is { } normalized && !candidates.Contains(normalized, StringComparer.Ordinal))
             {
-
                 candidates.Add(normalized);
-
             }
-
         }
 
         return candidates;
-
     }
 
     private static string? TryParentOf(string directory)
     {
-
         try
         {
-
             return Path.GetDirectoryName(
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory)));
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-
             return null;
-
         }
-
     }
 
     private static Result<BackupRestorePhysicalRecoveryOutcome> KeptPhysical(Error error)
     {
-
         Warn(error);
 
         return Result<BackupRestorePhysicalRecoveryOutcome>.Success(
             BackupRestorePhysicalRecoveryOutcome.KeptClosed);
-
     }
 
     private static Result<BackupRestoreStartupRecoveryOutcome> Kept(Error error)
     {
-
         Warn(error);
 
         return Result<BackupRestoreStartupRecoveryOutcome>.Success(
             BackupRestoreStartupRecoveryOutcome.KeptClosed);
-
     }
 
     private static void Warn(Error error) =>
@@ -595,7 +513,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
     public static IReadOnlyList<BackupRestoreRecoveryReport> Resolve(string grimoireDirectory)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(grimoireDirectory);
 
         string liveRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(grimoireDirectory));
@@ -604,9 +521,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (parent is null)
         {
-
             return [];
-
         }
 
         IReadOnlyList<string> indexed = BackupRestoreStagingIndex.Read(grimoireDirectory);
@@ -623,31 +538,24 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         foreach (string stagingRoot in stagingRoots)
         {
-
             BackupRestoreJournalRecord? journal = BackupRestoreJournal.TryRead(stagingRoot);
 
             if (journal is null)
             {
-
                 continue;
-
             }
 
             reports.Add(ResolveOne(stagingRoot, journal, liveRoot));
-
         }
 
         if (indexedRoots.Count > 0)
         {
-
             // Rewriting the whole set rather than removing entry by entry is what prunes an index
             // still naming staging that was never created, or that some other sweep already took.
             PruneIndex(grimoireDirectory, indexedRoots);
-
         }
 
         return reports;
-
     }
 
     /// <summary>
@@ -661,43 +569,33 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </remarks>
     private static void PruneStagingIndex(string grimoireDirectory)
     {
-
         try
         {
-
             BackupRestoreStagingIndex.Write(
                 grimoireDirectory,
                 [.. BackupRestoreStagingIndex.Read(grimoireDirectory)
                     .Select(TryNormalize)
                     .OfType<string>()
                     .Where(Directory.Exists)]);
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
         }
-
     }
 
     private static void PruneIndex(string grimoireDirectory, List<string> indexedRoots)
     {
-
         try
         {
-
             BackupRestoreStagingIndex.Write(
                 grimoireDirectory,
                 [.. indexedRoots.Where(BackupRestoreJournal.Exists)]);
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
         }
-
     }
 
     /// <summary>
@@ -708,25 +606,19 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </summary>
     private static string? TryNormalize(string stagingRoot)
     {
-
         try
         {
-
             string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(stagingRoot));
 
             return BackupRestoreJournal.IsCanonicalStagingName(Path.GetFileName(full))
                 ? full
                 : null;
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-
             return null;
-
         }
-
     }
 
     private static BackupRestoreRecoveryReport ResolveOne(
@@ -734,7 +626,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         BackupRestoreJournalRecord journal,
         string liveRoot)
     {
-
         Result validation = BackupRestoreJournal.ValidateForRecovery(
             stagingRoot,
             liveRoot,
@@ -742,13 +633,11 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (validation.IsFailure)
         {
-
             return new BackupRestoreRecoveryReport(
                 stagingRoot,
                 BackupRestoreRecoveryOutcome.ReconciliationRequired,
                 journal.Phase,
                 "The legacy restore journal could not be admitted safely and was left untouched.");
-
         }
 
         bool stagedExists = Directory.Exists(journal.StagedRoot);
@@ -759,7 +648,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (journal.Phase < BackupRestorePhase.Commit)
         {
-
             Discard(stagingRoot, journal);
 
             return new BackupRestoreRecoveryReport(
@@ -768,12 +656,10 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 journal.Phase,
                 "The restore was interrupted before any destructive step; staging was removed and the "
                 + "installation was never modified.");
-
         }
 
         if (journal.Phase > BackupRestorePhase.Commit)
         {
-
             Discard(stagingRoot, journal);
 
             return new BackupRestoreRecoveryReport(
@@ -781,12 +667,10 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 BackupRestoreRecoveryOutcome.CommitCompleted,
                 journal.Phase,
                 "The restore had already committed; only staging cleanup remained.");
-
         }
 
         if (stagedExists && liveExists && !displacedExists)
         {
-
             Discard(stagingRoot, journal);
 
             return new BackupRestoreRecoveryReport(
@@ -794,15 +678,12 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 BackupRestoreRecoveryOutcome.RolledBack,
                 journal.Phase,
                 "The commit had not begun; the prior installation was already in place.");
-
         }
 
         if (!liveExists && displacedExists)
         {
-
             try
             {
-
                 Directory.Move(journal.DisplacedRoot, journal.LiveRoot);
 
                 Discard(stagingRoot, journal);
@@ -812,26 +693,21 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                     BackupRestoreRecoveryOutcome.RolledBack,
                     journal.Phase,
                     "The commit was interrupted between renames; the prior installation was restored.");
-
             }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException)
             {
-
                 return new BackupRestoreRecoveryReport(
                     stagingRoot,
                     BackupRestoreRecoveryOutcome.ReconciliationRequired,
                     journal.Phase,
                     "The prior installation could not be moved back into place. It is preserved at "
                     + journal.DisplacedRoot);
-
             }
-
         }
 
         if (!stagedExists && liveExists && displacedExists)
         {
-
             return new BackupRestoreRecoveryReport(
                 stagingRoot,
                 BackupRestoreRecoveryOutcome.ReconciliationRequired,
@@ -839,7 +715,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 "The restored generation is committed but its local secret protection may not have "
                 + "been rebuilt. Re-run the restore, or verify the Grimoire opens. The prior "
                 + "installation is preserved at " + journal.DisplacedRoot);
-
         }
 
         Discard(stagingRoot, journal);
@@ -849,19 +724,15 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
             BackupRestoreRecoveryOutcome.CommitCompleted,
             journal.Phase,
             "The commit had completed; only staging cleanup remained.");
-
     }
 
     private static void Discard(string stagingRoot, BackupRestoreJournalRecord journal)
     {
-
         BackupRestoreJournal.Delete(stagingRoot);
 
         _ = OwnedTemporaryDirectory.TryDelete(
             stagingRoot,
             journal.StagingVolumeId,
             journal.StagingFileId);
-
     }
-
 }

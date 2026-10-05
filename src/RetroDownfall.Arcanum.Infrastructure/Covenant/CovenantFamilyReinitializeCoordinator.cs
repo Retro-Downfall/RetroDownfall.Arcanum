@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// </remarks>
 internal interface ICovenantFamilyReinitializeTransition
 {
-
     /// <summary>Quiesces the disclosure writer and drains the central connection owner.</summary>
     Task<Result> CloseHandlesAsync(CancellationToken cancellationToken);
 
@@ -51,7 +50,6 @@ internal interface ICovenantFamilyReinitializeTransition
 
     /// <summary>Reopens the disclosure writer after publication succeeded.</summary>
     Task<Result> ReopenDisclosureWriterAsync(CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -66,12 +64,10 @@ internal sealed record CovenantReinitializeErasureWork(
 /// </summary>
 internal interface ICovenantReinitializeErasureSource
 {
-
     Task<Result<CovenantReinitializeErasureWork>> EnumerateAsync(
         Guid operationId,
         Guid datasetGeneration,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -100,7 +96,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
     ICovenantFamilyReinitializeTransition transition,
     TimeProvider timeProvider)
 {
-
     /// <summary>How long the apply request owns its ledger lease.</summary>
     internal static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(30);
 
@@ -164,7 +159,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
         string ownerId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         ArgumentNullException.ThrowIfNull(checkpoint);
@@ -180,9 +174,7 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (acquired.IsFailure)
         {
-
             return Result<CovenantExclusiveLeaseDisposition>.Failure(acquired.Error);
-
         }
 
         await using CovenantExclusiveLease lease = acquired.Value;
@@ -193,9 +185,7 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (authority.IsFailure)
         {
-
             return Result<CovenantExclusiveLeaseDisposition>.Failure(authority.Error);
-
         }
 
         CovenantFamilyReinitializeCheckpointV1 state = checkpoint;
@@ -204,7 +194,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         try
         {
-
             state = await AdvanceAsync(
                 operation,
                 state,
@@ -218,13 +207,11 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
             if (erased.IsFailure)
             {
-
                 // A manual file blocker leaves the family intact and admission closed. Dropping the
                 // family now would destroy the database's own record of a file it still cannot prove
                 // it removed from disk.
                 return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             state = await AdvanceAsync(
@@ -265,7 +252,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 CovenantFamilyReinitializePhase.DatabaseCompacted,
                 async (current, token) =>
                 {
-
                     Result<CovenantDigest> compacted = await _transition
                         .CompactAsync(token)
                         .ConfigureAwait(false);
@@ -274,7 +260,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                         ? Result<CovenantFamilyReinitializeCheckpointV1>.Failure(compacted.Error)
                         : Result<CovenantFamilyReinitializeCheckpointV1>.Success(
                             current with { CompactedFileIdentityDigest = compacted.Value.ToString() });
-
                 },
                 cancellationToken).ConfigureAwait(false);
 
@@ -285,7 +270,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 CovenantFamilyReinitializePhase.AcceleratorInstalled,
                 async (current, token) =>
                 {
-
                     Result<Guid> installed = await _transition
                         .InstallTiersAsync(token)
                         .ConfigureAwait(false);
@@ -299,7 +283,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                                 AcceleratorInstalled = true,
                                 NewDatasetGeneration = installed.Value,
                             });
-
                 },
                 cancellationToken).ConfigureAwait(false);
 
@@ -318,14 +301,11 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 CovenantFamilyReinitializePhase.ReopenedVerified,
                 (_, token) => _transition.VerifyReopenAsync(token),
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (CovenantReinitializeStepFailedException)
         {
-
             return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         // A checkpoint past the install phase without the generation that install produced is durable
@@ -333,10 +313,8 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
         // stays closed and the operation stays resumable.
         if (state.NewDatasetGeneration is not { } publishedGeneration)
         {
-
             return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         // Publication happens while the gate is still held. Reopening first would leave a window in
@@ -347,20 +325,16 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (published.IsFailure)
         {
-
             return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         Result writer = await _transition.ReopenDisclosureWriterAsync(cancellationToken).ConfigureAwait(false);
 
         if (writer.IsFailure)
         {
-
             return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         CovenantExclusiveLeaseDisposition disposition = CovenantExclusiveDisposition.Select(
@@ -371,7 +345,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 HealthPublished: true));
 
         return await CloseAsync(lease, disposition, cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -389,62 +362,50 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
         CovenantArtifactErasureAuthority authority,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantReinitializeErasureWork> work = await _erasureSource
             .EnumerateAsync(operation.Id, checkpoint.OldDatasetGeneration, cancellationToken)
             .ConfigureAwait(false);
 
         if (work.IsFailure)
         {
-
             return Result.Failure(work.Error);
-
         }
 
         foreach (CovenantProtectedArtifactErasurePage page in work.Value.DatabasePages)
         {
-
             Result<CovenantArtifactErasureProgress> erased = await _artifacts
                 .ErasePageAsync(page, authority, cancellationToken)
                 .ConfigureAwait(false);
 
             if (erased.IsFailure || erased.Value.IsBlocked)
             {
-
                 return Result.Failure(
                     erased.IsFailure
                         ? erased.Error
                         : new Error(
                             ErrorCodes.Covenant.ManualArtifactErasureRequired,
                             "A protected artifact could not be erased before the family drop."));
-
             }
-
         }
 
         foreach (CovenantManagedFileErasureRequest file in work.Value.ManagedFiles)
         {
-
             Result<CovenantArtifactErasureProgress> erased = await _managedFiles
                 .EraseAsync(file, authority, cancellationToken)
                 .ConfigureAwait(false);
 
             if (erased.IsFailure || erased.Value.IsBlocked)
             {
-
                 return Result.Failure(
                     erased.IsFailure
                         ? erased.Error
                         : new Error(
                             ErrorCodes.Covenant.ManualArtifactErasureRequired,
                             "A managed workspace file could not be erased before the family drop."));
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     private Task<CovenantFamilyReinitializeCheckpointV1> AdvanceAsync(
@@ -461,13 +422,11 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
             phase,
             async (current, token) =>
             {
-
                 Result performed = await step(current, token).ConfigureAwait(false);
 
                 return performed.IsFailure
                     ? Result<CovenantFamilyReinitializeCheckpointV1>.Failure(performed.Error)
                     : Result<CovenantFamilyReinitializeCheckpointV1>.Success(current);
-
             },
             cancellationToken);
 
@@ -488,12 +447,9 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
         Func<CovenantFamilyReinitializeCheckpointV1, CancellationToken, Task<Result<CovenantFamilyReinitializeCheckpointV1>>> step,
         CancellationToken cancellationToken)
     {
-
         if (checkpoint.Phase >= phase)
         {
-
             return checkpoint;
-
         }
 
         Result<CovenantFamilyReinitializeCheckpointV1> performed =
@@ -501,9 +457,7 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (performed.IsFailure)
         {
-
             throw new CovenantReinitializeStepFailedException(performed.Error);
-
         }
 
         return await CheckpointAsync(
@@ -511,7 +465,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
             performed.Value with { Phase = phase },
             ownerId,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<CovenantFamilyReinitializeCheckpointV1> CheckpointAsync(
@@ -520,7 +473,6 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
         string ownerId,
         CancellationToken cancellationToken)
     {
-
         LongRunningOperation? current = await _store.GetAsync(operation.Id, cancellationToken).ConfigureAwait(false);
 
         bool saved = await _operations.CheckpointAsync(
@@ -535,16 +487,13 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (!saved)
         {
-
             throw new CovenantReinitializeStepFailedException(
                 new Error(
                     ErrorCodes.Covenant.RevisionConflict,
                     "The Covenant reinitialize checkpoint was written by another owner."));
-
         }
 
         return checkpoint;
-
     }
 
     private static async Task<Result<CovenantExclusiveLeaseDisposition>> CloseAsync(
@@ -552,15 +501,13 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken)
     {
-
-        Result closed = await lease.CompleteAsync(disposition, cancellationToken).ConfigureAwait(false);
+        // The disposition reports what the reinitialize durably did, so completing it takes no token.
+        Result closed = await lease.CompleteAsync(disposition, CancellationToken.None).ConfigureAwait(false);
 
         return closed.IsFailure
             ? Result<CovenantExclusiveLeaseDisposition>.Failure(closed.Error)
             : Result<CovenantExclusiveLeaseDisposition>.Success(disposition);
-
     }
-
 }
 
 /// <summary>
@@ -574,9 +521,7 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 internal sealed class CovenantReinitializeStepFailedException(Error error)
     : Exception(error.Message)
 {
-
     internal Error Error { get; } = error;
-
 }
 
 /// <summary>
@@ -590,7 +535,6 @@ internal sealed class CovenantReinitializeStepFailedException(Error error)
 /// </remarks>
 internal sealed class CovenantFamilyReinitializeRecoveryHandler : ILongRunningOperationRecoveryHandler
 {
-
     public string Kind => LongRunningOperationKinds.CovenantFamilyReinitialize;
 
     public int SupportedCheckpointVersion => CovenantFamilyReinitializeCheckpointV1.CurrentVersion;
@@ -599,17 +543,14 @@ internal sealed class CovenantFamilyReinitializeRecoveryHandler : ILongRunningOp
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         if (operation.CheckpointPayload is not { } payload)
         {
-
             // No checkpoint means admission was never closed under this operation's owner, so nothing
             // durable can be outstanding and the row may close.
             return Task.FromResult(
                 LongRunningOperationRecoveryResult.Abandoned(CovenantReinitializeNeverStarted));
-
         }
 
         Result<CovenantFamilyReinitializeCheckpointV1> checkpoint =
@@ -617,18 +558,15 @@ internal sealed class CovenantFamilyReinitializeRecoveryHandler : ILongRunningOp
 
         if (checkpoint.IsFailure)
         {
-
             return Task.FromResult(
                 LongRunningOperationRecoveryResult.RequiresAttention(
                     LongRunningOperationErrorCodes.CorruptCheckpoint));
-
         }
 
         return Task.FromResult(
             checkpoint.Value.Phase == CovenantFamilyReinitializePhase.ReopenedVerified
                 ? LongRunningOperationRecoveryResult.Completed()
                 : LongRunningOperationRecoveryResult.RequiresAttention(CovenantReinitializeResumeRequired));
-
     }
 
     /// <summary>The terminal code for a reinitialize that never closed admission.</summary>
@@ -636,5 +574,4 @@ internal sealed class CovenantFamilyReinitializeRecoveryHandler : ILongRunningOp
 
     /// <summary>The parked code for a reinitialize whose durable phase must be resumed.</summary>
     internal const string CovenantReinitializeResumeRequired = "covenant.family_reinitialize_resume_required";
-
 }

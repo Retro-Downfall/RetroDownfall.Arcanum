@@ -736,6 +736,9 @@ public static class ErrorCodes
         /// than leaving this memory's text and its vector disagreeing about what it says.
         /// </summary>
         public const string EmbeddingUnavailable = "Saga.EmbeddingUnavailable";
+
+        /// <summary>A durable Saga write did not commit. The transaction wrote nothing.</summary>
+        public const string WriteFailed = "Saga.WriteFailed";
     }
 
     /// <summary>Lexicon — structured agent-directed entity memory (replaces model-facing Lore).</summary>
@@ -1064,6 +1067,12 @@ public static class ErrorCodes
 
         /// <summary>A maintenance, cleanup, or synchronization step did not complete.</summary>
         public const string MaintenanceFailed = "Covenant.MaintenanceFailed";
+
+        /// <summary>
+        /// A durable Covenant write did not commit, or the database stayed busy past the retry bound. The
+        /// transaction wrote nothing.
+        /// </summary>
+        public const string WriteFailed = "Covenant.WriteFailed";
 
         /// <summary>Automatic recovery is refused; an authenticated operator operation is required.</summary>
         public const string ManualRecoveryRequired = "Covenant.ManualRecoveryRequired";

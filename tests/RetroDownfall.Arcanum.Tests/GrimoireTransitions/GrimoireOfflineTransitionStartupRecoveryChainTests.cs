@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Operations;
@@ -511,6 +513,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
             Gate = new CovenantOperationGate(
                 Runtime,
                 new FakeCovenantCampaignScopeProbe(),
+                NullLogger<CovenantOperationGate>.Instance,
                 TimeSpan.FromSeconds(5));
         }
     }

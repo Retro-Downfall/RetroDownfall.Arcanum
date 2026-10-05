@@ -3099,6 +3099,7 @@ public sealed class CovenantErasureSameProcessTests
                         provider => new CovenantOperationGate(
                             provider.GetRequiredService<CovenantRuntimeGenerationProvider>(),
                             provider.GetRequiredService<ICovenantCampaignScopeProbe>(),
+                            NullLogger<CovenantOperationGate>.Instance,
                             timeout));
                 }
 

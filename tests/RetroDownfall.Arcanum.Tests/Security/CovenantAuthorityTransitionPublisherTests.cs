@@ -1,5 +1,6 @@
 using System.Text;
 using System.Reflection;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -1067,7 +1068,10 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
             CovenantAvailability availability = new(runtime);
 
-            CovenantOperationGate gate = new(runtime, new NoCampaignProbe());
+            CovenantOperationGate gate = new(
+                runtime,
+                new NoCampaignProbe(),
+                NullLogger<CovenantOperationGate>.Instance);
 
             return new Harness(
                 runtime,

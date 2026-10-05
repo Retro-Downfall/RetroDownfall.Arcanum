@@ -3,6 +3,11 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+using RetroDownfall.Arcanum.Infrastructure.Memory;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Memory;
 
@@ -11,6 +16,139 @@ public sealed class MemoryReviewContractTests
     private static readonly Guid Campaign = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
     private static readonly Guid RequestId = Guid.Parse("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE");
+
+    /// <summary>
+    /// R-172: each store used to invent its own per-item outcome strings, and Lexicon mixed casings
+    /// (<c>corrected</c> beside <c>AlreadyRetired</c>). Every outcome is now one member of a single closed,
+    /// PascalCase set that API §8.34 enumerates, and receipts persisted with an earlier build's lowercase
+    /// spelling still read back as that set.
+    /// </summary>
+    [Fact]
+    public void Every_store_reports_outcomes_from_one_closed_vocabulary()
+    {
+        Assert.Equal(MemoryReviewOutcomes.All.Count, MemoryReviewOutcomes.All.Distinct(StringComparer.Ordinal).Count());
+
+        Assert.All(
+            MemoryReviewOutcomes.All,
+            static outcome => Assert.Matches("^[A-Z][A-Za-z]+$", outcome));
+
+        foreach (MemoryReviewAction action in Enum.GetValues<MemoryReviewAction>())
+        {
+            string applied = MemoryReviewOutcomes.Applied(action);
+
+            Assert.Contains(applied, MemoryReviewOutcomes.All);
+
+            Assert.Equal(applied, MemoryReviewOutcomes.FromPersisted(applied));
+        }
+
+        // What an earlier Lexicon persisted.
+        Assert.Equal(MemoryReviewOutcomes.Confirmed, MemoryReviewOutcomes.FromPersisted("acknowledged"));
+
+        Assert.Equal(MemoryReviewOutcomes.Corrected, MemoryReviewOutcomes.FromPersisted("corrected"));
+
+        Assert.Equal(MemoryReviewOutcomes.Retired, MemoryReviewOutcomes.FromPersisted("retired"));
+
+        Assert.Equal(MemoryReviewOutcomes.Pinned, MemoryReviewOutcomes.FromPersisted("pinned"));
+
+        Assert.Equal(MemoryReviewOutcomes.Unpinned, MemoryReviewOutcomes.FromPersisted("unpinned"));
+
+        Assert.Equal(MemoryReviewOutcomes.AutoAcknowledged, MemoryReviewOutcomes.FromPersisted("auto-acknowledged"));
+
+        // Closed means closed: neither another casing of a member nor an invented word is an outcome.
+        Assert.Null(MemoryReviewOutcomes.FromPersisted("CORRECTED"));
+
+        Assert.Null(MemoryReviewOutcomes.FromPersisted("Applied"));
+
+        Assert.Null(MemoryReviewOutcomes.FromPersisted(null));
+
+        Assert.False(MemoryReviewOutcomes.IsKnown("corrected"));
+    }
+
+    /// <summary>
+    /// R-168: replaying a request looks up every receipt of that request, and it ran twice per apply, once
+    /// of them under the write lock. The predicate was a <c>substr</c> over the primary key, which SQLite
+    /// cannot seek, so every apply scanned every receipt ever written. The three stores' statements are
+    /// explained as the services run them, and each must seek the primary-key index over a key range.
+    /// </summary>
+    [SkippableFact]
+    public async Task Receipt_lookup_uses_the_primary_key_index()
+    {
+        await using SagaStoreHarness grimoire = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        AssertSeeksPrimaryKey(
+            "Saga",
+            await ExplainReceiptLookupAsync(grimoire.Connection, SagaMemoryReviewService.ReceiptLookupSql, "@")
+                .ConfigureAwait(false));
+
+        AssertSeeksPrimaryKey(
+            "Lexicon",
+            await ExplainReceiptLookupAsync(grimoire.Connection, LexiconService.ReceiptLookupSql, "@")
+                .ConfigureAwait(false));
+
+        await using CovenantCanonicalFixture canonical = await CovenantCanonicalFixture
+            .CreateAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+
+        AssertSeeksPrimaryKey(
+            "Covenant",
+            await ExplainReceiptLookupAsync(canonical.Connection, CovenantMemoryReviewService.ReceiptLookupSql, "$")
+                .ConfigureAwait(false));
+    }
+
+    private static async Task<string> ExplainReceiptLookupAsync(
+        System.Data.Common.DbConnection connection,
+        string sql,
+        string parameterPrefix)
+    {
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "EXPLAIN QUERY PLAN " + sql;
+
+        string prefix = RequestId.ToString("N") + ":";
+
+        foreach ((string name, string value) in new[]
+        {
+            ("prefix", prefix),
+            ("prefixUpper", RequestId.ToString("N") + ";"),
+        })
+        {
+            // Bound only where the statement names it, so the current predicate (one parameter) and the
+            // range predicate (two) are both explained as written.
+            if (!sql.Contains(parameterPrefix + name, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            System.Data.Common.DbParameter parameter = command.CreateParameter();
+
+            parameter.ParameterName = parameterPrefix + name;
+
+            parameter.Value = value;
+
+            command.Parameters.Add(parameter);
+        }
+
+        System.Text.StringBuilder plan = new();
+
+        await using System.Data.Common.DbDataReader reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+
+        while (await reader.ReadAsync().ConfigureAwait(false))
+        {
+            _ = plan.AppendLine(reader.GetString(reader.FieldCount - 1));
+        }
+
+        return plan.ToString();
+    }
+
+    private static void AssertSeeksPrimaryKey(string store, string plan)
+    {
+        Assert.True(
+            plan.Contains("SEARCH", StringComparison.Ordinal)
+            && plan.Contains("sqlite_autoindex_", StringComparison.Ordinal)
+            && !plan.Contains("SCAN", StringComparison.Ordinal),
+            $"{store} receipt lookup does not seek the DecisionId primary key: {plan}");
+    }
 
     [Theory]
     [InlineData(0)]

@@ -3,6 +3,7 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -43,7 +44,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class SagaAnnalsProtectedErasureTests
 {
-
     private static readonly DateTimeOffset Created =
         DateTimeOffset.Parse("2026-09-28T12:00:00Z", CultureInfo.InvariantCulture);
 
@@ -54,7 +54,6 @@ public sealed class SagaAnnalsProtectedErasureTests
     [InlineData(true)]
     public async Task A_labelled_saga_memory_with_a_full_annals_graph_leaves_no_claim_row_behind(bool staged)
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
 
         Guid target = Guid.NewGuid();
@@ -113,15 +112,11 @@ public sealed class SagaAnnalsProtectedErasureTests
 
         if (staged)
         {
-
             await PurgeStagedAsync(harness);
-
         }
         else
         {
-
             await EraseLiveAsync(harness, target);
-
         }
 
         (int claims, int versions, int heads, int edges, int reviewEvents, int receipts) = (
@@ -143,7 +138,6 @@ public sealed class SagaAnnalsProtectedErasureTests
         Assert.Equal(0, await harness.CountAsync("artifact_sensitivity", "1 = 1"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
-
     }
 
     /// <summary>
@@ -153,7 +147,6 @@ public sealed class SagaAnnalsProtectedErasureTests
     [SkippableFact]
     public async Task The_orphan_assertion_fails_on_a_claim_whose_subject_row_is_gone()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
 
         Guid memory = Guid.NewGuid();
@@ -171,7 +164,6 @@ public sealed class SagaAnnalsProtectedErasureTests
             () => AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection));
 
         Assert.Contains("'Saga'", failure.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -186,7 +178,6 @@ public sealed class SagaAnnalsProtectedErasureTests
     [SkippableFact]
     public async Task The_orphan_assertion_fails_on_a_version_whose_claim_is_gone()
     {
-
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
 
         Guid memory = Guid.NewGuid();
@@ -215,12 +206,10 @@ public sealed class SagaAnnalsProtectedErasureTests
         Assert.Contains("store not recoverable once the claim is gone", failure.Message, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Saga or Lexicon", failure.Message, StringComparison.Ordinal);
-
     }
 
     private static async Task InsertAsync(SagaStoreHarness harness, Guid id, string content, DateTimeOffset createdAt)
     {
-
         SagaMemoryWriteOutcome outcome = await harness.Store.InsertAsync(
             id.ToString(),
             content,
@@ -232,7 +221,6 @@ public sealed class SagaAnnalsProtectedErasureTests
             Token);
 
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
-
     }
 
     /// <summary>
@@ -242,7 +230,6 @@ public sealed class SagaAnnalsProtectedErasureTests
     /// </summary>
     private static async Task ConfirmHeadAsync(SagaStoreHarness harness, Guid memory)
     {
-
         FakeTimeProvider time = new();
 
         time.SetUtcNow(Created.AddHours(1));
@@ -265,7 +252,8 @@ public sealed class SagaAnnalsProtectedErasureTests
                 }),
             MemoryErasureTestKeys.Isolated(),
             new OperatorAuthorityContextIssuer(new FakeCovenantAuthorityProvider()),
-            time);
+            time,
+            NullLogger<SagaMemoryReviewService>.Instance);
 
         Result<SagaReviewPageDto> page = await review.ListAsync(
             new SagaReviewListRequest(SagaMemoryScopeKind.Global, CampaignId: null, Limit: 10, Cursor: null),
@@ -291,7 +279,6 @@ public sealed class SagaAnnalsProtectedErasureTests
             Token);
 
         Assert.True(confirmed.IsSuccess, confirmed.IsFailure ? confirmed.Error.Message : string.Empty);
-
     }
 
     /// <summary>
@@ -299,7 +286,6 @@ public sealed class SagaAnnalsProtectedErasureTests
     /// </summary>
     private static async Task PurgeStagedAsync(SagaStoreHarness harness)
     {
-
         SqliteConnection connection = (SqliteConnection)harness.Connection;
 
         await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
@@ -319,7 +305,6 @@ public sealed class SagaAnnalsProtectedErasureTests
         Assert.True(purged.IsSuccess, purged.IsFailure ? purged.Error.Message : string.Empty);
 
         await transaction.CommitAsync(Token);
-
     }
 
     /// <summary>
@@ -328,7 +313,6 @@ public sealed class SagaAnnalsProtectedErasureTests
     /// </summary>
     private static async Task EraseLiveAsync(SagaStoreHarness harness, Guid memory)
     {
-
         using CovenantConnectionSource connections = new(
             harness.Context,
             FixtureOrdinaryConnectionFactory.For(harness.Context));
@@ -379,7 +363,6 @@ public sealed class SagaAnnalsProtectedErasureTests
         Assert.Equal(CovenantErasureBlocker.None, erased.Value.Blocker);
 
         Assert.Equal(1UL, erased.Value.ErasedCount);
-
     }
 
     private static async Task ExecuteAsync(
@@ -387,14 +370,12 @@ public sealed class SagaAnnalsProtectedErasureTests
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         await using DbCommand command = harness.Connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             DbParameter parameter = command.CreateParameter();
 
             parameter.ParameterName = name;
@@ -402,17 +383,14 @@ public sealed class SagaAnnalsProtectedErasureTests
             parameter.Value = value;
 
             _ = command.Parameters.Add(parameter);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(Token);
-
     }
 
     /// <summary>A Confirm embeds nothing, so any call here is a defect in the precondition.</summary>
     private sealed class NoEmbeddingWeaveService : IWeaveService
     {
-
         public bool IsAvailable => true;
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
@@ -427,7 +405,5 @@ public sealed class SagaAnnalsProtectedErasureTests
             string text,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("A review Confirm does not chunk.");
-
     }
-
 }

@@ -496,6 +496,8 @@ public sealed class LexiconProtectedInspectionTests
 
         public Task<Result<CovenantSessionExportSensitivity>> InspectSessionAsync(Guid sessionId, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new NotSupportedException();
 
+        public Task<Result<CovenantSessionExportSensitivity>> InspectSessionWithoutLeaseAsync(Guid sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public Task<Result<CovenantCampaignExportExclusions>> InventoryCampaignExclusionsAsync(Guid campaignId, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 

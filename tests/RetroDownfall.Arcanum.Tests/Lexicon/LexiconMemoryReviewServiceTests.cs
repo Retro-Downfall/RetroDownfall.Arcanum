@@ -263,7 +263,7 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
 
         MemoryReviewBulkItemResultDto appliedItem = Assert.Single(applied.Value.Items);
 
-        Assert.Equal("corrected", appliedItem.Outcome);
+        Assert.Equal(MemoryReviewOutcomes.Corrected, appliedItem.Outcome);
         Assert.NotNull(appliedItem.ResultingVersionId);
 
         LexiconEntryDetail after = await test.ShowAsync();
@@ -310,12 +310,7 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
         Assert.True(applied.IsSuccess, applied.Error.Message);
 
         Assert.Equal(
-            action switch
-            {
-                MemoryReviewAction.Retire => "retired",
-                MemoryReviewAction.Pin => "pinned",
-                _ => "unpinned",
-            },
+            MemoryReviewOutcomes.Applied(action),
             Assert.Single(applied.Value.Items).Outcome);
 
         LexiconEntryDetail after = await test.ShowAsync();
@@ -743,12 +738,191 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
         Assert.True(authorizedReplay.Value.Replayed);
     }
 
+    /// <summary>
+    /// R-025: a batch that applies one correction and then meets a stale target has to roll the applied
+    /// correction back with its receipts and marker. The earlier version of this test used Confirm, which
+    /// writes nothing, and receipts are written after the loop, so a zero receipt count held with or
+    /// without a rollback.
+    /// </summary>
+    /// <summary>
+    /// R-172: a receipt an earlier build persisted spells its outcome in lowercase, in the receipt's
+    /// identifier and in the digest that seals it. Replay has to keep accepting that spelling and report
+    /// the closed vocabulary's. The legacy receipts are written here exactly as that build wrote them, by
+    /// the same canonical encoding, because they are persisted data that can never be rewritten.
+    /// </summary>
+    [Theory]
+    [InlineData(MemoryReviewAction.Confirm)]
+    [InlineData(MemoryReviewAction.Correct)]
+    [InlineData(MemoryReviewAction.Retire)]
+    [InlineData(MemoryReviewAction.Pin)]
+    public async Task A_receipt_persisted_with_a_lowercase_outcome_still_replays_as_the_closed_spelling(
+        MemoryReviewAction action)
+    {
+        await using CorrectionFixture test = new(fixture, annals: true);
+
+        _ = await test.SeedAsync();
+
+        ILexiconMemoryReviewService review = Assert.IsAssignableFrom<ILexiconMemoryReviewService>(test.Concrete);
+
+        var listed = await review.ListAsync(
+            new(LexiconCorrectionTests.Global, 1, null), null, CancellationToken.None);
+
+        LexiconReviewBulkPrepareRequest request = new(
+            Guid.NewGuid(),
+            LexiconCorrectionTests.Global,
+            action,
+            [new(
+                listed.Value.Items[0].ObservationToken,
+                action == MemoryReviewAction.Correct ? new LexiconReplacementContent("person", ["gamma"]) : null)]);
+
+        var prepared = await review.PrepareAsync(request, null, CancellationToken.None);
+
+        LexiconReviewBulkApplyRequest apply = new(request, prepared.Value.PreparedPlanToken);
+
+        var original = await review.ApplyAsync(apply, null, CancellationToken.None);
+
+        Assert.True(original.IsSuccess, original.Error.Message);
+
+        await RewriteReceiptsAsLegacyAsync(test, request);
+
+        var replay = await review.ApplyAsync(apply, null, CancellationToken.None);
+
+        Assert.True(replay.IsSuccess, replay.Error.Message);
+
+        Assert.True(replay.Value.Replayed);
+
+        Assert.Equal(original.Value.Items, replay.Value.Items);
+
+        Assert.Equal(MemoryReviewOutcomes.Applied(action), Assert.Single(replay.Value.Items).Outcome);
+    }
+
+    /// <summary>
+    /// Rewrites every receipt of the request into the spelling builds before the closed vocabulary wrote:
+    /// lowercase outcomes in the identifier, <c>auto-acknowledged</c> on a correction's replacement, and
+    /// the response digest recomputed over exactly those strings.
+    /// </summary>
+    private static async Task RewriteReceiptsAsLegacyAsync(
+        CorrectionFixture test,
+        LexiconReviewBulkPrepareRequest request)
+    {
+        static string Canonical(System.Text.StringBuilder builder, string value) =>
+            builder.Append(value.Length).Append(':').Append(value).Append('|').ToString();
+
+        System.Text.StringBuilder ordered = new();
+
+        _ = Canonical(ordered, "lexicon");
+        _ = Canonical(ordered, request.RequestId.ToString("D"));
+        _ = Canonical(ordered, ((int)request.Action).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        _ = Canonical(ordered, request.Scope.Kind.ToString());
+        _ = Canonical(ordered, request.Scope.CampaignId?.ToString("D") ?? string.Empty);
+
+        foreach (LexiconReviewDecision decision in request.Decisions)
+        {
+            _ = Canonical(ordered, decision.ObservationToken);
+            _ = Canonical(ordered, decision.ReplacementContent?.Type ?? string.Empty);
+
+            foreach (string fact in decision.ReplacementContent?.Facts ?? [])
+            {
+                _ = Canonical(ordered, fact);
+            }
+
+            _ = ordered.Append(';');
+        }
+
+        string orderedHex = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(ordered.ToString())));
+
+        List<(string DecisionId, long EventSequence)> rows = [];
+
+        await using (SqliteCommand read = test.Connection.CreateCommand())
+        {
+            read.CommandText = "SELECT DecisionId, ReviewEventSequence FROM annal_review_decision_receipts";
+
+            await using SqliteDataReader reader = await read.ExecuteReaderAsync();
+
+            while (await reader.ReadAsync())
+            {
+                rows.Add((reader.GetString(0), reader.GetInt64(1)));
+            }
+        }
+
+        Assert.NotEmpty(rows);
+
+        foreach ((string decisionId, long eventSequence) in rows)
+        {
+            string[] parts = decisionId.Split(':');
+
+            bool replacement = parts[2] == "R";
+
+            string legacy = parts[4] switch
+            {
+                "Confirmed" => "acknowledged",
+                "Corrected" => "corrected",
+                "Retired" => "retired",
+                "Pinned" => "pinned",
+                "Unpinned" => "unpinned",
+                _ => parts[4],
+            };
+
+            parts[4] = legacy;
+
+            string legacyId = string.Join(':', parts);
+
+            string subject;
+
+            string version;
+
+            await using (SqliteCommand eventRead = test.Connection.CreateCommand())
+            {
+                eventRead.CommandText = "SELECT SubjectId, VersionId FROM annal_review_events WHERE Sequence = $sequence";
+
+                _ = eventRead.Parameters.AddWithValue("$sequence", eventSequence);
+
+                await using SqliteDataReader reader = await eventRead.ExecuteReaderAsync();
+
+                Assert.True(await reader.ReadAsync());
+
+                subject = Guid.Parse(reader.GetString(0)).ToString("D");
+
+                version = reader.GetString(1);
+            }
+
+            string? resulting = replacement ? version : parts[7] == "-" ? null : parts[7];
+
+            System.Text.StringBuilder response = new();
+
+            _ = Canonical(response, orderedHex);
+            _ = Canonical(response, legacyId);
+            _ = Canonical(response, eventSequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            _ = Canonical(response, subject);
+            _ = Canonical(response, version);
+            _ = Canonical(response, replacement ? "auto-acknowledged" : legacy);
+            _ = Canonical(response, resulting ?? string.Empty);
+
+            await using SqliteCommand update = test.Connection.CreateCommand();
+
+            update.CommandText =
+                "UPDATE annal_review_decision_receipts SET DecisionId = $new, ResponseReceiptDigest = $digest WHERE DecisionId = $old";
+
+            _ = update.Parameters.AddWithValue("$new", legacyId);
+
+            _ = update.Parameters.AddWithValue(
+                "$digest",
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(response.ToString())));
+
+            _ = update.Parameters.AddWithValue("$old", decisionId);
+
+            Assert.Equal(1, await update.ExecuteNonQueryAsync());
+        }
+    }
+
     [Fact]
-    public async Task One_stale_target_rolls_back_the_entire_batch()
+    public async Task One_stale_target_after_an_applied_correction_rolls_back_the_earlier_correction_receipts_and_marker()
     {
         await using CorrectionFixture test = new(fixture, annals: true);
 
         LexiconEntryDetail first = await test.SeedAsync();
+
         Assert.True((await test.Concrete.UpsertAsync("Second", "place", ["east"], LexiconScope.Global)).IsSuccess);
 
         ILexiconMemoryReviewService review = Assert.IsAssignableFrom<ILexiconMemoryReviewService>(test.Concrete);
@@ -756,20 +930,63 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
         var listed = await review.ListAsync(
             new(LexiconCorrectionTests.Global, 50, null), null, CancellationToken.None);
 
+        // Newest first: "Second" is decided, and its correction written, before the stale "Entity" is met.
+        Assert.Equal(2, listed.Value.Items.Length);
+
+        Assert.Equal(first.Entry.Id, listed.Value.Items[1].EntryId);
+
         LexiconReviewBulkPrepareRequest request = new(
             Guid.NewGuid(),
             LexiconCorrectionTests.Global,
-            MemoryReviewAction.Confirm,
-            [.. listed.Value.Items.Select(static item => new LexiconReviewDecision(item.ObservationToken, null))]);
+            MemoryReviewAction.Correct,
+            [
+                new LexiconReviewDecision(listed.Value.Items[0].ObservationToken, new("place", ["east", "west"])),
+                new LexiconReviewDecision(listed.Value.Items[1].ObservationToken, new("person", ["gamma"])),
+            ]);
 
         var prepared = await review.PrepareAsync(request, null, CancellationToken.None);
 
+        Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+        // The stale target: corrected elsewhere after the plan was prepared.
         Assert.True((await test.Service.CorrectAsync(first.Target, new("person", ["changed"]), null)).IsSuccess);
+
+        string[] storeBefore = await test.SnapshotAsync();
+
+        object? markerBefore = await test.ScalarAsync(
+            "SELECT ReviewedThroughSequence || ':' || Revision FROM annal_review_markers WHERE SubjectStoreCode = 2");
+
+        Assert.NotNull(markerBefore);
+
+        object? eventsBefore = await test.ScalarAsync("SELECT count(*) FROM annal_review_events");
 
         var applied = await review.ApplyAsync(new(request, prepared.Value.PreparedPlanToken), null, CancellationToken.None);
 
         Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.MemoryReview.StaleObservation, applied.Error.Code);
+
         Assert.Equal(0L, await test.ScalarAsync("SELECT count(*) FROM annal_review_decision_receipts"));
+
+        Assert.Equal(
+            markerBefore,
+            await test.ScalarAsync(
+                "SELECT ReviewedThroughSequence || ':' || Revision FROM annal_review_markers WHERE SubjectStoreCode = 2"));
+
+        Assert.Equal(eventsBefore, await test.ScalarAsync("SELECT count(*) FROM annal_review_events"));
+
+        // The first decision's correction is gone with everything it wrote: entry, search row, Annals
+        // version and head, and provenance.
+        Assert.Equal(storeBefore, await test.SnapshotAsync());
+
+        LexiconEntryDetail second = (await test.Concrete.ShowExactAsync(
+            LexiconCorrectionTests.Global,
+            "second",
+            null)).Value.Value;
+
+        Assert.Equal("place", second.Entry.Type);
+
+        Assert.Equal(["east"], second.Entry.Facts);
     }
 
     [Fact]

@@ -5,12 +5,14 @@ using System.Security.Cryptography;
 using System.Text;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Memory;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -30,8 +32,18 @@ internal sealed class CovenantMemoryReviewService(
     CovenantMutationKernel mutationKernel,
     CovenantCurationKernel curationKernel,
     TimeProvider timeProvider,
-    CovenantAvailabilityRepublisher availabilityRepublisher) : ICovenantMemoryReviewService
+    CovenantAvailabilityRepublisher availabilityRepublisher,
+    ILogger<CovenantMemoryReviewService> logger) : ICovenantMemoryReviewService
 {
+    /// <summary>
+    /// How long a busy database is retried before the apply gives up, or <see langword="null"/> for the
+    /// shared default. A seam so a test can prove the exhausted-retry answer without waiting out the default.
+    /// </summary>
+    internal TimeSpan? BusyRetryDeadlineForTesting { get; init; }
+
+    /// <summary>The delay between busy retries, or <see langword="null"/> for the shared backoff.</summary>
+    internal Func<TimeSpan, CancellationToken, Task>? BusyRetryDelayForTesting { get; init; }
+
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
         "The memory-review token is invalid, expired, stale, or bound to another queue.");
@@ -51,6 +63,10 @@ internal sealed class CovenantMemoryReviewService(
     private static readonly Error RequestReuse = new(
         ErrorCodes.MemoryReview.RequestReuse,
         "This memory-review request identity already belongs to a different decision set.");
+
+    private static readonly Error WriteFailed = new(
+        ErrorCodes.Covenant.WriteFailed,
+        "The Covenant review decisions could not be persisted. Nothing was written.");
 
     public async ValueTask<Result<CovenantReviewPageDto>> ListAsync(
         CovenantReviewListRequest request,
@@ -525,6 +541,73 @@ internal sealed class CovenantMemoryReviewService(
             return InvalidToken;
         }
 
+        Result<MemoryReviewBulkResultDto> committed;
+
+        try
+        {
+            // The write transaction retries a busy database rather than surfacing the first SQLITE_BUSY, and
+            // every attempt starts from nothing: the previous one rolled back or never began.
+            committed = await SqliteBusyRetry.ExecuteAsync(
+                () => ApplyInTransactionAsync(
+                    connection,
+                    writeLease,
+                    preparedRequest,
+                    requestDigest,
+                    scopeDigest,
+                    plan,
+                    decodedObservations.Value,
+                    cancellationToken),
+                cancellationToken,
+                delayAsync: BusyRetryDelayForTesting,
+                deadline: BusyRetryDeadlineForTesting).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException
+            and not GrimoireMaintenanceUnavailableException)
+        {
+            // The transaction rolled back with the exception. Mapped to this store's code, the way
+            // Lexicon maps its own, and logged by type and error code only: a driver message can carry
+            // what it was trying to write.
+            logger.LogError(
+                "Covenant memory review apply failed: {FailureType} (SQLite error {SqliteErrorCode}).",
+                failure.GetType(),
+                (failure as SqliteException)?.SqliteErrorCode);
+
+            return WriteFailed;
+        }
+
+        if (committed.IsSuccess && !committed.Value.Replayed)
+        {
+            // After COMMIT, under the caller's write lease, and outside the retry: the write is durable,
+            // so a failure here must neither re-run it nor turn a committed apply into an error. A decision
+            // that went through the mutation kernel advanced the canonical search sequence; one that only
+            // curated republishes the unchanged tuple.
+            try
+            {
+                await availabilityRepublisher
+                    .RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception failure) when (failure is not OperationCanceledException)
+            {
+                logger.LogError(
+                    "Covenant availability republish after a committed review apply failed: {FailureType}.",
+                    failure.GetType());
+            }
+        }
+
+        return committed;
+    }
+
+    private async Task<Result<MemoryReviewBulkResultDto>> ApplyInTransactionAsync(
+        SqliteConnection connection,
+        CovenantWriteLease writeLease,
+        CovenantReviewBulkPrepareRequest preparedRequest,
+        MemoryReviewDigest requestDigest,
+        MemoryReviewDigest scopeDigest,
+        MemoryReviewPreparedPlanTokenFacts plan,
+        MemoryReviewObservationTokenFacts[] observations,
+        CancellationToken cancellationToken)
+    {
         // Read from the latch before BEGIN, never inside it, and disposed only after the transaction
         // ends. Review decisions are operator intents, which the kernel never refuses through it; a
         // correction reads its key to release the fingerprint of the identity it writes.
@@ -576,7 +659,7 @@ internal sealed class CovenantMemoryReviewService(
 
         for (int index = 0; index < preparedRequest.Decisions.Length; index++)
         {
-            MemoryReviewObservationTokenFacts observed = decodedObservations.Value[index];
+            MemoryReviewObservationTokenFacts observed = observations[index];
 
             CovenantReviewEvent? row = await ReadEventAsync(
                 connection,
@@ -685,12 +768,6 @@ internal sealed class CovenantMemoryReviewService(
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-        // After COMMIT, under the caller's write lease. A decision that went through the mutation kernel
-        // advanced the canonical search sequence; one that only curated republishes the unchanged tuple.
-        await availabilityRepublisher
-            .RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
-            .ConfigureAwait(false);
 
         return new MemoryReviewBulkResultDto(
             MemoryReviewStore.Covenant,
@@ -1866,29 +1943,20 @@ internal sealed class CovenantMemoryReviewService(
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static string Outcome(MemoryReviewAction action) =>
-        action switch
-        {
-            MemoryReviewAction.Confirm => "Confirmed",
-            MemoryReviewAction.Correct => "Corrected",
-            MemoryReviewAction.Retire => "Retired",
-            MemoryReviewAction.Pin => "Pinned",
-            MemoryReviewAction.Unpin => "Unpinned",
-            _ => throw new ArgumentOutOfRangeException(nameof(action)),
-        };
+    private static string Outcome(MemoryReviewAction action) => MemoryReviewOutcomes.Applied(action);
 
     private static string Outcome(MemoryReviewAction action, CovenantMutationOutcome mutationOutcome) =>
         mutationOutcome switch
         {
             CovenantMutationOutcome.Applied => Outcome(action),
-            CovenantMutationOutcome.NoChange => nameof(CovenantMutationOutcome.NoChange),
+            CovenantMutationOutcome.NoChange => MemoryReviewOutcomes.NoChange,
             _ => throw new ArgumentOutOfRangeException(nameof(mutationOutcome)),
         };
 
     private static bool IsExpectedOutcome(MemoryReviewAction action, string outcome) =>
         string.Equals(outcome, Outcome(action), StringComparison.Ordinal)
         || action != MemoryReviewAction.Confirm
-            && string.Equals(outcome, nameof(CovenantMutationOutcome.NoChange), StringComparison.Ordinal);
+            && string.Equals(outcome, MemoryReviewOutcomes.NoChange, StringComparison.Ordinal);
 
     private static CovenantOperationScope OperationScope(CovenantScope scope, Guid? campaignId) =>
         scope == CovenantScope.Global
@@ -2160,6 +2228,16 @@ internal sealed class CovenantMemoryReviewService(
                 Replayed: true));
     }
 
+    /// <summary>The one statement that finds every receipt of one request, as the service runs it.</summary>
+    internal const string ReceiptLookupSql =
+        """
+        SELECT DecisionId, DatasetGeneration, ReviewEventSequence,
+               RequestIdempotencyDigest, ResponseReceiptDigest
+        FROM covenant_review_decision_receipts
+        WHERE DecisionId >= $prefix AND DecisionId < $prefixUpper
+        ORDER BY DecisionId;
+        """;
+
     private static async ValueTask<List<StoredReceipt>> ReadReceiptsAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
@@ -2168,15 +2246,9 @@ internal sealed class CovenantMemoryReviewService(
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT DecisionId, DatasetGeneration, ReviewEventSequence,
-                   RequestIdempotencyDigest, ResponseReceiptDigest
-            FROM covenant_review_decision_receipts
-            WHERE substr(DecisionId, 1, length($prefix)) = $prefix
-            ORDER BY DecisionId;
-            """;
-        Bind(command, "$prefix", requestId.ToString("N", CultureInfo.InvariantCulture) + ":");
+        command.CommandText = ReceiptLookupSql;
+        Bind(command, "$prefix", MemoryReviewReceiptKeys.Prefix(requestId));
+        Bind(command, "$prefixUpper", MemoryReviewReceiptKeys.UpperBound(requestId));
 
         List<StoredReceipt> receipts = [];
 

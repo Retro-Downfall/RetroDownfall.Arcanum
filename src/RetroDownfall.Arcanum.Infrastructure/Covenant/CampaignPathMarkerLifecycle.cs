@@ -38,7 +38,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 internal sealed partial class CampaignPathMarkerLifecycle
     : ICampaignPathMarkerLifecycle, IAsyncDisposable
 {
-
     private readonly ICampaignPathMarkerCodec _codec;
 
     /// <summary>
@@ -87,7 +86,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         TimeProvider timeProvider,
         ICampaignRootIdentityRecoveryKeyProvider? recoveryKeys = null)
     {
-
         _codec = codec ?? throw new ArgumentNullException(nameof(codec));
 
         _rootOpener = rootOpener ?? throw new ArgumentNullException(nameof(rootOpener));
@@ -99,9 +97,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
         _recoveryKeys = recoveryKeys;
-
     }
 
+    /// <remarks>
+    /// Taking the seeds means owning every opened root authority in them. Each holds two directory handles, and
+    /// the preparation retains only the ones it makes a child for (the retained set is released by
+    /// <see cref="ReleaseRetainedRootsAsync"/>). Every other one, whether its marker was already absent, a refusal
+    /// was returned before it was reached, or the loop failed beside it, is released here on every exit, so a
+    /// refused restore cannot strand handles to the end of the process.
+    /// </remarks>
     public async Task<Result<CampaignPathRestoreCleanupPreparationReceipt>>
         PrepareRestoreCleanupInStagedDatabaseAsync(
             CampaignPathRestoreCleanupPreparation preparation,
@@ -109,41 +113,82 @@ internal sealed partial class CampaignPathMarkerLifecycle
             SqliteTransaction stagedTransaction,
             CancellationToken cancellationToken)
     {
+        List<CampaignPathMarkerRootAuthority> retained = [];
 
+        try
+        {
+            return await PrepareRestoreCleanupSeedsAsync(
+                preparation,
+                stagedConnection,
+                stagedTransaction,
+                retained,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (preparation is { OrderedSeeds.IsDefault: false })
+            {
+                await DisposeUnretainedSeedAuthoritiesAsync(preparation.OrderedSeeds, retained)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Releases the opened root authority of every seed that is not in <paramref name="retained"/>.
+    /// </summary>
+    private static async ValueTask DisposeUnretainedSeedAuthoritiesAsync(
+        ImmutableArray<CampaignPathRestoreCleanupSeed> seeds,
+        List<CampaignPathMarkerRootAuthority> retained)
+    {
+        List<IAsyncDisposable> unretained = [];
+
+        foreach (CampaignPathRestoreCleanupSeed seed in seeds)
+        {
+            if (seed.Observation is CampaignPathCleanupRootObservation.Opened opened
+                && !retained.Any(root => ReferenceEquals(root, opened.RootAuthority)))
+            {
+                unretained.Add(opened.RootAuthority);
+            }
+        }
+
+        await CampaignPathRetainedRootRelease.DisposeAllAsync(unretained).ConfigureAwait(false);
+    }
+
+    private async Task<Result<CampaignPathRestoreCleanupPreparationReceipt>>
+        PrepareRestoreCleanupSeedsAsync(
+            CampaignPathRestoreCleanupPreparation preparation,
+            SqliteConnection stagedConnection,
+            SqliteTransaction stagedTransaction,
+            List<CampaignPathMarkerRootAuthority> retainedAuthorities,
+            CancellationToken cancellationToken)
+    {
         if (preparation is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A restore cleanup preparation is required.");
-
         }
 
         Result ownerValid = ValidateRestoreOwner(preparation.Owner);
 
         if (ownerValid.IsFailure)
         {
-
             return ownerValid.Error;
-
         }
 
         if (preparation.OrderedSeeds.IsDefault)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "An uninitialized seed vector is not a proven empty marker inventory.");
-
         }
 
         if (preparation.OrderedSeeds.Length > CampaignPathRestoreCleanupIntentVector.MaximumIntents)
         {
-
             return new Error(
                 ErrorCodes.Covenant.CapacityExceeded,
                 "This restore observed more Campaign markers than one authenticated journal may carry.");
-
         }
 
         // The zero arm never opens marker storage, borrows mutation authorization, calls the codec, or
@@ -151,38 +196,30 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // preparation that never ran: it produces the one frozen digest and nothing else could.
         if (preparation.OrderedSeeds.IsEmpty)
         {
-
             return new CampaignPathRestoreCleanupPreparationReceipt(
                 preparation.Owner,
                 ImmutableArray<Guid>.Empty,
                 0,
                 CampaignPathRestoreCleanupIntentVector.EmptyDigest);
-
         }
 
         if (stagedConnection is null || stagedTransaction is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A nonempty restore cleanup preparation requires the caller's staged transaction.");
-
         }
 
         HashSet<Guid> campaigns = new(preparation.OrderedSeeds.Length);
 
         foreach (CampaignPathRestoreCleanupSeed seed in preparation.OrderedSeeds)
         {
-
             Result seedValid = ValidateSeed(seed, campaigns);
 
             if (seedValid.IsFailure)
             {
-
                 return seedValid.Error;
-
             }
-
         }
 
         CampaignPathMarkerIntentStore store = new(
@@ -196,7 +233,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         foreach (CampaignPathRestoreCleanupSeed seed in preparation.OrderedSeeds)
         {
-
             CampaignPathMarkerRootAuthority authority =
                 ((CampaignPathCleanupRootObservation.Opened)seed.Observation).RootAuthority;
 
@@ -207,9 +243,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (observed.IsFailure)
             {
-
                 return observed.Error;
-
             }
 
             // A proven-absent marker needs no cleanup effect and therefore no durable child. Recording
@@ -218,9 +252,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
             // matching a real marker.
             if (observed.Value.Absent)
             {
-
                 continue;
-
             }
 
             Result<Guid> inserted = await store.InsertOrReadRestoreCleanupAsync(
@@ -234,9 +266,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (inserted.IsFailure)
             {
-
                 return inserted.Error;
-
             }
 
             RetainedRoot retained = new(
@@ -245,25 +275,23 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (!TryRetainRoot(inserted.Value, retained, out RetainedRoot? displaced))
             {
-
                 await authority.DisposeAsync().ConfigureAwait(false);
 
                 return new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "Campaign marker lifecycle authority is no longer available.");
-
             }
+
+            // Now the lifecycle's, to release with its owner: the caller's exit path must not dispose it.
+            retainedAuthorities.Add(authority);
 
             if (displaced is not null)
             {
-
                 await CampaignPathRetainedRootRelease.DisposeAllAsync(
                     [displaced.Authority]).ConfigureAwait(false);
-
             }
 
             committed.Add(inserted.Value);
-
         }
 
         ImmutableArray<Guid> orderedIntentIds = committed.ToImmutable();
@@ -273,9 +301,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (vector.IsFailure)
         {
-
             return vector.Error;
-
         }
 
         return new CampaignPathRestoreCleanupPreparationReceipt(
@@ -283,7 +309,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
             orderedIntentIds,
             checked((ulong)orderedIntentIds.Length),
             vector.Value);
-
     }
 
     public async Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
@@ -291,23 +316,18 @@ internal sealed partial class CampaignPathMarkerLifecycle
         ICovenantExclusiveOperationLease exclusiveLease,
         CancellationToken cancellationToken)
     {
-
         if (request is null || exclusiveLease is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A gate-owned marker reconciliation requires its request and the caller's lease.");
-
         }
 
         Result ownerValid = ValidateRestoreOwner(request.Owner);
 
         if (ownerValid.IsFailure)
         {
-
             return ownerValid.Error;
-
         }
 
         CovenantOperationLeaseSnapshot snapshot = exclusiveLease.Snapshot;
@@ -318,11 +338,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
             || held.EffectDigest != request.Owner.EffectDigest
             || snapshot.Coverage != CovenantLeaseCoverage.Installation)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "The supplied lease does not close this restore's scope under this exact owner.");
-
         }
 
         Result<CovenantDigest> recomputed =
@@ -330,18 +348,14 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (recomputed.IsFailure)
         {
-
             return recomputed.Error;
-
         }
 
         if (recomputed.Value != request.IntentVectorDigest)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The named marker children do not reproduce the authenticated intent-vector digest.");
-
         }
 
         // The verified zero arm consumes its frozen values and constructs no substitutes. It opens no
@@ -349,7 +363,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // call, because a proven empty inventory has nothing to reconcile.
         if (request.OrderedIntentIds.IsEmpty)
         {
-
             return request.IntentVectorDigest == CampaignPathRestoreCleanupIntentVector.EmptyDigest
                 ? new CampaignPathMarkerGateCompletion(
                     CampaignPathMarkerAggregateOutcome.Committed,
@@ -358,7 +371,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 : new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A zero-child marker checkpoint must carry the frozen empty-vector digest.");
-
         }
 
         SqliteConnection connection =
@@ -366,7 +378,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         foreach (Guid intentId in request.OrderedIntentIds)
         {
-
             Result advanced = await ReconcileOneAsync(
                 connection,
                 request.Owner,
@@ -375,11 +386,8 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (advanced.IsFailure)
             {
-
                 return advanced.Error;
-
             }
-
         }
 
         // An extra same-owner child beneath a proven checkpoint means the durable state and the
@@ -392,11 +400,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (ownerChildren != request.OrderedIntentIds.Length)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The live database holds a different number of children than this restore journaled.");
-
         }
 
         return new CampaignPathMarkerGateCompletion(
@@ -407,50 +413,39 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 connection,
                 request.Owner,
                 request.OrderedIntentIds));
-
     }
 
     public async ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)
     {
-
         List<IAsyncDisposable> removedRoots;
 
         lock (_retainedRootsGate)
         {
-
             removedRoots = DetachRetainedRoots(ownerOperationId);
-
         }
 
         await CampaignPathRetainedRootRelease.DisposeAllAsync(removedRoots)
             .ConfigureAwait(false);
-
     }
 
     public async ValueTask DisposeAsync()
     {
-
         List<IAsyncDisposable> removedRoots;
 
         lock (_retainedRootsGate)
         {
-
             if (_retainedRootsDisposed)
             {
-
                 return;
-
             }
 
             _retainedRootsDisposed = true;
 
             removedRoots = DetachRetainedRoots(ownerOperationId: null);
-
         }
 
         await CampaignPathRetainedRootRelease.DisposeAllAsync(removedRoots)
             .ConfigureAwait(false);
-
     }
 
     private bool TryRetainRoot(
@@ -458,48 +453,36 @@ internal sealed partial class CampaignPathMarkerLifecycle
         RetainedRoot retained,
         out RetainedRoot? displaced)
     {
-
         lock (_retainedRootsGate)
         {
-
             displaced = null;
 
             if (_retainedRootsDisposed)
             {
-
                 return false;
-
             }
 
             if (_retainedRoots.TryGetValue(intentId, out RetainedRoot? current)
                 && !ReferenceEquals(current.Authority, retained.Authority))
             {
-
                 displaced = current;
-
             }
 
             _retainedRoots[intentId] = retained;
 
             return true;
-
         }
-
     }
 
     private bool TryRetainFullResetRoot(
         FullResetRetainedRootKey retainedKey,
         CampaignPathMarkerRootAuthority authority)
     {
-
         lock (_retainedRootsGate)
         {
-
             if (_retainedRootsDisposed)
             {
-
                 return false;
-
             }
 
             if (_fullResetRetainedRoots.TryGetValue(
@@ -507,67 +490,49 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     out CampaignPathMarkerRootAuthority? current)
                 && ReferenceEquals(current, authority))
             {
-
                 return true;
-
             }
 
             return _fullResetRetainedRoots.TryAdd(retainedKey, authority);
-
         }
-
     }
 
     private List<IAsyncDisposable> DetachRetainedRoots(Guid? ownerOperationId)
     {
-
         List<IAsyncDisposable> removedRoots = [];
 
         foreach (KeyValuePair<Guid, RetainedRoot> entry in _retainedRoots)
         {
-
             if (ownerOperationId is { } owner
                 && entry.Value.OwnerOperationId != owner)
             {
-
                 continue;
-
             }
 
             if (_retainedRoots.TryRemove(entry.Key, out RetainedRoot? removed))
             {
-
                 removedRoots.Add(removed.Authority);
-
             }
-
         }
 
         foreach (KeyValuePair<FullResetRetainedRootKey, CampaignPathMarkerRootAuthority> entry
             in _fullResetRetainedRoots)
         {
-
             if (ownerOperationId is { } owner
                 && entry.Key.OwnerOperationId != owner)
             {
-
                 continue;
-
             }
 
             if (_fullResetRetainedRoots.TryRemove(
                     entry.Key,
                     out CampaignPathMarkerRootAuthority? removed))
             {
-
                 removedRoots.Add(removed);
-
             }
-
         }
 
         return removedRoots;
-
     }
 
     private static Result ValidateRestoreOwner(CovenantExclusiveRecoveryOwner owner) =>
@@ -582,27 +547,22 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CampaignPathRestoreCleanupSeed seed,
         HashSet<Guid> campaigns)
     {
-
         if (seed is null
             || seed.CampaignId == Guid.Empty
             || seed.PriorPathRevision <= 0
             || !seed.IndexedIdentityDigest.IsValid
             || string.IsNullOrWhiteSpace(seed.CanonicalDisplayPath))
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A restore cleanup seed requires a complete Campaign identity and path evidence.");
-
         }
 
         if (!campaigns.Add(seed.CampaignId))
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "One restore may hold at most one cleanup child per Campaign.");
-
         }
 
         // Restore requires an opened root for every seed. A blocked root cannot be cleaned, and
@@ -610,11 +570,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // a Campaign the restored installation does not own.
         if (seed.Observation is not CampaignPathCleanupRootObservation.Opened opened)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "A restore cannot proceed while a destination Campaign root cannot be opened.");
-
         }
 
         return opened.RootAuthority.CampaignId == seed.CampaignId
@@ -625,7 +583,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A restore cleanup seed does not echo the root authority it carries."));
-
     }
 
     private async Task<Result<ObservedMarker>> ObserveMarkerAsync(
@@ -633,23 +590,18 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CampaignPathRestoreCleanupSeed seed,
         CancellationToken cancellationToken)
     {
-
         Result<PhysicalCampaignMarkerOpenResult> opened =
             await authority.OpenMarkerOrProveAbsentNoFollowAsync(cancellationToken)
                 .ConfigureAwait(false);
 
         if (opened.IsFailure)
         {
-
             return opened.Error;
-
         }
 
         if (opened.Value is PhysicalCampaignMarkerOpenResult.Absent)
         {
-
             return new ObservedMarker(Absent: true, default, default);
-
         }
 
         PhysicalCampaignRootOpener.MarkerHandleCapability marker =
@@ -657,7 +609,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         await using (marker.ConfigureAwait(false))
         {
-
             Result<PhysicalCampaignRootOpener.MarkerCodecBytesLease> read =
                 await marker.ReadAllBoundedAsync(
                     _codec.MaximumMarkerByteCount,
@@ -665,9 +616,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (read.IsFailure)
             {
-
                 return read.Error;
-
             }
 
             using PhysicalCampaignRootOpener.MarkerCodecBytesLease lease = read.Value;
@@ -676,9 +625,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (parsed.IsFailure)
             {
-
                 return parsed.Error;
-
             }
 
             // The marker has to agree with the row it is about to authorize a delete for. A marker
@@ -687,20 +634,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
             if (parsed.Value.CampaignId != seed.CampaignId
                 || parsed.Value.PathRevision != seed.PriorPathRevision)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "A destination Campaign root carries a marker that names different ownership.");
-
             }
 
             return new ObservedMarker(
                 Absent: false,
                 new CovenantDigest(SHA256.HashData(lease.Bytes.Span)),
                 marker.PhysicalIdentityDigest);
-
         }
-
     }
 
     private async Task<Result> ReconcileOneAsync(
@@ -709,7 +652,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         Guid intentId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -725,20 +667,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
             || row.Kind != CampaignPathMarkerIntentKind.RestoreCleanup
             || row.ExclusiveOwnerOperation != CovenantExclusiveOperation.BackupRestore)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A named marker child is missing or does not belong to this restore owner.");
-
         }
 
         if (row.Phase is CampaignPathMarkerPhase.ReopenPending)
         {
-
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return Result.Success();
-
         }
 
         if (row.Phase is not CampaignPathMarkerPhase.Prepared
@@ -747,17 +685,14 @@ internal sealed partial class CampaignPathMarkerLifecycle
             and not CampaignPathMarkerPhase.DatabaseStateCommitted
             and not CampaignPathMarkerPhase.SensitiveMaterialDestroyed)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "A marker child is in a phase automatic reconciliation may not adopt.");
-
         }
 
         if (!_retainedRoots.TryGetValue(intentId, out RetainedRoot? retained)
             || retained.OwnerOperationId != owner.OperationId)
         {
-
             // A restart lost every handle preparation opened. The intent row still records no root
             // identity digest, so the proof comes from the marker instead: it binds itself to the
             // volume and file identifiers of the root it was written into.
@@ -766,13 +701,10 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (reopened.IsFailure)
             {
-
                 return reopened.Error;
-
             }
 
             retained = reopened.Value;
-
         }
 
         Result effect = await ApplyCleanupEffectAsync(
@@ -783,15 +715,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (effect.IsFailure)
         {
-
             return effect.Error;
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return Result.Success();
-
     }
 
     private async Task<Result> ApplyCleanupEffectAsync(
@@ -800,7 +729,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CampaignPathMarkerIntentRow row,
         CancellationToken cancellationToken)
     {
-
         long revision = row.PhaseRevision;
 
         Result<PhysicalCampaignMarkerOpenResult> opened =
@@ -809,14 +737,11 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (opened.IsFailure)
         {
-
             return opened.Error;
-
         }
 
         if (opened.Value is PhysicalCampaignMarkerOpenResult.Absent)
         {
-
             // Absence here is a completed delete, not a missing target: preparation proved the marker
             // present, and nothing but this operation holds authority over that directory.
             return await AdvanceToPendingAsync(
@@ -827,7 +752,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     CampaignPathMarkerTargetObservationCode.Absent,
                     null),
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         PhysicalCampaignRootOpener.MarkerHandleCapability marker =
@@ -835,7 +759,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         await using (marker.ConfigureAwait(false))
         {
-
             Result<PhysicalCampaignRootOpener.MarkerCodecBytesLease> read =
                 await marker.ReadAllBoundedAsync(
                     _codec.MaximumMarkerByteCount,
@@ -843,9 +766,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (read.IsFailure)
             {
-
                 return read.Error;
-
             }
 
             using PhysicalCampaignRootOpener.MarkerCodecBytesLease lease = read.Value;
@@ -855,11 +776,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
             // is to leave it exactly where it is.
             if (new CovenantDigest(SHA256.HashData(lease.Bytes.Span)) != row.MarkerDigest)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "The Campaign root marker changed after this restore committed its evidence.");
-
             }
 
             Result observed = await store.AdvancePhaseAsync(
@@ -874,9 +793,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (observed.IsFailure)
             {
-
                 return observed.Error;
-
             }
 
             revision++;
@@ -891,9 +808,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (verified.IsFailure)
             {
-
                 return verified.Error;
-
             }
 
             revision++;
@@ -906,9 +821,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (deleted.IsFailure)
             {
-
                 return deleted.Error;
-
             }
 
             Result flushed = await authority.FlushMarkerDirectoryAsync(cancellationToken)
@@ -916,11 +829,8 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (flushed.IsFailure)
             {
-
                 return flushed.Error;
-
             }
-
         }
 
         Result committed = await store.AdvancePhaseAsync(
@@ -933,9 +843,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (committed.IsFailure)
         {
-
             return committed.Error;
-
         }
 
         revision++;
@@ -950,9 +858,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (destroyed.IsFailure)
         {
-
             return destroyed.Error;
-
         }
 
         revision++;
@@ -964,7 +870,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
             null,
             CovenantExclusiveLeaseDisposition.CommitAndReopen,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -977,7 +882,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CampaignPathMarkerTargetObservation observation,
         CancellationToken cancellationToken)
     {
-
         CampaignPathMarkerPhase[] ladder =
         [
             CampaignPathMarkerPhase.TargetReopenedOrAbsent,
@@ -991,7 +895,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         foreach (CampaignPathMarkerPhase phase in ladder)
         {
-
             Result advanced = await store.AdvancePhaseAsync(
                 intentId,
                 revision,
@@ -1004,17 +907,13 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (advanced.IsFailure)
             {
-
                 return advanced.Error;
-
             }
 
             revision++;
-
         }
 
         return Result.Success();
-
     }
 
     private async Task<long> CountOwnerChildrenAsync(
@@ -1022,7 +921,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         Guid ownerOperationId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -1035,7 +933,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return count;
-
     }
 
     private sealed record RetainedRoot(
@@ -1067,32 +964,26 @@ internal sealed partial class CampaignPathMarkerLifecycle
         ImmutableArray<Guid> orderedIntentIds)
         : ICovenantExclusivePostDispositionFinalizer
     {
-
         private int _invoked;
 
         public async ValueTask<Result> FinalizeAfterSuccessfulDispositionAsync(
             CovenantExclusiveLeaseDisposition disposition,
             CancellationToken cancellationToken)
         {
-
             if (Interlocked.Exchange(ref _invoked, 1) != 0)
             {
-
                 return Result.Failure(
                     new Error(
                         ErrorCodes.Covenant.LifecycleConflict,
                         "This marker journal finalizer has already run."));
-
             }
 
             if (disposition != CovenantExclusiveLeaseDisposition.CommitAndReopen)
             {
-
                 return Result.Failure(
                     new Error(
                         ErrorCodes.Covenant.LifecycleConflict,
                         "Restore cleanup children complete only after a committing disposition."));
-
             }
 
             await using SqliteTransaction transaction =
@@ -1107,18 +998,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             foreach (Guid intentId in orderedIntentIds)
             {
-
                 CampaignPathMarkerIntentRow? row =
                     await store.ReadAsync(intentId, cancellationToken).ConfigureAwait(false);
 
                 if (row is null || row.Phase != CampaignPathMarkerPhase.ReopenPending)
                 {
-
                     return Result.Failure(
                         new Error(
                             ErrorCodes.Covenant.LifecycleConflict,
                             "A marker child left its pending phase before finalization."));
-
                 }
 
                 Result completed = await store.AdvancePhaseAsync(
@@ -1131,11 +1019,8 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
                 if (completed.IsFailure)
                 {
-
                     return completed;
-
                 }
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -1143,40 +1028,27 @@ internal sealed partial class CampaignPathMarkerLifecycle
             await owner.ReleaseRetainedRootsAsync(recoveryOwner.OperationId).ConfigureAwait(false);
 
             return Result.Success();
-
         }
-
     }
-
 }
 
 internal static class CampaignPathRetainedRootRelease
 {
-
     internal static async ValueTask DisposeAllAsync(
         IEnumerable<IAsyncDisposable> retainedRoots)
     {
-
         foreach (IAsyncDisposable retainedRoot in retainedRoots)
         {
-
             try
             {
-
                 await retainedRoot.DisposeAsync().ConfigureAwait(false);
-
             }
             catch (Exception exception)
             {
-
                 Log.Warning(
                     exception,
                     "A retained Campaign root authority reported a disposal failure; remaining roots will still be released.");
-
             }
-
         }
-
     }
-
 }

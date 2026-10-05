@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -29,7 +30,6 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </remarks>
 internal static class GrimoireSchemaTestInstaller
 {
-
     /// <summary>A stable identity: tests compare rows across runs, so a fresh GUID would defeat them.</summary>
     private const string InstallationIdentity = "3D6A1F42-77B5-4C0E-9E31-8A2B4D5F6C71";
 
@@ -52,12 +52,10 @@ internal static class GrimoireSchemaTestInstaller
         string connectionString,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = new(connectionString);
 
         try
         {
-
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             await CovenantSqliteConnectionInitializer.Instance
@@ -65,17 +63,13 @@ internal static class GrimoireSchemaTestInstaller
                 .ConfigureAwait(false);
 
             return connection;
-
         }
         catch
         {
-
             await connection.DisposeAsync().ConfigureAwait(false);
 
             throw;
-
         }
-
     }
 
     /// <summary>
@@ -145,7 +139,6 @@ internal static class GrimoireSchemaTestInstaller
     /// </remarks>
     internal static IServiceCollection AddGrimoireSchemaInstallation(this IServiceCollection services)
     {
-
         services.AddSingleton<WeaveIndexAvailability>();
 
         services.AddSingleton<ICovenantSqliteConnectionInitializer>(
@@ -190,13 +183,13 @@ internal static class GrimoireSchemaTestInstaller
         services.AddSingleton(
             static sp => new CovenantOperationGate(
                 sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
-                sp.GetRequiredService<ICovenantCampaignScopeProbe>()));
+                sp.GetRequiredService<ICovenantCampaignScopeProbe>(),
+                NullLogger<CovenantOperationGate>.Instance));
 
         services.AddSingleton<ICovenantOperationGate>(
             static sp => sp.GetRequiredService<CovenantOperationGate>());
 
         return services;
-
     }
 
     /// <summary>
@@ -210,5 +203,4 @@ internal static class GrimoireSchemaTestInstaller
     /// </remarks>
     private static byte[] CreateFingerprint() =>
         CovenantAuthorityBootstrapper.ComputeMasterKeyFingerprint(GrimoireFixture.TestApiKey);
-
 }

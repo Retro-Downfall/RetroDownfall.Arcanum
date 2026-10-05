@@ -53,6 +53,85 @@ public sealed class LexiconLifecycleTests(GrimoireFixture fixture)
         Assert.Null((await service.GetByNameInScopeAsync("Entity", LexiconScope.Global)).Value);
     }
 
+    /// <summary>
+    /// R-173: a lifecycle write took an unadjusted wall-clock instant for its Annals
+    /// <c>RecordedAtUtc</c>, while upsert and correction clamp theirs, so a retirement made in the same
+    /// instant as the version it supersedes recorded a belief interval of zero length. With the clock
+    /// frozen, the retirement has to land strictly after the version it replaced.
+    /// </summary>
+    [Fact]
+    public async Task Retirement_is_recorded_strictly_after_the_version_it_supersedes()
+    {
+        FakeTimeProvider time = new();
+
+        DateTimeOffset frozen = new(2026, 9, 28, 12, 0, 0, TimeSpan.Zero);
+
+        time.SetUtcNow(frozen);
+
+        await using CorrectionFixture test = new(fixture, annals: true, timeProvider: time);
+
+        LexiconEntryDetail before = await test.SeedAsync();
+
+        var retired = await test.Service.RetireAsync(before.Target, null);
+
+        Assert.True(retired.IsSuccess, retired.Error.Message);
+
+        AnnalClaimVersion[] history = retired.Value.Entry.AnnalHistory;
+
+        AnnalClaimVersion retirement = history[^1];
+
+        Assert.Equal(AnnalOperation.Retire, retirement.Operation);
+
+        AnnalClaimVersion superseded = history[^2];
+
+        Assert.Equal(superseded.VersionId, retirement.PredecessorVersionId);
+
+        // The frozen clock is the only source of time, so every instant is the frozen one or a few
+        // explicit ticks past it, never the wall clock.
+        Assert.Equal(frozen, superseded.RecordedAtUtc);
+
+        Assert.True(
+            retirement.RecordedAtUtc > superseded.RecordedAtUtc,
+            $"The retirement was recorded at {retirement.RecordedAtUtc:o}, not after the version it superseded ({superseded.RecordedAtUtc:o}).");
+
+        Assert.True(retirement.RecordedAtUtc - frozen < TimeSpan.FromMilliseconds(1));
+
+        Assert.Equal(retirement.RecordedAtUtc, superseded.RecordedUntilUtc);
+    }
+
+    /// <summary>
+    /// R-173: a claimless entry has no version to follow, so its retirement is clamped past the entry's own
+    /// last update instead. The baseline the retirement first appends shares the retirement's instant, as
+    /// a correction's does: they are one write.
+    /// </summary>
+    [Fact]
+    public async Task Retiring_a_claimless_entry_records_after_its_last_update_from_the_injected_clock()
+    {
+        FakeTimeProvider time = new();
+
+        DateTimeOffset frozen = new(2026, 9, 28, 12, 0, 0, TimeSpan.Zero);
+
+        time.SetUtcNow(frozen);
+
+        await using CorrectionFixture test = new(fixture, annals: false, timeProvider: time);
+
+        LexiconEntryDetail before = await test.SeedAsync();
+
+        Assert.Equal(frozen, before.Entry.UpdatedAt);
+
+        var retired = await test.Service.RetireAsync(before.Target, null);
+
+        Assert.True(retired.IsSuccess, retired.Error.Message);
+
+        AnnalClaimVersion retirement = retired.Value.Entry.AnnalHistory[^1];
+
+        Assert.Equal(AnnalOperation.Retire, retirement.Operation);
+
+        Assert.True(retirement.RecordedAtUtc > before.Entry.UpdatedAt);
+
+        Assert.True(retirement.RecordedAtUtc - frozen < TimeSpan.FromMilliseconds(1));
+    }
+
     [Fact]
     public async Task Deletion_identity_default_fails_closed()
     {

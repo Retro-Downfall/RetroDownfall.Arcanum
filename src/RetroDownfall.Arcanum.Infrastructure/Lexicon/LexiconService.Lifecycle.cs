@@ -105,7 +105,7 @@ internal sealed partial class LexiconService
 
                     if ((timestamp is not null) != setTimestamp)
                     {
-                        DateTimeOffset now = DateTimeOffset.UtcNow;
+                        DateTimeOffset now = NextRecordedAt(state.Row.Entry.UpdatedAt, state.Head);
 
                         if (change == LifecycleChange.Retire)
                         {
