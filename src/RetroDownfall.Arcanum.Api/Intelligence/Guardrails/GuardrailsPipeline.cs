@@ -32,6 +32,22 @@ public sealed partial class GuardrailsPipeline(
     IGuardrailAuditLogger auditLogger,
     ILogger<GuardrailsPipeline> logger)
 {
+    /// <summary>
+    /// One PII detector: the violation type it reports, the caller-facing description, and the
+    /// compiled pattern. Internal so a test can substitute a pattern with a tiny match budget.
+    /// </summary>
+    internal sealed record PiiPattern(string Type, string Description, Regex Pattern);
+
+    private static readonly PiiPattern[] DefaultPiiPatterns =
+    [
+        new(TypePiiEmail, "Email address detected in input.", EmailPattern()),
+        new(TypePiiSsn, "Social Security Number detected in input.", SsnPattern()),
+        new(TypePiiCreditCard, "Credit card number detected in input.", CreditCardPattern()),
+        new(TypePiiPhone, "Phone number detected in input.", PhonePattern()),
+    ];
+
+    /// <summary>The PII detectors the input scan runs, in report order.</summary>
+    internal IReadOnlyList<PiiPattern> PiiPatterns { get; init; } = DefaultPiiPatterns;
 
     private const string StageInput = "Input";
 
@@ -45,6 +61,9 @@ public sealed partial class GuardrailsPipeline(
     private const string TypePiiSsn = "pii-ssn";
 
     private const string TypePiiCreditCard = "pii-credit-card";
+
+    // Reported when a PII pattern exhausted its match budget; blocks, but is not a PII hit.
+    private const string TypePiiUndetermined = "pii-undetermined";
 
     private const string TypeToxicity = "toxicity";
 
@@ -63,14 +82,11 @@ public sealed partial class GuardrailsPipeline(
         CancellationToken cancellationToken,
         GuardrailAuditContext? auditContext = null)
     {
-
         GuardrailsSettings settings = optionsMonitor.CurrentValue.ResolveGuardrails();
 
         if (!settings.Enabled || messages is null or { Count: 0 })
         {
-
             return Result<GuardrailsResult>.Success(GuardrailsResult.Allowed);
-
         }
 
         string text = ConcatenateMessageText(messages);
@@ -79,19 +95,16 @@ public sealed partial class GuardrailsPipeline(
 
         if (violations.Count == 0)
         {
-
             return Result<GuardrailsResult>.Success(GuardrailsResult.Allowed);
-
         }
 
         GuardrailsResult result = new(false, [.. violations]);
 
-        await LogViolationsAsync(StageInput, result.Violations, auditContext, cancellationToken).ConfigureAwait(false);
+        await LogViolationsAsync(StageInput, result.Violations, auditContext).ConfigureAwait(false);
 
         Error error = BuildError(result.Violations[0], StageInput);
 
         return Result<GuardrailsResult>.Failure(error);
-
     }
 
     /// <summary>
@@ -105,149 +118,111 @@ public sealed partial class GuardrailsPipeline(
         CancellationToken cancellationToken,
         GuardrailAuditContext? auditContext = null)
     {
-
         GuardrailsSettings settings = optionsMonitor.CurrentValue.ResolveGuardrails();
 
         if (!settings.Enabled || string.IsNullOrEmpty(text))
         {
-
             return Result<GuardrailsResult>.Success(GuardrailsResult.Allowed);
-
         }
 
         List<GuardrailsViolation> violations = ScanOutput(text, settings);
 
         if (violations.Count == 0)
         {
-
             return Result<GuardrailsResult>.Success(GuardrailsResult.Allowed);
-
         }
 
         GuardrailsResult result = new(false, [.. violations]);
 
-        await LogViolationsAsync(StageOutput, result.Violations, auditContext, cancellationToken).ConfigureAwait(false);
+        await LogViolationsAsync(StageOutput, result.Violations, auditContext).ConfigureAwait(false);
 
         Error error = BuildError(result.Violations[0], StageOutput);
 
         return Result<GuardrailsResult>.Failure(error);
-
     }
 
     private static string ConcatenateMessageText(IReadOnlyList<CoreChatMessage> messages)
     {
-
         if (messages.Count == 1)
         {
-
             return messages[0].Content ?? string.Empty;
-
         }
 
         StringBuilder builder = new();
 
         foreach (CoreChatMessage message in messages)
         {
-
             if (!string.IsNullOrEmpty(message.Content))
             {
-
                 builder.Append(message.Content).Append('\n');
-
             }
-
         }
 
         return builder.ToString();
-
     }
 
     private List<GuardrailsViolation> ScanInput(string text, GuardrailsSettings settings)
     {
-
         List<GuardrailsViolation> violations = [];
 
         if (settings.DetectPii)
         {
-
             AddPiiViolations(violations, text);
-
         }
 
         if (settings.BlockToxicity && settings.ToxicityBlocklist is { Length: > 0 } blocklist)
         {
-
             AddToxicityViolations(violations, text, blocklist);
-
         }
 
         AddTopicViolations(violations, text, settings, stageIsInput: true);
 
         return violations;
-
     }
 
     private List<GuardrailsViolation> ScanOutput(string text, GuardrailsSettings settings)
     {
-
         List<GuardrailsViolation> violations = [];
 
         if (settings.BlockToxicity && settings.ToxicityBlocklist is { Length: > 0 } blocklist)
         {
-
             AddToxicityViolations(violations, text, blocklist);
-
         }
 
         AddTopicViolations(violations, text, settings, stageIsInput: false);
 
         return violations;
-
     }
 
-    private static void AddPiiViolations(List<GuardrailsViolation> violations, string text)
+    private void AddPiiViolations(List<GuardrailsViolation> violations, string text)
     {
-
-        if (EmailPattern().IsMatch(text))
+        foreach (PiiPattern pii in PiiPatterns)
         {
+            switch (MatchPattern(pii.Pattern, text, pii.Type, out string? matched))
+            {
+                case PatternMatch.Matched:
+                    violations.Add(new GuardrailsViolation(
+                        pii.Type,
+                        pii.Description,
+                        RedactMatch(pii.Type, matched)));
 
-            violations.Add(new GuardrailsViolation(
-                TypePiiEmail,
-                "Email address detected in input.",
-                RedactMatch(TypePiiEmail, EmailPattern().Match(text).Value)));
+                    break;
 
+                // The match budget elapsed, so whether this input carries PII is unknown. Reading
+                // that as "no PII" would let crafted input choose its own answer, so an evaluation
+                // that did not finish fails closed and is audited, like a blocked-topic timeout.
+                case PatternMatch.Undetermined:
+                    violations.Add(new GuardrailsViolation(
+                        TypePiiUndetermined,
+                        "A PII pattern could not be evaluated within its match budget.",
+                        RedactMatch(TypePiiUndetermined, null)));
+
+                    break;
+
+                default:
+                    break;
+            }
         }
-
-        if (SsnPattern().IsMatch(text))
-        {
-
-            violations.Add(new GuardrailsViolation(
-                TypePiiSsn,
-                "Social Security Number detected in input.",
-                RedactMatch(TypePiiSsn, SsnPattern().Match(text).Value)));
-
-        }
-
-        if (CreditCardPattern().IsMatch(text))
-        {
-
-            violations.Add(new GuardrailsViolation(
-                TypePiiCreditCard,
-                "Credit card number detected in input.",
-                RedactMatch(TypePiiCreditCard, CreditCardPattern().Match(text).Value)));
-
-        }
-
-        if (PhonePattern().IsMatch(text))
-        {
-
-            violations.Add(new GuardrailsViolation(
-                TypePiiPhone,
-                "Phone number detected in input.",
-                RedactMatch(TypePiiPhone, PhonePattern().Match(text).Value)));
-
-        }
-
     }
 
     private static void AddToxicityViolations(
@@ -255,31 +230,23 @@ public sealed partial class GuardrailsPipeline(
         string text,
         string[] blocklist)
     {
-
         foreach (string term in blocklist)
         {
-
             if (string.IsNullOrWhiteSpace(term))
             {
-
                 continue;
-
             }
 
             int index = text.IndexOf(term, StringComparison.OrdinalIgnoreCase);
 
             if (index >= 0)
             {
-
                 violations.Add(new GuardrailsViolation(
                     TypeToxicity,
                     $"Blocked term matched guardrail policy.",
                     RedactMatch(TypeToxicity, term)));
-
             }
-
         }
-
     }
 
     private void AddTopicViolations(
@@ -288,51 +255,39 @@ public sealed partial class GuardrailsPipeline(
         GuardrailsSettings settings,
         bool stageIsInput)
     {
-
         // Allowed-topics only apply to input — an output can be any topic not explicitly blocked.
         if (stageIsInput && settings.AllowedTopics is { Length: > 0 } allowed)
         {
-
             bool matchedAny = false;
 
             foreach (string pattern in allowed)
             {
-
                 // Undetermined stays unmatched here, which is already the fail-closed direction for
                 // an allow list.
-                if (MatchTopic(pattern, text, out string? matched) == TopicMatch.Matched)
+                if (MatchTopic(pattern, text, out string? matched) == PatternMatch.Matched)
                 {
-
                     matchedAny = true;
 
                     break;
-
                 }
-
             }
 
             if (!matchedAny)
             {
-
                 violations.Add(new GuardrailsViolation(
                     TypeTopicAllowed,
                     "Input did not match any allowed-topic pattern.",
                     null));
-
             }
-
         }
 
         if (settings.BlockedTopics is { Length: > 0 } blocked)
         {
-
             foreach (string pattern in blocked)
             {
-
                 switch (MatchTopic(pattern, text, out string? matched))
                 {
-
-                    case TopicMatch.Matched:
+                    case PatternMatch.Matched:
                         violations.Add(new GuardrailsViolation(
                             TypeTopicBlocked,
                             "Content matched a blocked-topic pattern.",
@@ -343,7 +298,7 @@ public sealed partial class GuardrailsPipeline(
                     // The match budget elapsed, so whether the block applies is unknown. Treating
                     // that as "no violation" would let crafted input choose its own answer, so a
                     // blocked-topic evaluation that did not finish fails closed and is audited.
-                    case TopicMatch.Undetermined:
+                    case PatternMatch.Undetermined:
                         violations.Add(new GuardrailsViolation(
                             TypeTopicBlocked,
                             "A blocked-topic pattern could not be evaluated within its match budget.",
@@ -353,141 +308,128 @@ public sealed partial class GuardrailsPipeline(
 
                     default:
                         break;
-
                 }
-
             }
-
         }
-
     }
 
     /// <summary>
-    /// Outcome of evaluating one topic pattern. <see cref="Undetermined"/> is deliberately distinct
+    /// Outcome of evaluating one pattern. <see cref="Undetermined"/> is deliberately distinct
     /// from <see cref="NoMatch"/> so each caller can pick its own fail-safe direction.
     /// </summary>
-    private enum TopicMatch
+    private enum PatternMatch
     {
-
         NoMatch,
 
         Matched,
 
         Undetermined,
-
     }
 
-    private TopicMatch MatchTopic(string pattern, string text, out string? matched)
+    private PatternMatch MatchTopic(string pattern, string text, out string? matched)
     {
-
         matched = null;
 
         if (string.IsNullOrWhiteSpace(pattern))
         {
-
-            return TopicMatch.NoMatch;
-
+            return PatternMatch.NoMatch;
         }
+
+        Regex regex;
 
         try
         {
-
-            Regex regex = GetTopicRegex(pattern);
-
-            Match m = regex.Match(text);
-
-            if (m.Success)
-            {
-
-                matched = m.Value;
-
-                return TopicMatch.Matched;
-
-            }
-
+            regex = GetTopicRegex(pattern);
         }
         catch (ArgumentException ex)
         {
-
             // An operator typo is a configuration mistake, not an attack surface: the pattern never
             // matches anything, so skipping it is the same answer at every call site.
             logger.LogWarning(ex, "Guardrails topic pattern '{Pattern}' is invalid; skipped.", pattern);
 
+            return PatternMatch.NoMatch;
+        }
+
+        return MatchPattern(regex, text, $"topic '{pattern}'", out matched);
+    }
+
+    /// <summary>
+    /// Runs one pattern once. A match budget that elapses is reported as
+    /// <see cref="PatternMatch.Undetermined"/> rather than thrown, so every caller picks its own
+    /// fail-safe direction. The input text is never logged.
+    /// </summary>
+    private PatternMatch MatchPattern(Regex regex, string text, string label, out string? matched)
+    {
+        matched = null;
+
+        try
+        {
+            Match m = regex.Match(text);
+
+            if (m.Success)
+            {
+                matched = m.Value;
+
+                return PatternMatch.Matched;
+            }
         }
         catch (RegexMatchTimeoutException ex)
         {
+            logger.LogWarning(ex, "Guardrails pattern {Pattern} exceeded its match budget; the result is undetermined.", label);
 
-            logger.LogWarning(ex, "Guardrails topic pattern '{Pattern}' exceeded its match budget; the result is undetermined.", pattern);
-
-            return TopicMatch.Undetermined;
-
+            return PatternMatch.Undetermined;
         }
 
-        return TopicMatch.NoMatch;
-
+        return PatternMatch.NoMatch;
     }
 
     private static Regex GetTopicRegex(string pattern)
     {
-
         if (TopicRegexCache.Count >= MaxTopicRegexCacheSize)
         {
-
             TopicRegexCache.Clear();
-
         }
 
         return TopicRegexCache.GetOrAdd(
             pattern,
             static p => new Regex(p, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, s_matchTimeout));
-
     }
 
     private async Task LogViolationsAsync(
         string stage,
         IReadOnlyList<GuardrailsViolation> violations,
-        GuardrailAuditContext? auditContext,
-        CancellationToken cancellationToken)
+        GuardrailAuditContext? auditContext)
     {
-
         const int maxAuditEntriesPerTurn = 10;
 
         int logged = 0;
 
         foreach (GuardrailsViolation violation in violations)
         {
-
             if (logged >= maxAuditEntriesPerTurn)
             {
-
                 logger.LogWarning(
                     "Guardrails detected {ViolationCount} violations for this turn; only the first {MaxAuditEntries} are audited.",
                     violations.Count,
                     maxAuditEntriesPerTurn);
 
                 break;
-
             }
 
-            await LogViolationAsync(stage, violation, auditContext, cancellationToken).ConfigureAwait(false);
+            await LogViolationAsync(stage, violation, auditContext).ConfigureAwait(false);
 
             logged++;
-
         }
-
     }
 
     private async Task LogViolationAsync(
         string stage,
         GuardrailsViolation violation,
-        GuardrailAuditContext? auditContext,
-        CancellationToken cancellationToken)
+        GuardrailAuditContext? auditContext)
     {
-
         // Never throw — the turn is already being rejected; an audit-trail failure must not escalate.
         try
         {
-
             GuardrailAuditRecord record = new(
                 DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
                 auditContext?.SessionId,
@@ -496,16 +438,14 @@ public sealed partial class GuardrailsPipeline(
                 violation.MatchedText,
                 auditContext?.Model);
 
-            await auditLogger.LogAsync(record, cancellationToken).ConfigureAwait(false);
-
+            // The rejection is already decided, so a request token that was cancelled meanwhile
+            // (client disconnect, shutdown) must not drop the only evidence a guardrail fired.
+            await auditLogger.LogAsync(record, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(ex, "Failed to write guardrails audit log entry.");
-
         }
-
     }
 
     /// <summary>
@@ -515,8 +455,14 @@ public sealed partial class GuardrailsPipeline(
     /// </summary>
     private static Error BuildError(GuardrailsViolation violation, string stage)
     {
-
         bool isOutput = string.Equals(stage, StageOutput, StringComparison.Ordinal);
+
+        if (string.Equals(violation.Type, TypePiiUndetermined, StringComparison.Ordinal))
+        {
+            return new Error(
+                ErrorCodes.Guardrails.Blocked,
+                "Input rejected: the content could not be scanned for personally identifiable information within its time budget.");
+        }
 
         return violation.Type.StartsWith("pii-", StringComparison.Ordinal)
             ? new Error(
@@ -529,7 +475,6 @@ public sealed partial class GuardrailsPipeline(
                 isOutput
                     ? "Response blocked: model output matched a guardrail policy (toxicity or topic)."
                     : "Input rejected: content matched a guardrail policy (toxicity or topic).");
-
     }
 
     /// <summary>
@@ -539,12 +484,9 @@ public sealed partial class GuardrailsPipeline(
     /// </summary>
     private static string RedactMatch(string type, string? match)
     {
-
         if (string.IsNullOrEmpty(match))
         {
-
             return "***";
-
         }
 
         return type switch
@@ -555,39 +497,37 @@ public sealed partial class GuardrailsPipeline(
             TypePiiPhone => "***-***-****",
             _ => MaskInterior(match),
         };
-
     }
 
     private static string MaskInterior(string match)
     {
-
         if (match.Length <= 2)
         {
-
             return "***";
-
         }
 
         return string.Concat(match[0], new string('*', Math.Min(match.Length - 2, 8)), match[^1]);
-
     }
 
-    private static readonly TimeSpan s_matchTimeout = TimeSpan.FromMilliseconds(500);
+    // Every guardrail pattern, operator-supplied or built in, gets the same match budget; a
+    // [GeneratedRegex] needs it as a constant.
+    private const int MatchTimeoutMilliseconds = 500;
+
+    private static readonly TimeSpan s_matchTimeout = TimeSpan.FromMilliseconds(MatchTimeoutMilliseconds);
 
     private static readonly ConcurrentDictionary<string, Regex> TopicRegexCache = new();
 
     private const int MaxTopicRegexCacheSize = 100;
 
-    [GeneratedRegex(@"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, MatchTimeoutMilliseconds)]
     private static partial Regex EmailPattern();
 
-    [GeneratedRegex(@"\b\d{3}-\d{2}-\d{4}\b", RegexOptions.None)]
+    [GeneratedRegex(@"\b\d{3}-\d{2}-\d{4}\b", RegexOptions.None, MatchTimeoutMilliseconds)]
     private static partial Regex SsnPattern();
 
-    [GeneratedRegex(@"\b(?:\d[ \-]?){13,19}\b", RegexOptions.None)]
+    [GeneratedRegex(@"\b(?:\d[ \-]?){13,19}\b", RegexOptions.None, MatchTimeoutMilliseconds)]
     private static partial Regex CreditCardPattern();
 
-    [GeneratedRegex(@"(?<!\d)(?:\+?\d{1,2}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)", RegexOptions.None)]
+    [GeneratedRegex(@"(?<!\d)(?:\+?\d{1,2}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)", RegexOptions.None, MatchTimeoutMilliseconds)]
     private static partial Regex PhonePattern();
-
 }
