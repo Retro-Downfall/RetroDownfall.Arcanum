@@ -392,8 +392,40 @@ internal sealed class BatchProcessingService(
             // duplicates it saw before.
             BatchCustomIdTracker customIds = new();
 
-            while (await reader.HasNextRecordAsync(stoppingToken).ConfigureAwait(false))
+            // The physical line number of the last line of the last page this pass finished, so a
+            // failure that leaves no prepared line behind can still say where to resume.
+            long lastFinishedLine = 0;
+
+            while (true)
             {
+                // The lookahead reads the input outside any page, so it is guarded like one: a stream
+                // that fails here would otherwise leave the batch in_progress with no note at all.
+                bool hasNextRecord;
+
+                try
+                {
+                    hasNextRecord = await reader.HasNextRecordAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (StopsAsUnexpectedFailure(exception, state, stoppingToken))
+                {
+                    state.HasRecords = true;
+
+                    if (!await TryStopAfterUnexpectedFailureAsync(
+                            batch.Id, null, lastFinishedLine, batches, exception).ConfigureAwait(false))
+                    {
+                        throw;
+                    }
+
+                    state.UnexpectedFailure = true;
+
+                    break;
+                }
+
+                if (!hasNextRecord)
+                {
+                    break;
+                }
+
                 state.HasRecords = true;
 
                 if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? pageGroup))
@@ -412,18 +444,18 @@ internal sealed class BatchProcessingService(
 
                         await ProcessRequestPageAsync(batch.Id, page, state, scope.ServiceProvider,
                             batches, settings, stoppingToken).ConfigureAwait(false);
+
+                        lastFinishedLine = page[^1].Line;
                     }
-                    catch (Exception exception) when (!stoppingToken.IsCancellationRequested
-                        && !state.AccountingSettlementFailed
-                        && !IsMaintenanceUnavailable(exception))
+                    catch (Exception exception) when (StopsAsUnexpectedFailure(exception, state, stoppingToken))
                     {
                         // An unexpected failure would otherwise leave the batch in_progress until a
                         // restart or a manual reset. Stop it here instead: seal what is in doubt,
                         // note where it stopped, and publish what was checkpointed as failed. If
                         // even that cannot be recorded, the original failure propagates and
                         // startup reconciliation recovers the batch as before.
-                        if (!await TryStopAfterUnexpectedFailureAsync(batch.Id, page, batches, exception)
-                                .ConfigureAwait(false))
+                        if (!await TryStopAfterUnexpectedFailureAsync(
+                                batch.Id, page, lastFinishedLine, batches, exception).ConfigureAwait(false))
                         {
                             throw;
                         }
@@ -746,8 +778,24 @@ internal sealed class BatchProcessingService(
     }
 
     /// <summary>
+    /// Whether an exception raised while reading or processing the input should stop the batch as
+    /// failed. Host shutdown, a failed accounting settlement and the Grimoire closing for maintenance
+    /// are not processing failures: each leaves the batch <c>in_progress</c>, and the exception
+    /// propagates to <see cref="ProcessBatchWithCleanupAsync"/>, so the durable recovery that owns the
+    /// batch (and its reservation) settles it at the next startup.
+    /// </summary>
+    private static bool StopsAsUnexpectedFailure(
+        Exception exception,
+        BatchProcessingState state,
+        CancellationToken stoppingToken) =>
+        !stoppingToken.IsCancellationRequested
+        && !state.AccountingSettlementFailed
+        && !IsMaintenanceUnavailable(exception);
+
+    /// <summary>
     /// True when the failure (or anything it wraps) is the Grimoire closing for maintenance. That is a
-    /// transient admission condition the batch already waits out, not a processing failure.
+    /// deliberate, temporary refusal rather than a processing failure, so it is never published as a
+    /// failed batch; it leaves the batch to durable recovery exactly as host shutdown does.
     /// </summary>
     private static bool IsMaintenanceUnavailable(Exception exception) =>
         exception switch
@@ -758,22 +806,29 @@ internal sealed class BatchProcessingService(
         };
 
     /// <summary>
-    /// Records an unexpected page failure durably: every line left in doubt is sealed as interrupted
-    /// (never replayed, since the provider may have charged it) with the exception type as the
-    /// reason, and the first line that never started carries a note in the error file saying where to
-    /// resume. Runs on <see cref="CancellationToken.None"/> because the failure has already happened
-    /// and this is its bookkeeping. Returns <see langword="false"/> when the bookkeeping itself
-    /// failed, so the caller can let the original failure propagate.
+    /// Records an unexpected failure durably: every line left in doubt is sealed as interrupted (never
+    /// replayed, since the provider may have charged it) with the exception type as the reason, and
+    /// the first line that never started carries a note in the error file saying where to resume.
+    /// When the failure left no prepared page behind, because reading the input is what failed, the
+    /// note goes on the line after <paramref name="lastFinishedLine"/>. Runs on
+    /// <see cref="CancellationToken.None"/> because the failure has already happened and this is its
+    /// bookkeeping. Returns <see langword="false"/> when the bookkeeping itself failed, so the caller
+    /// can let the original failure propagate.
     /// </summary>
     private async Task<bool> TryStopAfterUnexpectedFailureAsync(
         Guid batchId,
         IReadOnlyList<PreparedBatchRequestLine>? page,
+        long lastFinishedLine,
         IBatchRepository batches,
         Exception failure)
     {
         string exceptionType = failure.GetType().FullName ?? failure.GetType().Name;
 
+        // The persisted reason names the exception type only, because it travels in artifacts a client
+        // downloads. The operator's own log keeps the exception itself, as the unexpected-failure log
+        // this path replaced did, so the message and stack of a terminal failure are not lost.
         logger.LogError(
+            failure,
             "Batch {BatchId} stopped after an unexpected failure (exception type {ExceptionType}); it will be published as failed with its checkpointed lines.",
             batchId,
             exceptionType);
@@ -808,6 +863,17 @@ internal sealed class BatchProcessingService(
                         batches,
                         CancellationToken.None).ConfigureAwait(false);
                 }
+            }
+            else if (page is null)
+            {
+                long resumeLine = lastFinishedLine + 1;
+
+                await PersistNonProviderErrorAsync(
+                    batchId,
+                    new PreparedBatchRequestLine(resumeLine, null, null),
+                    $"Processing stopped while reading the input at or after line {resumeLine} after an unexpected host error (exception type {exceptionType}). Lines before it were checkpointed; submit the lines from here on to continue.",
+                    batches,
+                    CancellationToken.None).ConfigureAwait(false);
             }
 
             return true;
@@ -909,12 +975,16 @@ internal sealed class BatchProcessingService(
     }
 
     private static string ResolveCustomId(PreparedBatchRequestLine prepared) =>
+        ResolveCustomId(prepared.Line, prepared.Request);
 
-        string.IsNullOrWhiteSpace(prepared.Request?.CustomId)
-
-            ? $"line-{prepared.Line}"
-
-            : prepared.Request.CustomId;
+    /// <summary>
+    /// The id a line's result is reported under: its own <c>custom_id</c>, or <c>line-N</c> when it
+    /// names none. Duplicate detection tracks this value, not only what the client wrote.
+    /// </summary>
+    private static string ResolveCustomId(long line, BatchJsonlRequestLine? request) =>
+        string.IsNullOrWhiteSpace(request?.CustomId)
+            ? $"line-{line}"
+            : request.CustomId;
 
     private static async Task<bool> IsBatchCancelledAsync(
         Guid batchId,
@@ -1005,7 +1075,7 @@ internal sealed class BatchProcessingService(
             page.Add(new PreparedBatchRequestLine(record.PhysicalLine, record.Request,
                 record.Error ?? (record.Request?.Body is null
                     ? "Line did not contain a 'body' object."
-                    : ValidateEnvelope(record.Request, batchEndpoint, customIds))));
+                    : ValidateEnvelope(record.Request, record.PhysicalLine, batchEndpoint, customIds))));
         }
 
         while (page.Count < RequestPageSize
@@ -1023,12 +1093,14 @@ internal sealed class BatchProcessingService(
     /// </summary>
     private static string? ValidateEnvelope(
         BatchJsonlRequestLine request,
+        long line,
         string batchEndpoint,
         BatchCustomIdTracker customIds)
     {
         // Registered first, so every id is remembered even when the line is refused for another reason.
-        bool repeatedCustomId = !string.IsNullOrWhiteSpace(request.CustomId)
-            && customIds.IsRepeat(request.CustomId);
+        // The id a line is reported under counts, including the line-N a line without one is given, so
+        // an explicit "line-3" cannot share a result key with the third line's synthesized id.
+        bool repeatedCustomId = customIds.IsRepeat(ResolveCustomId(line, request));
 
         if (!BatchJsonlRules.IsRequiredMethod(request.Method))
         {
