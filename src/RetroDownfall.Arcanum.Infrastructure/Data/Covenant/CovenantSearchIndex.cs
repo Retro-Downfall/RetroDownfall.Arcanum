@@ -27,6 +27,16 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
     /// </summary>
     internal const int FallbackCandidateLimit = CovenantLimits.MaxFallbackCandidates;
 
+    /// <summary>
+    /// The exact-key operand of a query with more than one term, which names no one key.
+    /// </summary>
+    /// <remarks>
+    /// A Covenant key matches <c>[a-z0-9][a-z0-9._-]{0,127}</c>, so no key can equal a NUL and the
+    /// exact-key comparison matches nothing. It is spelled as an escape: a raw NUL byte in a source
+    /// file is one an editor, a diff tool or a formatter is free to drop or mangle without a word.
+    /// </remarks>
+    private const string NoExactKey = "\0";
+
     public async ValueTask<Result<CovenantSearchPage>> SearchAsync(
         CovenantSearchQuery query,
         ICovenantSnapshotReadLease readLease,
@@ -382,7 +392,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         Bind(
             command,
             "$exactKey",
-            query.Terms.NormalizedTerms.Length == 1 ? query.Terms.NormalizedTerms[0] : " ");
+            query.Terms.NormalizedTerms.Length == 1 ? query.Terms.NormalizedTerms[0] : NoExactKey);
 
         Bind(command, "$prefixKey", TrimTrailingWildcard(query.Terms.LikePatterns[0]));
 
