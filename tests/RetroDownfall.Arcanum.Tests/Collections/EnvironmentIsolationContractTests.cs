@@ -63,6 +63,9 @@ public sealed class EnvironmentIsolationContractTests
     private static readonly Lazy<IReadOnlyList<Type>> GlobalConsoleMutatingTestClasses =
         new(LoadGlobalConsoleMutatingTestClasses);
 
+    private static readonly Lazy<IReadOnlyList<Type>> WorkspacePathPolicyUsingTestClasses =
+        new(LoadWorkspacePathPolicyUsingTestClasses);
+
     private static readonly Lazy<IReadOnlyList<TestHomeUse>> TestHomeUses = new(LoadTestHomeUses);
 
     /// <summary>
@@ -189,6 +192,54 @@ public sealed class EnvironmentIsolationContractTests
             + "class that assigns one, directly or through the CLI test harness, must run in the "
             + "'GlobalConsole' collection (or another DisableParallelization collection): "
             + string.Join("; ", offenders));
+    }
+
+    /// <summary>
+    /// <c>WorkspacePathPolicy</c> keeps process-global test seams (ordinal-ignore-case comparison, the
+    /// containment observer) that its covering tests install and reset. A test that merely uses the policy
+    /// or <c>PhysicalFileSystemWriter</c> (or its resolver) is exactly the neighbour such a seam leaks into, so every class
+    /// that reaches either, directly or through a helper, joins the one serialized
+    /// <c>WorkspacePathPolicy</c> collection instead of relying on each author to notice.
+    /// </summary>
+    [Fact]
+    public void Every_test_class_that_uses_WorkspacePathPolicy_or_PhysicalFileSystemWriter_is_in_the_WorkspacePathPolicy_collection()
+    {
+        List<string> offenders = [];
+
+        foreach (Type type in WorkspacePathPolicyUsingTestClasses.Value)
+        {
+            string? collection = AttributeName<CollectionAttribute>(type);
+
+            if (!string.Equals(collection, WorkspacePathPolicyCollectionName, StringComparison.Ordinal))
+            {
+                offenders.Add($"{type.FullName} is in {(collection is null ? "no collection" : $"collection '{collection}'")}");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"Every test class that uses WorkspacePathPolicy or PhysicalFileSystemWriter must declare [Collection(\"{WorkspacePathPolicyCollectionName}\")]: "
+            + string.Join("; ", offenders));
+    }
+
+    /// <summary>
+    /// Guards the scan above: an IL walk that stopped matching the policy and writer call sites would
+    /// report no offenders and pass vacuously forever.
+    /// </summary>
+    [Fact]
+    public void The_workspace_path_policy_scan_finds_direct_and_writer_using_test_classes()
+    {
+        string[] found =
+        [
+            .. WorkspacePathPolicyUsingTestClasses.Value
+                .Select(static type => type.Name),
+        ];
+
+        Assert.Contains("WorkspacePathPolicySymlinkTests", found);
+
+        Assert.Contains("PhysicalFileSystemWriterTests", found);
+
+        Assert.Contains("WorkspacePathResolverTests", found);
     }
 
     /// <summary>
@@ -590,6 +641,21 @@ public sealed class EnvironmentIsolationContractTests
 
     private static IReadOnlyList<Type> LoadGlobalConsoleMutatingTestClasses() =>
         LoadMutatingTestClasses(IsGlobalConsoleMutation);
+
+    private const string WorkspacePathPolicyCollectionName = "WorkspacePathPolicy";
+
+    private static IReadOnlyList<Type> LoadWorkspacePathPolicyUsingTestClasses() =>
+        LoadMutatingTestClasses(IsWorkspacePathPolicyUse);
+
+    /// <summary>
+    /// Any call into <c>WorkspacePathPolicy</c>, <c>PhysicalFileSystemWriter</c> or the
+    /// <c>WorkspacePathResolver</c> that routes every API path through the policy, including constructors.
+    /// </summary>
+    private static bool IsWorkspacePathPolicyUse(
+        MethodBase method) =>
+        method.DeclaringType == typeof(RetroDownfall.Arcanum.Infrastructure.Security.WorkspacePathPolicy)
+        || method.DeclaringType == typeof(RetroDownfall.Arcanum.Infrastructure.Workspaces.PhysicalFileSystemWriter)
+        || method.DeclaringType == typeof(RetroDownfall.Arcanum.Infrastructure.Workspaces.WorkspacePathResolver);
 
     /// <summary>
     /// Assignment to the process-wide console: the three <see cref="Console"/> stream swaps and the

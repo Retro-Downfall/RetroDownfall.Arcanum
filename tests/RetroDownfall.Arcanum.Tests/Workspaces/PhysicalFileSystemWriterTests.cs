@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Workspaces;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 {
     private TempWorkspace _workspace = null!;

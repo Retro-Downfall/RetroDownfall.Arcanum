@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class WorkspacePathPolicyTests : IAsyncLifetime
 {
     private readonly TempWorkspace _workspace = new();
