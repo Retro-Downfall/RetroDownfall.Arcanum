@@ -741,14 +741,32 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 + "installation is preserved at " + journal.DisplacedRoot);
         }
 
-        Discard(stagingRoot, journal);
+        // A completed commit has exactly one shape: the staged generation moved into the live root and
+        // nothing displaced — a restore onto a machine with no installation to displace.
+        if (!stagedExists && liveExists && !displacedExists)
+        {
+            Discard(stagingRoot, journal);
 
+            return new BackupRestoreRecoveryReport(
+                stagingRoot,
+                BackupRestoreRecoveryOutcome.CommitCompleted,
+                journal.Phase,
+                "The commit had completed; only staging cleanup remained.");
+        }
+
+        // Every other combination is one no commit leaves behind, and staging may hold the only
+        // complete tree. Nothing is removed until an operator has looked.
         return new BackupRestoreRecoveryReport(
             stagingRoot,
-            BackupRestoreRecoveryOutcome.CommitCompleted,
+            BackupRestoreRecoveryOutcome.ReconciliationRequired,
             journal.Phase,
-            "The commit had completed; only staging cleanup remained.");
+            "The restore journal names a commit, but the filesystem shows no state a commit leaves "
+            + $"behind (staged {Presence(stagedExists)}, live {Presence(liveExists)}, displaced "
+            + $"{Presence(displacedExists)}). Staging was left untouched at {stagingRoot} for an operator "
+            + "to resolve.");
     }
+
+    private static string Presence(bool exists) => exists ? "present" : "absent";
 
     private static void Discard(string stagingRoot, BackupRestoreJournalRecord journal)
     {
