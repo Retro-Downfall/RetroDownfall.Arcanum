@@ -74,7 +74,7 @@ public sealed class WorkspaceCommands(
             return WriteError(workspaces.Error);
         }
 
-        Result<CampaignDto[]> campaigns = await GetAllCampaignsAsync(cancellationToken)
+        Result<CampaignDto[]> campaigns = await apiClient.GetAllCampaignsAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (campaigns.IsFailure)
@@ -681,25 +681,6 @@ public sealed class WorkspaceCommands(
         }
 
         return WorkspaceResolution.Success(selection.Value!);
-    }
-
-    private async Task<Result<CampaignDto[]>> GetAllCampaignsAsync(
-        CancellationToken cancellationToken)
-    {
-        Result<HostListing<CampaignDto>> campaigns = await HostPageWalker
-            .ReadAsync<CampaignDto, int>(
-                "campaign list",
-                singlePage: false,
-                async (offset, token) => HostPageWalker.ByOffset(
-                    await apiClient.GetCampaignsPageAsync(null, 100, offset, token).ConfigureAwait(false),
-                    offset),
-                cancellationToken,
-                firstPageCursor: 0)
-            .ConfigureAwait(false);
-
-        return campaigns.IsFailure
-            ? Result<CampaignDto[]>.Failure(campaigns.Error)
-            : Result<CampaignDto[]>.Success(campaigns.Value.Items);
     }
 
     private void WriteWorkspace(WorkspaceInfo workspace)

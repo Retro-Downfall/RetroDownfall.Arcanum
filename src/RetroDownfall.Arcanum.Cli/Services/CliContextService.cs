@@ -308,8 +308,8 @@ internal sealed class CliContextService(
         CampaignDto selected,
         CancellationToken cancellationToken)
     {
-        Result<CampaignDto[]> listed = await GetAllCampaignsAsync(
-                cancellationToken)
+        Result<CampaignDto[]> listed = await apiClient
+            .GetAllCampaignsAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (listed.IsFailure)
@@ -946,34 +946,11 @@ internal sealed class CliContextService(
     {
         // A host that cannot list its campaigns, or whose cursor does not advance, degrades the caller to
         // "not loaded" rather than failing it.
-        Result<CampaignDto[]> campaigns = await GetAllCampaignsAsync(cancellationToken).ConfigureAwait(false);
+        Result<CampaignDto[]> campaigns = await apiClient.GetAllCampaignsAsync(cancellationToken).ConfigureAwait(false);
 
         return campaigns.IsFailure
             ? (false, [])
             : (true, campaigns.Value);
-    }
-
-    /// <summary>
-    /// Every campaign, following the host's continuation. The walker refuses a cursor that does not advance,
-    /// so the accumulator cannot grow without bound.
-    /// </summary>
-    private async Task<Result<CampaignDto[]>> GetAllCampaignsAsync(
-        CancellationToken cancellationToken)
-    {
-        Result<HostListing<CampaignDto>> campaigns = await HostPageWalker
-            .ReadAsync<CampaignDto, int>(
-                "campaign list",
-                singlePage: false,
-                async (offset, token) => HostPageWalker.ByOffset(
-                    await apiClient.GetCampaignsPageAsync(null, 100, offset, token).ConfigureAwait(false),
-                    offset),
-                cancellationToken,
-                firstPageCursor: 0)
-            .ConfigureAwait(false);
-
-        return campaigns.IsFailure
-            ? Result<CampaignDto[]>.Failure(campaigns.Error)
-            : Result<CampaignDto[]>.Success(campaigns.Value.Items);
     }
 
     private void AddRelationshipWarnings(
