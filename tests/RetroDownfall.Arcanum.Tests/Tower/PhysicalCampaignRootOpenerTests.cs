@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Tower;
 /// </remarks>
 public sealed class PhysicalCampaignRootOpenerTests : IDisposable
 {
-
     private static readonly byte[] Key = Convert.FromHexString(
         "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
 
@@ -28,20 +27,17 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
     [Fact]
     public void The_same_directory_always_derives_the_same_identity()
     {
-
         CovenantDigest? first = _opener.IdentifyExact(_root);
 
         CovenantDigest? second = _opener.IdentifyExact(_root);
 
         Assert.NotNull(first);
         Assert.Equal(first, second);
-
     }
 
     [Fact]
     public void Two_sibling_directories_sharing_a_name_prefix_never_collide()
     {
-
         // The case a path-prefix scan gets wrong: "/work/app" is not a prefix match for "/work/app-legacy"
         // in any sense that should carry authority, but string comparison says otherwise.
         string app = Directory.CreateDirectory(Path.Combine(_root, "app")).FullName;
@@ -49,13 +45,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         string legacy = Directory.CreateDirectory(Path.Combine(_root, "app-legacy")).FullName;
 
         Assert.NotEqual(_opener.IdentifyExact(app), _opener.IdentifyExact(legacy));
-
     }
 
     [Fact]
     public void A_moved_directory_keeps_its_identity_and_the_vacated_path_does_not_inherit_it()
     {
-
         string original = Directory.CreateDirectory(Path.Combine(_root, "before")).FullName;
 
         CovenantDigest? before = _opener.IdentifyExact(original);
@@ -70,13 +64,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         string impostor = Directory.CreateDirectory(original).FullName;
 
         Assert.NotEqual(before, _opener.IdentifyExact(impostor));
-
     }
 
     [Fact]
     public void A_deleted_and_recreated_directory_does_not_inherit_the_old_identity()
     {
-
         string path = Path.Combine(_root, "recreated");
 
         _ = Directory.CreateDirectory(path);
@@ -98,13 +90,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         {
             Assert.NotEqual(before, after);
         }
-
     }
 
     [SkippableFact]
     public void A_symlink_resolves_to_its_own_object_and_not_to_its_target()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Creating a directory symlink on Windows needs elevation.");
 
         string target = Directory.CreateDirectory(Path.Combine(_root, "target")).FullName;
@@ -120,13 +110,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         // The no-follow query returns the link itself, which is not a directory, so the link
         // contributes no candidate at all rather than borrowing the target's registration.
         Assert.Empty(_opener.EnumerateAncestorIdentities(link));
-
     }
 
     [Fact]
     public void Ancestors_are_enumerated_deepest_first_and_bounded()
     {
-
         string deep = _root;
 
         for (int level = 0; level < 4; level++)
@@ -150,13 +138,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         Assert.Contains(
             candidates,
             candidate => candidate.PhysicalIdentityDigest == _opener.IdentifyExact(_root));
-
     }
 
     [Fact]
     public void An_absent_unreadable_or_non_directory_path_contributes_no_candidate()
     {
-
         string file = Path.Combine(_root, "file.txt");
 
         File.WriteAllText(file, "not a directory");
@@ -165,37 +151,31 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         Assert.Empty(_opener.EnumerateAncestorIdentities("   "));
         Assert.Empty(_opener.EnumerateAncestorIdentities(Path.Combine(_root, "missing")));
         Assert.Empty(_opener.EnumerateAncestorIdentities(file));
-
     }
 
     [Fact]
     public void A_different_installation_key_derives_a_different_identity_for_the_same_directory()
     {
-
         byte[] other = Convert.FromHexString(
             "202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F");
 
         PhysicalCampaignRootOpener stranger = new(new StubKeySource(other));
 
         Assert.NotEqual(_opener.IdentifyExact(_root), stranger.IdentifyExact(_root));
-
     }
 
     [Fact]
     public void An_unavailable_identity_key_leaves_every_root_unresolved()
     {
-
         PhysicalCampaignRootOpener unkeyed = new(new StubKeySource(null));
 
         Assert.Null(unkeyed.IdentifyExact(_root));
         Assert.Empty(unkeyed.EnumerateAncestorIdentities(_root));
-
     }
 
     [Fact]
     public async Task Existing_only_full_reset_open_does_not_create_a_missing_marker_directory()
     {
-
         string existingOnlyRoot = Directory.CreateDirectory(
             Path.Combine(_root, "existing-only")).FullName;
 
@@ -225,13 +205,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         await ordinary.Value.DisposeAsync();
 
         Assert.True(Directory.Exists(Path.Combine(existingOnlyRoot, ".arcanum")));
-
     }
 
     [Fact]
     public async Task Retained_root_does_not_adopt_a_substituted_marker_directory()
     {
-
         string root = Directory.CreateDirectory(
             Path.Combine(_root, "root-substitution")).FullName;
 
@@ -267,48 +245,38 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
 
         _opener.AfterRootHandleOpenedBeforeMarkerDirectoryOpenForTests = () =>
         {
-
             Directory.Move(root, Path.Combine(_root, "retained-root"));
 
             Directory.Move(replacementRoot, root);
-
         };
 
         Result<PhysicalCampaignRootOpener.MarkerRootCapability> opened;
 
         try
         {
-
             opened = await _opener.OpenExistingForMarkerLifecycleAsync(
                 Guid.NewGuid(),
                 1,
                 identity,
                 root,
                 CancellationToken.None);
-
         }
         finally
         {
-
             _opener.AfterRootHandleOpenedBeforeMarkerDirectoryOpenForTests = null;
-
         }
 
         if (opened.IsSuccess)
         {
-
             await opened.Value.DisposeAsync();
-
         }
 
         Assert.True(opened.IsFailure);
-
     }
 
     [Fact]
     public async Task Retained_marker_directory_does_not_adopt_copied_marker_after_name_substitution()
     {
-
         string root = Directory.CreateDirectory(
             Path.Combine(_root, "marker-substitution")).FullName;
 
@@ -367,34 +335,26 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
 
         _opener.BeforeMarkerChildOpenForTests = () =>
         {
-
             Directory.Move(markerDirectory, Path.Combine(root, ".arcanum-retained"));
 
             Directory.Move(replacementMarkerDirectory, markerDirectory);
-
         };
 
         Result<PhysicalCampaignMarkerOpenResult> reopened;
 
         try
         {
-
             reopened = await capability.OpenMarkerOrProveAbsentNoFollowAsync(
                 CancellationToken.None);
-
         }
         finally
         {
-
             _opener.BeforeMarkerChildOpenForTests = null;
-
         }
 
         if (reopened.IsFailure)
         {
-
             return;
-
         }
 
         PhysicalCampaignMarkerOpenResult.Opened reopenedMarker =
@@ -402,19 +362,205 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
 
         await using (reopenedMarker.Marker)
         {
-
             Assert.Equal(
                 expectedIdentity,
                 reopenedMarker.Marker.PhysicalIdentityDigest);
+        }
+    }
 
+    /// <summary>
+    /// The create runs relative to the retained marker directory, so a directory swapped in under the
+    /// display path between the identity re-check and the create receives nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task Marker_create_after_root_swap_does_not_write_outside_retained_directory()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows marker effects stay path-based between identity re-checks (DESIGN §10.12).");
+
+        (PhysicalCampaignRootOpener.MarkerRootCapability capability, string markerDirectory) =
+            await OpenSwappableAsync("create-swap");
+
+        await using PhysicalCampaignRootOpener.MarkerRootCapability owned = capability;
+
+        string retained = markerDirectory + "-retained";
+
+        string substitute = Path.Combine(_root, "create-swap-substitute");
+
+        SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(substitute);
+
+        _opener.BeforeMarkerChildOpenForTests = () =>
+        {
+            Directory.Move(markerDirectory, retained);
+
+            Directory.Move(substitute, markerDirectory);
+        };
+
+        Result<PhysicalCampaignRootOpener.MarkerTemporaryHandleCapability> created;
+
+        try
+        {
+            created = await owned.CreateTemporaryExclusiveNoFollowAsync(
+                "pending-marker",
+                CancellationToken.None);
+        }
+        finally
+        {
+            _opener.BeforeMarkerChildOpenForTests = null;
         }
 
+        if (created.IsSuccess)
+        {
+            await created.Value.DisposeAsync();
+        }
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(markerDirectory));
+
+        Assert.True(created.IsSuccess);
+
+        Assert.True(File.Exists(Path.Combine(retained, "pending-marker")));
+    }
+
+    [SkippableFact]
+    public async Task Marker_rename_and_delete_after_root_swap_stay_inside_retained_directory()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows marker effects stay path-based between identity re-checks (DESIGN §10.12).");
+
+        (PhysicalCampaignRootOpener.MarkerRootCapability capability, string markerDirectory) =
+            await OpenSwappableAsync("effect-swap");
+
+        await using PhysicalCampaignRootOpener.MarkerRootCapability owned = capability;
+
+        byte[] bytes = [0x41, 0x52, 0x43, 0x41, 0x4E, 0x55, 0x4D];
+
+        PhysicalCampaignRootOpener.MarkerTemporaryHandleCapability renamed =
+            await WrittenTemporaryAsync(owned, "pending-marker", bytes);
+
+        PhysicalCampaignRootOpener.MarkerTemporaryHandleCapability deleted =
+            await WrittenTemporaryAsync(owned, "abandoned-marker", bytes);
+
+        string retained = markerDirectory + "-retained";
+
+        string substitute = Path.Combine(_root, "effect-swap-substitute");
+
+        SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(substitute);
+
+        await File.WriteAllBytesAsync(Path.Combine(substitute, "abandoned-marker"), bytes);
+
+        _opener.BeforeMarkerChildEffectForTests = () =>
+        {
+            Directory.Move(markerDirectory, retained);
+
+            Directory.Move(substitute, markerDirectory);
+
+            _opener.BeforeMarkerChildEffectForTests = null;
+        };
+
+        Result renameResult;
+
+        try
+        {
+            renameResult = await owned.RenameTemporaryToMarkerNoReplaceAsync(
+                renamed,
+                renamed.PhysicalIdentityDigest,
+                bytes,
+                CancellationToken.None);
+        }
+        finally
+        {
+            _opener.BeforeMarkerChildEffectForTests = null;
+        }
+
+        await renamed.DisposeAsync();
+
+        Assert.True(renameResult.IsSuccess);
+
+        Assert.True(File.Exists(Path.Combine(retained, "campaign-root.marker")));
+
+        Assert.False(File.Exists(Path.Combine(markerDirectory, "campaign-root.marker")));
+
+        // Move the swapped name back so the retained directory is the display path again for the
+        // identity re-check, then swap once more inside the delete.
+        Directory.Move(markerDirectory, substitute);
+
+        Directory.Move(retained, markerDirectory);
+
+        _opener.BeforeMarkerChildEffectForTests = () =>
+        {
+            Directory.Move(markerDirectory, retained);
+
+            Directory.Move(substitute, markerDirectory);
+
+            _opener.BeforeMarkerChildEffectForTests = null;
+        };
+
+        Result deleteResult;
+
+        try
+        {
+            deleteResult = await owned.CompareDeleteTemporaryAsync(
+                deleted,
+                deleted.PhysicalIdentityDigest,
+                bytes,
+                CancellationToken.None);
+        }
+        finally
+        {
+            _opener.BeforeMarkerChildEffectForTests = null;
+        }
+
+        await deleted.DisposeAsync();
+
+        Assert.True(deleteResult.IsSuccess);
+
+        Assert.False(File.Exists(Path.Combine(retained, "abandoned-marker")));
+
+        Assert.True(File.Exists(Path.Combine(markerDirectory, "abandoned-marker")));
+    }
+
+    private async Task<(PhysicalCampaignRootOpener.MarkerRootCapability Capability, string MarkerDirectory)>
+        OpenSwappableAsync(string name)
+    {
+        string root = Directory.CreateDirectory(Path.Combine(_root, name)).FullName;
+
+        CovenantDigest identity = _opener.IdentifyExact(root)!.Value;
+
+        Result<PhysicalCampaignRootOpener.MarkerRootCapability> opened =
+            await _opener.OpenForMarkerLifecycleAsync(
+                Guid.NewGuid(),
+                1,
+                identity,
+                root,
+                CancellationToken.None);
+
+        Assert.True(opened.IsSuccess);
+
+        return (opened.Value, Path.Combine(root, ".arcanum"));
+    }
+
+    private static async Task<PhysicalCampaignRootOpener.MarkerTemporaryHandleCapability> WrittenTemporaryAsync(
+        PhysicalCampaignRootOpener.MarkerRootCapability capability,
+        string leaf,
+        byte[] bytes)
+    {
+        Result<PhysicalCampaignRootOpener.MarkerTemporaryHandleCapability> created =
+            await capability.CreateTemporaryExclusiveNoFollowAsync(leaf, CancellationToken.None);
+
+        Assert.True(created.IsSuccess);
+
+        Assert.True((await created.Value.WriteAllAsync(bytes, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await created.Value.FlushToDiskAsync(CancellationToken.None)).IsSuccess);
+
+        return created.Value;
     }
 
     [Fact]
     public void A_claimed_root_tuple_derives_the_identity_of_the_directory_it_names()
     {
-
         (ulong volumeId, ulong fileId) = Tuple(_root);
 
         // The property post-restart marker reconciliation rests on: a marker records the volume and
@@ -423,13 +569,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         Assert.Equal(
             _opener.IdentifyExact(_root),
             _opener.DeriveClaimedRootIdentityDigest(volumeId, fileId));
-
     }
 
     [Fact]
     public void A_claimed_tuple_naming_another_directory_derives_a_different_identity()
     {
-
         string other = Directory.CreateDirectory(Path.Combine(_root, "other")).FullName;
 
         (ulong volumeId, ulong fileId) = Tuple(other);
@@ -437,13 +581,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         Assert.NotEqual(
             _opener.IdentifyExact(_root),
             _opener.DeriveClaimedRootIdentityDigest(volumeId, fileId));
-
     }
 
     [Fact]
     public void A_different_installation_key_derives_a_different_identity_for_the_same_claim()
     {
-
         byte[] other = Convert.FromHexString(
             "202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F");
 
@@ -454,13 +596,11 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         Assert.NotEqual(
             _opener.DeriveClaimedRootIdentityDigest(volumeId, fileId),
             stranger.DeriveClaimedRootIdentityDigest(volumeId, fileId));
-
     }
 
     [Fact]
     public void An_unavailable_identity_key_derives_no_claimed_identity()
     {
-
         PhysicalCampaignRootOpener unkeyed = new(new StubKeySource(null));
 
         (ulong volumeId, ulong fileId) = Tuple(_root);
@@ -468,7 +608,6 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         // Fails closed in the same direction as every other derivation: no key means no expectation to
         // compare against, never an expectation an unkeyed caller could satisfy.
         Assert.Null(unkeyed.DeriveClaimedRootIdentityDigest(volumeId, fileId));
-
     }
 
     /// <summary>
@@ -476,18 +615,15 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
     /// </summary>
     private static (ulong VolumeId, ulong FileId) Tuple(string directory)
     {
-
         Assert.True(FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
             directory,
             out FileHandleMetadata metadata));
 
         return (metadata.Identity.VolumeId, metadata.Identity.FileId);
-
     }
 
     public void Dispose()
     {
-
         try
         {
             Directory.Delete(_root, recursive: true);
@@ -496,15 +632,12 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
         {
             // A leftover temporary directory is not worth failing a suite over.
         }
-
     }
 
     private sealed class StubKeySource(byte[]? key) : ICampaignRootIdentityKeyProvider
     {
-
         public bool TryCopyRootIdentityKey(Span<byte> destination)
         {
-
             if (key is null || destination.Length < key.Length)
             {
                 return false;
@@ -513,9 +646,6 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
             key.CopyTo(destination);
 
             return true;
-
         }
-
     }
-
 }
