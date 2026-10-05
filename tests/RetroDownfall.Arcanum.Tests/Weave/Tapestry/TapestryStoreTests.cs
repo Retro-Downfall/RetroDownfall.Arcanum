@@ -524,7 +524,8 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         string membership = TapestryHash.OfChildMembership(
             ["h1", "h2"],
             TapestryHash.SummaryRecipeVersion,
-            "fast");
+            "fast",
+            "embedding-model");
 
         await _store!.AppendNodesAsync(
             [Summary(generationId, "s1", "the summary", membership, 2)],
@@ -552,7 +553,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
         Assert.Null(await _store.TryGetReusableSummaryAsync(
             WorkspaceScope,
-            TapestryHash.OfChildMembership(["h1", "h3"], TapestryHash.SummaryRecipeVersion, "fast"),
+            TapestryHash.OfChildMembership(["h1", "h3"], TapestryHash.SummaryRecipeVersion, "fast", "embedding-model"),
             CancellationToken.None));
     }
 

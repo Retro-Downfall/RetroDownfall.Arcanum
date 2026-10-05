@@ -80,7 +80,8 @@ internal sealed class TapestryWeaver(
             bounds.MaxChildrenPerSummary,
             bounds.MaxClustersPerLayer,
             bounds.MaxSummaryTokens,
-            bounds.Dimensions);
+            bounds.Dimensions,
+            bounds.EmbeddingModel);
 
         string? summaryModel = summarizer.ResolveSummaryModel();
 
@@ -891,10 +892,14 @@ internal sealed class TapestryWeaver(
         Bounds bounds,
         CancellationToken cancellationToken)
     {
+        // The embedding model is part of the reuse identity: a reused summary brings its embedding with
+        // it, and one written under another model sits in a different vector space than the leaves and
+        // summaries around it, at the same width and with nothing to flag it.
         string membershipHash = TapestryHash.OfChildMembership(
             members.Select(static member => member.ContentHash),
             TapestryHash.SummaryRecipeVersion,
-            summarizer.ResolveSummaryModel());
+            summarizer.ResolveSummaryModel(),
+            bounds.EmbeddingModel);
 
         string stableKey = $"L{layer}\u001f{membershipHash}";
 
@@ -911,7 +916,8 @@ internal sealed class TapestryWeaver(
         string identityHash = TapestryHash.OfChildMembership(
             members.Select(static member => member.StableKey),
             TapestryHash.SummaryRecipeVersion,
-            summarizer.ResolveSummaryModel());
+            summarizer.ResolveSummaryModel(),
+            bounds.EmbeddingModel);
 
         stableKey = $"{stableKey}{StableKeyFieldSeparator}{identityHash}";
 
@@ -1082,7 +1088,8 @@ internal sealed class TapestryWeaver(
         int TargetChildrenPerSummary,
         int MaxChildrenPerSummary,
         int MaxClustersPerLayer,
-        int MaxSummaryTokens)
+        int MaxSummaryTokens,
+        string EmbeddingModel)
     {
         public static Bounds From(EmbeddingSettings embeddings)
         {
@@ -1101,7 +1108,8 @@ internal sealed class TapestryWeaver(
                     target,
                     ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary(tapestry.MaxChildrenPerSummary)),
                 ArcanumSettingClamps.EmbeddingsTapestryMaxClustersPerLayer(tapestry.MaxClustersPerLayer),
-                ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(tapestry.MaxSummaryTokens));
+                ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(tapestry.MaxSummaryTokens),
+                TapestryHash.OfEmbeddingModel(embeddings.Provider, embeddings.Model));
         }
     }
 }

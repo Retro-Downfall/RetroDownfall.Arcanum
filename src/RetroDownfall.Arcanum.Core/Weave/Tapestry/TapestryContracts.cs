@@ -398,16 +398,32 @@ public static class TapestryHash
     }
 
     /// <summary>
+    /// The embedding provider and model that produced a tree's vectors, as one opaque value. Vectors
+    /// are only comparable with vectors of the same model, and two models can share a width, so the
+    /// dimension alone cannot tell a tree built under one from a tree built under the other.
+    /// </summary>
+    public static string OfEmbeddingModel(string? provider, string? model) =>
+        OfParts([provider?.Trim() ?? string.Empty, model?.Trim() ?? string.Empty]);
+
+    /// <summary>
     /// A summary node's reuse identity: the exact sorted child-membership plus the recipe, model, and
     /// input hashes. Reuse requires all of them to match — deterministic clustering does not make
     /// model prose reproducible, so identity is the only safe basis for skipping a summary call.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="embeddingModel"/> is part of the identity because a reused summary brings its
+    /// embedding with it: one written under a different embedding model sits in a different vector
+    /// space than the leaves and summaries around it, at the same width and with nothing to flag it.
+    /// </remarks>
     public static string OfChildMembership(
         IEnumerable<string> childContentHashes,
         string summaryRecipeVersion,
-        string? summaryModel)
+        string? summaryModel,
+        string embeddingModel)
     {
         ArgumentNullException.ThrowIfNull(childContentHashes);
+
+        ArgumentNullException.ThrowIfNull(embeddingModel);
 
         List<string> sorted = [.. childContentHashes];
 
@@ -417,6 +433,7 @@ public static class TapestryHash
         [
             summaryRecipeVersion,
             summaryModel ?? string.Empty,
+            embeddingModel,
             .. sorted,
         ]);
     }
@@ -441,14 +458,24 @@ public static class TapestryHash
     /// The tree-shaping settings a generation was built under. A change here invalidates the
     /// generation exactly like an algorithm-version change.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="embeddingModel"/> (from <see cref="OfEmbeddingModel"/>) is in the fingerprint
+    /// alongside <paramref name="dimensions"/>: swapping the embedding model at the same width leaves
+    /// every stored vector the right length and the wrong space, so only the model's identity can
+    /// invalidate the tree.
+    /// </remarks>
     public static string OfSettings(
         int maxTreeDepth,
         int targetChildrenPerSummary,
         int maxChildrenPerSummary,
         int maxClustersPerLayer,
         int maxSummaryTokens,
-        int dimensions) =>
-        OfParts(
+        int dimensions,
+        string embeddingModel)
+    {
+        ArgumentNullException.ThrowIfNull(embeddingModel);
+
+        return OfParts(
         [
             maxTreeDepth.ToString(CultureInfo.InvariantCulture),
             targetChildrenPerSummary.ToString(CultureInfo.InvariantCulture),
@@ -456,5 +483,7 @@ public static class TapestryHash
             maxClustersPerLayer.ToString(CultureInfo.InvariantCulture),
             maxSummaryTokens.ToString(CultureInfo.InvariantCulture),
             dimensions.ToString(CultureInfo.InvariantCulture),
+            embeddingModel,
         ]);
+    }
 }

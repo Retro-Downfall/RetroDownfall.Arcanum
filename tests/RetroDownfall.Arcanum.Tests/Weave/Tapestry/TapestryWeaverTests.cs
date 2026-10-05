@@ -102,11 +102,15 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         int maxTreeDepth = 5,
         int target = 2,
         int maxChildren = 3,
-        bool workspaceTrees = true) =>
+        bool workspaceTrees = true,
+        string? embeddingProvider = "local-embeddings",
+        string? embeddingModel = "embed-a") =>
         new()
         {
             Enabled = true,
             TapestryEnabled = true,
+            Provider = embeddingProvider,
+            Model = embeddingModel,
             Dimensions = TestDimensions,
             Tapestry = new TapestryEmbeddingSettings
             {
@@ -370,6 +374,56 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.True(
             outcome.SummariesReused > 0,
             $"expected at least one reused summary, got {outcome.SummariesReused}");
+    }
+
+    /// <summary>
+    /// A tree's vectors are only comparable with the vectors of the model that produced them, so a tree
+    /// built under one embedding provider or model is not current under another, and its summaries and
+    /// their embeddings are not reused, even when the vector width is the same.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("local-embeddings", "embed-b")]
+    [InlineData("other-provider", "embed-a")]
+    public async Task WeaveAsync_RebuildsWhenTheEmbeddingModelChangesAtTheSameDimension(
+        string provider,
+        string model)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = CreateWeaver();
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        string firstGeneration = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId;
+
+        _summarizer!.ResetCounters();
+
+        TapestryWeaveOutcome changed = await weaver.WeaveAsync(
+            Scope,
+            Settings(embeddingProvider: provider, embeddingModel: model),
+            CancellationToken.None);
+
+        Assert.True(changed.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {changed.Status}. Log:\n{_logger}");
+
+        Assert.NotEqual(
+            firstGeneration,
+            (await _store.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId);
+
+        // Every summary vector in the new tree comes from the new model, so none of the old ones may be
+        // carried over by identity.
+        Assert.Equal(0, changed.SummariesReused);
+
+        Assert.True(changed.SummaryCallsMade > 0);
+
+        // And the same configuration again is current, so the new identity is stable.
+        Assert.Equal(
+            TapestryWeaveStatus.UpToDate,
+            (await weaver.WeaveAsync(
+                Scope,
+                Settings(embeddingProvider: provider, embeddingModel: model),
+                CancellationToken.None)).Status);
     }
 
     [SkippableFact]
