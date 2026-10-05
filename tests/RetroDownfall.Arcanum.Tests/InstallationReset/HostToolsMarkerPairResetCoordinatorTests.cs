@@ -1299,6 +1299,56 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     }
 
     [Fact]
+    public async Task Unexpected_exceptions_are_named_by_their_kind_and_never_by_their_message()
+    {
+        // The kind is the one thing the log can say about a failure the answer collapses, so a closed
+        // set that files the failures a decoding or cryptographic collaborator actually raises under
+        // "Other" leaves the operator with no more than they had before the logging existed. A
+        // null-reference is in the set too: it is the shape a defect takes, and the log is where a
+        // defect has to be recognisable.
+        (Func<Exception> Create, string Kind)[] cases =
+        [
+            (() => new NullReferenceException("sentinel-diagnostic-detail"), nameof(NullReferenceException)),
+            (() => new FormatException("sentinel-diagnostic-detail"), nameof(FormatException)),
+            (() => new InvalidDataException("sentinel-diagnostic-detail"), nameof(InvalidDataException)),
+            (() => new System.Security.Cryptography.CryptographicException("sentinel-diagnostic-detail"), "CryptographicException"),
+            (() => new System.Text.Json.JsonException("sentinel-diagnostic-detail"), "JsonException"),
+            (() => new KeyNotFoundException("sentinel-diagnostic-detail"), nameof(KeyNotFoundException)),
+            (() => new InvalidCastException("sentinel-diagnostic-detail"), nameof(InvalidCastException)),
+            (() => new ObjectDisposedException("sentinel-diagnostic-detail"), nameof(ObjectDisposedException)),
+            (() => new DllNotFoundException("sentinel-diagnostic-detail"), nameof(DllNotFoundException)),
+            (() => new BadImageFormatException("sentinel-diagnostic-detail"), nameof(BadImageFormatException)),
+            (() => new UnlistedFailure("sentinel-diagnostic-detail"), "Other"),
+        ];
+
+        foreach ((Func<Exception> create, string kind) in cases)
+        {
+            RecordingLogger logger = new();
+
+            PairBeginOutcome outcome = await BeginWithOsDeleteBehaviorAsync(
+                _ => throw create(),
+                new ManualClock(),
+                logger,
+                driveClock: null);
+
+            Assert.True(outcome.Result.IsFailure, kind);
+
+            LogEntry entry = Assert.Single(
+                logger.Entries,
+                static candidate => candidate.Level >= LogLevel.Warning);
+
+            Assert.Contains($"unexpected {kind} during", entry.Message);
+
+            Assert.DoesNotContain(
+                "sentinel",
+                entry.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private sealed class UnlistedFailure(string message) : Exception(message);
+
+    [Fact]
     public async Task Slow_os_credential_call_does_not_exhaust_the_shared_deadline()
     {
         // Six seconds in an operating-system credential call, which can be as slow as the user's
@@ -1314,9 +1364,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         PairBeginOutcome outcome = await BeginWithOsDeleteBehaviorAsync(
             async token =>
             {
-                deleteStarted.SetResult();
-
-                await Task.Delay(TimeSpan.FromSeconds(6), clock, token);
+                await WaitOnClockAsync(clock, TimeSpan.FromSeconds(6), deleteStarted, token);
 
                 return HostToolsMarkerPairResetOsDeleteStatus.Deleted;
             },
@@ -1352,9 +1400,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         PairBeginOutcome outcome = await BeginWithOsDeleteBehaviorAsync(
             async token =>
             {
-                deleteStarted.SetResult();
-
-                await Task.Delay(TimeSpan.FromMinutes(10), clock, token);
+                await WaitOnClockAsync(clock, TimeSpan.FromMinutes(10), deleteStarted, token);
 
                 return HostToolsMarkerPairResetOsDeleteStatus.Deleted;
             },
@@ -1383,6 +1429,38 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         Assert.Contains("os-marker-delete", entry.Message);
 
         Assert.Contains("timed out", entry.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Waits on the manual clock, and reports that its timer exists before it starts waiting.
+    /// </summary>
+    /// <remarks>
+    /// The driver advances the clock as soon as it is told the call has started, so the timer has to be
+    /// registered first. Signalling before <c>Task.Delay</c> had created its timer let the driver's
+    /// continuation advance the clock on another thread first; the delay's timer was then created at
+    /// the advanced time, never fired, and the awaiting call hung.
+    /// </remarks>
+    private static async Task WaitOnClockAsync(
+        ManualClock clock,
+        TimeSpan delay,
+        TaskCompletionSource armed,
+        CancellationToken cancellationToken)
+    {
+        TaskCompletionSource elapsed = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using ITimer timer = clock.CreateTimer(
+            static state => ((TaskCompletionSource)state!).TrySetResult(),
+            elapsed,
+            delay,
+            Timeout.InfiniteTimeSpan);
+
+        using CancellationTokenRegistration registration = cancellationToken.Register(
+            () => elapsed.TrySetCanceled(cancellationToken));
+
+        armed.SetResult();
+
+        await elapsed.Task;
     }
 
     private sealed record PairBeginOutcome(

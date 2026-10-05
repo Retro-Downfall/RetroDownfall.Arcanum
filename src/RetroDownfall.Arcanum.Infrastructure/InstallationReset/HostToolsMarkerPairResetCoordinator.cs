@@ -2066,6 +2066,12 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
     /// thing worth logging, and reading it reflectively would put a reflection-shaped call on a path the
     /// hosted-producer analysis has to classify, for no gain over naming the families that can occur
     /// here. Anything outside the set is reported as <c>Other</c>.
+    ///
+    /// <para>The set covers the families the collaborators of this operation can raise: storage and
+    /// platform failures, the decoding and cryptographic failures of the records it authenticates, a
+    /// native credential backend that is missing or unloadable, and the shapes a defect takes (a null
+    /// reference, a bad cast, a missing key). The more specific type is listed before the family it
+    /// belongs to, so a disposed object is not reported as a generic invalid operation.</para>
     /// </remarks>
     private static string ExceptionKind(Exception exception) =>
         exception switch
@@ -2073,10 +2079,20 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             OperationCanceledException => nameof(OperationCanceledException),
             TimeoutException => nameof(TimeoutException),
             SqliteException => nameof(SqliteException),
+            InvalidDataException => nameof(InvalidDataException),
             IOException => nameof(IOException),
             UnauthorizedAccessException => nameof(UnauthorizedAccessException),
             NotSupportedException => nameof(NotSupportedException),
+            FormatException => nameof(FormatException),
+            System.Security.Cryptography.CryptographicException => "CryptographicException",
+            System.Text.Json.JsonException => "JsonException",
+            DllNotFoundException => nameof(DllNotFoundException),
+            BadImageFormatException => nameof(BadImageFormatException),
+            KeyNotFoundException => nameof(KeyNotFoundException),
+            InvalidCastException => nameof(InvalidCastException),
+            NullReferenceException => nameof(NullReferenceException),
             ArgumentException => nameof(ArgumentException),
+            ObjectDisposedException => nameof(ObjectDisposedException),
             InvalidOperationException => nameof(InvalidOperationException),
             _ => "Other",
         };
