@@ -131,8 +131,6 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IAttachmentRevealLauncher, AttachmentRevealLauncher>();
 
-        services.AddSingleton<MarkdigSpectreRenderer>();
-
         // W6.4: shared secret/grimoire stack (Data Protection + digest cache + secret store +
         // CLI Grimoire), owned by Infrastructure so it cannot drift from the host wiring.
         services.AddArcanumCliClientStack();

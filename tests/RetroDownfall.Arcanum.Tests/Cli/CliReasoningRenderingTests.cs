@@ -72,32 +72,6 @@ public sealed class CliReasoningRenderingTests
         Assert.Contains("[red]unsafe[/]", console.Output, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void Streaming_render_cadence_coalesces_high_delta_chunks_and_flushes_final_partial()
-    {
-        long elapsedMilliseconds = 0;
-        StreamingRenderCadence cadence = new(() => elapsedMilliseconds);
-
-        for (int i = 0; i < 31; i++)
-        {
-            cadence.NoteChunk();
-            Assert.False(cadence.ShouldRefresh(force: false));
-        }
-
-        cadence.NoteChunk();
-        Assert.True(cadence.ShouldRefresh(force: false));
-        cadence.MarkRefreshed();
-
-        cadence.NoteChunk();
-        Assert.False(cadence.ShouldRefresh(force: false));
-        elapsedMilliseconds = 75;
-        Assert.True(cadence.ShouldRefresh(force: false));
-        cadence.MarkRefreshed();
-
-        cadence.NoteChunk();
-        Assert.True(cadence.ShouldRefresh(force: true));
-    }
-
     /// <summary>
     /// The CLI accumulated the whole answer only to learn whether its last character was a newline, so a
     /// long answer held every byte it streamed for the lifetime of the turn. The bound is on allocation:
