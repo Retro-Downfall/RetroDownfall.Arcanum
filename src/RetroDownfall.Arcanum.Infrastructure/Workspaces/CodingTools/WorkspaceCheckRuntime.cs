@@ -41,6 +41,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
     private readonly Func<WorkspaceCheckSettings>? _currentSettingsProvider;
 
+    private readonly Func<bool> _mandatoryJailAvailability;
+
     private readonly string _settingsFingerprint;
 
     /// <summary>
@@ -98,7 +100,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         TimeProvider? timeProvider = null,
         WorkspaceCheckExecutableRuntimePolicy? executablePolicy = null,
         TimeSpan? processTimeoutOverride = null,
-        Func<WorkspaceCheckSettings>? currentSettingsProvider = null)
+        Func<WorkspaceCheckSettings>? currentSettingsProvider = null,
+        Func<bool>? mandatoryJailAvailability = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(scopeFactory);
@@ -112,6 +115,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
             ?? WorkspaceCheckExecutableRuntimePolicy.ForCurrentPlatform();
         _processTimeoutOverride = processTimeoutOverride;
         _currentSettingsProvider = currentSettingsProvider;
+        _mandatoryJailAvailability = mandatoryJailAvailability
+            ?? WorkspaceCheckExecutionPolicy.IsMandatoryJailAvailableForCurrentHost;
         _settingsFingerprint =
             InternalCodingToolSettingsFingerprint
                 .BuildWorkspaceCheck(settings);
@@ -133,9 +138,9 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 "workspace_check configuration changed; this stale invocation surface is unavailable.");
         }
 
-        bool jailAvailable =
-            WorkspaceCheckExecutionPolicy
-                .IsMandatoryJailAvailableForCurrentHost();
+        // A disabled tool never spawns the jail probe: the disabled answer does not depend on it.
+        bool jailAvailable = _settings.Enabled
+            && _mandatoryJailAvailability();
         string platform = WorkspaceCheckExecutionPolicy.DetectPlatform();
         WorkspaceCheckExecutionStatus platformStatus =
             WorkspaceCheckExecutionPolicy.Resolve(

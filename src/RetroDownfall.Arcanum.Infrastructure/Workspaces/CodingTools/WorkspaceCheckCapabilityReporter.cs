@@ -357,8 +357,8 @@ public sealed class WorkspaceCheckCapabilityReporter
         WorkspaceCheckSettings check =
             current.ResolveWorkspaceChecks();
         string platform = WorkspaceCheckExecutionPolicy.DetectPlatform();
-        bool jailAvailable =
-            WorkspaceCheckExecutionPolicy
+        bool jailAvailable = check.Enabled
+            && WorkspaceCheckExecutionPolicy
                 .IsMandatoryJailAvailableForCurrentHost();
         WorkspaceCheckExecutionStatus platformStatus =
             WorkspaceCheckExecutionPolicy.Resolve(
@@ -369,7 +369,6 @@ public sealed class WorkspaceCheckCapabilityReporter
 
         if (!platformStatus.IsEligible)
         {
-
             return Map(platformStatus);
         }
 
@@ -392,7 +391,6 @@ public sealed class WorkspaceCheckCapabilityReporter
         if (!executableStatus.IsEligible
             || executable.Snapshot is null)
         {
-
             return new WorkspaceCheckCapabilityStatus(
                 false,
                 check.Enabled,
@@ -402,7 +400,6 @@ public sealed class WorkspaceCheckCapabilityReporter
         if (!string.IsNullOrWhiteSpace(workspaceRoot)
             && Directory.Exists(workspaceRoot))
         {
-
             WorkspaceCheckSdkResolution sdk =
                 WorkspaceCheckSdkResolver.Resolve(
                     workspaceRoot,
@@ -410,19 +407,16 @@ public sealed class WorkspaceCheckCapabilityReporter
 
             if (!sdk.Success)
             {
-
                 return new WorkspaceCheckCapabilityStatus(
                     false,
                     true,
                     sdk.Message
                     ?? "The workspace-selected SDK is unavailable or untrusted.");
             }
-
         }
 
         if (WorkspaceCheckLaunchChainPolicy.Capture() is null)
         {
-
             return new WorkspaceCheckCapabilityStatus(
                 false,
                 true,
@@ -435,7 +429,6 @@ public sealed class WorkspaceCheckCapabilityReporter
         if (OperatingSystem.IsMacOS()
             && !MacOsDotNetIpcRoots.AreAvailable())
         {
-
             return new WorkspaceCheckCapabilityStatus(
                 false,
                 true,
@@ -456,18 +449,15 @@ public sealed class WorkspaceCheckCapabilityReporter
         string? requestedWorkspace,
         string? configuredWorkspace)
     {
-
         if (!string.IsNullOrWhiteSpace(requestedWorkspace)
             && Directory.Exists(requestedWorkspace))
         {
-
             return Path.GetFullPath(requestedWorkspace);
         }
 
         if (!string.IsNullOrWhiteSpace(configuredWorkspace)
             && Directory.Exists(configuredWorkspace))
         {
-
             return Path.GetFullPath(configuredWorkspace);
         }
 
