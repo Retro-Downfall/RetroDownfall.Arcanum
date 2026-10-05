@@ -438,8 +438,9 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         // mid-rollout provider pool can answer one long input with vectors of two different widths
         // while every individual HTTP response is well-formed. A narrower trailing vector reads off
         // the end of the array (500); a wider one is silently truncated and mean-pooled into a
-        // plausible-looking but wrong unit vector (200). Both must be the same sanitized 503 the
-        // count-mismatch guard beside it produces.
+        // plausible-looking but wrong unit vector (200). Both must be the same sanitized 503 that a
+        // short-answering provider gets from the WeaveService boundary (see
+        // PostEmbeddings_ProviderReturnsFewerVectorsThanInputs_Returns503).
         _fake.TrailingVectorDimensionDelta = trailingDelta;
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -462,6 +463,39 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("embedding_provider_unavailable", raggedError!.Error.Code);
+    }
+
+    [SkippableFact]
+    public async Task PostEmbeddings_ChunkerReturnsNoChunksForLongInput_Returns503()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // A long input is chunked, embedded per chunk and mean-pooled, and the pool reads its width off the
+        // first chunk vector. A chunker that answers no chunks for a non-empty input (the shipped one never
+        // does, so this is a custom IWeaveService contract violation) used to index off the end of an empty
+        // array and surface an unhandled 500. It is the same sanitized 503 as any other provider fault.
+        _fake.ReturnNoChunks = true;
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string longText = string.Concat(Enumerable.Repeat("The quick brown fox jumps over the lazy dog. ", 30));
+
+        OpenAiEmbeddingRequest request = new(Model: null, Input: new OpenAiEmbeddingInput { Strings = [longText] });
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/embeddings",
+            new StringContent(
+                JsonSerializer.Serialize(request, ArcanumJsonContext.Default.OpenAiEmbeddingRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
     }
 
     [SkippableTheory]
@@ -733,6 +767,12 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         /// </summary>
         public int SubsequentBatchDimensionDelta { get; set; }
 
+        /// <summary>
+        /// Makes <see cref="ChunkAsync"/> answer an empty chunk list, reproducing a custom chunker that
+        /// breaks the "at least one chunk for non-empty text" contract.
+        /// </summary>
+        public bool ReturnNoChunks { get; set; }
+
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
             EmbedBatchCallCount++;
@@ -755,6 +795,11 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken)
         {
+            if (ReturnNoChunks)
+            {
+                return Task.FromResult(Result<(string Chunk, int Offset)[]>.Success([]));
+            }
+
             const int chunkSize = 100;
 
             List<(string Chunk, int Offset)> chunks = [];

@@ -353,6 +353,17 @@ internal static partial class OpenAiV1Endpoints
             return Result<float[]>.Failure(chunked.Error);
         }
 
+        // The shipped chunker answers at least one chunk for any non-empty text, and this method only
+        // runs for text longer than the chunk size. A custom IWeaveService that breaks that contract
+        // would otherwise reach the width read below with an empty array and surface as an unhandled
+        // 500, so it is the same provider fault as any other malformed answer.
+        if (chunked.Value.Length == 0)
+        {
+            return Result<float[]>.Failure(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "The embedding provider returned no chunks for the input."));
+        }
+
         string[] chunkTexts = new string[chunked.Value.Length];
 
         for (int i = 0; i < chunked.Value.Length; i++)
@@ -369,8 +380,8 @@ internal static partial class OpenAiV1Endpoints
 
         // IWeaveService.EmbedBatchAsync answers exactly one vector per chunk or fails, so a chunk
         // batch that came back short never reaches the mean-pool below (it would silently pool
-        // fewer chunks than the document has). The chunker answers at least one chunk for any
-        // non-empty text, and this method only runs for text longer than the chunk size.
+        // fewer chunks than the document has), and the empty-chunk case was refused above, so the
+        // first vector read below always exists.
         //
         // The vector width is a separate matter and still needs checking here. WeaveService
         // issues one round trip per BatchSize sub-batch, so a load-balanced or mid-rollout provider

@@ -1093,6 +1093,45 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             (await _index!.GetStateAsync(attachment.Id, CancellationToken.None)).Status);
     }
 
+    /// <summary>
+    /// A provider that answers fewer vectors than inputs is failed once, by the real service, at the
+    /// provider boundary, so the processor sees an ordinary embedding failure: the attachment is marked
+    /// failed for the provider (not for its dimensions) and a retry is requested. Before the service
+    /// enforced the count, this shape reached the dimensions check and ended terminal without a retry.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task ProcessAsync_ProviderAnswersFewerVectorsThanChunks_MarksFailedAndRequestsRetry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "notes",
+            "notes.txt",
+            "text/plain",
+            "short answer");
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(
+            ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService()).ProcessUnderOpenAdmissionAsync(
+                new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+                CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.Empty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+
+        SessionAttachmentIndexState state = await _index.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, state.Status);
+
+        Assert.Equal("The embedding provider failed.", state.FailureReason);
+    }
+
     [SkippableFact]
 
     public async Task ProcessAsync_DimensionMismatch_MarksFailedWithoutPartialChunks()
