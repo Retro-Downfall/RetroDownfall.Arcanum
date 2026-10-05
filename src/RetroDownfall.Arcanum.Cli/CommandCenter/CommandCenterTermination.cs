@@ -22,11 +22,15 @@ internal sealed class CommandCenterTermination : IDisposable
 
     private readonly CancellationTokenSource _unwound = new();
 
-    private readonly List<PosixSignalRegistration> _registrations = [];
+    private readonly List<IDisposable> _registrations = [];
 
     private readonly TimeSpan _grace;
 
     private readonly Action<int> _forceExit;
+
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+
+    private readonly Func<PosixSignal, Action<PosixSignalContext>, IDisposable> _registerSignal;
 
     private int _requested;
 
@@ -35,23 +39,49 @@ internal sealed class CommandCenterTermination : IDisposable
     public CommandCenterTermination()
         : this(
             CliApplicationFactory.ProcessTerminationGrace,
-            static code => Environment.Exit(code),
+            static code => EndProcess(code, CommandCenterApp.RestoreTerminalModes, Environment.Exit),
             registerSignals: true)
     {
     }
 
-    internal CommandCenterTermination(TimeSpan grace, Action<int> forceExit, bool registerSignals)
+    /// <param name="grace">How long the launch has to unwind before the backstop ends the process.</param>
+    /// <param name="forceExit">Ends the process with the given code; replaced by a test.</param>
+    /// <param name="registerSignals">Whether to register for the real signals.</param>
+    /// <param name="delay">The grace timer; replaced by a test so it never races a real clock.</param>
+    /// <param name="registerSignal">Registers one signal handler; replaced by a test.</param>
+    internal CommandCenterTermination(
+        TimeSpan grace,
+        Action<int> forceExit,
+        bool registerSignals,
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<PosixSignal, Action<PosixSignalContext>, IDisposable>? registerSignal = null)
     {
         ArgumentNullException.ThrowIfNull(forceExit);
 
         _grace = grace;
         _forceExit = forceExit;
+        _delay = delay ?? Task.Delay;
+        _registerSignal = registerSignal ?? RegisterWithOperatingSystem;
 
         if (registerSignals)
         {
             Register(PosixSignal.SIGTERM);
             Register(PosixSignal.SIGHUP);
         }
+    }
+
+    /// <summary>
+    /// The backstop's exit. It skips the host's cleanup, which is the point of a backstop, so it restores
+    /// the terminal itself first: a hung interface would otherwise leave the shell with mouse reporting on
+    /// and the alternate screen up.
+    /// </summary>
+    internal static void EndProcess(int exitCode, Action restoreTerminal, Action<int> exit)
+    {
+        ArgumentNullException.ThrowIfNull(restoreTerminal);
+        ArgumentNullException.ThrowIfNull(exit);
+
+        restoreTerminal();
+        exit(exitCode);
     }
 
     /// <summary>Cancelled when the process is asked to end by SIGTERM or SIGHUP.</summary>
@@ -78,7 +108,7 @@ internal sealed class CommandCenterTermination : IDisposable
         // The launch unwound: the backstop must not end a process that is already finishing.
         _unwound.Cancel();
 
-        foreach (PosixSignalRegistration registration in _registrations)
+        foreach (IDisposable registration in _registrations)
         {
             registration.Dispose();
         }
@@ -91,7 +121,7 @@ internal sealed class CommandCenterTermination : IDisposable
     {
         try
         {
-            _registrations.Add(PosixSignalRegistration.Create(signal, OnSignal));
+            _registrations.Add(_registerSignal(signal, OnSignal));
         }
         catch (PlatformNotSupportedException)
         {
@@ -108,20 +138,31 @@ internal sealed class CommandCenterTermination : IDisposable
 
         try
         {
-            _source.Cancel();
-
-            _ = Task.Delay(_grace, _unwound.Token)
+            // Armed before the token is cancelled: cancelling runs the token's callbacks inline on this
+            // thread, so one that blocks would otherwise keep the backstop from ever starting, and a
+            // hung host is exactly what the backstop is for.
+            _ = _delay(_grace, _unwound.Token)
                 .ContinueWith(
                     _ => _forceExit(forcedExitCode),
                     CancellationToken.None,
                     TaskContinuationOptions.OnlyOnRanToCompletion,
                     TaskScheduler.Default);
+
+            _source.Cancel();
         }
         catch (ObjectDisposedException)
         {
             // The launch already finished and disposed these sources; there is nothing left to stop.
         }
+        catch (AggregateException)
+        {
+            // A cancellation callback threw. The token is cancelled and the backstop is armed; the
+            // signal handler that called this has nowhere to put the exception.
+        }
     }
+
+    private static IDisposable RegisterWithOperatingSystem(PosixSignal signal, Action<PosixSignalContext> handler) =>
+        PosixSignalRegistration.Create(signal, handler);
 
     private static int ExitCodeFor(PosixSignal signal) =>
         signal switch

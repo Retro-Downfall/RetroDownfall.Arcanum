@@ -272,33 +272,11 @@ internal sealed class CommandCenterHost(
                 attachmentDriftMonitor.Start(state, uiChannel.Writer, runToken);
 
                 Task pump = Task.Run(
-                    async () =>
-                    {
-                        try
-                        {
-                            List<CommandCenterUiUpdateKind> queued = new();
-                            await foreach (CommandCenterUiUpdate update in uiChannel.Reader.ReadAllAsync(runToken).ConfigureAwait(false))
-                            {
-                                // Drain whatever else arrived while the UI thread was busy and collapse
-                                // it, so a burst of streaming flushes costs one pane rebuild, not one
-                                // per flush.
-                                queued.Clear();
-                                queued.Add(update.Kind);
-                                while (uiChannel.Reader.TryRead(out CommandCenterUiUpdate? pending))
-                                {
-                                    queued.Add(pending.Kind);
-                                }
-
-                                foreach (CommandCenterUiUpdateKind kind in CommandCenterUiUpdatePump.Coalesce(queued))
-                                {
-                                    app.Invoke(() => window.ApplyState(state, kind: kind));
-                                }
-                            }
-                        }
-                        catch (OperationCanceledException)
-                        {
-                        }
-                    },
+                    () => CommandCenterUiUpdatePump.RunAsync(
+                        uiChannel.Reader,
+                        kind => app.Invoke(() => window.ApplyState(state, kind: kind)),
+                        logger,
+                        runToken),
                     runToken);
 
                 void SubmitFromInput()
@@ -670,10 +648,14 @@ internal sealed class CommandCenterHost(
                         {
                             pump.GetAwaiter().GetResult();
                         }
-                        catch
+                        catch (OperationCanceledException)
                         {
-                            // The pump ends by cancellation once the run token is cancelled, and a
-                            // faulted pump has already been reported by the failure that ended the run.
+                            // The pump ends by cancellation once the run token is cancelled.
+                        }
+                        catch (Exception ex)
+                        {
+                            // Nothing else observes the pump, so its fault is reported here.
+                            logger.LogError(ex, "The Command Center UI update pump failed.");
                         }
                     });
 
@@ -738,19 +720,11 @@ internal sealed class CommandCenterHost(
     {
         CancellationToken cancellationToken = runCancellation.Token;
 
-        void OnInterrupt(object? sender, ConsoleCancelEventArgs e)
-        {
-            e.Cancel = true;
+        CommandCenterStartUpInterrupt interrupt = new(() => runCancellation.Cancel());
 
-            try
-            {
-                runCancellation.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-                // The run already finished; there is nothing left to cancel.
-            }
-        }
+        // Cancel stays false for a later interrupt, so the default action ends a process whose start-up
+        // never looks at its token.
+        void OnInterrupt(object? sender, ConsoleCancelEventArgs e) => e.Cancel = interrupt.Absorb();
 
         Console.CancelKeyPress += OnInterrupt;
 

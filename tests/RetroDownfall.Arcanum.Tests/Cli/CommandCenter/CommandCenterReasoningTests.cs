@@ -395,8 +395,11 @@ public sealed class CommandCenterReasoningTests
 
         Task run = runner.RunTurnAsync("question", state, updates.Writer, cancellation.Token);
 
-        // The first token stops the spinner, so the runner has consumed it before the cancel lands.
-        await WaitUntilAsync(() => !state.ThinkingActive, AsyncTestTimeout);
+        // The runner asks the stream for more only after it has finished with the token frame (appended
+        // it to the answer, not merely stopped the spinner), so the stream's blocked read is the point at
+        // which the cancel can no longer land before the text exists.
+        await stream.ReadBlocked.WaitAsync(AsyncTestTimeout);
+        Assert.False(state.ThinkingActive);
 
         cancellation.Cancel();
         await run.WaitAsync(AsyncTestTimeout);
@@ -620,7 +623,12 @@ public sealed class CommandCenterReasoningTests
 
     private sealed class BlockingAfterPayloadStream(byte[] payload) : Stream
     {
+        private readonly TaskCompletionSource _readBlocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private int _position;
+
+        /// <summary>Completes when the reader has taken the whole payload and asked for more.</summary>
+        public Task ReadBlocked => _readBlocked.Task;
 
         public override bool CanRead => true;
 
@@ -666,6 +674,7 @@ public sealed class CommandCenterReasoningTests
                 return Read(buffer.Span);
             }
 
+            _ = _readBlocked.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             return 0;
         }
