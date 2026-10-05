@@ -10,7 +10,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// </summary>
 internal sealed class InMemoryLogRingBuffer : ILogRingBuffer
 {
-
     private readonly Lock _lock = new();
 
     private readonly Dictionary<Guid, ChannelWriter<LogEntry>> _writers = new();
@@ -48,19 +47,15 @@ internal sealed class InMemoryLogRingBuffer : ILogRingBuffer
 
     public void Write(LogEntry entry)
     {
-
-        long sequence = Interlocked.Increment(ref _sequence);
-
-        LogEntry stored = entry with { Sequence = sequence };
-
-        List<ChannelWriter<LogEntry>> writers;
-
+        // The sequence number, the ring slot and the fan-out all happen under one lock so a snapshot and
+        // every stream observe the same order. Subscriber channels are bounded with DropOldest and never
+        // run continuations synchronously, so TryWrite cannot block or re-enter the buffer.
         lock (_lock)
         {
+            LogEntry stored = entry with { Sequence = ++_sequence };
 
             if (_count < _capacity)
             {
-
                 int index = (_head + _count) % _capacity;
 
                 _entries[index] = stored;
@@ -69,39 +64,24 @@ internal sealed class InMemoryLogRingBuffer : ILogRingBuffer
             }
             else
             {
-
                 _entries[_head] = stored;
 
                 _head = (_head + 1) % _capacity;
             }
 
-            if (_writers.Count == 0)
+            foreach (ChannelWriter<LogEntry> writer in _writers.Values)
             {
-
-                return;
-
+                _ = writer.TryWrite(stored);
             }
-
-            writers = _writers.Values.ToList();
-
-        }
-
-        foreach (ChannelWriter<LogEntry> writer in writers)
-        {
-
-            _ = writer.TryWrite(stored);
         }
     }
 
     public IReadOnlyList<LogEntry> GetSnapshot()
     {
-
         lock (_lock)
         {
-
             if (_count == 0)
             {
-
                 return Array.Empty<LogEntry>();
             }
 
@@ -109,7 +89,6 @@ internal sealed class InMemoryLogRingBuffer : ILogRingBuffer
 
             for (int i = 0; i < _count; i++)
             {
-
                 int index = (_head + i) % _capacity;
 
                 snapshot[i] = _entries[index];
@@ -121,39 +100,31 @@ internal sealed class InMemoryLogRingBuffer : ILogRingBuffer
 
     public async IAsyncEnumerable<LogEntry> StreamAsync([EnumeratorCancellation] CancellationToken ct)
     {
-
         Channel<LogEntry> channel = Channel.CreateBounded<LogEntry>(_channelOptions);
 
         Guid subscriptionId = Guid.NewGuid();
 
         lock (_lock)
         {
-
             _writers[subscriptionId] = channel.Writer;
         }
 
         try
         {
-
             await foreach (LogEntry item in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-
                 yield return item;
             }
         }
         finally
         {
-
             lock (_lock)
             {
-
                 if (_writers.Remove(subscriptionId, out ChannelWriter<LogEntry>? writer))
                 {
-
                     writer.Complete();
                 }
             }
         }
     }
-
 }
