@@ -21,7 +21,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 [Collection("ApprenticeReliability")]
-public sealed class ApprenticeServiceReliabilityTests
+public sealed partial class ApprenticeServiceReliabilityTests
 {
     [Fact]
     public async Task ReweaveAsync_MaterializesPlanBeforeValidationIndexesIt()
@@ -982,7 +982,7 @@ public sealed class ApprenticeServiceReliabilityTests
     }
 
     [Fact]
-    public async Task SimulacrumValidatesChildrenAndShiftsFateBeforeCheckpointAdvance()
+    public async Task SimulacrumValidatesChildrenThenCommitsCompletionBeforeShiftingFate()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1056,32 +1056,15 @@ public sealed class ApprenticeServiceReliabilityTests
 
             await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-            AssertUnadvanced(repo.Get(apprenticeId));
+            // The group's effects are done, so its completion is already durable while the cancellable
+            // Shifting Fate evaluation is still running.
+            AssertAdvanced(repo.Get(apprenticeId), expectedTail: "Original tail");
 
             intelligence.AllowShiftingFate.TrySetResult();
 
             Assert.True(await execution.WaitAsync(TimeSpan.FromSeconds(10)));
 
-            Apprentice completed = repo.Get(apprenticeId);
-
-            Assert.Equal(2, completed.CurrentStep);
-
-            ApprenticeCheckpoint checkpoint = Assert.IsType<ApprenticeCheckpoint>(
-                ApprenticeRepository.DeserializeCheckpoint(completed.CheckpointData));
-
-            Assert.Equal(2, checkpoint.CurrentStep);
-
-            Assert.Equal("keep me", checkpoint.ConversationSummary);
-
-            Assert.Equal(["receipt-1"], checkpoint.CompletedToolCallIds);
-
-            List<PlanStep> completedPlan = ApprenticeRepository.DeserializePlan(completed.Plan);
-
-            Assert.Equal("completed", completedPlan[0].Status);
-
-            Assert.Equal("completed", completedPlan[1].Status);
-
-            Assert.Equal("Revised tail", completedPlan[2].Description);
+            AssertAdvanced(repo.Get(apprenticeId), expectedTail: "Revised tail");
         }
         finally
         {
@@ -1103,6 +1086,27 @@ public sealed class ApprenticeServiceReliabilityTests
             Assert.Equal("keep me", checkpoint.ConversationSummary);
 
             Assert.Equal(["receipt-1"], checkpoint.CompletedToolCallIds);
+        }
+        static void AssertAdvanced(Apprentice persisted, string expectedTail)
+        {
+            Assert.Equal(2, persisted.CurrentStep);
+
+            ApprenticeCheckpoint checkpoint = Assert.IsType<ApprenticeCheckpoint>(
+                ApprenticeRepository.DeserializeCheckpoint(persisted.CheckpointData));
+
+            Assert.Equal(2, checkpoint.CurrentStep);
+
+            Assert.Equal("keep me", checkpoint.ConversationSummary);
+
+            Assert.Equal(["receipt-1"], checkpoint.CompletedToolCallIds);
+
+            List<PlanStep> plan = ApprenticeRepository.DeserializePlan(persisted.Plan);
+
+            Assert.Equal("completed", plan[0].Status);
+
+            Assert.Equal("completed", plan[1].Status);
+
+            Assert.Equal(expectedTail, plan[2].Description);
         }
     }
 
@@ -2911,23 +2915,25 @@ public sealed class ApprenticeServiceReliabilityTests
 
         repo.AllowChildSettlement.TrySetResult();
 
-        await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
-
-        Assert.Equal(["provider", "child-authority", "shifting-fate"], phases);
-
-        Assert.False(drain.IsCompleted);
-
-        intelligence.AllowShiftingFate.TrySetResult();
-
+        // The group's completion is past the point of no return, so it commits before the cancellable
+        // Shifting Fate evaluation rather than after it.
         await repo.FinalCheckpointReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.Equal(
-            ["provider", "child-authority", "shifting-fate", "final-checkpoint"],
-            phases);
+        Assert.Equal(["provider", "child-authority", "final-checkpoint"], phases);
 
         Assert.False(drain.IsCompleted);
 
         repo.AllowFinalCheckpoint.TrySetResult();
+
+        await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            ["provider", "child-authority", "final-checkpoint", "shifting-fate"],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        intelligence.AllowShiftingFate.TrySetResult();
 
         await barriers.EffectGroupDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -2935,8 +2941,8 @@ public sealed class ApprenticeServiceReliabilityTests
             [
                 "provider",
                 "child-authority",
-                "shifting-fate",
                 "final-checkpoint",
+                "shifting-fate",
                 "effect-group-disposal",
             ],
             phases);
@@ -2951,8 +2957,8 @@ public sealed class ApprenticeServiceReliabilityTests
             [
                 "provider",
                 "child-authority",
-                "shifting-fate",
                 "final-checkpoint",
+                "shifting-fate",
                 "effect-group-disposal",
                 "scope-disposal",
             ],
@@ -2968,8 +2974,8 @@ public sealed class ApprenticeServiceReliabilityTests
             [
                 "provider",
                 "child-authority",
-                "shifting-fate",
                 "final-checkpoint",
+                "shifting-fate",
                 "effect-group-disposal",
                 "scope-disposal",
                 "work-lease-disposal",
@@ -4630,35 +4636,98 @@ public sealed class ApprenticeServiceReliabilityTests
         }
     }
 
+    /// <summary>
+    /// Behaves like the Grimoire row it stands in for: every read is a private copy and every write
+    /// replaces the stored row, so a stale snapshot written back is visible as exactly that.
+    /// </summary>
     private class InMemoryApprenticeRepository : IApprenticeRepository
     {
         private readonly Dictionary<Guid, Apprentice> _store = new();
+
+        private readonly Lock _sync = new();
 
         public InMemoryApprenticeRepository(params Apprentice[] apprentices)
         {
             foreach (Apprentice apprentice in apprentices)
             {
-                _store[apprentice.Id] = apprentice;
+                _store[apprentice.Id] = CloneApprentice(apprentice);
             }
         }
 
         public Apprentice Get(Guid id)
         {
-            return _store[id];
+            lock (_sync)
+            {
+                return CloneApprentice(_store[id]);
+            }
         }
 
         public virtual Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
-            Apprentice? value = _store.TryGetValue(id, out Apprentice? found) ? found : null;
+            lock (_sync)
+            {
+                Apprentice? value = _store.TryGetValue(id, out Apprentice? found) ? CloneApprentice(found) : null;
 
-            return Task.FromResult(value);
+                return Task.FromResult(value);
+            }
         }
 
         public virtual Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-            _store[apprentice.Id] = apprentice;
+            lock (_sync)
+            {
+                _store[apprentice.Id] = CloneApprentice(apprentice);
+            }
 
             return Task.FromResult(apprentice);
+        }
+
+        public virtual async Task<bool> UpdateProgressAsync(
+            Apprentice apprentice,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice merged;
+
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(apprentice.Id, out Apprentice? stored))
+                {
+                    return false;
+                }
+                merged = CloneApprentice(stored);
+            }
+            merged.Plan = apprentice.Plan;
+
+            merged.CurrentStep = apprentice.CurrentStep;
+
+            merged.SessionId = apprentice.SessionId;
+
+            merged.CheckpointData = apprentice.CheckpointData;
+
+            // Routed through UpdateAsync so a repository that observes writes sees this one too.
+            _ = await UpdateAsync(merged, cancellationToken);
+
+            return true;
+        }
+
+        public virtual async Task<bool> TryUpdateAsync(
+            Apprentice apprentice,
+            IReadOnlyCollection<string> expectedStatuses,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
+        {
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(apprentice.Id, out Apprentice? stored)
+                    || stored.CurrentStep != expectedCurrentStep
+                    || !expectedStatuses.Contains(stored.Status, StringComparer.Ordinal))
+                {
+                    return false;
+                }
+            }
+            _ = await UpdateAsync(apprentice, cancellationToken);
+
+            return true;
         }
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default)
@@ -4669,39 +4738,53 @@ public sealed class ApprenticeServiceReliabilityTests
 
             string idle = ApprenticeStatus.Idle.ToString();
 
-            IReadOnlyList<Apprentice> values = _store.Values
-                .Where(a =>
-                    string.Equals(a.Status, running, StringComparison.Ordinal)
-                    || string.Equals(a.Status, planning, StringComparison.Ordinal)
-                    && ApprenticeRepository.DeserializePlan(a.Plan).Count == 0
-                    || string.Equals(a.Status, idle, StringComparison.Ordinal)
-                    && ApprenticeRepository.DeserializeCheckpoint(a.CheckpointData)?.LaunchRequested is true)
-                .ToList();
+            lock (_sync)
+            {
+                IReadOnlyList<Apprentice> values = _store.Values
+                    .Where(a =>
+                        string.Equals(a.Status, running, StringComparison.Ordinal)
+                        || string.Equals(a.Status, planning, StringComparison.Ordinal)
+                        && ApprenticeRepository.DeserializePlan(a.Plan).Count == 0
+                        || string.Equals(a.Status, idle, StringComparison.Ordinal)
+                        && ApprenticeRepository.DeserializeCheckpoint(a.CheckpointData)?.LaunchRequested is true)
+                    .Select(CloneApprentice)
+                    .ToList();
 
-            return Task.FromResult(values);
+                return Task.FromResult(values);
+            }
         }
 
         public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
         {
             string planning = ApprenticeStatus.Planning.ToString();
 
-            IReadOnlyList<Apprentice> values = _store.Values
-                .Where(a => string.Equals(a.Status, planning, StringComparison.Ordinal))
-                .ToList();
+            lock (_sync)
+            {
+                IReadOnlyList<Apprentice> values = _store.Values
+                    .Where(a => string.Equals(a.Status, planning, StringComparison.Ordinal))
+                    .Select(CloneApprentice)
+                    .ToList();
 
-            return Task.FromResult(values);
+                return Task.FromResult(values);
+            }
         }
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-            _store[apprentice.Id] = apprentice;
+            lock (_sync)
+            {
+                _store[apprentice.Id] = CloneApprentice(apprentice);
+            }
 
             return Task.FromResult(apprentice);
         }
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(_store.Remove(id));
+            lock (_sync)
+            {
+                return Task.FromResult(_store.Remove(id));
+            }
         }
 
         public Task<ListPageResult<Apprentice>> ListAsync(

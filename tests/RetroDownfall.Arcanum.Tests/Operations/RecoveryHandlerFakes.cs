@@ -246,6 +246,24 @@ internal sealed class FakeApprenticeRepository : IApprenticeRepository
         return Task.FromResult(apprentice);
     }
 
+    public async Task<bool> UpdateProgressAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
+    {
+        _ = await UpdateAsync(apprentice, cancellationToken);
+
+        return true;
+    }
+
+    public async Task<bool> TryUpdateAsync(
+        Apprentice apprentice,
+        IReadOnlyCollection<string> expectedStatuses,
+        int expectedCurrentStep,
+        CancellationToken cancellationToken = default)
+    {
+        _ = await UpdateAsync(apprentice, cancellationToken);
+
+        return true;
+    }
+
     public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
         Task.FromResult(_apprentices.Remove(id));
 

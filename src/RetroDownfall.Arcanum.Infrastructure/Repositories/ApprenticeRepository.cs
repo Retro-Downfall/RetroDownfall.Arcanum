@@ -215,6 +215,80 @@ public sealed class ApprenticeRepository : IApprenticeRepository
         return apprentice;
     }
 
+    public async Task<bool> UpdateProgressAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(apprentice);
+
+        apprentice.UpdatedAt = DateTimeOffset.UtcNow;
+
+        int updated = await ExecuteWriteAsync(
+            """
+            UPDATE "Apprentices"
+            SET "Plan" = $plan,
+                "CurrentStep" = $currentStep,
+                "SessionId" = $sessionId,
+                "CheckpointData" = $checkpointData,
+                "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id;
+            """,
+            command => BindProgress(command, apprentice),
+            cancellationToken).ConfigureAwait(false);
+
+        return updated > 0;
+    }
+
+    public async Task<bool> TryUpdateAsync(
+        Apprentice apprentice,
+        IReadOnlyCollection<string> expectedStatuses,
+        int expectedCurrentStep,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(apprentice);
+
+        ArgumentNullException.ThrowIfNull(expectedStatuses);
+
+        if (expectedStatuses.Count == 0)
+        {
+            return false;
+        }
+
+        string[] statuses = [.. expectedStatuses];
+
+        string statusList = string.Join(", ", statuses.Select(static (_, index) => $"$expectedStatus{index}"));
+
+        apprentice.UpdatedAt = DateTimeOffset.UtcNow;
+
+        int updated = await ExecuteWriteAsync(
+            $"""
+            UPDATE "Apprentices"
+            SET "Plan" = $plan,
+                "CurrentStep" = $currentStep,
+                "Status" = $status,
+                "SessionId" = $sessionId,
+                "CheckpointData" = $checkpointData,
+                "ErrorMessage" = $errorMessage,
+                "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id
+              AND "CurrentStep" = $expectedCurrentStep
+              AND "Status" IN ({statusList});
+            """,
+            command =>
+            {
+                BindProgress(command, apprentice);
+                GrimoireEntitySql.AddParameter(command, "$status", apprentice.Status);
+                GrimoireEntitySql.AddParameter(command, "$errorMessage", apprentice.ErrorMessage);
+                GrimoireEntitySql.AddParameter(command, "$expectedCurrentStep", expectedCurrentStep);
+
+                for (int index = 0; index < statuses.Length; index++)
+                {
+                    GrimoireEntitySql.AddParameter(command, $"$expectedStatus{index}", statuses[index]);
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return updated > 0;
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
         await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
@@ -290,6 +364,40 @@ public sealed class ApprenticeRepository : IApprenticeRepository
             },
             cancellationToken).ConfigureAwait(false);
     }
+
+    private static void BindProgress(SqliteCommand command, Apprentice apprentice)
+    {
+        GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(apprentice.Id));
+        GrimoireEntitySql.AddParameter(command, "$plan", apprentice.Plan);
+        GrimoireEntitySql.AddParameter(command, "$currentStep", apprentice.CurrentStep);
+        GrimoireEntitySql.AddParameter(
+            command,
+            "$sessionId",
+            apprentice.SessionId is { } sessionId ? GrimoireEntitySql.Format(sessionId) : null);
+        GrimoireEntitySql.AddParameter(command, "$checkpointData", apprentice.CheckpointData);
+        GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(apprentice.UpdatedAt));
+    }
+
+    /// <summary>
+    /// One targeted write on the scoped connection, retried through SQLITE_BUSY the way
+    /// <see cref="EfSaveChangesRetry"/> retries the whole-row update.
+    /// </summary>
+    private Task<int> ExecuteWriteAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken) =>
+        SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+                    _db,
+                    commandText,
+                    cancellationToken).ConfigureAwait(false);
+                bind(command);
+
+                return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            },
+            cancellationToken);
 
     private async Task<Apprentice?> ReadSingleAsync(
         string commandText,

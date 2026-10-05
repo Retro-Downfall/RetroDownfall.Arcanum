@@ -140,7 +140,6 @@ public sealed class ApprenticeCheckpointDelegationChainTests
                 0,
                 "needs a Dungeon Master",
                 false,
-                CancellationToken.None,
             ])!;
 
         await task.WaitAsync(TimeSpan.FromSeconds(15));
@@ -244,12 +243,10 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             [
                 repo,
                 apprentice,
-                ApprenticeRepository.DeserializePlan(apprentice.Plan),
                 0,
                 "step one done",
                 12L,
                 apprenticeId,
-                CancellationToken.None,
             ])!;
 
         await task.WaitAsync(TimeSpan.FromSeconds(15));
@@ -352,6 +349,24 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             _store[apprentice.Id] = apprentice;
 
             return Task.FromResult(apprentice);
+        }
+
+        public async Task<bool> UpdateProgressAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
+        {
+            _ = await UpdateAsync(apprentice, cancellationToken);
+
+            return true;
+        }
+
+        public async Task<bool> TryUpdateAsync(
+            Apprentice apprentice,
+            IReadOnlyCollection<string> expectedStatuses,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
+        {
+            _ = await UpdateAsync(apprentice, cancellationToken);
+
+            return true;
         }
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
