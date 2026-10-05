@@ -988,11 +988,7 @@ public sealed class ArcanumApiClientTests
             (
                 nameof(ArcanumApiClient.InvokeDiagnosticMcpToolAsync),
                 async () => (await client.InvokeDiagnosticMcpToolAsync(
-                    new McpToolInvokeRequest
-                    {
-                        ToolName = "remote_tool",
-                        Arguments = noArguments.RootElement,
-                    },
+                    new McpToolInvokeRequest("remote_tool", noArguments.RootElement),
                     CancellationToken.None)).Error),
             (
                 nameof(ArcanumApiClient.ReconcileOperationsAsync),

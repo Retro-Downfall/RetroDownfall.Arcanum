@@ -19,6 +19,8 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -405,6 +407,10 @@ public sealed class CovenantPlaintextExportTests
 
             builder.Services.ConfigureHttpJsonOptions(static options =>
                 options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
+
+            // The session routes take more services than the export routes under test use; they are only
+            // declared here so endpoint building does not take them for request bodies.
+            RouteGraphHost.RegisterServiceContracts(builder.Services);
 
             WebApplication app = builder.Build();
 

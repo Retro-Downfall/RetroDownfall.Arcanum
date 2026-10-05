@@ -108,7 +108,7 @@ public sealed class RequestAugmentingHandlerTests
         ChatOptions options = new()
         {
             ResponseFormat = ChatResponseFormat.ForJsonSchema(
-                JsonSerializer.Deserialize<JsonElement>("""{"type":"object","properties":{"answer":{"type":"string"}}}"""),
+                JsonSerializer.Deserialize<JsonElement>("""{"type":"object","properties":{"answer":{"type":"string"}}}""", AdHocJson.Options),
                 "answer",
                 schemaDescription: string.Empty),
         };

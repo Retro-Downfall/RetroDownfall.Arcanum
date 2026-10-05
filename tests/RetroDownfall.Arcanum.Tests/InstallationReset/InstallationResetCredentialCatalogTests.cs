@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
@@ -227,7 +228,7 @@ public sealed class InstallationResetCredentialCatalogTests
 
         Assert.DoesNotContain(
             "sentinel-secret",
-            System.Text.Json.JsonSerializer.Serialize(inventory),
+            System.Text.Json.JsonSerializer.Serialize(inventory, AdHocJson.Options),
             StringComparison.Ordinal);
 
         Assert.Empty(store.DeletedAccounts);

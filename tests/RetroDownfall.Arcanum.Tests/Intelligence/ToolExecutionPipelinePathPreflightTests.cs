@@ -151,7 +151,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
                     rename to missing-new.txt
                     """,
                 dryRun = false,
-            });
+            }, AdHocJson.Options);
 
         bool parsed = ToolExecutionPipeline.TryParseApplyPatchManifest(
             arguments,
@@ -179,7 +179,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
                     @@ -0,0 +1 @@
                     +value
                     """,
-            });
+            }, AdHocJson.Options);
         WorkspacePatchSettings settings = new()
         {
             MaxPatchBytes = long.MinValue,
@@ -213,7 +213,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
                     -before
                     +after
                     """,
-            });
+            }, AdHocJson.Options);
         using CancellationTokenSource cancellation = new();
         cancellation.Cancel();
 

@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Api.Conclave;
 [ExcludeFromCodeCoverage] // Reason: apprentice SSE streaming HTTP endpoints; covered via ApprenticeEndpointTests integration smoke.
 internal static class ApprenticeEndpoints
 {
-
     private static readonly byte[] SseDone = "data: [DONE]\n\n"u8.ToArray();
 
     public static RouteGroupBuilder MapApprenticeEndpoints(this RouteGroupBuilder apiGroup)
@@ -95,13 +94,11 @@ internal static class ApprenticeEndpoints
 
                 if (request is null)
                 {
-
                     return Results.BadRequest(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
                             Result<ApprenticeDetailDto>.Failure(
                                 new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
-
                 }
 
                 if (string.IsNullOrWhiteSpace(request.Name))
@@ -254,13 +251,11 @@ internal static class ApprenticeEndpoints
 
                 if (request is null || request.Steps is null || request.Steps.Count == 0)
                 {
-
                     return Results.BadRequest(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
                             Result<ApprenticeDetailDto>.Failure(
                                 new Error(ErrorCodes.Apprentice.InvalidPlan, "Request body must include at least one plan step.")),
                             traceId));
-
                 }
 
                 Result<ApprenticeDetailDto> result = await runtime
@@ -268,7 +263,6 @@ internal static class ApprenticeEndpoints
                     .ConfigureAwait(false);
 
                 return MapReweaveResult(result, traceId);
-
             })
         .WithName("ReweaveApprentice");
 
@@ -284,13 +278,11 @@ internal static class ApprenticeEndpoints
 
                 if (request is null || string.IsNullOrWhiteSpace(request.Guidance))
                 {
-
                     return Results.BadRequest(
                         ApiResponse<string>.FromResult(
                             Result<string>.Failure(
                                 new Error(ErrorCodes.Apprentice.InvalidGuidance, "Dungeon Master guidance is required.")),
                             traceId));
-
                 }
 
                 Result<string> result = await runtime
@@ -298,7 +290,6 @@ internal static class ApprenticeEndpoints
                     .ConfigureAwait(false);
 
                 return MapInterveneResult(result, traceId);
-
             })
         .WithName("InterveneApprentice");
 
@@ -315,20 +306,17 @@ internal static class ApprenticeEndpoints
 
                 if (request is null || string.IsNullOrWhiteSpace(request.Goal))
                 {
-
                     return Results.BadRequest(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
                             Result<ApprenticeDetailDto>.Failure(
                                 new Error(ErrorCodes.Apprentice.InvalidGoal, "Apprentice goal is required.")),
                             traceId));
-
                 }
 
                 Apprentice? parent = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
                 if (parent is null)
                 {
-
                     return Results.Json(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
                             Result<ApprenticeDetailDto>.Failure(
@@ -336,7 +324,6 @@ internal static class ApprenticeEndpoints
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
-
                 }
 
                 Result<Apprentice> result = await archmage
@@ -352,9 +339,7 @@ internal static class ApprenticeEndpoints
 
                 if (result.IsFailure)
                 {
-
                     return MapCastResult(result.Error, traceId);
-
                 }
 
                 ApprenticeDetailDto dto = ApprenticeMapping.ToDetailDto(result.Value!);
@@ -362,13 +347,12 @@ internal static class ApprenticeEndpoints
                 return Results.Created(
                     $"/api/apprentices/{result.Value!.Id}",
                     ApiResponse<ApprenticeDetailDto>.FromResult(Result<ApprenticeDetailDto>.Success(dto), traceId));
-
             })
         .WithName("CastApprentice");
 
         apiGroup.MapGet(
             "/apprentices/{id:guid}/chronicle",
-            async (Guid id, IApprenticeRepository repo, IApprenticeRuntime runtime, SseConnectionGate sseGate, IOptionsMonitor<ArcanumSettings> settings, HttpContext httpContext) =>
+            async (Guid id, IApprenticeRepository repo, IApprenticeRuntime runtime, SseConnectionGate sseGate, IOptionsMonitor<ArcanumSettings> settings, ILoggerFactory loggerFactory, HttpContext httpContext) =>
             {
                 Apprentice? apprentice = await repo.GetByIdAsync(id, httpContext.RequestAborted).ConfigureAwait(false);
 
@@ -386,14 +370,11 @@ internal static class ApprenticeEndpoints
 
                 if (!sseGate.TryAcquire(SseEventTypes.Chronicle, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
-
                     return SseConnectionResults.FromDenial(httpContext, denial);
-
                 }
 
                 using (sseLease)
                 {
-
                 SseStreamWriter.PrepareResponse(httpContext);
 
                 ChronicleSseStreamWriter sseWriter = new(httpContext);
@@ -402,13 +383,13 @@ internal static class ApprenticeEndpoints
                 int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
                     settings.CurrentValue.ResolveEventBus().ChannelCapacity);
 
-                Channel<ApprenticeEvent> liveBuffer = Channel.CreateBounded<ApprenticeEvent>(
-                    new BoundedChannelOptions(channelCapacity)
-                    {
-                        SingleReader = true,
-                        SingleWriter = true,
-                        FullMode = BoundedChannelFullMode.DropOldest,
-                    });
+                // Overflow here is a slow client, and it is reported twice: a Warning in the server log the
+                // moment it starts, and an `eventsDropped` frame in the client's own stream before the next
+                // frame it is sent. The hub's channel, which reports its own overflow, never fills while this
+                // pump drains it, so this buffer is the only place a slow reader can be seen.
+                LiveEventBuffer<ApprenticeEvent> liveBuffer = new(channelCapacity);
+
+                ILogger logger = loggerFactory.CreateLogger(typeof(ApprenticeEndpoints));
 
                 GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
 
@@ -430,14 +411,34 @@ internal static class ApprenticeEndpoints
                 // whichever frame it was writing, rather than a cancellation inside one.
                 using CancellationTokenSource pumpCts = quiescence.LinkProducer(httpContext.RequestAborted);
 
-                Task pumpTask = PumpChronicleLiveAsync(id, runtime, liveBuffer.Writer, pumpCts.Token);
+                Task pumpTask = PumpChronicleLiveAsync(id, runtime, liveBuffer, logger, pumpCts.Token);
+
+                // Puts the drop marker on the wire in front of the next live frame, so the gap and the
+                // statement about it arrive together and in the stream the slow client is reading.
+                async Task WriteLiveEventAsync(ApprenticeEvent liveEvent, CancellationToken ct)
+                {
+                    long dropped = liveBuffer.TakeDropped();
+
+                    if (dropped > 0)
+                    {
+                        await sseWriter.WriteEventAsync(
+                            new ApprenticeEvent
+                            {
+                                Type = ApprenticeEventType.EventsDropped,
+                                ApprenticeId = id,
+                                Timestamp = DateTimeOffset.UtcNow,
+                                Summary = $"{dropped} chronicle event(s) were dropped because this client read too slowly.",
+                            },
+                            ct).ConfigureAwait(false);
+                    }
+
+                    await sseWriter.WriteEventAsync(liveEvent, ct).ConfigureAwait(false);
+                }
 
                 try
                 {
-
                     if (!quiescence.IsQuiescing && plan.Count > 0)
                     {
-
                         await sseWriter.WriteEventAsync(
                             new ApprenticeEvent
                             {
@@ -447,13 +448,11 @@ internal static class ApprenticeEndpoints
                                 Plan = plan,
                             },
                             httpContext.RequestAborted).ConfigureAwait(false);
-
                     }
 
                     if (!quiescence.IsQuiescing
                         && ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
                     {
-
                         ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
 
                         await sseWriter.WriteEventAsync(
@@ -466,14 +465,12 @@ internal static class ApprenticeEndpoints
                                 Error = checkpoint?.EscalationReason ?? apprentice.ErrorMessage,
                             },
                             httpContext.RequestAborted).ConfigureAwait(false);
-
                     }
 
                     if (!quiescence.IsQuiescing
                         && apprentice.CurrentStep < plan.Count
                         && string.Equals(plan[apprentice.CurrentStep].Status, "in_progress", StringComparison.OrdinalIgnoreCase))
                     {
-
                         PlanStep current = plan[apprentice.CurrentStep];
 
                         await sseWriter.WriteEventAsync(
@@ -486,67 +483,51 @@ internal static class ApprenticeEndpoints
                                 Description = current.Description,
                             },
                             httpContext.RequestAborted).ConfigureAwait(false);
-
                     }
 
                     while (!quiescence.IsQuiescing
                         && liveBuffer.Reader.TryRead(out ApprenticeEvent? buffered)
                         && buffered is not null)
                     {
-
-                        await sseWriter.WriteEventAsync(buffered, httpContext.RequestAborted)
-                            .ConfigureAwait(false);
-
+                        await WriteLiveEventAsync(buffered, httpContext.RequestAborted).ConfigureAwait(false);
                     }
 
                     await SseStreamWriter.StreamAsync(
                         httpContext,
                         liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted),
-                        (ev, ct) => sseWriter.WriteEventAsync(ev, ct),
+                        WriteLiveEventAsync,
                         heartbeatInterval,
                         quiescence,
                         httpContext.RequestAborted).ConfigureAwait(false);
-
                 }
                 catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
                 {
-
                     // W3.4 Group A (S10): client disconnected during plan replay, buffered
                     // drain, or the live chronicle stream. Break silently — no DONE frame
                     // to a dead socket. The SseStreamWriter.StreamAsync path also handles
                     // disconnect internally; this catch covers the direct WriteEventAsync
                     // calls (plan replay / step-start / escalated) that precede it. The
                     // finally cancels the pump CTS so the chronicle producer stops promptly.
-
                 }
                 catch (OperationCanceledException)
                 {
-
                     await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
-
                 }
                 finally
                 {
-
                     await pumpCts.CancelAsync().ConfigureAwait(false);
 
                     try
                     {
-
                         await pumpTask.ConfigureAwait(false);
-
                     }
                     catch (OperationCanceledException)
                     {
-
                     }
-
                 }
 
                 return Results.Empty;
-
                 }
-
             })
         .WithName("GetApprenticeChronicle")
         .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
@@ -557,7 +538,8 @@ internal static class ApprenticeEndpoints
     private static async Task PumpChronicleLiveAsync(
         Guid apprenticeId,
         IApprenticeRuntime runtime,
-        ChannelWriter<ApprenticeEvent> writer,
+        LiveEventBuffer<ApprenticeEvent> buffer,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         try
@@ -566,7 +548,12 @@ internal static class ApprenticeEndpoints
                 .SubscribeChronicleAsync(apprenticeId, cancellationToken)
                 .ConfigureAwait(false))
             {
-                await writer.WriteAsync(ev, cancellationToken).ConfigureAwait(false);
+                if (buffer.Write(ev))
+                {
+                    logger.LogWarning(
+                        "Chronicle stream for apprentice {ApprenticeId} is dropping events for a slow client.",
+                        apprenticeId);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -574,7 +561,7 @@ internal static class ApprenticeEndpoints
         }
         finally
         {
-            writer.TryComplete();
+            buffer.Complete();
         }
     }
 
@@ -619,70 +606,55 @@ internal static class ApprenticeEndpoints
 
     private static IResult MapReweaveResult(Result<ApprenticeDetailDto> result, string traceId)
     {
-
         if (result.IsSuccess)
         {
-
             return Results.Ok(ApiResponse<ApprenticeDetailDto>.FromResult(result, traceId));
-
         }
 
         return Results.Json(
             ApiResponse<ApprenticeDetailDto>.FromResult(result, traceId),
             ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
             statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
-
     }
 
     private static IResult MapCastResult(Error error, string traceId)
     {
-
         return Results.Json(
             ApiResponse<ApprenticeDetailDto>.FromResult(
                 Result<ApprenticeDetailDto>.Failure(error),
                 traceId),
             ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
             statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(error.Code));
-
     }
 
     private static IResult MapInterveneResult(Result<string> result, string traceId)
     {
-
         if (result.IsSuccess)
         {
-
             return Results.Accepted($"/api/apprentices/{result.Value}", ApiResponse<string>.FromResult(result, traceId));
-
         }
 
         return Results.Json(
             ApiResponse<string>.FromResult(result, traceId),
             ArcanumJsonContext.Default.ApiResponseString,
             statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
-
     }
 
     private static IResult MapRuntimeResult(Result<string> result, string traceId)
     {
-
         if (result.IsSuccess)
         {
-
             return Results.Accepted($"/api/apprentices/{result.Value}", ApiResponse<string>.FromResult(result, traceId));
-
         }
 
         return Results.Json(
             ApiResponse<string>.FromResult(result, traceId),
             ArcanumJsonContext.Default.ApiResponseString,
             statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
-
     }
 
     private static IResult MapApprenticeWorkspaceError(Error error, string traceId)
     {
-
         int statusCode = string.Equals(error.Code, ErrorCodes.Campaign.PathNotAllowed, StringComparison.Ordinal)
             ? ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Campaign.PathNotAllowed)
             : ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(ErrorCodes.Apprentice.InvalidWorkspace);
@@ -693,7 +665,5 @@ internal static class ApprenticeEndpoints
                 traceId),
             ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
             statusCode: statusCode);
-
     }
-
 }

@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Tower;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -26,7 +27,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// </remarks>
 public sealed class CovenantMutationRouteTests
 {
-
     private static readonly string[] MutationRoutes =
     [
         "PrepareCovenantSet",
@@ -59,7 +59,6 @@ public sealed class CovenantMutationRouteTests
 
     public async Task Every_covenant_mutation_route_requires_operator_manage_authority(string routeName)
     {
-
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         Endpoint endpoint = graph.Endpoint(routeName);
@@ -72,13 +71,11 @@ public sealed class CovenantMutationRouteTests
         // The pre-binding middleware reads this before a body byte is bound. A route that carried
         // ProtectedRead here would let a read authority commit a write.
         Assert.Equal(CovenantAuthorityRequirement.CovenantManage, metadata.Requirement);
-
     }
 
     [Fact]
     public async Task The_declared_set_is_exactly_the_named_mutation_routes()
     {
-
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         string[] declared =
@@ -93,13 +90,11 @@ public sealed class CovenantMutationRouteTests
         ];
 
         Assert.Equal([.. MutationRoutes.Order(StringComparer.Ordinal)], declared);
-
     }
 
     [Fact]
     public async Task A_commit_route_answers_PUT_and_a_prepare_route_answers_POST()
     {
-
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         // The set commit is a PUT because it is an idempotent assertion of one key's content, and its
@@ -113,12 +108,10 @@ public sealed class CovenantMutationRouteTests
             "POST",
             graph.Endpoint("PrepareCovenantSet").Metadata
                 .GetMetadata<IHttpMethodMetadata>()!.HttpMethods);
-
     }
 
     private sealed class RouteGraph : IAsyncDisposable
     {
-
         private WebApplication _app = null!;
 
         internal IReadOnlyList<Endpoint> Endpoints =>
@@ -126,10 +119,7 @@ public sealed class CovenantMutationRouteTests
 
         internal static async Task<RouteGraph> CreateAsync()
         {
-
-            WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
-
-            builder.WebHost.UseTestServer();
+            WebApplicationBuilder builder = RouteGraphHost.CreateBuilder();
 
             RouteGraph graph = new();
 
@@ -140,7 +130,6 @@ public sealed class CovenantMutationRouteTests
             await graph._app.StartAsync();
 
             return graph;
-
         }
 
         internal Endpoint Endpoint(string name) =>
@@ -153,13 +142,9 @@ public sealed class CovenantMutationRouteTests
 
         public async ValueTask DisposeAsync()
         {
-
             await _app.StopAsync();
 
             await _app.DisposeAsync();
-
         }
-
     }
-
 }

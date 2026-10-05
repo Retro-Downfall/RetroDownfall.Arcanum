@@ -14,11 +14,9 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ApiHost")]
 public sealed class CampaignEndpointTests
 {
-
     [SkippableFact]
     public async Task RegisterCampaign_repository_failure_maps_error_code()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -67,13 +65,11 @@ public sealed class CampaignEndpointTests
         Assert.Equal(
             "Repository failure selected by code, not legacy exception text.",
             body.Error.Value.Message);
-
     }
 
     [SkippableFact]
     public async Task ImportCampaign_replace_strategy_with_memberless_payload_rejects_without_deleting_prompts()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -101,13 +97,11 @@ public sealed class CampaignEndpointTests
         // The rejected bundle must not have destroyed the Campaign's existing prompts: payload
         // validation has to precede the "replace" delete sweep, not follow it.
         Assert.Single(await ListCampaignPromptsAsync(client, campaign.Id));
-
     }
 
     [SkippableFact]
     public async Task ImportCampaign_payload_without_spells_or_prompts_imports_nothing_and_succeeds()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -135,13 +129,144 @@ public sealed class CampaignEndpointTests
         Assert.Equal(0, body.Data!.SpellsImported);
 
         Assert.Equal(0, body.Data.PromptsImported);
+    }
 
+    /// <summary>
+    /// A campaign root is usually a repository the operator cloned, so what it holds at
+    /// <c>.arcanum/campaign.json</c> is not trusted to be a small regular file.
+    /// </summary>
+    /// <remarks>
+    /// Each shape is a valid bundle that the unbounded, link-following read used to import, so a refusal
+    /// here is the reader's and not the parser's: a link to a file outside the campaign, a link in the
+    /// place of the <c>.arcanum</c> directory, and a regular file past the size cap.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("symlinked-file")]
+    [InlineData("symlinked-directory")]
+    [InlineData("oversized-file")]
+    public async Task Import_from_disk_refuses_a_symlinked_or_oversized_campaign_json(string shape)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(
+            OperatingSystem.IsWindows() && shape.StartsWith("symlinked", StringComparison.Ordinal),
+            "Creating a symbolic link needs a privilege the Windows lane does not hold.");
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, shape);
+
+        string bundle = "{\"campaign\":" + CampaignJson(campaign) + ",\"spells\":[],\"prompts\":[]}";
+
+        string arcanumDirectory = Path.Combine(campaign.Path, ".arcanum");
+
+        string outside = Path.Combine(factory.TempHome, $"outside-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(outside);
+
+        switch (shape)
+        {
+            case "symlinked-file":
+
+                Directory.CreateDirectory(arcanumDirectory);
+
+                await File.WriteAllTextAsync(Path.Combine(outside, "campaign.json"), bundle);
+
+                File.CreateSymbolicLink(
+                    Path.Combine(arcanumDirectory, "campaign.json"),
+                    Path.Combine(outside, "campaign.json"));
+
+                break;
+
+            case "symlinked-directory":
+
+                await File.WriteAllTextAsync(Path.Combine(outside, "campaign.json"), bundle);
+
+                // Registration may already have created the directory; the link takes its place.
+                if (Directory.Exists(arcanumDirectory))
+                {
+                    Directory.Delete(arcanumDirectory, recursive: true);
+                }
+
+                Directory.CreateSymbolicLink(arcanumDirectory, outside);
+
+                break;
+
+            default:
+
+                Directory.CreateDirectory(arcanumDirectory);
+
+                // A valid bundle padded with trailing whitespace to one byte past the cap, so the only
+                // thing wrong with it is its size.
+                await using (FileStream stream = File.Create(Path.Combine(arcanumDirectory, "campaign.json")))
+                {
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes(bundle));
+
+                    stream.SetLength(16L * 1024L * 1024L + 1L);
+
+                    stream.Position = bundle.Length;
+
+                    byte[] spaces = Enumerable.Repeat((byte)' ', 64 * 1024).ToArray();
+
+                    while (stream.Position < stream.Length)
+                    {
+                        int count = (int)Math.Min(spaces.Length, stream.Length - stream.Position);
+
+                        await stream.WriteAsync(spaces.AsMemory(0, count));
+                    }
+                }
+
+                break;
+        }
+
+        HttpResponseMessage response = await client.PostAsync(
+            $"/api/campaigns/{campaign.Id}/import",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<CampaignImportResultDto>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto);
+
+        Assert.NotNull(body);
+
+        Assert.False(body!.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Campaign.ImportFailed, body.Error!.Value.Code);
+    }
+
+    [SkippableFact]
+    public async Task Import_from_disk_still_reads_a_regular_campaign_json_inside_the_campaign()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "disk-bundle");
+
+        string arcanumDirectory = Path.Combine(campaign.Path, ".arcanum");
+
+        Directory.CreateDirectory(arcanumDirectory);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(arcanumDirectory, "campaign.json"),
+            "{\"campaign\":" + CampaignJson(campaign) + ",\"spells\":[],\"prompts\":[]}");
+
+        HttpResponseMessage response = await client.PostAsync(
+            $"/api/campaigns/{campaign.Id}/import",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [SkippableFact]
     public async Task ImportCampaign_spell_with_unparsable_embedded_json_reports_import_failure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -173,13 +298,11 @@ public sealed class CampaignEndpointTests
         // The body itself parsed fine; only the spell's embedded metadata string did not, and the
         // message has to name the spell rather than blame the whole request body.
         Assert.Contains("broken", body.Error.Value.Message, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task GetCampaignPrompts_truncated_page_reports_hasMore_and_nextOffset()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid campaignId = Guid.NewGuid();
@@ -190,7 +313,6 @@ public sealed class CampaignEndpointTests
         {
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<ICampaignRepository>();
 
                 services.AddScoped<ICampaignRepository>(_ => new SingleCampaignRepository(campaignId));
@@ -198,7 +320,6 @@ public sealed class CampaignEndpointTests
                 services.RemoveAll<IPromptRepository>();
 
                 services.AddScoped<IPromptRepository>(_ => new TruncatedPromptRepository(campaignId));
-
             },
         };
 
@@ -217,12 +338,10 @@ public sealed class CampaignEndpointTests
         Assert.True(body!.Data!.HasMore);
 
         Assert.Equal(10_000, body.Data.NextOffset);
-
     }
 
     private sealed class SingleCampaignRepository(Guid campaignId) : ICampaignRepository
     {
-
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(id == campaignId
                 ? new Campaign
@@ -258,12 +377,10 @@ public sealed class CampaignEndpointTests
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(1);
-
     }
 
     private sealed class TruncatedPromptRepository(Guid campaignId) : IPromptRepository
     {
-
         public Task<ListPageResult<Prompt>> ListAsync(
             Guid? scopeCampaignId,
             int? limit = null,
@@ -308,7 +425,6 @@ public sealed class CampaignEndpointTests
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     private static string CampaignJson(CampaignDto campaign) =>
@@ -319,7 +435,6 @@ public sealed class CampaignEndpointTests
         HttpClient client,
         string suffix)
     {
-
         string path = Path.Combine(factory.TempHome, $"campaign-import-{suffix}-{Guid.NewGuid():N}");
 
         Directory.CreateDirectory(path);
@@ -366,12 +481,10 @@ public sealed class CampaignEndpointTests
         Assert.Equal(HttpStatusCode.Created, promptCreated.StatusCode);
 
         return campaign;
-
     }
 
     private static async Task<IReadOnlyList<PromptSummaryDto>> ListCampaignPromptsAsync(HttpClient client, Guid campaignId)
     {
-
         HttpResponseMessage response = await client.GetAsync($"/api/campaigns/{campaignId}/prompts");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -381,12 +494,10 @@ public sealed class CampaignEndpointTests
             ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto);
 
         return body!.Data!.Items;
-
     }
 
     private sealed class MaxReachedCampaignRepository : ICampaignRepository
     {
-
         public Task<Campaign?> GetByIdAsync(
             Guid id,
             CancellationToken cancellationToken = default) =>
@@ -430,7 +541,5 @@ public sealed class CampaignEndpointTests
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
-
     }
-
 }

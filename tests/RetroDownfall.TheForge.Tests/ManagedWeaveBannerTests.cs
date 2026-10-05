@@ -6,27 +6,22 @@ namespace RetroDownfall.TheForge.Tests;
 
 public sealed class ManagedWeaveBannerTests
 {
-
     [Fact]
     public void ShouldShow_WhenEmbeddingsEnabledAndManaged()
     {
-
         InstanceMetadataDto meta = CreateMeta(embeddingsEnabled: true, mode: "managed");
 
         Assert.True(ManagedWeaveBanner.ShouldShow(meta));
-
     }
 
     [Fact]
     public void ShouldShow_False_WhenDisabledOrVec0()
     {
-
         Assert.False(ManagedWeaveBanner.ShouldShow(CreateMeta(embeddingsEnabled: false, mode: "disabled")));
 
         Assert.False(ManagedWeaveBanner.ShouldShow(CreateMeta(embeddingsEnabled: true, mode: "vec0")));
 
         Assert.False(ManagedWeaveBanner.ShouldShow(null));
-
     }
 
     private static InstanceMetadataDto CreateMeta(bool embeddingsEnabled, string mode) =>
@@ -41,7 +36,6 @@ public sealed class ManagedWeaveBannerTests
             "/tmp",
             "/tmp/arcanum.json",
             5001,
-            false,
             false,
             false,
             false,
@@ -63,5 +57,4 @@ public sealed class ManagedWeaveBannerTests
             null,
             null,
             0);
-
 }

@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -164,7 +165,7 @@ public sealed class ClientToolForwardingTests
                     },
                 })
                 .ToArray(),
-        });
+        }, AdHocJson.Options);
 
         HttpResponseMessage response = await client.PostAsync(
             "/v1/chat/completions",

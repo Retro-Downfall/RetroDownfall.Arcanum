@@ -1,12 +1,12 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Text.Json;
-using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Conclave;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
@@ -38,10 +38,6 @@ internal static class SessionEndpoints
     private static readonly byte[] SseDone = "data: [DONE]\n\n"u8.ToArray();
 
     private static readonly byte[] SseLiveSentinel = "data: {\"type\":\"live\"}\n\n"u8.ToArray();
-
-    private static readonly byte[] SseDataPrefix = "data: "u8.ToArray();
-
-    private static readonly byte[] SseLineBreak = "\n\n"u8.ToArray();
 
     private const long AttachmentMultipartEnvelopeAllowanceBytes = 64L * 1024L;
 
@@ -1431,6 +1427,7 @@ internal static class SessionEndpoints
                 SessionEventHub eventHub,
                 SseConnectionGate sseGate,
                 IOptionsMonitor<ArcanumSettings> options,
+                ILoggerFactory loggerFactory,
                 HttpContext httpContext) =>
             {
                 Session? session = await repo.GetByIdAsync(id, httpContext.RequestAborted).ConfigureAwait(false);
@@ -1480,13 +1477,15 @@ internal static class SessionEndpoints
                 int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
                     options.CurrentValue.ResolveEventBus().ChannelCapacity);
 
-                Channel<Entry> liveBuffer = Channel.CreateBounded<Entry>(
-                    new BoundedChannelOptions(channelCapacity)
-                    {
-                        SingleReader = true,
-                        SingleWriter = true,
-                        FullMode = BoundedChannelFullMode.DropOldest,
-                    });
+                // Overflow here is a slow client. The hub's channel, which logs its own overflow, never fills
+                // while this pump drains it, so this buffer is the only place a slow reader can be seen: it is
+                // reported as a Warning when it starts and again, with the count, once the client reads on.
+                LiveEventBuffer<Entry> liveBuffer = new(channelCapacity);
+
+                // One buffer and one JSON writer serve every frame of this connection.
+                SessionEntrySseStreamWriter entryWriter = new(httpContext);
+
+                ILogger logger = loggerFactory.CreateLogger(typeof(SessionEndpoints));
 
                 GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
 
@@ -1495,7 +1494,23 @@ internal static class SessionEndpoints
                 // whichever frame it was writing, rather than a cancellation inside one.
                 using CancellationTokenSource pumpCts = quiescence.LinkProducer(httpContext.RequestAborted);
 
-                Task pumpTask = PumpSessionLiveAsync(id, eventHub, liveBuffer.Writer, pumpCts.Token);
+                Task pumpTask = PumpSessionLiveAsync(id, eventHub, liveBuffer, logger, pumpCts.Token);
+
+                // Ends the overflow episode when the client reads on, so a later one is reported again.
+                Task WriteLiveEntryAsync(Entry liveEntry, CancellationToken ct)
+                {
+                    long dropped = liveBuffer.TakeDropped();
+
+                    if (dropped > 0)
+                    {
+                        logger.LogWarning(
+                            "Session stream for {SessionId} dropped {Dropped} unread entr(ies) for a slow client.",
+                            id,
+                            dropped);
+                    }
+
+                    return entryWriter.WriteEntryAsync(liveEntry, ct);
+                }
 
                 // The pump owns a SessionEventHub subscription that only its own cancellation
                 // releases, so everything from here on must sit inside the try whose finally cancels
@@ -1527,7 +1542,7 @@ internal static class SessionEndpoints
 
                             replayIds.Add(entry.Id);
 
-                            await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
+                            await entryWriter.WriteEntryAsync(entry, httpContext.RequestAborted).ConfigureAwait(false);
                         }
                     }
                     else
@@ -1545,7 +1560,7 @@ internal static class SessionEndpoints
                                 break;
                             }
 
-                            await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
+                            await entryWriter.WriteEntryAsync(entry, httpContext.RequestAborted).ConfigureAwait(false);
                         }
                     }
 
@@ -1568,14 +1583,14 @@ internal static class SessionEndpoints
                     {
                         if (!replayIds.Contains(buffered.Id))
                         {
-                            await WriteEntrySseAsync(httpContext, buffered, httpContext.RequestAborted).ConfigureAwait(false);
+                            await WriteLiveEntryAsync(buffered, httpContext.RequestAborted).ConfigureAwait(false);
                         }
                     }
 
                     await SseStreamWriter.StreamAsync(
                         httpContext,
                         liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted),
-                        (entry, ct) => WriteEntrySseAsync(httpContext, entry, ct),
+                        WriteLiveEntryAsync,
                         heartbeatInterval,
                         quiescence,
                         httpContext.RequestAborted).ConfigureAwait(false);
@@ -2404,14 +2419,20 @@ internal static class SessionEndpoints
     private static async Task PumpSessionLiveAsync(
         Guid sessionId,
         SessionEventHub eventHub,
-        ChannelWriter<Entry> writer,
+        LiveEventBuffer<Entry> buffer,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         try
         {
             await foreach (Entry entry in eventHub.SubscribeAsync(sessionId, cancellationToken).ConfigureAwait(false))
             {
-                await writer.WriteAsync(entry, cancellationToken).ConfigureAwait(false);
+                if (buffer.Write(entry))
+                {
+                    logger.LogWarning(
+                        "Session stream for {SessionId} is dropping entries for a slow client.",
+                        sessionId);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -2419,7 +2440,7 @@ internal static class SessionEndpoints
         }
         finally
         {
-            writer.TryComplete();
+            buffer.Complete();
         }
     }
 
@@ -2428,33 +2449,5 @@ internal static class SessionEndpoints
         Session? session = await repo.GetByIdAsync(id, ct).ConfigureAwait(false);
 
         return session?.CloneHeader();
-    }
-
-    private static async Task WriteEntrySseAsync(HttpContext httpContext, Entry entry, CancellationToken cancellationToken)
-    {
-        EntryDto dto = SessionMapping.ToEntryDto(entry);
-
-        ArrayBufferWriter<byte> buffer = new(SseDataPrefix.Length + 512 + SseLineBreak.Length);
-
-        buffer.Write(SseDataPrefix);
-
-        Utf8JsonWriter jsonWriter = new(buffer);
-
-        try
-        {
-            JsonSerializer.Serialize(jsonWriter, dto, ArcanumJsonContext.Default.EntryDto);
-
-            jsonWriter.Flush();
-
-            buffer.Write(SseLineBreak);
-
-            await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
-
-            await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            jsonWriter.Dispose();
-        }
     }
 }

@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -117,9 +118,7 @@ public sealed class MemoryReviewRouteTests
 
         internal static async Task<RouteGraph> CreateAsync()
         {
-            WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
-
-            builder.WebHost.UseTestServer();
+            WebApplicationBuilder builder = RouteGraphHost.CreateBuilder();
 
             RouteGraph graph = new();
 

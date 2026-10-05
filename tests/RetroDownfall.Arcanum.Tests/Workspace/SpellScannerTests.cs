@@ -760,7 +760,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
         string dependencies = System.Text.Json.JsonSerializer.Serialize(
             Enumerable.Range(0, dependencyCount)
                 .Select(static index => $"dependency-{index:D2}")
-                .ToArray());
+                .ToArray(), AdHocJson.Options);
 
         _workspace.WriteFile(
             "spells/many-dependencies/SKILL.json",

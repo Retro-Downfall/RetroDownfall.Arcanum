@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -340,11 +341,26 @@ public sealed class ApiKeyAuthenticator(
     }
 
     /// <summary>
-    /// The single 401 shape both gates emit: <c>ApiResponse&lt;string&gt;</c> carrying
-    /// <c>Auth.Unauthorized</c> (DESIGN §11.3).
+    /// The single 401 both gates emit: <c>ApiResponse&lt;string&gt;</c> carrying <c>Auth.Unauthorized</c>
+    /// (DESIGN §11.3), and under <c>/v1</c> the OpenAI error shape (<c>invalid_request_error</c> /
+    /// <c>invalid_api_key</c>), because an OpenAI client reads <c>error.code</c> and every other failure on
+    /// that surface already speaks it.
     /// </summary>
     public static IResult Unauthorized(HttpContext httpContext)
     {
+        if (httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Json(
+                new OpenAiErrorResponse(
+                    new OpenAiErrorDetail(
+                        "Invalid or missing API key.",
+                        "invalid_request_error",
+                        Param: null,
+                        Code: "invalid_api_key")),
+                ArcanumJsonContext.Default.OpenAiErrorResponse,
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
         string? traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         ApiResponse<string> body = new(null, false, new Error(ErrorCodes.Auth.Unauthorized, "Invalid or missing API key."), traceId);

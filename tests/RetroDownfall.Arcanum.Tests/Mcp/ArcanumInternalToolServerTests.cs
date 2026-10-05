@@ -1829,7 +1829,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         McpToolsCallResultWire result = await session.CallToolAsync(
             "not_a_real_tool",
-            JsonSerializer.SerializeToElement(new { }));
+            JsonSerializer.SerializeToElement(new { }, AdHocJson.Options));
 
         Assert.True(result.IsError);
 
@@ -5489,7 +5489,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         public Task SendCancelNotificationAsync(int requestId)
         {
-            JsonElement cancelParams = JsonSerializer.SerializeToElement(new { requestId });
+            JsonElement cancelParams = JsonSerializer.SerializeToElement(new { requestId }, AdHocJson.Options);
 
             JsonRpcRequest notification = new()
             {

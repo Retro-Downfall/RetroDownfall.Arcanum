@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -20,6 +21,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 
@@ -236,6 +238,100 @@ public sealed class SessionEndpointTests
         }
 
         Assert.Equal(0, hub.GetSubscriberCount(sessionId));
+    }
+
+    /// <summary>
+    /// A session stream whose client stops reading logs that entries were dropped for it.
+    /// </summary>
+    /// <remarks>
+    /// The route's own buffer used to drop its oldest entries in silence, and the hub's channel, which logs
+    /// its overflow, never filled because the pump drained it as fast as it could. The entries are large so
+    /// the transport stops accepting frames after a few of them and the route's buffer is what overflows.
+    /// </remarks>
+    [SkippableFact]
+    public async Task GetStream_slow_reader_logs_a_warning_when_entries_are_dropped_for_it()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CapturedLogProvider logs = new();
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.RemoveAll<ILoggerFactory>();
+
+                services.AddSingleton<ILoggerFactory>(new LoggerFactory([logs]));
+            },
+        };
+
+        Guid sessionId;
+
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            Session session = new() { Title = "slow-reader" };
+
+            _ = db.Sessions.Add(session);
+
+            await db.SaveChangesAsync();
+
+            sessionId = session.Id;
+        }
+
+        SessionEventHub hub = factory.Services.GetRequiredService<SessionEventHub>();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            $"/api/sessions/{sessionId:D}/stream",
+            HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        for (int attempt = 0; attempt < 200 && hub.GetSubscriberCount(sessionId) == 0; attempt++)
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.True(hub.GetSubscriberCount(sessionId) > 0, "The session stream never subscribed to the hub.");
+
+        string bulk = new('x', 4096);
+
+        // More than the route's buffer holds (the EventBus channel capacity, 256 by default) and fewer than
+        // the hub's own channel does, so any warning has to come from the route's buffer.
+        for (int index = 0; index < 600; index++)
+        {
+            hub.Publish(
+                sessionId,
+                new Entry
+                {
+                    SessionId = sessionId,
+                    Role = MessageRole.User,
+                    Content = bulk,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    Sequence = index + 1,
+                });
+        }
+
+        CapturedLogEntry? warning = null;
+
+        for (int attempt = 0; attempt < 200 && warning is null; attempt++)
+        {
+            warning = logs.Entries.FirstOrDefault(static entry =>
+                entry.Level == LogLevel.Warning
+                && entry.Message.Contains("slow client", StringComparison.Ordinal));
+
+            if (warning is null)
+            {
+                await Task.Delay(25);
+            }
+        }
+
+        Assert.NotNull(warning);
+
+        Assert.Contains(sessionId.ToString("D"), warning.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [SkippableFact]
@@ -897,7 +993,7 @@ public sealed class SessionEndpointTests
 
             {
                 workspacePath = fileName,
-            });
+            }, options: AdHocJson.Options);
 
             HttpResponseMessage response = await client.PostAsync(
                 $"/api/sessions/{sessionId:D}/attachments/reference",
@@ -999,7 +1095,7 @@ public sealed class SessionEndpointTests
                 workspacePath = fileName,
 
                 workspaceId = workspace!.Id,
-            });
+            }, options: AdHocJson.Options);
 
             HttpResponseMessage response = await client.PostAsync(
                 $"/api/sessions/{sessionId:D}/attachments/reference",
@@ -1071,7 +1167,7 @@ public sealed class SessionEndpointTests
                 workspacePath = fileName,
 
                 logicalName = "refreshable-notes",
-            });
+            }, options: AdHocJson.Options);
 
             HttpResponseMessage createdResponse = await client.PostAsync(
                 $"/api/sessions/{sessionId:D}/attachments/reference",
@@ -1160,7 +1256,7 @@ public sealed class SessionEndpointTests
 
             {
                 workspacePath = "../" + fileName,
-            });
+            }, options: AdHocJson.Options);
 
             HttpResponseMessage response = await client.PostAsync(
                 $"/api/sessions/{sessionId:D}/attachments/reference",

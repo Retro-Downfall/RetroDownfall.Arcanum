@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -142,6 +143,10 @@ public sealed partial class DaemonInitiativeEndpointTests
 
         builder.Services.ConfigureHttpJsonOptions(static options =>
             options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
+
+        // The daemon family's other routes take more services than the initiative routes use; they are only
+        // declared here so endpoint building does not take them for request bodies.
+        RouteGraphHost.RegisterServiceContracts(builder.Services);
 
         WebApplication app = builder.Build();
 

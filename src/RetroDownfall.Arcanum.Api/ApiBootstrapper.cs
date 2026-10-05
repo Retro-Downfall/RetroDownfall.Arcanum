@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.HostFiltering;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
@@ -230,6 +232,96 @@ public static class ApiBootstrapper
         return bool.TryParse(configured.Trim(), out bool parsed) && parsed;
     }
 
+    /// <summary>
+    /// The host names a loopback-only host answers to: the three spellings of the loopback address a local
+    /// client or browser uses to reach it. A port on the request's Host header is ignored.
+    /// </summary>
+    internal static readonly string[] LoopbackHostNames = ["localhost", "127.0.0.1", "[::1]"];
+
+    /// <summary>
+    /// Whether the Host-header allow-list applies: on a loopback-only bind, and not on an all-interfaces
+    /// bind (<c>Arcanum:Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>), which is the topology that
+    /// legitimately answers other names.
+    /// </summary>
+    internal static bool IsHostFilteringEffective(IConfiguration configuration) =>
+        !ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(configuration));
+
+    /// <summary>
+    /// Gives the framework's host-filtering middleware the names a loopback-only host answers to, and
+    /// leaves it unconfigured on an all-interfaces bind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// There is deliberately no <c>UseHostFiltering</c> call of Arcanum's own. <c>WebApplication.CreateSlimBuilder</c>
+    /// (what <c>arcanum serve</c> and the dev host both use) registers the framework's host-filtering startup
+    /// filter, which puts the middleware first in the pipeline on every host and enforces whatever
+    /// <see cref="HostFilteringOptions.AllowedHosts"/> holds. Its own fallback, <c>*</c>, applies only while
+    /// that list is empty. So the one decision this method makes is whether to put anything in the list, and
+    /// a list registered on an all-interfaces bind would refuse every network client and every reverse proxy
+    /// relaying a public name, whatever any later <c>Use</c> call chose.
+    /// </para>
+    /// <para>
+    /// The effective bind is decided once, here, from the same configuration Kestrel is configured from. The
+    /// callback authority is read from the startup settings when the middleware first needs the list, as the
+    /// route that receives the callback is mapped from them, so a change to it takes effect on restart.
+    /// </para>
+    /// </remarks>
+    internal static IServiceCollection AddArcanumHostFiltering(this IServiceCollection services, IConfiguration configuration)
+    {
+        if (!IsHostFilteringEffective(configuration))
+        {
+            return services;
+        }
+
+        services.AddOptions<HostFilteringOptions>()
+            .Configure<IOptionsMonitor<ArcanumSettings>>(static (options, settings) =>
+                options.AllowedHosts = [.. ResolveAllowedHostNames(settings.CurrentValue)]);
+
+        return services;
+    }
+
+    /// <summary>
+    /// The names a loopback-only host answers to: the loopback names, plus the host of the callback base
+    /// URL the operator told peers to post to when the callback surface is on.
+    /// </summary>
+    internal static string[] ResolveAllowedHostNames(ArcanumSettings settings)
+    {
+        string? callbackHost = ResolveCallbackAuthorityHost(settings);
+
+        return callbackHost is null
+            ? [.. LoopbackHostNames]
+            : [.. LoopbackHostNames, callbackHost];
+    }
+
+    /// <summary>
+    /// The host of <c>Arcanum:Integrations:A2A:PushCallbackBaseUrl</c>, in the form a client puts in a
+    /// <c>Host</c> header, or <see langword="null"/> when there is none to answer.
+    /// </summary>
+    /// <remarks>
+    /// <c>null</c> unless the callback route is mapped (<see cref="A2ACallbackEndpoints.IsSurfaceEnabled"/>):
+    /// the name is the operator's statement of where a peer reaches that route, and with the surface off
+    /// there is no route and no peer. A value that is not an absolute http or https URL adds nothing (the
+    /// configuration validator refuses one at startup). The URI parser also refuses a host with a <c>*</c>
+    /// in it, so a configured URL can never widen the list into one of the middleware's wildcard patterns.
+    /// </remarks>
+    internal static string? ResolveCallbackAuthorityHost(ArcanumSettings settings)
+    {
+        if (!A2ACallbackEndpoints.IsSurfaceEnabled(settings))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(settings.ResolveA2A().PushCallbackBaseUrl, UriKind.Absolute, out Uri? baseUrl)
+            || (baseUrl.Scheme != Uri.UriSchemeHttp && baseUrl.Scheme != Uri.UriSchemeHttps))
+        {
+            return null;
+        }
+
+        // Host, not IdnHost: an IPv6 literal stays bracketed, the form the middleware compares it in, and the
+        // middleware puts a Unicode name through IDNA itself.
+        return baseUrl.Host;
+    }
+
     private static bool IsRateLimitEnabled(IConfiguration configuration)
         => ArcanumEnvironment.IsRateLimitEnabled(
             rateLimitConfigEnabled: false,
@@ -290,6 +382,17 @@ public static class ApiBootstrapper
     public static IServiceCollection AddArcanumApiServices(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddExceptionHandler<ArcanumExceptionHandler>();
+
+        // The framework's default is to throw a binder failure into the exception handler only in
+        // Development and to write an empty 400 everywhere else. Pinned on so a bound-body route answers a
+        // body that is not valid JSON, and a parameter that cannot be bound, with the same envelope in every
+        // environment, through ArcanumExceptionHandler's BadHttpRequestException arm. It does not reach the
+        // faults Kestrel raises while the generated reader pulls the body (too large, too slow, trailers
+        // too long), nor an unaccepted Content-Type: the generated code records those as a status and
+        // returns, and UseArcanumExceptionHandler's status-code hook answers them.
+        services.Configure<RouteHandlerOptions>(static options => options.ThrowOnBadRequest = true);
+
+        services.AddArcanumHostFiltering(configuration);
 
         services.AddProblemDetails();
 
@@ -500,6 +603,54 @@ public static class ApiBootstrapper
     public static void UseArcanumExceptionHandler(this WebApplication app)
     {
         app.UseExceptionHandler();
+
+        // A route that binds its body as a handler parameter reads it in framework-generated code that
+        // catches the exceptions Kestrel raises for a bad body, writes the status onto the response and
+        // returns -- it does not rethrow, whatever ThrowOnBadRequest says, so ArcanumExceptionHandler never
+        // sees them and the response would reach the client with a status and no body. The same generated
+        // code answers a Content-Type the route does not accept by setting 415 and returning. This hook is
+        // what gives those empty responses the envelope. It acts on exactly the statuses below and leaves
+        // every other empty status as it was, because a route can return a bodyless 400 on purpose
+        // (GET /api/presence).
+        app.UseStatusCodePages(WriteBodyFaultEnvelopeAsync);
+    }
+
+    /// <summary>
+    /// Puts the documented error envelope on an otherwise empty 408, 413, 415 or 431 that a route's own
+    /// body read produced.
+    /// </summary>
+    /// <remarks>
+    /// 408 (a body under the minimum data rate), 413 (a body past the ceiling) and 431 (trailers over the
+    /// header ceiling) only ever come from reading a body, so for a matched endpoint they are answered
+    /// here. 415 needs no endpoint: the binder sets it before any handler runs. A body that ends early
+    /// (400) is deliberately not covered: it is indistinguishable here from a bodyless 400 a route
+    /// returns on purpose, and the client that dropped the connection is no longer there to read it.
+    /// </remarks>
+    internal static async Task WriteBodyFaultEnvelopeAsync(StatusCodeContext context)
+    {
+        HttpContext httpContext = context.HttpContext;
+
+        int statusCode = httpContext.Response.StatusCode;
+
+        bool isBodyRead = statusCode is StatusCodes.Status408RequestTimeout
+            or StatusCodes.Status413PayloadTooLarge
+            or StatusCodes.Status431RequestHeaderFieldsTooLarge;
+
+        if (statusCode != StatusCodes.Status415UnsupportedMediaType
+            && !(isBodyRead && httpContext.GetEndpoint() is not null))
+        {
+            return;
+        }
+
+        bool isOpenAiRoute = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase);
+
+        IResult envelope = isOpenAiRoute
+            ? OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(statusCode)
+            : statusCode == StatusCodes.Status415UnsupportedMediaType
+                ? ApiRequestJson.UnacceptedMediaTypeResult(httpContext)
+                : ApiRequestJson.UnreadableBodyResult(httpContext, statusCode);
+
+        await envelope.ExecuteAsync(httpContext).ConfigureAwait(false);
     }
 
     /// <summary>

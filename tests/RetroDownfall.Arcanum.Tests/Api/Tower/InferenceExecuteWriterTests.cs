@@ -53,6 +53,82 @@ public sealed class InferenceExecuteWriterTests
         Assert.True(body.WritesAttempted > 0);
     }
 
+    /// <summary>
+    /// A stream that is waiting on the provider is not silent: a blank NDJSON line goes out on a timer, so an
+    /// idle connection survives the proxies and clients that drop one that says nothing.
+    /// </summary>
+    /// <remarks>
+    /// A blank line is the NDJSON keep-alive: the format is one JSON document per non-blank line, so every
+    /// reader skips it. It is written between frames only, never inside one.
+    /// </remarks>
+    [Fact]
+    public async Task Idle_stream_emits_heartbeat_newline_within_interval()
+    {
+        ServiceCollection services = new();
+
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        MemoryStream body = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.RequestServices = provider;
+
+        httpContext.Response.Body = body;
+
+        using CancellationTokenSource cts = new();
+
+        httpContext.RequestAborted = cts.Token;
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "after-the-wait",
+            StreamGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+
+        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+
+        Task writing = InferenceExecuteWriter.WriteStreamAsync(
+            httpContext,
+            intelligence,
+            request,
+            cts.Token,
+            heartbeatInterval: TimeSpan.FromMilliseconds(50));
+
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+
+        while (body.Length < 2 && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // Still waiting on the provider: nothing but heartbeats has been written.
+        string idleOutput = Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.False(writing.IsCompleted);
+
+        Assert.True(idleOutput.Length >= 2, "No heartbeat was written while the stream sat idle.");
+
+        Assert.All(idleOutput, static character => Assert.Equal('\n', character));
+
+        intelligence.StreamGate.SetResult();
+
+        await writing;
+
+        string output = Encoding.UTF8.GetString(body.ToArray());
+
+        string[] documents = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.NotEmpty(documents);
+
+        Assert.Contains(documents, static line => line.Contains("after-the-wait", StringComparison.Ordinal));
+
+        // Every non-blank line is a whole JSON document, so a heartbeat never lands inside a frame.
+        Assert.All(documents, static line => JsonDocument.Parse(line).Dispose());
+    }
+
     [Fact]
     public async Task WriteStreamAsync_RequestAborted_ReturnsCleanlyWithoutErrorFrame()
     {

@@ -393,7 +393,7 @@ public sealed class A2AOutboundModalityTests
             {
                 webHost.UseTestServer();
 
-                webHost.ConfigureServices(static services => services.AddRouting());
+                webHost.ConfigureServices(static services => services.AddRouting().AddAdHocHttpJson());
 
                 webHost.Configure(app =>
                 {

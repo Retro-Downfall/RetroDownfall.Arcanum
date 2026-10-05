@@ -17,6 +17,8 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
@@ -485,14 +487,46 @@ internal static class CampaignEndpoints
 
                 if (payload is null)
                 {
-                    string diskPath = Path.Combine(campaign.Path, ".arcanum", "campaign.json");
+                    string diskPath = Path.GetFullPath(Path.Combine(campaign.Path, ".arcanum", "campaign.json"));
 
-                    if (!File.Exists(diskPath))
+                    // A campaign root is frequently a repository the operator cloned, so neither the file nor
+                    // the .arcanum directory above it is trusted to be what it looks like. The path is
+                    // contained first, which resolves a link standing in for the directory, and the read
+                    // then opens the leaf once without following a link, proves it is an unaliased regular
+                    // file, and stops at the bundle cap. Both refusals look the same to the caller; a file
+                    // that is simply absent is reported as before.
+                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(campaign.Path, diskPath, out _))
+                    {
+                        return ImportFailed(traceId, "campaign.json must be a regular file inside the campaign directory.");
+                    }
+
+                    SecureUtf8FileReadResult read = await SecureFileReader
+                        .ReadUtf8TextAsync(diskPath, MaxOnDiskImportBundleBytes, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
+                    if (read.Status is SecureFileReadStatus.NotFound)
                     {
                         return ImportFailed(traceId, "No import payload and no campaign.json on disk.");
                     }
 
-                    string json = await File.ReadAllTextAsync(diskPath, ctx.RequestAborted).ConfigureAwait(false);
+                    if (read.Status is SecureFileReadStatus.TooLarge)
+                    {
+                        return ImportFailed(
+                            traceId,
+                            $"campaign.json exceeds the {MaxOnDiskImportBundleBytes}-byte limit on an on-disk import bundle.");
+                    }
+
+                    if (read.Status is SecureFileReadStatus.Rejected)
+                    {
+                        return ImportFailed(traceId, "campaign.json must be a regular file inside the campaign directory.");
+                    }
+
+                    if (read.Status is not SecureFileReadStatus.Success || read.Text is null)
+                    {
+                        return ImportFailed(traceId, "Could not read campaign.json.");
+                    }
+
+                    string json = read.Text;
 
                     try
                     {
@@ -636,6 +670,13 @@ internal static class CampaignEndpoints
     /// The one 400 shape <c>POST /api/campaigns/{id}/import</c> answers with when the bundle itself
     /// is unusable, so a malformed bundle never reaches the generic unhandled-exception handler.
     /// </summary>
+    /// <summary>
+    /// The largest <c>.arcanum/campaign.json</c> an import will read from disk: the same 16 MiB the import
+    /// route accepts as a request body, so a bundle that could be posted can also be read from the
+    /// campaign directory, and nothing larger is read into memory.
+    /// </summary>
+    private const int MaxOnDiskImportBundleBytes = 16 * 1024 * 1024;
+
     private static IResult ImportFailed(string traceId, string message) =>
         Results.BadRequest(
             ApiResponse<CampaignImportResultDto>.FromResult(

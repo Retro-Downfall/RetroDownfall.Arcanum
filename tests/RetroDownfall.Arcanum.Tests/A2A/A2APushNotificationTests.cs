@@ -594,7 +594,7 @@ public sealed class A2APushNotificationTests
             {
                 webHost.UseTestServer();
 
-                webHost.ConfigureServices(static services => services.AddRouting());
+                webHost.ConfigureServices(static services => services.AddRouting().AddAdHocHttpJson());
 
                 webHost.Configure(app =>
                 {

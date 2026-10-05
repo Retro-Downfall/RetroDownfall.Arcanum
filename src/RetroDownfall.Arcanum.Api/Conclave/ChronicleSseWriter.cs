@@ -11,19 +11,6 @@ namespace RetroDownfall.Arcanum.Api.Conclave;
 [ExcludeFromCodeCoverage] // Reason: HTTP SSE streaming glue; exercised via apprentice chronicle integration routes.
 internal static class ChronicleSseWriter
 {
-
-    public static async Task WriteEventAsync(
-        HttpContext httpContext,
-        ApprenticeEvent @event,
-        CancellationToken cancellationToken)
-    {
-
-        ChronicleSseStreamWriter writer = new(httpContext);
-
-        await writer.WriteEventAsync(@event, cancellationToken).ConfigureAwait(false);
-
-    }
-
     internal static void WritePassThroughEvent(
         Utf8JsonWriter writer,
         ApprenticeEvent envelope,
@@ -116,9 +103,7 @@ internal static class ChronicleSseWriter
 
             foreach (PlanStep step in @event.Plan)
             {
-
                 JsonSerializer.Serialize(writer, step, ArcanumJsonContext.Default.PlanStep);
-
             }
 
             writer.WriteEndArray();
@@ -244,5 +229,4 @@ internal static class ChronicleSseWriter
         // follow-up PR that updates this switch and the CLI parser together.
         _ => type.ToString(),
     };
-
 }

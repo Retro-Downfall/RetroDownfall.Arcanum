@@ -55,11 +55,11 @@ public sealed class OpenAiV1EndpointTests
 
         string json = await response.Content.ReadAsStringAsync();
 
-        ApiResponse<string>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseString);
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.NotNull(body);
 
-        Assert.Equal("Auth.Unauthorized", body.Error?.Code);
+        Assert.Equal("invalid_api_key", body.Error.Code);
     }
 
     [SkippableFact]
@@ -1005,6 +1005,61 @@ public sealed class OpenAiV1EndpointTests
         Assert.Null(model.PromptCaching);
     }
 
+    /// <summary>
+    /// An OpenAI client reads <c>error.code</c> and <c>error.type</c>, so a 401 on <c>/v1</c> is spoken in
+    /// that shape, exactly as the rate limiter and the maintenance refusal already do.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("GET", "/v1/models")]
+    [InlineData("POST", "/v1/chat/completions")]
+    public async Task Unauthenticated_v1_request_returns_openai_invalid_api_key_envelope(string method, string path)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateClient();
+
+        using HttpRequestMessage request = new(new HttpMethod(method), path);
+
+        if (method == "POST")
+        {
+            request.Content = new StringContent("""{"model":"m","messages":[]}""", Encoding.UTF8, "application/json");
+        }
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal("invalid_api_key", body.Error.Code);
+
+        Assert.Null(body.Error.Param);
+    }
+
+    [SkippableFact]
+    public async Task Unauthenticated_api_request_keeps_the_arcanum_envelope()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateClient();
+
+        using HttpResponseMessage response = await client.GetAsync("/api/sessions");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        ApiResponse<string>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseString);
+
+        Assert.Equal("Auth.Unauthorized", body?.Error?.Code);
+    }
+
     [SkippableFact]
     public async Task GetModels_WithoutApiKey_Returns401()
     {
@@ -1018,13 +1073,11 @@ public sealed class OpenAiV1EndpointTests
 
         string json = await response.Content.ReadAsStringAsync();
 
-        ApiResponse<string>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseString);
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.NotNull(body);
 
-        Assert.False(body.IsSuccess);
-
-        Assert.Equal("Auth.Unauthorized", body.Error?.Code);
+        Assert.Equal("invalid_api_key", body.Error.Code);
     }
 
     [SkippableTheory]

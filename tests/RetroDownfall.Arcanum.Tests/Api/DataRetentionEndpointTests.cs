@@ -43,6 +43,7 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -105,9 +106,7 @@ public sealed class DataRetentionEndpointTests
 
     public DataRetentionEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableTheory]
@@ -138,7 +137,6 @@ public sealed class DataRetentionEndpointTests
         string method,
         string path)
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -147,10 +145,8 @@ public sealed class DataRetentionEndpointTests
 
         if (method is "POST" or "PUT")
         {
-
             string json = path switch
             {
-
                 "/api/data/retention" =>
                     "{\"dataClass\":\"archived-sessions\",\"enabled\":true,\"days\":30}",
 
@@ -170,14 +166,12 @@ public sealed class DataRetentionEndpointTests
                     "{\"scope\":\"Global\"}",
 
                 _ => "{}",
-
             };
 
             request.Content = new StringContent(
                 json,
                 Encoding.UTF8,
                 "application/json");
-
         }
 
         HttpResponseMessage response = await _factory
@@ -185,14 +179,12 @@ public sealed class DataRetentionEndpointTests
             .SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
     }
 
     [SkippableFact]
 
     public async Task Covenant_memory_reset_preview_returns_a_plan_without_applying_data()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -201,14 +193,12 @@ public sealed class DataRetentionEndpointTests
 
         service.PlanAdmissionHandler = (dataRequest, capability) =>
         {
-
             Assert.Equal(DataRetentionPlanAdmissionCapability.Request, capability);
 
             return Result<DataRetentionPlanAdmission>.Success(
                 new DataRetentionPlanAdmission(
                     service.Plan with { Request = dataRequest },
                     lease));
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
@@ -240,14 +230,12 @@ public sealed class DataRetentionEndpointTests
                 DataRetentionOperation.ResetMemory,
                 MemoryScope: MemoryResetScope.Covenant),
             service.LastPlanRequest);
-
     }
 
     [SkippableFact]
 
     public async Task Covenant_data_lifecycle_routes_require_lifecycle_manage_authority()
     {
-
         RequireSqlCipher();
 
         _ = _factory.CreateClient();
@@ -275,23 +263,19 @@ public sealed class DataRetentionEndpointTests
 
         foreach (RouteEndpoint route in routes)
         {
-
             CovenantAuthorityRequirementMetadata? metadata = route.Metadata
                 .GetMetadata<CovenantAuthorityRequirementMetadata>();
 
             Assert.NotNull(metadata);
 
             Assert.Equal(CovenantAuthorityRequirement.LifecycleManage, metadata.Requirement);
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task Covenant_reset_and_factory_plans_hold_their_read_lease_through_the_protected_response()
     {
-
         RequireSqlCipher();
 
         List<RecordingCovenantLease> leases = [];
@@ -300,7 +284,6 @@ public sealed class DataRetentionEndpointTests
         {
             PlanAdmissionHandler = (request, _) =>
             {
-
                 RecordingCovenantLease lease = new();
 
                 leases.Add(lease);
@@ -309,7 +292,6 @@ public sealed class DataRetentionEndpointTests
                     new DataRetentionPlanAdmission(
                     CreatePlan(request) with
                     {
-
                         Request = request,
                         Covenant = new DataRetentionCovenantInventory(
                             Rows: 1,
@@ -318,12 +300,9 @@ public sealed class DataRetentionEndpointTests
                             AffectedSessions: 4,
                             PossibleDisclosures: 5,
                             CovenantDisclosureCountKind.Exact),
-
                     },
                     lease));
-
             },
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
@@ -348,49 +327,39 @@ public sealed class DataRetentionEndpointTests
 
         foreach (HttpResponseMessage response in new[] { resetResponse, factoryResponse })
         {
-
             AssertProtectedCovenantHeaders(response);
-
         }
 
         Assert.Equal(2, leases.Count);
 
         Assert.All(leases, static lease =>
         {
-
             Assert.Equal(1, lease.Revalidations);
 
             Assert.Equal(1, lease.Disposals);
-
         });
-
     }
 
     [SkippableFact]
 
     public async Task A_stale_covenant_plan_writes_a_typed_503_refusal_with_protected_headers()
     {
-
         RequireSqlCipher();
 
         RecordingCovenantLease lease = new()
         {
-
             Revalidation = Result.Failure(
                 new Error(
                     ErrorCodes.Covenant.ErasureIncomplete,
                     "Covenant erasure remains incomplete.")),
-
         };
 
         FakeDataRetentionService service = new()
         {
-
             PlanAdmissionHandler = (request, _) => Result<DataRetentionPlanAdmission>.Success(
                 new DataRetentionPlanAdmission(
                     CreatePlan(request),
                     lease)),
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
@@ -420,14 +389,12 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(1, lease.Revalidations);
 
         Assert.Equal(1, lease.Disposals);
-
     }
 
     [Fact]
 
     public async Task A_covenant_plan_lease_remains_held_until_delayed_json_serialization_finishes()
     {
-
         RecordingCovenantLease lease = new();
 
         DelayedWriteStream body = new();
@@ -460,24 +427,20 @@ public sealed class DataRetentionEndpointTests
         Assert.NotEmpty(body.ToArray());
 
         Assert.Equal(1, lease.Disposals);
-
     }
 
     [SkippableFact]
 
     public async Task Covenant_plan_admission_failure_is_mapped_without_serving_a_lease_free_plan()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new()
         {
-
             PlanAdmissionHandler = static (_, _) => Result<DataRetentionPlanAdmission>.Failure(
                 new Error(
                     ErrorCodes.Covenant.ErasureIncomplete,
                     "Covenant erasure remains incomplete.")),
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
@@ -503,7 +466,6 @@ public sealed class DataRetentionEndpointTests
         Assert.Null(body.Data);
 
         Assert.Equal(0, service.ApplyCallCount);
-
     }
 
     [SkippableTheory]
@@ -515,26 +477,21 @@ public sealed class DataRetentionEndpointTests
     public async Task Protected_plan_endpoint_rejects_a_successful_admission_without_its_required_lease(
         bool factoryReset)
     {
-
         RequireSqlCipher();
 
         DataRetentionPlanAdmissionCapability? observedCapability = null;
 
         FakeDataRetentionService service = new()
         {
-
             PlanAdmissionHandler = (request, capability) =>
             {
-
                 observedCapability = capability;
 
                 return Result<DataRetentionPlanAdmission>.Success(
                     new DataRetentionPlanAdmission(
                         CreatePlan(request),
                         ReadLease: null));
-
             },
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
@@ -570,7 +527,6 @@ public sealed class DataRetentionEndpointTests
                 ? DataRetentionPlanAdmissionCapability.Installation
                 : DataRetentionPlanAdmissionCapability.Request,
             observedCapability);
-
     }
 
     [SkippableTheory]
@@ -582,7 +538,6 @@ public sealed class DataRetentionEndpointTests
     public async Task Covenant_plan_endpoints_complete_only_after_their_installation_lease_is_disposed(
         bool factoryWorkspacePlan)
     {
-
         RequireSqlCipher();
 
         RecordingCovenantLease lease = new(blockDisposal: true);
@@ -591,17 +546,13 @@ public sealed class DataRetentionEndpointTests
 
         FakeDataRetentionService service = new()
         {
-
             PlanAdmissionHandler = (request, capability) =>
             {
-
                 observedCapability = capability;
 
                 return Result<DataRetentionPlanAdmission>.Success(
                     new DataRetentionPlanAdmission(CreatePlan(request), lease));
-
             },
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
@@ -649,7 +600,6 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(1, lease.Revalidations);
 
         Assert.Equal(1, lease.Disposals);
-
     }
 
     [SkippableTheory]
@@ -661,7 +611,6 @@ public sealed class DataRetentionEndpointTests
     public async Task Covenant_plan_endpoints_do_not_begin_lease_disposal_until_their_json_body_write_finishes(
         bool factoryWorkspacePlan)
     {
-
         RequireSqlCipher();
 
         ResponseWriteProbe bodyWrite = new();
@@ -670,10 +619,8 @@ public sealed class DataRetentionEndpointTests
 
         FakeDataRetentionService service = new()
         {
-
             PlanAdmissionHandler = (request, _) => Result<DataRetentionPlanAdmission>.Success(
                 new DataRetentionPlanAdmission(CreatePlan(request), lease)),
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service, bodyWrite);
@@ -727,14 +674,12 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.NotEmpty(await bodyTask);
-
     }
 
     [SkippableFact]
 
     public async Task Authenticated_status_plan_and_apply_use_the_data_lifecycle_service()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -813,14 +758,12 @@ public sealed class DataRetentionEndpointTests
             applied.Data?.RowsDeleted);
 
         Assert.Equal(applyRequest, service.LastApplyRequest);
-
     }
 
     [SkippableFact]
 
     public async Task Covenant_reset_plan_is_not_refused_by_the_retired_activation_conflict()
     {
-
         RequireSqlCipher();
 
         await using AsyncServiceScope scope = _factory.Services.CreateAsyncScope();
@@ -864,14 +807,12 @@ public sealed class DataRetentionEndpointTests
                 .SingleOrDefault(static field =>
                     field.IsLiteral
                     && field.GetRawConstantValue() is "Data.CovenantResetRequiresErasureCoordinator"));
-
     }
 
     [SkippableFact]
 
     public async Task Factory_reset_requires_the_exact_confirmation_before_apply()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -911,7 +852,6 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(
             DataRetentionOperation.FactoryReset,
             service.LastApplyRequest?.Request.Operation);
-
     }
 
     [SkippableTheory]
@@ -920,7 +860,6 @@ public sealed class DataRetentionEndpointTests
     public async Task Factory_reset_requires_the_confirmed_plan_and_requested_name_together(
         string json)
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -938,13 +877,11 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         Assert.Equal(0, service.ApplyCallCount);
-
     }
 
     [SkippableFact]
     public async Task Factory_reset_maps_the_confirmed_plan_and_requested_name_to_apply()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -969,13 +906,11 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(
             Guid.Parse("52525252-5252-4252-8252-525252525252"),
             service.LastApplyRequest?.RequestedOperationId);
-
     }
 
     [SkippableFact]
     public async Task Factory_reset_handoff_publishes_before_apply_and_records_before_response()
     {
-
         RequireSqlCipher();
 
         List<string> events = [];
@@ -1026,13 +961,11 @@ public sealed class DataRetentionEndpointTests
         Assert.NotEqual(
             requestedOperationId,
             coordinator.RecordedResult?.OperationId);
-
     }
 
     [SkippableFact]
     public async Task Factory_reset_handoff_retires_only_exact_pre_effect_plan_changed()
     {
-
         RequireSqlCipher();
 
         List<string> events = [];
@@ -1069,13 +1002,11 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
 
         Assert.Equal(["begin", "apply", "retire"], events);
-
     }
 
     [SkippableFact]
     public async Task Factory_reset_handoff_retains_evidence_for_every_other_apply_failure()
     {
-
         RequireSqlCipher();
 
         List<string> events = [];
@@ -1112,13 +1043,11 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 
         Assert.Equal(["begin", "apply"], events);
-
     }
 
     [SkippableFact]
     public async Task Factory_reset_handoff_rejects_a_mismatched_binding_before_publication_or_apply()
     {
-
         RequireSqlCipher();
 
         List<string> events = [];
@@ -1152,7 +1081,6 @@ public sealed class DataRetentionEndpointTests
         Assert.Empty(events);
 
         Assert.Equal(0, service.ApplyCallCount);
-
     }
 
     [SkippableTheory]
@@ -1165,7 +1093,6 @@ public sealed class DataRetentionEndpointTests
         InstallationResetDataScope scope,
         DataRetentionOperation expectedOperation)
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1174,14 +1101,12 @@ public sealed class DataRetentionEndpointTests
 
         service.PlanAdmissionHandler = (dataRequest, capability) =>
         {
-
             Assert.Equal(DataRetentionPlanAdmissionCapability.Installation, capability);
 
             return Result<DataRetentionPlanAdmission>.Success(
                 new DataRetentionPlanAdmission(
                     service.Plan with { Request = dataRequest },
                     lease));
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
@@ -1213,7 +1138,6 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(expectedOperation, service.LastPlanRequest?.Operation);
 
         Assert.Equal(workspace, service.LastPlanRequest?.Workspace);
-
     }
 
     [SkippableTheory]
@@ -1227,7 +1151,6 @@ public sealed class DataRetentionEndpointTests
     public async Task Factory_reset_planning_rejects_invalid_scope_bindings_before_planning(
         string json)
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1248,14 +1171,16 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         Assert.Null(service.LastPlanRequest);
-
     }
 
+    /// <summary>
+    /// A same-host proxy that forwards a remote client's request makes the effective peer loopback while the
+    /// socket the request arrived on belongs to somebody else. Both have to be local, as they are for every
+    /// other loopback-only gate.
+    /// </summary>
     [SkippableFact]
-
-    public async Task Factory_reset_planning_rejects_a_non_loopback_peer_before_planning()
+    public async Task FactoryResetPlan_with_forwarded_loopback_but_remote_socket_is_403()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1268,7 +1193,46 @@ public sealed class DataRetentionEndpointTests
 
         HttpContext context = await factory.Server.SendAsync(requestContext =>
         {
+            LoopbackTransportPeer.Apply(
+                requestContext,
+                rawPeer: IPAddress.Parse("203.0.113.10"),
+                effectivePeer: IPAddress.Loopback);
 
+            requestContext.Request.Method = HttpMethod.Post.Method;
+
+            requestContext.Request.Path = "/api/data/factory-reset/plan";
+
+            requestContext.Request.Headers[ArcanumApiHeaders.ApiKey] =
+                ArcanumWebApplicationFactory.TestApiKey;
+
+            requestContext.Request.ContentType = "application/json";
+
+            requestContext.Request.ContentLength = body.Length;
+
+            requestContext.Request.Body = new MemoryStream(body);
+        });
+
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+
+        Assert.Null(service.LastPlanRequest);
+    }
+
+    [SkippableFact]
+
+    public async Task Factory_reset_planning_rejects_a_non_loopback_peer_before_planning()
+    {
+        RequireSqlCipher();
+
+        FakeDataRetentionService service = new();
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        _ = factory.CreateClient();
+
+        byte[] body = Encoding.UTF8.GetBytes("{\"scope\":\"Global\"}");
+
+        HttpContext context = await factory.Server.SendAsync(requestContext =>
+        {
             requestContext.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.10");
 
             requestContext.Request.Method = HttpMethod.Post.Method;
@@ -1283,13 +1247,11 @@ public sealed class DataRetentionEndpointTests
             requestContext.Request.ContentLength = body.Length;
 
             requestContext.Request.Body = new MemoryStream(body);
-
         });
 
         Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
 
         Assert.Null(service.LastPlanRequest);
-
     }
 
     [SkippableTheory]
@@ -1308,7 +1270,6 @@ public sealed class DataRetentionEndpointTests
         string path,
         string json)
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1331,14 +1292,12 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         Assert.Equal(0, service.ApplyCallCount);
-
     }
 
     [Fact]
 
     public void Data_retention_json_contracts_require_every_mutation_selector()
     {
-
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(
             "{}",
             ArcanumJsonContext.Default.DataRetentionRequest));
@@ -1358,7 +1317,6 @@ public sealed class DataRetentionEndpointTests
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(
             "{}",
             ArcanumJsonContext.Default.FactoryResetRequest));
-
     }
 
     [SkippableTheory]
@@ -1373,7 +1331,6 @@ public sealed class DataRetentionEndpointTests
         string path,
         string json)
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1392,14 +1349,12 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         Assert.Equal(0, service.ApplyCallCount);
-
     }
 
     [SkippableFact]
 
     public async Task Retention_update_rejects_numeric_data_class_names()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1418,29 +1373,23 @@ public sealed class DataRetentionEndpointTests
             content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-
     }
 
     [SkippableFact]
 
     public async Task Apply_failures_map_to_coherent_http_status_codes()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new()
         {
-
             ApplyHandler = static request =>
             {
-
                 string code = request.ExpectedPlanId!;
 
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(code, "Expected test failure."));
-
             },
-
         };
 
         await using ArcanumWebApplicationFactory factory = CreateFactory(service);
@@ -1478,7 +1427,6 @@ public sealed class DataRetentionEndpointTests
 
         foreach ((string code, HttpStatusCode expectedStatus) in cases)
         {
-
             DataRetentionApplyRequest request = new(
                 new DataRetentionRequest(DataRetentionOperation.Prune),
                 code);
@@ -1498,16 +1446,13 @@ public sealed class DataRetentionEndpointTests
             Assert.False(body.IsSuccess);
 
             Assert.Equal(code, body.Error?.Code);
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task Targeted_routes_build_explicit_delete_and_memory_requests()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1562,14 +1507,12 @@ public sealed class DataRetentionEndpointTests
             service.LastApplyRequest?.Request);
 
         Assert.Equal("memory-plan-87", service.LastApplyRequest?.ExpectedPlanId);
-
     }
 
     [SkippableFact]
 
     public async Task Sequential_retention_updates_accumulate_for_get_and_planning()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1592,23 +1535,17 @@ public sealed class DataRetentionEndpointTests
         Result externalWrite = await writer.WriteAsync(
             options.CurrentValue with
             {
-
                 DefaultModel = "preserve-after-retention-update",
 
                 Retention = options.CurrentValue.Retention with
                 {
-
                     ActiveSessions = new RetentionRuleSettings
                     {
-
                         Enabled = true,
 
                         Days = 60,
-
                     },
-
                 },
-
             },
             CancellationToken.None);
 
@@ -1720,14 +1657,12 @@ public sealed class DataRetentionEndpointTests
                 ArcanumJsonContext.Default.RetentionRuleUpdateRequest));
 
         Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
-
     }
 
     [SkippableFact]
 
     public async Task Disabling_a_retention_rule_without_days_preserves_its_prior_days()
     {
-
         RequireSqlCipher();
 
         FakeDataRetentionService service = new();
@@ -1765,7 +1700,6 @@ public sealed class DataRetentionEndpointTests
         Assert.False(response.Data?.ArchivedSessions.Enabled);
 
         Assert.Equal(91, response.Data?.ArchivedSessions.Days);
-
     }
 
     private static ArcanumWebApplicationFactory CreateFactory(
@@ -1773,53 +1707,42 @@ public sealed class DataRetentionEndpointTests
         ResponseWriteProbe? responseWrite = null,
         IInstallationResetHostHandoffCoordinator? coordinator = null)
     {
-
         ArcanumWebApplicationFactory factory = new();
 
         factory.ServiceOverrides = services =>
         {
-
             services.RemoveAll<IDataRetentionService>();
 
             services.AddSingleton<IDataRetentionService>(serviceProvider =>
             {
-
                 service.RetentionSnapshot = () => serviceProvider
                     .GetRequiredService<IDataRetentionPolicyStore>()
                     .Current;
 
                 return service;
-
             });
 
             if (coordinator is not null)
             {
-
                 services.RemoveAll<IInstallationResetHostHandoffCoordinator>();
 
                 services.AddScoped<IInstallationResetHostHandoffCoordinator>(
                     _ => coordinator);
-
             }
 
             if (responseWrite is not null)
             {
-
                 services.AddSingleton<IStartupFilter>(
                     new ResponseWriteStartupFilter(responseWrite));
-
             }
-
         };
 
         return factory;
-
     }
 
     private static FactoryResetRequest CreateFactoryRequest(
         Guid requestedOperationId)
     {
-
         InstallationResetAcceptedBinding binding = new(
             "binding",
             ["/selected"],
@@ -1838,20 +1761,15 @@ public sealed class DataRetentionEndpointTests
                 InstallationResetScope.Global,
                 Workspace: null,
                 binding));
-
     }
 
     private static HttpClient CreateLoopbackAuthenticatedClient(
         ArcanumWebApplicationFactory factory)
     {
-
         HttpClient client = new(
-            factory.Server.CreateHandler(context =>
-                context.Connection.RemoteIpAddress = IPAddress.Loopback))
+            factory.Server.CreateHandler(LoopbackTransportPeer.Apply))
         {
-
             BaseAddress = new Uri("http://localhost"),
-
         };
 
         client.DefaultRequestHeaders.Add(
@@ -1859,7 +1777,6 @@ public sealed class DataRetentionEndpointTests
             ArcanumWebApplicationFactory.TestApiKey);
 
         return client;
-
     }
 
     private static StringContent JsonContent<T>(
@@ -1887,7 +1804,6 @@ public sealed class DataRetentionEndpointTests
 
     private static void AssertProtectedCovenantHeaders(HttpResponseMessage response)
     {
-
         Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
 
         Assert.Contains("no-cache", response.Headers.Pragma.Select(static value => value.Name));
@@ -1899,18 +1815,15 @@ public sealed class DataRetentionEndpointTests
         Assert.Null(response.Headers.ETag);
 
         Assert.Null(response.Content.Headers.LastModified);
-
     }
 
     private static async Task<ApiResponse<T>> ReadAsync<T>(
         HttpResponseMessage response,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo)
     {
-
         string json = await response.Content.ReadAsStringAsync();
 
         return JsonSerializer.Deserialize(json, typeInfo)!;
-
     }
 
     private static void RequireSqlCipher() =>
@@ -1920,7 +1833,6 @@ public sealed class DataRetentionEndpointTests
 
     private sealed class FakeDataRetentionService : IDataRetentionService
     {
-
         public DataRetentionStatus Status { get; } = new(
             new DateTimeOffset(2026, 8, 2, 12, 0, 0, TimeSpan.Zero),
             [],
@@ -1966,11 +1878,9 @@ public sealed class DataRetentionEndpointTests
 
         public Func<DataRetentionApplyRequest, Result<DataRetentionApplyResult>>? ApplyHandler
         {
-
             get;
 
             init;
-
         }
 
         public Func<
@@ -1978,11 +1888,9 @@ public sealed class DataRetentionEndpointTests
             DataRetentionPlanAdmissionCapability,
             Result<DataRetentionPlanAdmission>>? PlanAdmissionHandler
         {
-
             get;
 
             set;
-
         }
 
         public Task<DataRetentionStatus> GetStatusAsync(
@@ -1993,13 +1901,11 @@ public sealed class DataRetentionEndpointTests
             DataRetentionRequest request,
             CancellationToken cancellationToken = default)
         {
-
             LastPlanRequest = request;
 
             ObservedRetention = RetentionSnapshot?.Invoke();
 
             return Task.FromResult(Plan with { Request = request });
-
         }
 
         public Task<Result<DataRetentionPlanAdmission>> PlanAdmissionAsync(
@@ -2007,7 +1913,6 @@ public sealed class DataRetentionEndpointTests
             CancellationToken cancellationToken = default,
             DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request)
         {
-
             LastPlanRequest = request;
 
             ObservedRetention = RetentionSnapshot?.Invoke();
@@ -2018,14 +1923,12 @@ public sealed class DataRetentionEndpointTests
                     new Error(
                         ErrorCodes.Covenant.MaintenanceFailed,
                         "This fake has no Covenant planning lease.")));
-
         }
 
         public Task<Result<DataRetentionApplyResult>> ApplyAsync(
             DataRetentionApplyRequest request,
             CancellationToken cancellationToken = default)
         {
-
             ApplyCallCount++;
 
             LastApplyRequest = request;
@@ -2033,15 +1936,12 @@ public sealed class DataRetentionEndpointTests
             return Task.FromResult(
                 ApplyHandler?.Invoke(request)
                 ?? Result<DataRetentionApplyResult>.Success(Applied));
-
         }
-
     }
 
     private sealed class RecordingHostHandoffCoordinator(List<string> events)
         : IInstallationResetHostHandoffCoordinator
     {
-
         public DataRetentionApplyResult? RecordedResult { get; private set; }
 
         public Task<Result> BeginOrRecoverAsync(
@@ -2049,11 +1949,9 @@ public sealed class DataRetentionEndpointTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             events.Add("begin");
 
             return Task.FromResult(Result.Success());
-
         }
 
         public Task<Result> RecordOnlineCompletionAsync(
@@ -2062,13 +1960,11 @@ public sealed class DataRetentionEndpointTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             RecordedResult = result;
 
             events.Add("record");
 
             return Task.FromResult(Result.Success());
-
         }
 
         public Task<Result> RetirePreEffectAsync(
@@ -2076,18 +1972,14 @@ public sealed class DataRetentionEndpointTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             events.Add("retire");
 
             return Task.FromResult(Result.Success());
-
         }
-
     }
 
     private sealed class RecordingCovenantLease(bool blockDisposal = false) : ICovenantSnapshotReadLease
     {
-
         private readonly CancellationTokenSource _revocation = new();
 
         private readonly TaskCompletionSource _disposalStarted = new(
@@ -2127,36 +2019,28 @@ public sealed class DataRetentionEndpointTests
 
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken)
         {
-
             Revalidations++;
 
             return ValueTask.FromResult(Revalidation);
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             Disposals++;
 
             _disposalStarted.TrySetResult();
 
             if (blockDisposal)
             {
-
                 await _disposalReleased.Task.WaitAsync(TimeSpan.FromSeconds(30));
-
             }
 
             _revocation.Dispose();
-
         }
-
     }
 
     private sealed class DelayedWriteStream : MemoryStream
     {
-
         private readonly TaskCompletionSource _writeStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -2171,20 +2055,16 @@ public sealed class DataRetentionEndpointTests
             ReadOnlyMemory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-
             _writeStarted.TrySetResult();
 
             await _writesReleased.Task.WaitAsync(cancellationToken);
 
             await base.WriteAsync(buffer, cancellationToken);
-
         }
-
     }
 
     private sealed class ResponseWriteProbe
     {
-
         private readonly TaskCompletionSource _writeStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -2205,7 +2085,6 @@ public sealed class DataRetentionEndpointTests
             ReadOnlyMemory<byte> buffer,
             CancellationToken cancellationToken)
         {
-
             _writeStarted.TrySetResult();
 
             await _writeReleased.Task.WaitAsync(cancellationToken);
@@ -2213,49 +2092,36 @@ public sealed class DataRetentionEndpointTests
             await inner.WriteAsync(buffer, cancellationToken);
 
             _writeCompleted.TrySetResult();
-
         }
-
     }
 
     private sealed class ResponseWriteStartupFilter(ResponseWriteProbe probe) : IStartupFilter
     {
-
         public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
             application =>
             {
-
                 application.Use(async (context, nextMiddleware) =>
                 {
-
                     Stream original = context.Response.Body;
 
                     context.Response.Body = new ResponseWriteStream(original, probe);
 
                     try
                     {
-
                         await nextMiddleware().ConfigureAwait(false);
-
                     }
                     finally
                     {
-
                         context.Response.Body = original;
-
                     }
-
                 });
 
                 next(application);
-
             };
-
     }
 
     private sealed class ResponseWriteStream(Stream inner, ResponseWriteProbe probe) : Stream
     {
-
         public override bool CanRead => inner.CanRead;
 
         public override bool CanSeek => inner.CanSeek;
@@ -2266,11 +2132,9 @@ public sealed class DataRetentionEndpointTests
 
         public override long Position
         {
-
             get => inner.Position;
 
             set => inner.Position = value;
-
         }
 
         public override void Flush() => inner.Flush();
@@ -2299,7 +2163,5 @@ public sealed class DataRetentionEndpointTests
             int count,
             CancellationToken cancellationToken) =>
             WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
-
     }
-
 }

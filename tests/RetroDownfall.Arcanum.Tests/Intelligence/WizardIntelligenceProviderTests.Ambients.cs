@@ -401,7 +401,8 @@ public sealed partial class WizardIntelligenceProviderTests
                     return result.Content?.FirstOrDefault()?.Text ?? string.Empty;
                 },
                 "scribe_lexicon",
-                "records a Lexicon entry");
+                "records a Lexicon entry",
+                AdHocJson.AIFunctionOptions);
 
         public async Task<McpToolsCallResultWire> ScribeAsync(string name, string type, string[] facts)
         {

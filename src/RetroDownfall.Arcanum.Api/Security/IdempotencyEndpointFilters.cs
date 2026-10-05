@@ -178,7 +178,8 @@ public static class IdempotencyEndpointFilters
             bodyBytes,
             route,
             IdempotencyIdentity.NormalizeQuery(httpContext),
-            httpContext.Request.ContentType);
+            httpContext.Request.ContentType,
+            CovenantRequestFeatures.ContextPolicy(httpContext));
 
         IIdempotencyClaimStore claimStore =
             httpContext.RequestServices.GetRequiredService<IIdempotencyClaimStore>();

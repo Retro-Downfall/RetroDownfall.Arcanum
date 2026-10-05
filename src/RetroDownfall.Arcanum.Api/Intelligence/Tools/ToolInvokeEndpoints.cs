@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 /// </summary>
 internal static class ToolInvokeEndpoints
 {
-
     internal static void MapToolInvokeEndpoints(this RouteGroupBuilder group)
     {
         _ = group.MapPost("/tools/invoke", HandleInvokeAsync)
@@ -57,11 +56,10 @@ internal static class ToolInvokeEndpoints
                 statusCode: statusCode);
         }
 
-        ToolInvokeResponse response = new() { Result = result.Value };
+        ToolInvokeResponse response = new(result.Value);
 
         Result<ToolInvokeResponse> ok = Result<ToolInvokeResponse>.Success(response);
 
         return Results.Ok(ApiResponse<ToolInvokeResponse>.FromResult(ok, traceId));
     }
-
 }

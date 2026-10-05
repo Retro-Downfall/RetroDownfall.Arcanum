@@ -193,7 +193,7 @@ public sealed class SpellDependencyResolverTests : IDisposable
         string dependenciesJson = dependencyMode switch
         {
             "null" => "null",
-            _ => JsonSerializer.Serialize(dependencies ?? Array.Empty<string>()),
+            _ => JsonSerializer.Serialize(dependencies ?? Array.Empty<string>(), AdHocJson.Options),
         };
 
         string skillJson = $$"""

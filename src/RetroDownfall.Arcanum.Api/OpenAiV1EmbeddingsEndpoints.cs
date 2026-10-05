@@ -63,7 +63,7 @@ internal static partial class OpenAiV1Endpoints
         // where it landed before: only an actual non-JSON body is a 415.
         if (httpContext.Features.Get<IHttpRequestBodyDetectionFeature>()?.CanHaveBody ?? true)
         {
-            if (!httpContext.Request.HasJsonContentType())
+            if (!ApiRequestJson.HasReadableJsonContentType(httpContext.Request))
             {
                 return CreateUnsupportedMediaTypeErrorResult();
             }
@@ -86,10 +86,6 @@ internal static partial class OpenAiV1Endpoints
                     code: "invalid_json",
                     param: null,
                     statusCode: StatusCodes.Status400BadRequest);
-            }
-            catch (InvalidOperationException)
-            {
-                return CreateUnsupportedMediaTypeErrorResult();
             }
             catch (BadHttpRequestException exception)
             {
