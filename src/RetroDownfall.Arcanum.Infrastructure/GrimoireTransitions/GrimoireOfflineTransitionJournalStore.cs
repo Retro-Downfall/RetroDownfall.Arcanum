@@ -435,6 +435,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
         }
 
+        // The file is published: its verification and the anchor that follows run to completion.
         Result<GrimoireOfflineTransitionJournalPublication> published =
             await AuthenticatePublishedAsync(
                     location,
@@ -442,7 +443,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     digest.Value,
                     payloadBytes,
                     opening,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
         if (published.IsFailure)
@@ -645,6 +646,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 .ConfigureAwait(false);
         }
 
+        // The file is published: its verification and the anchor that follows run to completion.
         Result<GrimoireOfflineTransitionJournalPublication> published =
             await AuthenticatePublishedAsync(
                     current.Location,
@@ -652,7 +654,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     nextDigest.Value,
                     payloadBytes,
                     current.Anchor,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
         if (published.IsFailure)
@@ -841,7 +843,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     .ConfigureAwait(false);
 
                 return resumed.IsSuccess
-                    ? await RecoverAsync(heldInstallationLock, guardedDirectory, cancellationToken)
+                    ? await RecoverAsync(heldInstallationLock, guardedDirectory, CancellationToken.None)
                         .ConfigureAwait(false)
                     : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
             }
@@ -883,6 +885,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
             }
 
+            // The normalizing rename landed: retirement and reauthentication run to completion.
             Result retired = await _files.CompleteRetirementAsync(
                     heldInstallationLock,
                     location,
@@ -890,7 +893,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                     predecessor.Value.FileMetadata,
                     evidence.Working.Bytes,
                     requireCanonicalAfter: true,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (retired.IsFailure)
@@ -899,7 +902,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             }
 
             Result<GrimoireOfflineTransitionJournalPublication> revalidated =
-                await ReauthenticateCanonicalAsync(location, workingOneAhead.Value, cancellationToken)
+                await ReauthenticateCanonicalAsync(location, workingOneAhead.Value, CancellationToken.None)
                     .ConfigureAwait(false);
 
             if (revalidated.IsFailure)
@@ -963,7 +966,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 .ConfigureAwait(false);
 
             Result<GrimoireOfflineTransitionJournalPublication> revalidated = completed.IsSuccess
-                ? await ReauthenticateCanonicalAsync(location, canonical.Value, cancellationToken)
+                ? await ReauthenticateCanonicalAsync(location, canonical.Value, CancellationToken.None)
                     .ConfigureAwait(false)
                 : RecoveryRequired<GrimoireOfflineTransitionJournalPublication>();
 
@@ -1015,7 +1018,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
             }
 
             Result<GrimoireOfflineTransitionJournalPublication> revalidated =
-                await ReauthenticateCanonicalAsync(location, oneAhead.Value, cancellationToken)
+                await ReauthenticateCanonicalAsync(location, oneAhead.Value, CancellationToken.None)
                     .ConfigureAwait(false);
 
             if (revalidated.IsFailure)
@@ -1163,6 +1166,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             if (canonicalPublicationMatches.Value)
             {
+                // The anchor is Closed: the file it closed is retired to completion.
                 return await _files.CompleteRetirementAsync(
                         heldInstallationLock,
                         terminal.Location,
@@ -1170,7 +1174,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                         evidence.Canonical.Metadata,
                         evidence.Canonical.Bytes,
                         requireCanonicalAfter: false,
-                        cancellationToken)
+                        CancellationToken.None)
                     .ConfigureAwait(false);
             }
 
@@ -1193,6 +1197,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
 
             if (retiringPublicationMatches.Value)
             {
+                // The anchor is Closed: the file it closed is retired to completion.
                 return await _files.CompleteRetirementAsync(
                         heldInstallationLock,
                         terminal.Location,
@@ -1200,7 +1205,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                         evidence.Retiring.Metadata,
                         evidence.Retiring.Bytes,
                         requireCanonicalAfter: false,
-                        cancellationToken)
+                        CancellationToken.None)
                     .ConfigureAwait(false);
             }
 

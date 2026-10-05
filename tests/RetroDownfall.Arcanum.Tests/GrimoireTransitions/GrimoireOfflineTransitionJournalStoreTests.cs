@@ -2123,6 +2123,68 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Advance_cancelled_after_file_publish_still_returns_the_published_revision()
+    {
+        GrimoireOfflineTransitionJournalPublication first = await BeginAsync(ReadyStore());
+
+        using CancellationTokenSource cancellation = new();
+
+        GrimoireOfflineTransitionJournalStore store = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(afterStep: step =>
+            {
+                if (step == "file:residue-absence-proved")
+                {
+                    cancellation.Cancel();
+                }
+            }),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        GrimoireOfflineTransitionJournalPublication second = Value(await store.AdvanceAsync(
+            _lock,
+            first,
+            Bytes("second"),
+            cancellation.Token));
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.Equal(2UL, second.Anchor.Revision);
+
+        Assert.Equal(
+            second.Anchor,
+            Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(first.Location)));
+    }
+
+    [Fact]
+    public async Task Retire_cancelled_after_anchor_closed_still_completes()
+    {
+        GrimoireOfflineTransitionJournalPublication terminal = await BeginAsync(ReadyStore());
+
+        using CancellationTokenSource cancellation = new();
+
+        GrimoireOfflineTransitionJournalStore store = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials, afterStep: step =>
+            {
+                if (step == "anchor:closed-readback")
+                {
+                    cancellation.Cancel();
+                }
+            }));
+
+        Result retired = await store.RetireAsync(_lock, terminal, cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(retired.IsSuccess, retired.IsFailure ? retired.Error.Code : "success");
+
+        Assert.False(File.Exists(terminal.Location.JournalPath));
+
+        Assert.True(new GrimoireOfflineTransitionJournalFileStore().RequireNoEvidence(terminal.Location).IsSuccess);
+    }
+
+    [Fact]
     public async Task Retire_propagates_an_unavailable_key_during_active_publication_match()
     {
         GrimoireOfflineTransitionJournalStore setup = ReadyStore();

@@ -966,11 +966,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 return RecoveryRequired();
             }
 
+            // The working file already moved: the rereads proving where it landed run to completion.
             Result<GrimoireOfflineTransitionJournalFileRead> rereadCanonical = await ReadAsync(
                     primitives,
                     canonical,
                     location.JournalLeaf,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (rereadCanonical.IsFailure)
@@ -984,7 +985,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                     primitives,
                     previous,
                     location.PreviousLeaf,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (rereadPrevious.IsFailure)
@@ -1274,11 +1275,12 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
                 return RecoveryRequired();
             }
 
+            // Past the move to the retiring name, the reread and unlink run to completion.
             Result<GrimoireOfflineTransitionJournalFileRead> reread = await ReadAsync(
                     primitives,
                     retiring,
                     location.RetiringLeaf,
-                    cancellationToken)
+                    CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (reread.IsFailure)
