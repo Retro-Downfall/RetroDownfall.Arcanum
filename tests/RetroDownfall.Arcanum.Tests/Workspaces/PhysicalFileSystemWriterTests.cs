@@ -461,6 +461,80 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.False(Directory.Exists(Path.Combine(hooks, "planted")));
     }
 
+    /// <summary>
+    /// <c>ws/pending -> missing-dir</c> is an in-workspace link whose target does not exist, so containment
+    /// accepts the path but <c>mkdir</c> cannot create through it. The write route names that as
+    /// <c>Workspace.PathIsFile</c> (an existing non-directory entry where a directory is needed) instead of a
+    /// generic 500 I/O failure, and creates nothing at the link's target.
+    /// </summary>
+    [SkippableFact]
+    public async Task WriteFileAsync_through_a_dangling_in_workspace_link_is_refused_as_path_is_file()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink creation requires elevation on Windows.");
+
+        Directory.CreateSymbolicLink(Path.Combine(_workspace.Root, "pending"), "missing-dir");
+
+        Result<FileWriteResult> result = await CreateWriter().WriteFileAsync(
+            MakeWorkspace(),
+            "pending/deeper/new.txt",
+            "content",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathIsFile", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "missing-dir")));
+    }
+
+    /// <summary>
+    /// The directory route already refuses the dangling link itself (an existing entry where the directory
+    /// would go); a directory spelled below it reached the generic I/O failure instead.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("pending")]
+    [InlineData("pending/child")]
+    public async Task CreateDirectoryAsync_at_or_below_a_dangling_in_workspace_link_is_refused_as_path_is_file(
+        string relativePath)
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink creation requires elevation on Windows.");
+
+        Directory.CreateSymbolicLink(Path.Combine(_workspace.Root, "pending"), "missing-dir");
+
+        Result<DirectoryCreateResult> result = await CreateWriter().CreateDirectoryAsync(
+            MakeWorkspace(),
+            relativePath,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathIsFile", result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "missing-dir")));
+    }
+
+    [Fact]
+    public async Task WriteFileAsync_below_an_existing_file_is_refused_as_path_is_file()
+    {
+        string notes = _workspace.WriteFile("notes.txt", "notes");
+
+        Result<FileWriteResult> result = await CreateWriter().WriteFileAsync(
+            MakeWorkspace(),
+            "notes.txt/new.txt",
+            "content",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathIsFile", result.Error.Code);
+
+        Assert.Equal("notes", await File.ReadAllTextAsync(notes));
+    }
+
     [Fact]
     public async Task WriteFileAsync_rejects_content_exceeding_MaxFileWriteSizeBytes()
     {

@@ -240,6 +240,58 @@ internal static class WorkspacePathPolicy
     }
 
     /// <summary>
+    /// Reports whether an existing entry at or above <paramref name="directoryPath"/>, below the workspace root,
+    /// stops that directory from being created: an entry that is not a directory, or a symbolic link that does
+    /// not lead to one (for example an in-workspace link whose target does not exist, which <c>mkdir</c> never
+    /// creates through). The canonical walk keeps the first missing component and everything after it
+    /// lexically, so such a path passes containment and only the directory creation fails; writers use this to
+    /// name that cause instead of a generic I/O error. It only observes and never decides containment.
+    /// </summary>
+    internal static bool HasEntryBlockingDirectoryCreation(string workspaceRootFull, string directoryPath)
+    {
+        string root;
+
+        string candidate;
+
+        try
+        {
+            root = Path.GetFullPath(workspaceRootFull);
+
+            candidate = Path.GetFullPath(directoryPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or SecurityException)
+        {
+            return false;
+        }
+
+        if (!IsPathUnderWorkspace(root, candidate))
+        {
+            return false;
+        }
+
+        string current = Path.TrimEndingDirectorySeparator(root);
+
+        foreach (string part in SplitComponents(SuffixUnder(root, candidate)))
+        {
+            current = Path.Join(current, part);
+
+            if (!TryClassifyNoFollow(current, out PathEntryKind kind, out _)
+                || kind == PathEntryKind.Missing)
+            {
+                return false;
+            }
+
+            if (kind == PathEntryKind.NonDirectory
+                || (kind == PathEntryKind.SymbolicLink && !Directory.Exists(current)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Post-open containment: asks the kernel where <paramref name="handle"/> lives and checks that path
     /// against the kernel's own path for the canonical workspace root. Neither side uses the string the
     /// handle was opened with, so a link swapped in after validation, or an object moved out of the

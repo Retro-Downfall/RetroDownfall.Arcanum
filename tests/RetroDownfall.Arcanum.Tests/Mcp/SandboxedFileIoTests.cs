@@ -1162,6 +1162,62 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         AssertSandboxError(error);
     }
 
+    /// <summary>
+    /// <c>ws/pending -> missing-dir</c> is an in-workspace link whose target does not exist. Containment
+    /// accepts a write spelled through it, because the canonical walk keeps the missing target lexically
+    /// and it stays under the root, but <c>mkdir</c> never creates through a dangling link. The write must
+    /// say so instead of reporting a generic I/O error, and must create nothing at the link's target.
+    /// </summary>
+    [SkippableFact]
+    public async Task TryWriteAllTextAtomicallyAsync_through_a_dangling_in_workspace_link_names_the_link_and_creates_nothing()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string link = Path.Combine(_workspace.Root, "pending");
+
+        Directory.CreateSymbolicLink(link, "missing-dir");
+
+        (bool success, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                Path.Combine(link, "deeper", "new.txt"),
+                "content",
+                CancellationToken.None);
+
+        Assert.False(success);
+
+        AssertBlockedParentError(error);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "missing-dir")));
+
+        Assert.Equal("missing-dir", new DirectoryInfo(link).LinkTarget);
+    }
+
+    /// <summary>
+    /// The same refusal when the blocking component is an ordinary file: <c>notes.txt/new.txt</c> passes
+    /// containment (nothing exists below a file) and then cannot have its parent created.
+    /// </summary>
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_below_an_existing_file_names_the_file_and_leaves_it_untouched()
+    {
+        string notes = _workspace.WriteFile("notes.txt", "notes");
+
+        (bool success, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                Path.Combine(notes, "new.txt"),
+                "content",
+                CancellationToken.None);
+
+        Assert.False(success);
+
+        AssertBlockedParentError(error);
+
+        Assert.Equal("notes", await File.ReadAllTextAsync(notes));
+    }
+
     // Real metadata for paths the seam is not simulating. Resolved through the no-follow probe,
     // which has its own seam, so this never has to unset (and race with) the seam it is called from.
     // Every path in these tests is a regular file, where the two probes agree.
@@ -1195,6 +1251,20 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         McpToolContentTextWire content = Assert.IsType<McpToolContentTextWire>(Assert.Single(error.Content!));
 
         Assert.Contains("sandbox", content.Text!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AssertBlockedParentError(McpToolsCallResultWire? error)
+    {
+        Assert.NotNull(error);
+
+        Assert.True(error!.IsError);
+
+        McpToolContentTextWire content = Assert.IsType<McpToolContentTextWire>(Assert.Single(error.Content!));
+
+        Assert.Contains(
+            "an existing file or a symbolic link that does not lead to a directory",
+            content.Text!,
+            StringComparison.Ordinal);
     }
 
     private sealed class ReportedNameFileStream(string path, string reportedName)

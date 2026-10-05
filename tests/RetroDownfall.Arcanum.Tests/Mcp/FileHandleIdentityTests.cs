@@ -744,6 +744,26 @@ public sealed class FileHandleIdentityTests : IDisposable
         Assert.Null(kernelPath);
     }
 
+    /// <summary>
+    /// A host whose libc lacks <c>proc_pidfdinfo</c>, or whose kernel32 lacks
+    /// <c>GetFinalPathNameByHandleW</c>, makes the P/Invoke throw rather than return an error code. The
+    /// query must still answer "cannot name this handle" so the containment check fails closed with a
+    /// refusal instead of an unhandled exception escaping into the tool or request pipeline.
+    /// </summary>
+    [Fact]
+    public void IsKernelPathQueryFailure_TreatsAMissingNativeEntryPointAsAFailedQuery()
+    {
+        Assert.True(FileHandleIdentityInterop.IsKernelPathQueryFailure(new DllNotFoundException("libc")));
+
+        Assert.True(FileHandleIdentityInterop.IsKernelPathQueryFailure(new EntryPointNotFoundException("proc_pidfdinfo")));
+
+        Assert.True(FileHandleIdentityInterop.IsKernelPathQueryFailure(new ObjectDisposedException("handle")));
+
+        Assert.True(FileHandleIdentityInterop.IsKernelPathQueryFailure(new IOException()));
+
+        Assert.False(FileHandleIdentityInterop.IsKernelPathQueryFailure(new InvalidOperationException()));
+    }
+
     [Theory]
     [InlineData(@"\\?\C:\work\file.txt", @"C:\work\file.txt")]
     [InlineData(@"\\?\UNC\server\share\file.txt", @"\\server\share\file.txt")]

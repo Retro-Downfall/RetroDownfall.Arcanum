@@ -80,11 +80,7 @@ internal static partial class FileHandleIdentityInterop
 
             return false;
         }
-        catch (Exception exception) when (
-            exception is ObjectDisposedException
-                or IOException
-                or UnauthorizedAccessException
-                or ArgumentException)
+        catch (Exception exception) when (IsKernelPathQueryFailure(exception))
         {
             path = null;
 
@@ -98,6 +94,21 @@ internal static partial class FileHandleIdentityInterop
             }
         }
     }
+
+    /// <summary>
+    /// The exceptions <see cref="TryGetHandleKernelPath"/> reports as "the kernel cannot name this handle"
+    /// rather than letting them escape into the caller's containment check. A host whose libc lacks
+    /// <c>proc_pidfdinfo</c>, or whose kernel32 lacks <c>GetFinalPathNameByHandleW</c>, makes the P/Invoke
+    /// throw <see cref="DllNotFoundException"/> or <see cref="EntryPointNotFoundException"/>; that is a failed
+    /// query too, so the caller refuses the handle instead of surfacing an unhandled exception.
+    /// </summary>
+    internal static bool IsKernelPathQueryFailure(Exception exception) =>
+        exception is ObjectDisposedException
+            or IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or DllNotFoundException
+            or EntryPointNotFoundException;
 
     private static unsafe bool TryGetMacOsHandleKernelPath(
         SafeFileHandle handle,
@@ -246,7 +257,9 @@ internal static partial class FileHandleIdentityInterop
         return finalPath;
     }
 
-    [LibraryImport("libc", EntryPoint = "proc_pidfdinfo", SetLastError = true)]
+    // Neither import sets SetLastError: every failure is reported as "cannot name this handle" from the return
+    // value alone, so the error code is never read and capturing it would only add marshalling work.
+    [LibraryImport("libc", EntryPoint = "proc_pidfdinfo")]
     private static unsafe partial int ProcPidFdInfo(
         int processId,
         int descriptor,
@@ -254,10 +267,7 @@ internal static partial class FileHandleIdentityInterop
         byte* buffer,
         int bufferSize);
 
-    [LibraryImport(
-        "kernel32.dll",
-        EntryPoint = "GetFinalPathNameByHandleW",
-        SetLastError = true)]
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW")]
     private static unsafe partial uint GetFinalPathNameByHandle(
         SafeFileHandle file,
         char* filePath,
