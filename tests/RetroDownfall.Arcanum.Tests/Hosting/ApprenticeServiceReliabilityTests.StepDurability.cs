@@ -147,6 +147,43 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.Equal(sessionId, repo.Get(apprenticeId).SessionId);
     }
 
+    [Fact]
+    public async Task RunApprenticeAsync_NonCancellationFaultAfterOperatorCancel_KeepsCancelledStatus()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        InMemoryApprenticeRepository repo = new(RunningApprenticeWithOneStep(apprenticeId));
+
+        FaultOnAbortIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await intelligence.StreamReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Result<string> cancelled = await service.CancelAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(cancelled.IsSuccess, cancelled.IsFailure ? cancelled.Error.Message : null);
+
+        // The abort surfaces as an ordinary fault only after the operator's Cancelled is durable.
+        intelligence.AllowFault.TrySetResult();
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice persisted = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Cancelled.ToString(), persisted.Status);
+
+        Assert.Null(persisted.ErrorMessage);
+    }
+
     private static void AssertStepCommittedThenPaused(Apprentice persisted)
     {
         Assert.Equal(ApprenticeStatus.Paused.ToString(), persisted.Status);
@@ -217,6 +254,48 @@ public sealed partial class ApprenticeServiceReliabilityTests
         UpdatedAt = source.UpdatedAt,
         ParentApprenticeId = source.ParentApprenticeId,
     };
+
+    /// <summary>
+    /// A step stream whose transport, once the execution is aborted, fails with an ordinary exception
+    /// rather than an <see cref="OperationCanceledException"/>.
+    /// </summary>
+    private sealed class FaultOnAbortIntelligence : IArcanumIntelligenceProvider
+    {
+        internal TaskCompletionSource StreamReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowFault { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            StreamReached.TrySetResult();
+
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                await AllowFault.Task;
+
+                throw new InvalidOperationException("The provider transport was torn down by the abort.");
+            }
+
+            yield break;
+        }
+    }
 
     /// <summary>
     /// One successful step stream followed by a Shifting Fate evaluation that honours its token the way

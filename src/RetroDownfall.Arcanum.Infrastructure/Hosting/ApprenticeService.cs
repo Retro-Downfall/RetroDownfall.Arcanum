@@ -2144,6 +2144,11 @@ internal sealed class ApprenticeService(
         internal CastSendingSettlement CastSendings { get; } = new();
     }
 
+    /// <summary>
+    /// Records the run's own failure, and only over a row the run still owns: a fault raised by the abort
+    /// an operator's Pause or Cancel caused must never overwrite that operator's disposition with
+    /// <c>Failed</c>.
+    /// </summary>
     private async Task FailApprenticeAsync(
         IApprenticeRepository repo,
         Apprentice apprentice,
@@ -2153,11 +2158,20 @@ internal sealed class ApprenticeService(
     {
         string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(errorMessage);
 
+        int observedStep = apprentice.CurrentStep;
+
         apprentice.Status = ApprenticeStatus.Failed.ToString();
 
         apprentice.ErrorMessage = sanitized;
 
-        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+        if (!await repo
+                .TryUpdateAsync(apprentice, ExecutingStatuses, observedStep, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            LogOperatorDispositionKept(apprenticeId, ApprenticeStatus.Failed);
+
+            return;
+        }
 
         Publish(apprenticeId, new ApprenticeEvent
         {
