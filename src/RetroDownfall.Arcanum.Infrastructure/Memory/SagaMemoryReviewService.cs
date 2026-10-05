@@ -417,6 +417,18 @@ internal sealed class SagaMemoryReviewService(
         {
             return await ApplyCoreAsync(request, cancellationToken).ConfigureAwait(false);
         }
+        catch (InvalidDataException failure)
+        {
+            // Persisted state the review depends on is missing (a head update that produced no review
+            // event, a marker that cannot be reread). A retry cannot succeed, which is the one thing the
+            // operator needs to know and the write-failed answer would hide. The transaction already
+            // rolled back, and the line is as content-free as the other arm.
+            logger.LogError(
+                "Saga memory review apply found damaged review state: {FailureType}.",
+                failure.GetType());
+
+            return Result<MemoryReviewBulkResultDto>.Failure(IntegrityFailure);
+        }
         catch (Exception failure) when (failure is not OperationCanceledException
             and not GrimoireMaintenanceUnavailableException)
         {

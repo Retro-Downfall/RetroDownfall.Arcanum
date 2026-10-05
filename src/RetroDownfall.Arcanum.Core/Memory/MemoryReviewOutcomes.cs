@@ -6,12 +6,15 @@ namespace RetroDownfall.Arcanum.Core.Memory;
 /// <remarks>
 /// One set for Saga, Lexicon, and Covenant, spelled in PascalCase, and enumerated in API §8.34. Before it
 /// existed each store invented its own strings and Lexicon mixed casings (<c>corrected</c> beside
-/// <c>AlreadyRetired</c>), so a client that switched on an outcome had to know which store answered.
+/// <c>AlreadyRetired</c>), so a client that switched on an outcome had to know which store answered. A
+/// decision that finds its target already in the state it asked for reports <see cref="NoOp"/>: one
+/// spelling per action, the same in every store.
 ///
 /// <para>Receipts persist the spelling they were written with, and a replay must keep accepting what an
-/// earlier build wrote. <see cref="FromPersisted"/> is that reader: a closed spelling maps to itself and
-/// the lowercase Lexicon spellings older builds persisted map to their closed equivalents. Nothing
-/// <em>writes</em> a spelling outside <see cref="All"/>.</para>
+/// earlier build wrote. <see cref="FromPersisted"/> is that reader for the lowercase Lexicon spellings
+/// older builds persisted, which map to their closed equivalents; Covenant's replay additionally reads the
+/// <c>NoChange</c> word it persisted for every no-op, and reports <see cref="NoOp"/> for the action.
+/// Nothing <em>writes</em> a spelling outside <see cref="All"/>.</para>
 /// </remarks>
 public static class MemoryReviewOutcomes
 {
@@ -32,9 +35,6 @@ public static class MemoryReviewOutcomes
 
     /// <summary>A <c>Correct</c> carried the content the memory already holds, so it wrote nothing.</summary>
     public const string Unchanged = "Unchanged";
-
-    /// <summary>A write that Covenant found would change nothing, so it wrote nothing.</summary>
-    public const string NoChange = "NoChange";
 
     /// <summary>A <c>Retire</c> found the memory already retired.</summary>
     public const string AlreadyRetired = "AlreadyRetired";
@@ -57,7 +57,6 @@ public static class MemoryReviewOutcomes
         Pinned,
         Unpinned,
         Unchanged,
-        NoChange,
         AlreadyRetired,
         AlreadyPinned,
         NotPinned,
@@ -73,6 +72,27 @@ public static class MemoryReviewOutcomes
             MemoryReviewAction.Retire => Retired,
             MemoryReviewAction.Pin => Pinned,
             MemoryReviewAction.Unpin => Unpinned,
+            _ => throw new ArgumentOutOfRangeException(nameof(action)),
+        };
+
+    /// <summary>
+    /// The outcome of an action that found its target already in the state it asked for, so it wrote nothing.
+    /// </summary>
+    /// <remarks>
+    /// One spelling per action for every store, so a client that switches on an outcome never has to know
+    /// which store answered. A <c>Confirm</c> is always recorded, so it has no such outcome.
+    /// </remarks>
+    public static string NoOp(MemoryReviewAction action) =>
+        action switch
+        {
+            MemoryReviewAction.Correct => Unchanged,
+            MemoryReviewAction.Retire => AlreadyRetired,
+            MemoryReviewAction.Pin => AlreadyPinned,
+            MemoryReviewAction.Unpin => NotPinned,
+            MemoryReviewAction.Confirm => throw new ArgumentOutOfRangeException(
+                nameof(action),
+                action,
+                "A Confirm is always recorded, so it has no no-op outcome."),
             _ => throw new ArgumentOutOfRangeException(nameof(action)),
         };
 

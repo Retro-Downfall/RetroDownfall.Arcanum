@@ -583,6 +583,8 @@ public sealed class SagaMemoryReviewServiceTests
 
         Assert.Equal("Unchanged", item.Outcome);
 
+        Assert.Equal(MemoryReviewOutcomes.NoOp(MemoryReviewAction.Correct), item.Outcome);
+
         Assert.Null(item.ResultingVersionId);
 
         Assert.Equal(observed.EventSequence, first.Value.ReviewedThroughEventSequence);
@@ -666,6 +668,8 @@ public sealed class SagaMemoryReviewServiceTests
         MemoryReviewBulkItemResultDto item = Assert.Single(first.Value.Items);
 
         Assert.Equal("AlreadyRetired", item.Outcome);
+
+        Assert.Equal(MemoryReviewOutcomes.NoOp(MemoryReviewAction.Retire), item.Outcome);
 
         Assert.Null(item.ResultingVersionId);
 
@@ -1033,6 +1037,72 @@ public sealed class SagaMemoryReviewServiceTests
     }
 
     /// <summary>
+    /// R-171: an integrity throw inside the apply (a head update that produced no review event) was
+    /// reported as <c>Saga.WriteFailed</c> with "Nothing was written", which loses the one classification
+    /// an operator needs: the stored state is damaged, so a retry cannot succeed. It answers the review
+    /// integrity failure, content-free and logged once, with the transaction rolled back.
+    /// </summary>
+    [SkippableFact]
+    public async Task Apply_classifies_a_head_update_without_its_review_event_as_an_integrity_failure()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        DateTimeOffset created = DateTimeOffset.Parse(
+            "2026-09-28T12:00:00Z",
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        await InsertAsync(harness, "m-1", "first", created).ConfigureAwait(false);
+
+        ReviewRuntime runtime = CreateRuntime(harness);
+
+        SagaReviewItemDto item = Assert.Single((await runtime.Service.ListAsync(
+            new SagaReviewListRequest(SagaMemoryScopeKind.Global, null, 10, null),
+            CancellationToken.None).ConfigureAwait(false)).Value.Items);
+
+        SagaReviewBulkPrepareRequest request = new(
+            Guid.Parse("BBBBBBBB-1111-2222-3333-444444444444"),
+            SagaMemoryScopeKind.Global,
+            CampaignId: null,
+            MemoryReviewAction.Correct,
+            [new SagaReviewDecision(item.ObservationToken, "second")]);
+
+        Result<MemoryReviewBulkPlanDto> plan = await runtime.Service.PrepareAsync(
+            request,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(plan.IsSuccess, plan.Error.Message);
+
+        // The triggers are what turn a head write into its review event; without them the write lands and
+        // the review event the apply then reads for the receipt does not exist.
+        await ExecuteRawAsync(harness, "DROP TRIGGER annal_review_events_head_insert").ConfigureAwait(false);
+
+        await ExecuteRawAsync(harness, "DROP TRIGGER annal_review_events_head_update").ConfigureAwait(false);
+
+        Result<MemoryReviewBulkResultDto> failed = await runtime.Service.ApplyAsync(
+            new SagaReviewBulkApplyRequest(request, plan.Value.PreparedPlanToken),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(failed.IsFailure);
+
+        Assert.Equal(ErrorCodes.MemoryReview.IntegrityFailure, failed.Error.Code);
+
+        Assert.DoesNotContain("Nothing was written", failed.Error.Message, StringComparison.Ordinal);
+
+        TestLogEntry logged = Assert.Single(runtime.Logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.Null(logged.Exception);
+
+        Assert.DoesNotContain("m-1", logged.Message, StringComparison.Ordinal);
+
+        Assert.Equal("first", (await harness.Store.ReadCurationRowAsync(
+            "m-1",
+            CancellationToken.None).ConfigureAwait(false))!.Memory.Content);
+
+        Assert.Equal(0, await harness.CountAsync("annal_review_decision_receipts", "1 = 1").ConfigureAwait(false));
+    }
+
+    /// <summary>
     /// R-025: the same atomicity when the later decision fails by returning a failure rather than by
     /// throwing. The memory's stored content drifted from its Annals head after the plan was prepared,
     /// so correcting it back to the head's content appends nothing and that decision reports an
@@ -1087,6 +1157,11 @@ public sealed class SagaMemoryReviewServiceTests
             CancellationToken.None).ConfigureAwait(false);
 
         Assert.True(applied.IsFailure);
+
+        // The failure has to be the one this test exists to reach. A drift check added before the loop
+        // would refuse the batch earlier, with another code, and leave this test green without ever
+        // exercising the rollback of an applied correction.
+        Assert.Equal(ErrorCodes.MemoryReview.IntegrityFailure, applied.Error.Code);
 
         await AssertNothingChangedSinceAsync(harness, before, "m-2", "second").ConfigureAwait(false);
 

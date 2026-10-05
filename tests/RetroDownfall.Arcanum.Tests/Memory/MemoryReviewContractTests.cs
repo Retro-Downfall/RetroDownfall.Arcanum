@@ -19,12 +19,14 @@ public sealed class MemoryReviewContractTests
 
     /// <summary>
     /// R-172: each store used to invent its own per-item outcome strings, and Lexicon mixed casings
-    /// (<c>corrected</c> beside <c>AlreadyRetired</c>). Every outcome is now one member of a single closed,
-    /// PascalCase set that API §8.34 enumerates, and receipts persisted with an earlier build's lowercase
-    /// spelling still read back as that set.
+    /// (<c>corrected</c> beside <c>AlreadyRetired</c>). The vocabulary every store writes from is one
+    /// closed, PascalCase set, and receipts persisted with an earlier build's lowercase spelling still read
+    /// back as that set. This is the helper's contract; that each store reports only members of it is pinned
+    /// in the store's own tests (<c>MemoryCrossStoreIsolationTests</c> for applied outcomes, and the
+    /// no-op tests of each review service for the per-action no-op spellings below).
     /// </summary>
     [Fact]
-    public void Every_store_reports_outcomes_from_one_closed_vocabulary()
+    public void The_outcome_helpers_define_one_closed_pascal_case_vocabulary_and_read_legacy_spellings()
     {
         Assert.Equal(MemoryReviewOutcomes.All.Count, MemoryReviewOutcomes.All.Distinct(StringComparer.Ordinal).Count());
 
@@ -62,6 +64,59 @@ public sealed class MemoryReviewContractTests
         Assert.Null(MemoryReviewOutcomes.FromPersisted(null));
 
         Assert.False(MemoryReviewOutcomes.IsKnown("corrected"));
+    }
+
+    /// <summary>
+    /// R-172: a no-op used to be reported differently by each store (Covenant answered one word for every
+    /// no-op while Saga and Lexicon named the state the memory was already in), so a client had to know
+    /// which store answered. There is now one spelling per action, drawn from the closed set, and none of
+    /// them is the word an earlier Covenant persisted.
+    /// </summary>
+    [Fact]
+    public void Every_no_op_action_has_one_distinct_outcome_in_the_closed_set()
+    {
+        MemoryReviewAction[] noOpActions =
+        [
+            MemoryReviewAction.Correct,
+            MemoryReviewAction.Retire,
+            MemoryReviewAction.Pin,
+            MemoryReviewAction.Unpin,
+        ];
+
+        string[] outcomes = [.. noOpActions.Select(MemoryReviewOutcomes.NoOp)];
+
+        Assert.All(outcomes, static outcome => Assert.True(MemoryReviewOutcomes.IsKnown(outcome), outcome));
+
+        Assert.Equal(outcomes.Length, outcomes.Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Equal(
+            ["Unchanged", "AlreadyRetired", "AlreadyPinned", "NotPinned"],
+            outcomes);
+
+        // A Confirm is always recorded, so it has no no-op outcome to report.
+        _ = Assert.Throws<ArgumentOutOfRangeException>(static () => MemoryReviewOutcomes.NoOp(MemoryReviewAction.Confirm));
+
+        // The word an earlier Covenant persisted for every no-op is not a member any store writes now.
+        Assert.False(MemoryReviewOutcomes.IsKnown("NoChange"));
+    }
+
+    /// <summary>
+    /// R-172: API §8.34 says the closed set is enumerated there, so a member added to the code without the
+    /// section naming it (or the reverse) is a contract a client cannot read.
+    /// </summary>
+    [Fact]
+    public void The_api_reference_enumerates_every_outcome_of_the_closed_set()
+    {
+        string api = File.ReadAllText(
+            Path.Combine(RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(), "docs", "Arcanum.API.md"));
+
+        string paragraph = Assert.Single(
+            api.Split('\n'),
+            static line => line.StartsWith("**Per-item outcomes are one closed set.**", StringComparison.Ordinal));
+
+        Assert.All(
+            MemoryReviewOutcomes.All,
+            outcome => Assert.Contains($"`{outcome}`", paragraph, StringComparison.Ordinal));
     }
 
     /// <summary>
