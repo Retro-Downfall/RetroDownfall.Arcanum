@@ -359,9 +359,32 @@ internal static class CliApplicationFactory
 
         ArgumentNullException.ThrowIfNull(provider);
 
-        await using (provider.ConfigureAwait(false))
+        try
         {
             return await RunAsync(args, provider).ConfigureAwait(false);
+        }
+        finally
+        {
+            await DisposeProviderAfterTheCommandAsync(provider).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Releases the provider once the command has finished. A singleton whose release throws must
+    /// not replace the command's exit code (or the exception it is already unwinding with) with an
+    /// unhandled crash, so the failure is reported by type, never by message (an upstream message can
+    /// carry a secret or a path), and the command's own result stands.
+    /// </summary>
+    private static async Task DisposeProviderAfterTheCommandAsync(ServiceProvider provider)
+    {
+        try
+        {
+            await provider.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(
+                $"Releasing the CLI's services failed ({exception.GetType().FullName}); the command's own result stands.");
         }
     }
 

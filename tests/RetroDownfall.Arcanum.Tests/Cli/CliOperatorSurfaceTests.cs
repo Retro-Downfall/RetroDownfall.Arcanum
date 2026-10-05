@@ -644,6 +644,66 @@ public sealed class CliOperatorSurfaceTests
         Assert.True(probe.Disposed);
     }
 
+    /// <summary>
+    /// The provider is disposed after the command has finished, so a singleton whose release throws
+    /// must not replace the command's exit code with an unhandled crash. The failure is named by type
+    /// on stderr (its message can carry a path or a secret) and the command's own result stands.
+    /// </summary>
+    [Fact]
+    public async Task Run_and_dispose_keeps_the_command_result_when_a_service_fails_to_dispose()
+    {
+        const string Marker = ThrowingDisposalProbe.Marker;
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        // A type registration, not an instance: the container disposes only what it created.
+        services.AddSingleton<ThrowingDisposalProbe>();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        _ = provider.GetRequiredService<ThrowingDisposalProbe>();
+
+        TextWriter originalOut = Console.Out;
+
+        TextWriter originalError = Console.Error;
+
+        StringWriter error = new();
+
+        int exitCode;
+
+        try
+        {
+            Console.SetOut(new StringWriter());
+
+            Console.SetError(error);
+
+            exitCode = await CliApplicationFactory.RunAndDisposeProviderAsync(["--version"], provider);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+
+            Console.SetError(originalError);
+        }
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Contains(typeof(InvalidOperationException).FullName!, error.ToString(), StringComparison.Ordinal);
+
+        Assert.DoesNotContain(Marker, error.ToString(), StringComparison.Ordinal);
+    }
+
+    private sealed class ThrowingDisposalProbe : IDisposable
+    {
+        internal const string Marker = "marker-secret-path";
+
+        public void Dispose() => throw new InvalidOperationException(Marker);
+    }
+
     private sealed class ResolutionRecordingProvider(IServiceProvider inner) : IServiceProvider
     {
         public List<Type> Requested { get; } = [];
@@ -802,6 +862,9 @@ public sealed class CliOperatorSurfaceTests
     [InlineData(typeof(IOException))]
     [InlineData(typeof(UnauthorizedAccessException))]
     [InlineData(typeof(FileNotFoundException))]
+    [InlineData(typeof(DirectoryNotFoundException))]
+    [InlineData(typeof(PathTooLongException))]
+    [InlineData(typeof(DriveNotFoundException))]
     public void Map_names_a_local_file_access_failure_for_io_and_permission_faults(Type exceptionType)
     {
         Exception exception = (Exception)Activator.CreateInstance(exceptionType, "marker-secret-path")!;
@@ -813,6 +876,43 @@ public sealed class CliOperatorSurfaceTests
         Assert.Equal("Local file access failed. Check the path and its permissions.", failure.SafeMessage);
 
         Assert.DoesNotContain("marker-secret-path", failure.SafeMessage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A refusal to replace a saved context this build cannot use is an <see cref="IOException"/> whose
+    /// message is the operator-facing explanation. It keeps that message if it ever reaches the mapper
+    /// instead of being flattened to the file-permission hint or the catch-all.
+    /// </summary>
+    [Fact]
+    public void Map_keeps_the_operator_facing_message_of_a_context_refusal()
+    {
+        CliFailure failure = CliFailureMapper.Map(
+            new CliContextFileUnusableException("The saved CLI context at /x was left unchanged."));
+
+        Assert.Equal(CliExitCode.GenericError, failure.ExitCode);
+
+        Assert.Equal("The saved CLI context at /x was left unchanged.", failure.SafeMessage);
+    }
+
+    /// <summary>
+    /// An <see cref="IOException"/> is only a local file fault when the file system raised it. One that
+    /// wraps another failure is somebody else's: Kestrel reports a port that cannot be bound as an
+    /// <see cref="IOException"/> around the socket error, and `arcanum serve` has no catch of its own, so
+    /// the file-permission hint would send the operator to the wrong place. It stays an unrecognized
+    /// internal error, which `-v` still names by type.
+    /// </summary>
+    [Fact]
+    public void Map_does_not_blame_the_file_system_for_an_io_failure_that_wraps_another_failure()
+    {
+        IOException bindFailure = new(
+            "Failed to bind to address http://127.0.0.1:5000: address already in use.",
+            new System.Net.Sockets.SocketException(98));
+
+        CliFailure failure = CliFailureMapper.Map(bindFailure);
+
+        Assert.Equal(CliExitCode.GenericError, failure.ExitCode);
+
+        Assert.Equal("An unexpected CLI error occurred.", failure.SafeMessage);
     }
 
     /// <summary>

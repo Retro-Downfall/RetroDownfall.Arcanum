@@ -804,7 +804,7 @@ internal static class CliFailureMapper
             : exception switch
         {
             // HttpIOException derives from IOException but is a transport fault, so it has to be
-            // matched here, before the local-file arm below claims every IOException.
+            // matched here, before the local-file arm below can claim it.
             HttpRequestException or HttpIOException => new CliFailure(
                 CliExitCode.NetworkError,
                 "A network operation failed."),
@@ -820,15 +820,38 @@ internal static class CliFailureMapper
             OperationCanceledException => new CliFailure(
                 CliExitCode.Cancelled,
                 "The operation was cancelled."),
+            // A refusal to replace a saved context this build cannot use carries its own operator-facing
+            // explanation (the file, its format version and what to do), written for exactly this line.
+            CliContextFileUnusableException unusable => new CliFailure(
+                CliExitCode.GenericError,
+                unusable.Message),
             // The exception message of a file fault is a path the operator did not ask us to echo, so
             // the line names the class of failure only; `-v` adds the exception type.
-            IOException or UnauthorizedAccessException => new CliFailure(
+            _ when IsLocalFileFault(exception) => new CliFailure(
                 CliExitCode.GenericError,
                 "Local file access failed. Check the path and its permissions."),
             _ => new CliFailure(
                 CliExitCode.GenericError,
                 "An unexpected CLI error occurred."),
         };
+
+    /// <summary>
+    /// Whether the file system itself raised <paramref name="exception"/>: a permission refusal, a
+    /// missing file, directory or drive, a path that is too long, or an <see cref="IOException"/> the
+    /// runtime raised directly (a sharing violation, a full disk). An <see cref="IOException"/> that
+    /// wraps another failure is not one: Kestrel reports a port that cannot be bound as an
+    /// <see cref="IOException"/> around the socket error, and `arcanum serve` has no catch of its own, so
+    /// the file-permission hint would point the operator at the wrong thing.
+    /// </summary>
+    private static bool IsLocalFileFault(Exception exception) =>
+        exception is UnauthorizedAccessException
+            or FileNotFoundException
+            or DirectoryNotFoundException
+            or DriveNotFoundException
+            or PathTooLongException
+        || (exception is IOException
+            && exception.GetType() == typeof(IOException)
+            && exception.InnerException is null);
 
     /// <summary>
     /// The operator-facing message of a Grimoire startup refusal anywhere in the exception chain.
