@@ -241,6 +241,149 @@ public sealed class ProviderHealthProbeServiceTests
             static status => status.ProviderName == "kept-provider");
     }
 
+    /// <summary>
+    /// The scheduler's wait, not just the reconciliation it calls: the recovery interval (60 s by default) is the
+    /// longer, "do not hammer a down provider" wait, so a removed provider still counted as unhealthy would stretch
+    /// every pass from the 30 s normal interval to 60 s for the life of the host. The scheduler must pick its wait
+    /// from the reconciled answer, which only the loop itself can show.
+    /// </summary>
+    [Fact]
+    public async Task The_scheduler_waits_the_normal_interval_when_only_a_removed_provider_was_unhealthy()
+    {
+        RecordingTimerTimeProvider time = new();
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate admission = new(inner);
+
+        ProbeDouble probe = new(static _ => Task.FromResult(true));
+
+        ProviderHealthTracker tracker = new(NullLogger<ProviderHealthTracker>.Instance);
+
+        int threshold = ArcanumSettingClamps.HealthFailureThreshold(
+            ArcanumRuntimeDefaults.Resilience.HealthFailureThreshold);
+
+        for (int failure = 0; failure < threshold; failure++)
+        {
+            tracker.MarkFailed("removed-provider");
+        }
+
+        ProviderHealthProbeService service = CreateService(admission, probe, tracker, time, "kept-provider");
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitForAsync(() => time.RequestedDelays.Count >= 1);
+
+            Assert.Equal(
+                TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.HealthProbeIntervalSeconds(
+                        ArcanumRuntimeDefaults.Resilience.HealthProbeIntervalSeconds)),
+                time.RequestedDelays[0]);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task The_scheduler_waits_the_recovery_interval_while_a_configured_provider_is_unhealthy()
+    {
+        RecordingTimerTimeProvider time = new();
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate admission = new(inner);
+
+        ProbeDouble probe = new(static _ => Task.FromResult(false));
+
+        ProviderHealthTracker tracker = new(NullLogger<ProviderHealthTracker>.Instance);
+
+        int threshold = ArcanumSettingClamps.HealthFailureThreshold(
+            ArcanumRuntimeDefaults.Resilience.HealthFailureThreshold);
+
+        for (int failure = 0; failure < threshold; failure++)
+        {
+            tracker.MarkFailed("down-provider");
+        }
+
+        ProviderHealthProbeService service = CreateService(admission, probe, tracker, time, "down-provider");
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitForAsync(() => time.RequestedDelays.Count >= 1);
+
+            Assert.Equal(
+                TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.HealthRecoveryProbeIntervalSeconds(
+                        ArcanumRuntimeDefaults.Resilience.HealthRecoveryProbeIntervalSeconds)),
+                time.RequestedDelays[0]);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The condition was not reached.");
+
+            await Task.Delay(5);
+        }
+    }
+
+    /// <summary>
+    /// Records the wait every <c>Task.Delay(span, timeProvider, token)</c> asks for and never fires it, so a test can
+    /// read the interval the scheduler chose without waiting for it. Only the loop's own delay goes through it.
+    /// </summary>
+    private sealed class RecordingTimerTimeProvider : TimeProvider
+    {
+        private readonly object _gate = new();
+
+        private readonly List<TimeSpan> _requestedDelays = [];
+
+        internal IReadOnlyList<TimeSpan> RequestedDelays
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _requestedDelays];
+                }
+            }
+        }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            lock (_gate)
+            {
+                _requestedDelays.Add(dueTime);
+            }
+
+            return new NeverFiringTimer();
+        }
+
+        private sealed class NeverFiringTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
     [Fact]
     public async Task Unhealthy_configured_provider_keeps_the_recovery_interval()
     {
@@ -556,6 +699,7 @@ public sealed class ProviderHealthProbeServiceTests
             probe,
             tracker,
             new GrimoireConnectionAdmissionGate(TimeProvider.System),
+            TimeProvider.System,
             NullLogger<ProviderHealthProbeService>.Instance);
 
         await service.StartAsync(CancellationToken.None);
@@ -637,6 +781,14 @@ public sealed class ProviderHealthProbeServiceTests
         IGrimoireConnectionAdmissionGate admission,
         IProviderHealthProbe probe,
         IProviderHealthTracker tracker,
+        params string[] providerNames) =>
+        CreateService(admission, probe, tracker, TimeProvider.System, providerNames);
+
+    private static ProviderHealthProbeService CreateService(
+        IGrimoireConnectionAdmissionGate admission,
+        IProviderHealthProbe probe,
+        IProviderHealthTracker tracker,
+        TimeProvider time,
         params string[] providerNames)
     {
         ServiceCollection services = new();
@@ -659,6 +811,7 @@ public sealed class ProviderHealthProbeServiceTests
             }),
             probe,
             tracker,
+            time,
             NullLogger<ProviderHealthProbeService>.Instance);
     }
 

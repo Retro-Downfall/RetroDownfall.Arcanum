@@ -177,6 +177,46 @@ public sealed class UnseenServantServiceTests
         Assert.Same(replacement, activeJobTasks[taskId]);
     }
 
+    /// <summary>
+    /// The save outlives shutdown on purpose (R-182), so it must be bounded: a store that never answers cannot hold
+    /// host shutdown, and the job's own result stands without the watermark.
+    /// </summary>
+    [Fact]
+    public async Task A_watermark_save_that_never_finishes_is_abandoned_at_its_bound_and_logged()
+    {
+        await using UnseenServantAdmissionHarness harness = new();
+
+        _ = await harness.ConfigureDueJobAsync();
+
+        harness.Service.WatermarkSaveTimeout = TimeSpan.FromMilliseconds(100);
+
+        harness.OnStep = async (step, token) =>
+        {
+            if (step == "watermark")
+            {
+                // A store that never answers; only the bound's cancellation ends this.
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
+        };
+
+        harness.Dispatch(CancellationToken.None);
+
+        await Task.WhenAll(harness.ActiveTasks).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Empty(harness.Store.Rows);
+
+        Assert.Contains(
+            harness.Logger.Entries,
+            static entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Warning
+                && entry.Message.Contains("Failed to persist Unseen Servant watermark", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_production_watermark_save_bound_is_five_seconds()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(5), UnseenServantService.DefaultWatermarkSaveTimeout);
+    }
+
     [Fact]
     public async Task Watermark_is_saved_when_shutdown_is_requested_immediately_after_the_job_completes()
     {

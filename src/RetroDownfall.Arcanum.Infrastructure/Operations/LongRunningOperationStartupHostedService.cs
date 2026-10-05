@@ -40,7 +40,11 @@ internal sealed class LongRunningOperationStartupHostedService(
 
     private readonly CancellationTokenSource _shutdown = new();
 
+    private readonly object _stopGate = new();
+
     private Task? _backgroundTask;
+
+    private Task? _stopTask;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -92,7 +96,19 @@ internal sealed class LongRunningOperationStartupHostedService(
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Stops the background owner once. A second call returns the first call's outcome instead of cancelling a
+    /// source that a joined stop has already disposed, which would report a failure for a service that is stopped.
+    /// </summary>
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        lock (_stopGate)
+        {
+            return _stopTask ??= StopCoreAsync(cancellationToken);
+        }
+    }
+
+    private async Task StopCoreAsync(CancellationToken cancellationToken)
     {
         _ = cancellationToken;
 
@@ -164,9 +180,15 @@ internal sealed class LongRunningOperationStartupHostedService(
         Rethrow(cancellationFailure ?? backgroundFailure);
     }
 
-    private static void ObserveDetached(Task detached) =>
+    /// <summary>
+    /// A detached owner is no longer awaited, so a fault that arrives after the ceiling would otherwise vanish. The
+    /// background loop records its own failures, so this is the record of the one that escapes it.
+    /// </summary>
+    private void ObserveDetached(Task detached) =>
         _ = detached.ContinueWith(
-            static task => _ = task.Exception,
+            task => logger.LogError(
+                task.Exception,
+                "The detached durable-operation reconciliation owner failed after shutdown."),
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);

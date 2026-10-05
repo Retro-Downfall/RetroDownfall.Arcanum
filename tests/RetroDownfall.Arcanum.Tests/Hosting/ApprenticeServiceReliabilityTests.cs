@@ -2542,6 +2542,120 @@ public sealed partial class ApprenticeServiceReliabilityTests
         }
     }
 
+    /// <summary>
+    /// The Apprentice consequence of a revocation being a boundary signal, not a preemption (DESIGN 10.7, "Which
+    /// workers observe a maintenance revocation"): a step already in flight holds the effect group it won through its
+    /// provider call and cannot be interrupted, so maintenance waits for it up to the stage-one bound and then fails
+    /// the closure with <c>Grimoire.WorkDrainTimeout</c>; aborting that closure reopens admission and the step still
+    /// finishes normally. Until now only the gate half of that was pinned.
+    /// </summary>
+    [Fact]
+    public async Task MaintenanceDrainWithInFlightStep_FailsWithWorkDrainTimeoutAndReopens()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "In-flight step",
+            Goal = "Finish the step that maintenance could not interrupt.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Run through maintenance" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        BlockingSuccessfulStepIntelligence intelligence = new();
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        // A short stage-one bound on the real clock stands in for the five-second Grimoire.WorkDrainTimeout budget.
+        GrimoireConnectionAdmissionGate inner = new(
+            TimeProvider.System,
+            new RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantConnectionDrain(),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(200));
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        try
+        {
+            // The step is inside its provider call, holding the effect group it won.
+            await intelligence.StreamReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(1, gate.EffectGroupAttempts);
+
+            await using IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+            Result drained = await inner
+                .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(drained.IsFailure);
+
+            Assert.Equal("Grimoire.WorkDrainTimeout", drained.Error.Code);
+
+            // The step was not preempted: it is still in flight, its task live, its durable row untouched.
+            Assert.True(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(apprenticeId).Status);
+
+            Assert.Equal(0, repo.Get(apprenticeId).CurrentStep);
+
+            Assert.False(inner.TryAcquireWorkLease(GrimoireWorkKind.ApprenticeExecution, out IGrimoireWorkLease? refused));
+
+            Assert.Null(refused);
+
+            Result aborted = await inner.AbortClosingAsync(
+                closing,
+                static _ => ValueTask.FromResult(true),
+                CancellationToken.None);
+
+            Assert.True(aborted.IsSuccess, aborted.IsFailure ? aborted.Error.Message : null);
+
+            // Admission is open again while the step is still running.
+            Assert.True(inner.TryAcquireWorkLease(GrimoireWorkKind.ApprenticeExecution, out IGrimoireWorkLease? admitted));
+
+            await admitted!.DisposeAsync();
+
+            intelligence.AllowStream.TrySetResult();
+
+            await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+
+            Assert.Equal(1, repo.Get(apprenticeId).CurrentStep);
+
+            Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+        }
+        finally
+        {
+            intelligence.AllowStream.TrySetResult();
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     [Fact]
     public async Task KeepClosedWaitIsObservedByStop()
     {

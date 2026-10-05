@@ -56,9 +56,15 @@ internal sealed class UnseenServantService(
     private DateTimeOffset _lastIdempotencyCleanupUtc = DateTimeOffset.MinValue;
 
     /// <summary>
-    /// Upper bound for saving a watermark after a job returned; see <see cref="PersistWatermarkAsync"/>.
+    /// Code-owned upper bound for saving a watermark after a job returned; see <see cref="PersistWatermarkAsync"/>.
     /// </summary>
-    private static readonly TimeSpan WatermarkSaveTimeout = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan DefaultWatermarkSaveTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The bound in force. It is a property only so a test can shorten it to prove the save is abandoned at the
+    /// bound rather than waiting for a store that never answers; production leaves it at the default.
+    /// </summary>
+    internal TimeSpan WatermarkSaveTimeout { get; set; } = DefaultWatermarkSaveTimeout;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
