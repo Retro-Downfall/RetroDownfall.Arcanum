@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -10,6 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
@@ -215,6 +217,52 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         }
     }
 
+    /// <summary>Adds <paramref name="count"/> distinctly named chunks to the scope in one statement.</summary>
+    private async Task SeedBulkChunksAsync(int count)
+    {
+        System.Data.Common.DbConnection connection =
+            Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(_db!.Database);
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < @count)
+            INSERT INTO workspace_file_chunks
+                (ChunkId, WorkspacePath, RelativePath, ChunkIndex, Content, CharOffset, CharLength,
+                 StartLine, EndLine, FileLastWriteTime, IndexedAt)
+            SELECT printf('bulk-%06d', i), '/repo', printf('bulk%d.cs', i % 7), 0, 'bulk body number ' || i, 0, 10, 1, 3,
+                   '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            FROM n
+            """;
+
+        AddParameter(command, "@count", count);
+
+        _ = await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<int> CountAsync(string sql)
+    {
+        System.Data.Common.DbConnection connection =
+            Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(_db!.Database);
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return Convert.ToInt32(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
     {
         System.Data.Common.DbParameter parameter = command.CreateParameter();
@@ -341,6 +389,136 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.Equal(TapestryWeaveStatus.UpToDate, second.Status);
 
         Assert.Equal(callsAfterFirst, _summarizer.CallCount);
+    }
+
+    /// <summary>
+    /// An up-to-date tick is the overwhelmingly common one, and all it has to learn is that nothing changed.
+    /// The corpus fingerprint comes from the content hashes stored beside each leaf, so once the first weave
+    /// has stored them the tick never selects chunk text from the corpus table.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_UpToDateTickDoesNotReadChunkContent()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = CreateWeaver();
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        SqliteConnection connection = (SqliteConnection)Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(_db!.Database);
+
+        List<string> statements = [];
+
+        raw.sqlite3_trace(connection.Handle, (object _, string sql) => statements.Add(sql), null);
+
+        TapestryWeaveOutcome second;
+
+        try
+        {
+            second = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+        }
+        finally
+        {
+            raw.sqlite3_trace(connection.Handle, (strdelegate_trace)null!, null);
+        }
+
+        Assert.Equal(TapestryWeaveStatus.UpToDate, second.Status);
+
+        // The tick's fingerprint came from the stored hashes, and no statement it ran selects chunk text.
+        Assert.Contains(statements, static sql => sql.Contains("tapestry_leaf_hashes", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            statements,
+            static sql => sql.Contains("workspace_file_chunks", StringComparison.Ordinal)
+                && sql.Contains("\"Content\"", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A scope past the ceiling is refused by counting: nothing is read, hashed, embedded or summarized, no
+    /// generation is begun, and the outcome says why.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_ATooLargeScopeIsRefusedBeforeAnythingIsReadOrSpent()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedBulkChunksAsync(TapestryLimits.MaxLeavesPerScope + 1);
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.TooLarge, outcome.Status);
+
+        Assert.Null(outcome.GenerationId);
+
+        Assert.Equal(0, _summarizer!.CallCount);
+
+        Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM tapestry_generations"));
+
+        Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM tapestry_leaf_hashes"));
+
+        Assert.Contains("more than", _logger.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Growing past the ceiling stops the refresh, not the tree: the generation already published stays the
+    /// current one rather than being superseded by nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_AScopeThatGrowsPastTheCeilingKeepsItsPriorGenerationCurrent()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        TapestryWeaver weaver = CreateWeaver();
+
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        string published = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId;
+
+        await SeedBulkChunksAsync(TapestryLimits.MaxLeavesPerScope);
+
+        Assert.Equal(TapestryWeaveStatus.TooLarge, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
+
+        Assert.Equal(
+            published,
+            (await _store.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId);
+
+        Assert.Equal(1, await CountGenerationsWithStatusAsync("Complete"));
+    }
+
+    /// <summary>
+    /// Leaves arrive a page at a time, and a scope bigger than one page is still woven whole: every leaf,
+    /// from every page, is in the tree.
+    /// </summary>
+    [SkippableFact]
+    public async Task WeaveAsync_BuildsOverMoreThanOnePageOfLeaves()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        int leafCount = TapestryStore.LeafPageSize + 20;
+
+        await SeedBulkChunksAsync(leafCount);
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
+            Scope,
+            Settings(maxTreeDepth: 3, target: 8, maxChildren: 24),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        Assert.Equal(leafCount, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
+
+        Assert.Equal(
+            TapestryWeaveStatus.UpToDate,
+            (await CreateWeaver().WeaveAsync(
+                Scope,
+                Settings(maxTreeDepth: 3, target: 8, maxChildren: 24),
+                CancellationToken.None)).Status);
     }
 
     [SkippableFact]

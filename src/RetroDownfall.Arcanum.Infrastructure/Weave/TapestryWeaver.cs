@@ -56,23 +56,31 @@ internal sealed class TapestryWeaver(
 
         Bounds bounds = Bounds.From(embeddings);
 
-        // Fingerprint pass first, without the embedding join. The fingerprint decides whether this scope
-        // needs anything done at all, and it consumes only leaf ids and content hashes — so on the
-        // unchanged path (every sweep of a scope nobody has touched) this never reads or decodes a single
-        // embedding BLOB. The full corpus, embeddings included, is loaded below only once a rebuild is
-        // known to be necessary, where one extra pass is lost in the noise of clustering and model calls.
-        IReadOnlyList<TapestryLeafSource> fingerprintLeaves = await store
-            .EnumerateLeafSourcesAsync(scope, bounds.Dimensions, includeEmbeddings: false, cancellationToken)
+        // Identity pass first, from the content hashes the store keeps beside each leaf. The fingerprint
+        // decides whether this scope needs anything done at all, and it consumes only leaf ids and content
+        // hashes — so on the unchanged path (every sweep of a scope nobody has touched) this reads no chunk
+        // text and decodes no embedding BLOB. The corpus itself, embeddings included, is loaded below only
+        // once a rebuild is known to be necessary, where one extra pass is lost in the noise of clustering
+        // and model calls. A scope past the ceiling is refused here, by counting, before anything is loaded.
+        TapestryCorpusIdentity identity = await store
+            .GetCorpusIdentityAsync(scope, TapestryLimits.MaxLeavesPerScope, cancellationToken)
             .ConfigureAwait(false);
 
-        if (fingerprintLeaves.Count == 0)
+        if (identity.ExceedsCeiling)
+        {
+            LogTooLarge(scope);
+
+            return new TapestryWeaveOutcome(TapestryWeaveStatus.TooLarge);
+        }
+
+        if (identity.LeafCount == 0)
         {
             backoff.RecordSuccess(scope);
 
             return new TapestryWeaveOutcome(TapestryWeaveStatus.NoCorpus);
         }
 
-        string corpusFingerprint = TapestryHash.OfCorpus(fingerprintLeaves);
+        string corpusFingerprint = identity.Fingerprint;
 
         string settingsFingerprint = TapestryHash.OfSettings(
             bounds.MaxTreeDepth,
@@ -105,7 +113,7 @@ internal sealed class TapestryWeaver(
         // A corpus that needs any abstraction at all needs a summary model. Publishing a leaves-only
         // tree instead would add nothing over flat retrieval while still competing for the turn's
         // context budget, so the honest degradation is to contribute nothing.
-        if (summaryModel is null && fingerprintLeaves.Count > 1)
+        if (summaryModel is null && identity.LeafCount > 1)
         {
             logger.LogDebug(
                 "Tapestry weave skipped for {ScopeKind} {ScopeId}: no summary model is configured.",
@@ -141,11 +149,28 @@ internal sealed class TapestryWeaver(
             return new TapestryWeaveOutcome(TapestryWeaveStatus.BackingOff);
         }
 
-        // A rebuild is now certain, so pay for the full corpus — the same rows again, this time carrying
-        // each leaf's already-imprinted embedding so only genuinely new leaves cost an embedding call.
-        IReadOnlyList<TapestryLeafSource> leaves = await store
-            .EnumerateLeafSourcesAsync(scope, bounds.Dimensions, includeEmbeddings: true, cancellationToken)
-            .ConfigureAwait(false);
+        // A rebuild is now certain, so pay for the corpus's text — the same leaves again, this time carrying
+        // each one's already-imprinted embedding so only genuinely new leaves cost an embedding call. They
+        // arrive a page at a time, and the working set is bounded by the ceiling rather than by whatever the
+        // scope has grown to: clustering needs every vector and every summary prompt needs its leaves' text,
+        // so the ceiling is what keeps that in memory at all.
+        List<TapestryLeafSource> leaves = [];
+
+        await foreach (IReadOnlyList<TapestryLeafSource> page in store
+            .EnumerateLeafPagesAsync(scope, bounds.Dimensions, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            leaves.AddRange(page);
+
+            // The scope can grow between the identity pass and this one. Stop loading rather than holding
+            // more than the ceiling allows.
+            if (leaves.Count > TapestryLimits.MaxLeavesPerScope)
+            {
+                LogTooLarge(scope);
+
+                return new TapestryWeaveOutcome(TapestryWeaveStatus.TooLarge);
+            }
+        }
 
         if (leaves.Count == 0)
         {
@@ -217,6 +242,13 @@ internal sealed class TapestryWeaver(
             return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed);
         }
     }
+
+    private void LogTooLarge(TapestryScope scope) =>
+        logger.LogInformation(
+            "Tapestry weave skipped for {ScopeKind} {ScopeId}: the scope holds more than {Ceiling} leaves, so no tree is built or refreshed for it.",
+            scope.Kind,
+            scope.Id,
+            TapestryLimits.MaxLeavesPerScope);
 
     /// <summary>
     /// Identifies one build for the failure record: the corpus it covers, the tree-shaping settings, and

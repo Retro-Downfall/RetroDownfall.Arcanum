@@ -115,10 +115,16 @@ internal static class GrimoireSchemaVersionChains
     /// dash-free spelling, so no value is rewritten. Last, it adds <c>ux_tapestry_generations_complete_scope</c>, the
     /// partial unique index that makes the Tapestry's one-Complete-generation-per-scope invariant the schema's rather
     /// than the publishing statement's alone; one statement first supersedes every Complete generation of a scope but
-    /// the newest, so the index can be built over a pair the old switch left behind. It declares no sweep:
+    /// the newest, so the index can be built over a pair the old switch left behind. It also adds
+    /// <c>tapestry_leaf_hashes</c>, the per-leaf content hashes the Tapestry's sweep fingerprints a scope from
+    /// without reading its text, with one insert, one update and one delete trigger on each of
+    /// <c>workspace_file_chunks</c>, <c>session_attachment_chunks</c> and <c>Entries</c> that drop a leaf's hash
+    /// whenever its source row is inserted, rewritten or deleted. The table starts empty and is filled by the
+    /// Tapestry on first use, one scope at a time, so the step needs no backfill. It declares no sweep:
     /// the two file tables are small relative to the Entries family, no trigger or foreign key names either file
     /// column, the rewrite is one statement per column, the Tapestry repair is one statement over a derived table,
-    /// and an index is built inside the step's own transaction.</para>
+    /// the new table and its triggers are plain DDL over nothing, and an index is built inside the step's own
+    /// transaction.</para>
     /// </remarks>
     internal const int CoreSchemaVersion = 15;
 

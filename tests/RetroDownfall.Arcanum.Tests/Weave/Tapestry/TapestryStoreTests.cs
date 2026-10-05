@@ -136,6 +136,22 @@ public sealed class TapestryStoreTests : IAsyncLifetime
                 DateTimeOffset.UtcNow),
             Vec(0f, 1f));
 
+    /// <summary>Every leaf of a scope, collected from the pages the store streams them in.</summary>
+    private async Task<IReadOnlyList<TapestryLeafSource>> EnumerateLeavesAsync(TapestryScope scope)
+    {
+        List<TapestryLeafSource> leaves = [];
+
+        await foreach (IReadOnlyList<TapestryLeafSource> page in _store!.EnumerateLeafPagesAsync(
+            scope,
+            TestDimensions,
+            CancellationToken.None))
+        {
+            leaves.AddRange(page);
+        }
+
+        return leaves;
+    }
+
     private async Task SeedWorkspaceChunkAsync(string chunkId, string content)
     {
         DbConnection connection = _db!.Database.GetDbConnection();
@@ -851,11 +867,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             _ = await command.ExecuteNonQueryAsync();
         }
 
-        IReadOnlyList<TapestryLeafSource> leaves = await _store!.EnumerateLeafSourcesAsync(
-            WorkspaceScope,
-            TestDimensions,
-            includeEmbeddings: true,
-            CancellationToken.None);
+        IReadOnlyList<TapestryLeafSource> leaves = await EnumerateLeavesAsync(WorkspaceScope);
 
         TapestryLeafSource leaf = Assert.Single(leaves);
 
@@ -898,11 +910,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             _ = await command.ExecuteNonQueryAsync();
         }
 
-        IReadOnlyList<TapestryLeafSource> leaves = await _store!.EnumerateLeafSourcesAsync(
-            WorkspaceScope,
-            TestDimensions,
-            includeEmbeddings: true,
-            CancellationToken.None);
+        IReadOnlyList<TapestryLeafSource> leaves = await EnumerateLeavesAsync(WorkspaceScope);
 
         Assert.Null(Assert.Single(leaves).ExistingEmbedding);
     }

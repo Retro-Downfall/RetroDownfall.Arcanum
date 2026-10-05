@@ -185,6 +185,26 @@ public sealed record TapestryLeafSource(
     string ContentHash,
     float[]? ExistingEmbedding);
 
+/// <summary>
+/// What one scope's corpus is, without its text: how many leaves it holds and the fingerprint of their ids
+/// and content hashes. <see cref="ExceedsCeiling"/> means the scope held more rows than the ceiling the
+/// caller passed, in which case no content was read, <see cref="Fingerprint"/> is empty and
+/// <see cref="LeafCount"/> is only the number of rows seen before the count stopped.
+/// </summary>
+public sealed record TapestryCorpusIdentity(int LeafCount, string Fingerprint, bool ExceedsCeiling);
+
+/// <summary>Code-owned bounds on what one Tapestry build will take on (DESIGN §21.11).</summary>
+public static class TapestryLimits
+{
+    /// <summary>
+    /// The most leaves one scope may hold and still be woven. A rebuild keeps every leaf's text and vector
+    /// in memory to cluster them and pays for roughly one summary call per eight leaves, so a scope larger
+    /// than this is reported as <see cref="TapestryWeaveStatus.TooLarge"/> instead of being loaded. At the
+    /// default dimension a full scope's vectors alone are about 120 MB.
+    /// </summary>
+    public const int MaxLeavesPerScope = 20_000;
+}
+
 /// <summary>A prior generation's summary node offered for reuse when its identity matches exactly.</summary>
 public sealed record TapestrySummaryReuseCandidate(
     string ChildMembershipHash,
@@ -251,6 +271,13 @@ public enum TapestryWeaveStatus
     /// spent; it is retried after an exponentially growing wait, or sooner if any of the three change.
     /// </summary>
     BackingOff,
+
+    /// <summary>
+    /// The scope holds more leaves than <see cref="TapestryLimits.MaxLeavesPerScope"/>, so nothing was
+    /// read, embedded or summarized; the prior generation, if any, stays current and the scope is looked
+    /// at again on the next sweep.
+    /// </summary>
+    TooLarge,
 }
 
 /// <summary>The result of one scope's weave attempt, including what the build actually spent.</summary>
@@ -444,6 +471,18 @@ public static class TapestryHash
     /// complete layer, so there is no honest subtree-only invalidation.
     /// </summary>
     public static string OfCorpus(IEnumerable<TapestryLeafSource> leaves)
+    {
+        ArgumentNullException.ThrowIfNull(leaves);
+
+        return OfCorpus(leaves.Select(static leaf => (leaf.SourceId, leaf.ContentHash)));
+    }
+
+    /// <summary>
+    /// The same fingerprint from leaf ids and content hashes alone, which is all it ever consumed. This is
+    /// the form the store computes from the hashes it keeps beside the corpus, so a scope that has not
+    /// changed is recognised without reading a single row of text.
+    /// </summary>
+    public static string OfCorpus(IEnumerable<(string SourceId, string ContentHash)> leaves)
     {
         ArgumentNullException.ThrowIfNull(leaves);
 
