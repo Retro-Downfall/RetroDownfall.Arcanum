@@ -61,7 +61,8 @@ public sealed class PromptCommands(
                         .GetPromptsAsync(parsedCampaignId, query, tag, offset: offset, cancellationToken: token)
                         .ConfigureAwait(false),
                     offset),
-                cancellationToken)
+                cancellationToken,
+                firstPageCursor: 0)
             .ConfigureAwait(false);
 
         if (result.IsFailure)

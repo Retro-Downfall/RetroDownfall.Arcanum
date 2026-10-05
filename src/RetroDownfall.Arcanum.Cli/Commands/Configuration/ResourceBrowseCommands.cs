@@ -34,7 +34,7 @@ public sealed class McpCommands(
     IThemePalette themePalette,
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     public async Task<int> List(
         string? workingDirectory,
@@ -700,35 +700,21 @@ public sealed class McpCommands(
     /// </summary>
     private static bool InWorkspaceScope(McpServerInfo server, string workspacePath) =>
         string.IsNullOrWhiteSpace(server.WorkingDirectory)
-        || string.Equals(
-            TrimTrailingSeparators(server.WorkingDirectory),
-            TrimTrailingSeparators(workspacePath),
-            StringComparison.Ordinal);
-
-    private static string TrimTrailingSeparators(string path)
-    {
-        string trimmed = NormalizeWorkspace(path);
-
-        while (trimmed.Length > 1 && (trimmed[^1] is '/' or '\\'))
-        {
-            trimmed = trimmed[..^1];
-        }
-
-        return trimmed;
-    }
+        || McpWorkspacePath.Same(server.WorkingDirectory, workspacePath);
 
     /// <summary>
-    /// Whether a workspace selector is already a server path. Paths are used as given, so a server-owned
-    /// path of either platform's spelling reaches the host untouched; anything else is a registered
-    /// workspace's ID or name.
+    /// Whether a workspace selector is a path rather than a registered workspace's ID or name. A server-owned
+    /// path of either platform's spelling is a path, so it reaches the host in its own separators.
     /// </summary>
     private static bool LooksLikePath(string selector) =>
         selector.Contains('/', StringComparison.Ordinal)
         || selector.Contains('\\', StringComparison.Ordinal);
 
     /// <summary>
-    /// Turns a <c>--workspace</c> value into the server path the host scopes by: a path is used as given,
-    /// and a workspace ID or name is resolved through the registry, as every other workspace-taking verb does.
+    /// Turns a <c>--workspace</c> value into the server path the host scopes by: a path is canonicalised
+    /// (made absolute against this process's current directory, with dot segments and extra separators
+    /// removed), and a workspace ID or name is resolved through the registry, as every other
+    /// workspace-taking verb does.
     /// </summary>
     private async Task<WorkspaceScope> ResolveWorkspaceAsync(
         string? selector,
@@ -741,9 +727,9 @@ public sealed class McpCommands(
 
         string trimmed = selector.Trim();
 
-        if (resourceCatalog is null || LooksLikePath(trimmed))
+        if (LooksLikePath(trimmed))
         {
-            return new WorkspaceScope(trimmed, null);
+            return new WorkspaceScope(McpWorkspacePath.Canonicalise(trimmed), null);
         }
 
         ResourceSelectionResult<WorkspaceInfo> selection = await resourceCatalog

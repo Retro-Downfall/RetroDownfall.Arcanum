@@ -74,7 +74,7 @@ public sealed class WorkspaceCommands(
             return WriteError(workspaces.Error);
         }
 
-        Result<CampaignDto[]> campaigns = await GetAllCampaignsAsync(cancellationToken)
+        Result<CampaignDto[]> campaigns = await apiClient.GetAllCampaignsAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (campaigns.IsFailure)
@@ -681,50 +681,6 @@ public sealed class WorkspaceCommands(
         }
 
         return WorkspaceResolution.Success(selection.Value!);
-    }
-
-    private async Task<Result<CampaignDto[]>> GetAllCampaignsAsync(
-        CancellationToken cancellationToken)
-    {
-        List<CampaignDto> campaigns = [];
-
-        int offset = 0;
-
-        while (true)
-        {
-            Result<ListPageResult<CampaignDto>> result = await apiClient
-                .GetCampaignsPageAsync(
-                    null,
-                    100,
-                    offset,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (result.IsFailure)
-            {
-                return Result<CampaignDto[]>.Failure(result.Error);
-            }
-
-            campaigns.AddRange(result.Value.Items);
-
-            if (!result.Value.HasMore
-                || result.Value.NextOffset is not { } nextOffset)
-            {
-                return Result<CampaignDto[]>.Success([.. campaigns]);
-            }
-
-            // A non-advancing offset would append the same page forever, so it fails here rather
-            // than growing the accumulated list until the process runs out of memory.
-            if (nextOffset <= offset)
-            {
-                return Result<CampaignDto[]>.Failure(
-                    new Error(
-                        "Api.PaginationNoProgress",
-                        $"The campaign list returned non-advancing offset {nextOffset} after {offset}. Retry after repairing or upgrading the host."));
-            }
-
-            offset = nextOffset;
-        }
     }
 
     private void WriteWorkspace(WorkspaceInfo workspace)

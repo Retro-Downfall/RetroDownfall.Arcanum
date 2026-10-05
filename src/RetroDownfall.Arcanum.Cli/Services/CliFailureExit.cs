@@ -6,7 +6,7 @@ using RetroDownfall.Arcanum.Core.Hosting;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
-namespace RetroDownfall.Arcanum.Cli.Commands;
+namespace RetroDownfall.Arcanum.Cli.Services;
 
 /// <summary>
 /// Shared classification from a failed <see cref="Result"/>'s <see cref="Error"/> to the CLI exit-code

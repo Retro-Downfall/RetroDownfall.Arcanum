@@ -1258,6 +1258,77 @@ public sealed class CovenantCommandTests : IDisposable
     }
 
     /// <summary>
+    /// A host that goes away after the prepare succeeded fails the commit request itself, so the seven
+    /// mutation verbs reach the commit-side failure path (<c>WriteMutation</c> and <c>WriteCuration</c>) that
+    /// <see cref="Host_unreachable_exits_3_for_every_verb"/>, which dies at the prepare, never reaches.
+    /// </summary>
+    [Theory]
+    [InlineData("set")]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("pin")]
+    [InlineData("unpin")]
+    [InlineData("mask")]
+    [InlineData("unmask")]
+    public async Task Host_lost_at_the_commit_exits_3_and_names_the_mutation_for_every_mutation_verb(string verb)
+    {
+        RecordingHandler handler = new() { FailAtCommit = static () => new HttpRequestException("Connection reset") };
+
+        CliTestResult result = await RunCliAsync(handler, Invocation(verb, approve: "--yes"));
+
+        Assert.True(
+            result.ExitCode == (int)CliExitCode.NetworkError,
+            $"exit {result.ExitCode}; stdout: {result.Output}; stderr: {result.Error}");
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal((int)CliExitCode.NetworkError, document.RootElement.GetProperty("exitCode").GetInt32());
+
+        using JsonDocument prepare = JsonDocument.Parse(handler.Bodies[0]);
+
+        string mutationId = prepare.RootElement.GetProperty("mutationId").GetGuid().ToString("D");
+
+        Assert.Contains(mutationId, result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("may have been applied", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("memory covenant show preference.builds", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A commit whose answer never came back (a timeout, a lost connection) proves nothing about the
+    /// mutation, so the operator is told to look before retrying; a retry with a new mutation ID would
+    /// otherwise be a second write.
+    /// </summary>
+    [Fact]
+    public async Task A_commit_that_timed_out_exits_3_and_says_the_mutation_may_have_been_applied()
+    {
+        RecordingHandler handler = new() { FailAtCommit = static () => new TaskCanceledException("timed out", new TimeoutException()) };
+
+        CliTestResult result = await RunCliAsync(handler, Invocation("set", approve: "--yes"));
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        Assert.Contains("may have been applied", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A typed refusal from the host proves the mutation rolled back, so it is a plain failure with no
+    /// "may have been applied" note that would send the operator looking for a change that never happened.
+    /// </summary>
+    [Fact]
+    public async Task A_typed_refusal_at_the_commit_does_not_claim_the_mutation_may_have_been_applied()
+    {
+        RecordingHandler handler = new() { RefuseAtCommit = true };
+
+        CliTestResult result = await RunCliAsync(handler, Invocation("set", approve: "--yes"));
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.DoesNotContain("may have been applied", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Ctrl-C after the commit request went out keeps its cancellation (which the CLI maps to exit 130)
     /// and says the mutation may still have been applied, naming it, so the operator checks the key
     /// rather than assuming nothing happened.
@@ -1294,7 +1365,13 @@ public sealed class CovenantCommandTests : IDisposable
             _ => () => commands.Curate(CovenantCurationKind.Pin, "preference.builds", campaignId: null, CovenantLane.Confirmed, expectedRevision: 0, token),
         };
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(run);
+        OperationCanceledException thrown = await Assert.ThrowsAnyAsync<OperationCanceledException>(run);
+
+        // The process token cannot be cancelled from inside the harness, so the exit code is pinned in two
+        // halves that meet here: the exception that leaves the command is the one the CLI maps to 130.
+        Assert.Equal(CliExitCode.Cancelled, CliFailureMapper.Map(thrown).ExitCode);
+
+        Assert.Equal(130, (int)CliExitCode.Cancelled);
 
         using JsonDocument prepare = JsonDocument.Parse(handler.Bodies[0]);
 
@@ -1305,6 +1382,11 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.Contains(mutationId, said, StringComparison.Ordinal);
 
         Assert.Contains("may have been applied", said, StringComparison.Ordinal);
+
+        // A cancellation during the send cannot tell whether the request left, so the note does not say it did.
+        Assert.Contains("may never have reached the host", said, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("already sent", said, StringComparison.Ordinal);
 
         Assert.Contains("memory covenant show preference.builds", said, StringComparison.Ordinal);
     }
@@ -1360,8 +1442,18 @@ public sealed class CovenantCommandTests : IDisposable
 
         Assert.Contains("Api.PaginationNoProgress", result.Output + result.Error, StringComparison.Ordinal);
 
-        // First page, the page behind A, the page behind B, and the page behind A again, which is the repeat.
-        Assert.InRange(handler.Requests.Count(request => !request.EndsWith("detail", StringComparison.Ordinal)), 1, 4);
+        // The first page names A, the page behind A names B, and the page behind B names A again, which is
+        // the repeat: exactly three pages are read, and no further one.
+        Assert.Equal(3, handler.Requests.Count(request => !request.EndsWith("detail", StringComparison.Ordinal)));
+
+        // No partial listing reached stdout: the one document there is the error envelope and nothing else.
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(
+            ["error", "exitCode"],
+            document.RootElement.EnumerateObject().Select(static property => property.Name).Order(StringComparer.Ordinal).ToArray());
+
+        Assert.Equal((int)CliExitCode.GenericError, document.RootElement.GetProperty("exitCode").GetInt32());
     }
 
     private static readonly Guid MaskCampaignId = new("55555555-5555-4555-8555-555555555555");
@@ -1709,6 +1801,15 @@ public sealed class CovenantCommandTests : IDisposable
         /// </summary>
         internal Action? CancelAtCommit { get; init; }
 
+        /// <summary>
+        /// The transport failure the commit request (anything that is not a read or a prepare) dies of
+        /// after every prepare succeeded, so the failure lands on the commit route and nowhere earlier.
+        /// </summary>
+        internal Func<Exception>? FailAtCommit { get; init; }
+
+        /// <summary>Whether the commit request is answered with a typed refusal, which proves the mutation rolled back.</summary>
+        internal bool RefuseAtCommit { get; init; }
+
         internal bool EmptyList { get; init; }
 
         /// <summary>Whether the stubbed detail is a Campaign key with no entry, carrying only curation.</summary>
@@ -1762,6 +1863,27 @@ public sealed class CovenantCommandTests : IDisposable
                 cancel();
 
                 cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (FailAtCommit is { } fail && IsCommit(path))
+            {
+                throw fail();
+            }
+
+            if (RefuseAtCommit && IsCommit(path))
+            {
+                return new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(
+                            ApiResponse<CovenantMutationResultDto>.FromResult(
+                                Result<CovenantMutationResultDto>.Failure(
+                                    new Error(ErrorCodes.Covenant.RevisionConflict, "The lane moved on.")),
+                                "trace"),
+                            ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto),
+                        Encoding.UTF8,
+                        "application/json"),
+                };
             }
 
             Bodies.Add(request.Content is null

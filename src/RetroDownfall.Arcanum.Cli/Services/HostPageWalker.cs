@@ -44,11 +44,17 @@ internal static class HostPageWalker
     /// </param>
     /// <param name="readPageAsync">Reads the page at a continuation; <see langword="null"/> is the first page.</param>
     /// <param name="cancellationToken">Stops the read between and during pages.</param>
+    /// <param name="firstPageCursor">
+    /// The continuation value that addresses the first page, when the cursor has one (offset <c>0</c> for an
+    /// offset-paged list). A host that answers the first page with that same value as its continuation has
+    /// not advanced, so it is refused at once rather than after the first page is read a second time.
+    /// </param>
     public static async Task<Result<HostListing<TItem>>> ReadAsync<TItem, TCursor>(
         string listName,
         bool singlePage,
         Func<TCursor?, CancellationToken, Task<Result<HostPage<TItem, TCursor>>>> readPageAsync,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TCursor? firstPageCursor = null)
         where TCursor : struct
     {
         ArgumentNullException.ThrowIfNull(readPageAsync);
@@ -56,6 +62,11 @@ internal static class HostPageWalker
         List<TItem> all = [];
 
         HashSet<TCursor> seen = [];
+
+        if (firstPageCursor is { } first)
+        {
+            seen.Add(first);
+        }
 
         TCursor? cursor = null;
 
@@ -93,6 +104,121 @@ internal static class HostPageWalker
             }
 
             cursor = next;
+        }
+    }
+
+    /// <summary>
+    /// Reads a list the host answers with a bare array and no continuation, by row offset.
+    /// </summary>
+    /// <remarks>
+    /// <para>With nothing to follow, the only proof that rows remain is a row that exists. Following reads
+    /// pages until one is short, so the last page is known to be the last. A single page reads one row past
+    /// what it shows, and at the host's own row ceiling, where that extra row cannot be asked for in the
+    /// same request, reads one row beyond it in a second: either way "more rows exist" is a fact the host
+    /// reported, not a guess from a full page.</para>
+    /// <para>A host that ignores the offset would hand back the same page for ever, so a page that opens
+    /// with the same row as the page before it ends the read with <c>Api.PaginationNoProgress</c> and nothing
+    /// printed.</para>
+    /// </remarks>
+    /// <param name="listName">What the list is, named in the no-progress fault.</param>
+    /// <param name="firstRow">The offset of the first row to read.</param>
+    /// <param name="singlePageRows">
+    /// How many rows to read when the operator asked for exactly one page of that size, or
+    /// <see langword="null"/> to follow the list to its end.
+    /// </param>
+    /// <param name="hostMaxRows">The most rows the host returns for one request; it clamps a larger limit.</param>
+    /// <param name="followPageRows">The page size used when following, bounded by <paramref name="hostMaxRows"/>.</param>
+    /// <param name="readRowsAsync">Reads the rows at <c>(limit, offset)</c>.</param>
+    /// <param name="identity">A row's identity, which tells a repeated page from a new one.</param>
+    /// <param name="cancellationToken">Stops the read between and during pages.</param>
+    public static async Task<Result<HostListing<TItem>>> ReadRowsAsync<TItem>(
+        string listName,
+        int firstRow,
+        int? singlePageRows,
+        int hostMaxRows,
+        int followPageRows,
+        Func<int, int, CancellationToken, Task<Result<TItem[]>>> readRowsAsync,
+        Func<TItem, string> identity,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(readRowsAsync);
+
+        ArgumentNullException.ThrowIfNull(identity);
+
+        if (singlePageRows is { } requested)
+        {
+            int shown = Math.Clamp(requested, 1, hostMaxRows);
+
+            bool probeSeparately = shown >= hostMaxRows;
+
+            Result<TItem[]> page = await readRowsAsync(
+                    probeSeparately ? hostMaxRows : shown + 1,
+                    firstRow,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (page.IsFailure)
+            {
+                return Result<HostListing<TItem>>.Failure(page.Error);
+            }
+
+            bool more = page.Value.Length > shown;
+
+            if (probeSeparately && page.Value.Length >= shown)
+            {
+                Result<TItem[]> probe = await readRowsAsync(1, firstRow + shown, cancellationToken).ConfigureAwait(false);
+
+                if (probe.IsFailure)
+                {
+                    return Result<HostListing<TItem>>.Failure(probe.Error);
+                }
+
+                more = probe.Value.Length > 0;
+            }
+
+            return Result<HostListing<TItem>>.Success(
+                new HostListing<TItem>([.. page.Value.Take(shown)], more));
+        }
+
+        int pageRows = Math.Clamp(followPageRows, 1, hostMaxRows);
+
+        List<TItem> all = [];
+
+        string? previousFirst = null;
+
+        int offset = firstRow;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Result<TItem[]> page = await readRowsAsync(pageRows, offset, cancellationToken).ConfigureAwait(false);
+
+            if (page.IsFailure)
+            {
+                return Result<HostListing<TItem>>.Failure(page.Error);
+            }
+
+            if (page.Value.Length > 0)
+            {
+                string first = identity(page.Value[0]);
+
+                if (first == previousFirst)
+                {
+                    return NoProgress<TItem>(listName, "returned the same rows for a new offset", all.Count);
+                }
+
+                previousFirst = first;
+            }
+
+            all.AddRange(page.Value.Take(pageRows));
+
+            if (page.Value.Length < pageRows)
+            {
+                return Result<HostListing<TItem>>.Success(new HostListing<TItem>([.. all], MoreAvailable: false));
+            }
+
+            offset += pageRows;
         }
     }
 
@@ -154,10 +280,19 @@ internal static class HostPageWalker
             new HostPage<SessionSummaryDto, DateTimeOffset>(page.Summaries, page.HasMore, next));
     }
 
+    /// <summary>
+    /// The fault for a list whose continuation cannot advance: the host repeated a cursor, or reported more
+    /// rows without naming where they continue.
+    /// </summary>
+    /// <param name="listName">What the list is.</param>
+    /// <param name="reason">What the host did, in words that follow "the host's list".</param>
+    /// <param name="rowsRead">How many rows had been read when the fault was found.</param>
+    public static Error NoProgressError(string listName, string reason, int rowsRead) =>
+        new(
+            "Api.PaginationNoProgress",
+            $"The host's {listName} {reason} after {rowsRead} row(s), so the list cannot be completed. "
+            + "Nothing was printed; retry after repairing or upgrading the host.");
+
     private static Result<HostListing<TItem>> NoProgress<TItem>(string listName, string reason, int rowsRead) =>
-        Result<HostListing<TItem>>.Failure(
-            new Error(
-                "Api.PaginationNoProgress",
-                $"The host's {listName} {reason} after {rowsRead} row(s), so the list cannot be completed. "
-                + "Nothing was printed; retry after repairing or upgrading the host."));
+        Result<HostListing<TItem>>.Failure(NoProgressError(listName, reason, rowsRead));
 }

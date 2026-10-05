@@ -26,7 +26,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class SetupCommandTests : IDisposable
 {
-
     private const string ProviderSecret = "sk-setup-provider-secret";
 
     private const string ResearchSecret = "pplx-setup-research-secret";
@@ -42,35 +41,24 @@ public sealed class SetupCommandTests : IDisposable
 
     public void Dispose()
     {
-
         foreach (string directory in new[] { _workspaceRoot, _originalWorkspaceRoot })
         {
-
             try
             {
-
                 if (Directory.Exists(directory))
                 {
-
                     Directory.Delete(directory, recursive: true);
-
                 }
-
             }
             catch (IOException)
             {
-
                 // Best-effort cleanup.
-
             }
-
         }
-
     }
 
     private static string CreateDirectory(string name)
     {
-
         string path = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-setup-{name}-{Guid.NewGuid():N}");
@@ -78,25 +66,21 @@ public sealed class SetupCommandTests : IDisposable
         _ = Directory.CreateDirectory(path);
 
         return path;
-
     }
 
     [Fact]
     public void Root_help_lists_the_setup_command()
     {
-
         CliTestResult result = CliTestHarness.Run(CreateServices(NewWorld()), "--help");
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Contains("setup", result.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void Setup_help_documents_the_plan_apply_and_stdin_credential_surface()
     {
-
         CliTestResult result = CliTestHarness.Run(
             CreateServices(NewWorld()),
             "setup",
@@ -113,7 +97,6 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Contains("--research-key-stdin", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("--allow-unreachable-provider", result.Output, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -123,7 +106,6 @@ public sealed class SetupCommandTests : IDisposable
     [InlineData("--no-context")]
     public void Global_flags_remain_recursive_for_setup(string flag)
     {
-
         CliTestResult result = CliTestHarness.Run(
             CreateServices(NewWorld()),
             "setup",
@@ -136,13 +118,38 @@ public sealed class SetupCommandTests : IDisposable
             "Unrecognized command or argument",
             result.Error,
             StringComparison.OrdinalIgnoreCase);
+    }
 
+    /// <summary>
+    /// <c>--edition</c> advertises "local, development", so it takes a member name and nothing else: a
+    /// numeric ordinal, an ordinal that names no member and a comma-joined list are each a value the
+    /// operator never named, and used to be cast straight into the draft.
+    /// </summary>
+    [Theory]
+    [InlineData("1")]
+    [InlineData("99")]
+    [InlineData("local,development")]
+    public void Edition_takes_a_member_name_only(string edition)
+    {
+        SetupWorld world = NewWorld();
+
+        CliTestResult result = CliTestHarness.Run(
+            CreateServices(world),
+            "setup",
+            "--plan",
+            "--edition",
+            edition);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("Unknown edition", result.Error, StringComparison.Ordinal);
+
+        Assert.Equal(0, world.ConfigurationWrites);
     }
 
     [Fact]
     public void Plan_and_apply_together_are_rejected_before_anything_is_read()
     {
-
         SetupWorld world = NewWorld();
 
         CliTestResult result = CliTestHarness.Run(
@@ -154,13 +161,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Equal(0, world.ConfigurationWrites);
-
     }
 
     [Fact]
     public void Plan_writes_nothing_and_reports_the_precise_diff()
     {
-
         SetupWorld world = NewWorld();
 
         CliTestResult result = CliTestHarness.Run(
@@ -195,20 +200,16 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Contains("workspaces.defaultRoot", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("Completion summary", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Plan_fails_closed_when_the_preset_snapshot_cannot_be_read()
     {
-
         SetupWorld world = NewWorld() with
         {
-
             PresetReadFailure = new Error(
                 "Preset.RecoveryRequired",
                 "A prepared preset transaction requires exclusive recovery."),
-
         };
 
         CliTestResult result = CliTestHarness.Run(
@@ -231,13 +232,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(0, world.PresetApplies);
 
         Assert.Equal(0, world.CredentialWriteCount);
-
     }
 
     [Fact]
     public void Plan_json_is_one_document_with_the_full_completion_summary()
     {
-
         CliTestResult result = CliTestHarness.Run(
             CreateServices(NewWorld()),
             "setup",
@@ -282,13 +281,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.NotEmpty(summary.GetProperty("networkCapabilities").EnumerateArray());
 
         Assert.NotEmpty(summary.GetProperty("memoryCapabilities").EnumerateArray());
-
     }
 
     [Fact]
     public void The_endpoint_is_masked_in_the_diff_because_it_is_a_sensitive_value()
     {
-
         CliTestResult result = CliTestHarness.Run(
             CreateServices(NewWorld()),
             "setup",
@@ -303,13 +300,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.DoesNotContain("secret-host.test", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("secret-host.test", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Apply_commits_credentials_configuration_preset_and_context_in_order()
     {
-
         SetupWorld world = NewWorld();
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -354,25 +349,21 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(
             "https://provider.test/v1",
             world.WrittenSettings?.Providers.Single().Endpoint);
-
     }
 
     [Fact]
     public async Task Apply_revalidates_configuration_inside_the_exclusive_boundary_before_credentials()
     {
-
         SetupWorld world = NewWorld();
 
         RecordingGrimoireCliInitialization initialization = new(
             beforeOperation: () =>
             {
-
                 ArcanumSettings changed = ConfigurationPathAccessor.Clone(world.OriginalSettings);
 
                 changed.DefaultModel = "changed-after-review";
 
                 world.ConfigurationReadOverride = changed;
-
             });
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -399,13 +390,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(0, world.PresetApplies);
 
         Assert.Empty(world.ProviderCredentials);
-
     }
 
     [Fact]
     public async Task Apply_rejects_configuration_access_mode_drift_before_credentials()
     {
-
         SetupWorld world = NewWorld();
 
         world.ConfigurationAccessMode = ConfigurationAccessMode.HostApi;
@@ -438,19 +427,16 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(0, world.PresetApplies);
 
         Assert.Empty(world.ProviderCredentials);
-
     }
 
     [Fact]
     public async Task Apply_revalidates_preset_provenance_inside_the_exclusive_boundary_before_credentials()
     {
-
         SetupWorld world = NewWorld();
 
         RecordingGrimoireCliInitialization initialization = new(
             beforeOperation: () =>
             {
-
                 world.PresetProvenanceOverride = new ConfigurationPresetProvenance(
                     "general-assistant",
                     1,
@@ -458,7 +444,6 @@ public sealed class SetupCommandTests : IDisposable
                     "changed-after-review",
                     ImmutableArray<ConfigurationPresetBaselineValue>.Empty,
                     ImmutableArray<ConfigurationPresetBaselineValue>.Empty);
-
             });
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -485,13 +470,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(0, world.PresetApplies);
 
         Assert.Empty(world.ProviderCredentials);
-
     }
 
     [Fact]
     public async Task Apply_revalidates_the_drafted_provider_stored_presence_before_credentials()
     {
-
         SetupWorld world = NewWorld();
 
         RecordingGrimoireCliInitialization initialization = new(
@@ -521,13 +504,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(0, world.ConfigurationWrites);
 
         Assert.Equal(0, world.PresetApplies);
-
     }
 
     [Fact]
     public async Task Apply_revalidates_the_exact_candidate_provider_environment_reference()
     {
-
         const string variable = "ARCANUM_SETUP_EXPLICIT_PROVIDER_KEY";
 
         string? previous = global::System.Environment.GetEnvironmentVariable(variable);
@@ -536,14 +517,12 @@ public sealed class SetupCommandTests : IDisposable
 
         try
         {
-
             SetupWorld world = NewWorld();
 
             world.OriginalSettings.Providers =
             [
                 new ProviderSettings
                 {
-
                     Name = "alpha",
 
                     Endpoint = "https://provider.test/v1",
@@ -551,7 +530,6 @@ public sealed class SetupCommandTests : IDisposable
                     CredentialEnvironmentVariable = variable,
 
                     Models = ["gpt-test"],
-
                 },
             ];
 
@@ -583,21 +561,16 @@ public sealed class SetupCommandTests : IDisposable
             Assert.Equal(0, world.ConfigurationWrites);
 
             Assert.Equal(0, world.PresetApplies);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, previous);
-
         }
-
     }
 
     [Fact]
     public async Task Apply_revalidates_the_drafted_web_environment_presence_before_credentials()
     {
-
         const string variable = EnvironmentCredentialResolver.DefaultPerplexityApiKeyEnvironmentVariable;
 
         string? previous = global::System.Environment.GetEnvironmentVariable(variable);
@@ -606,7 +579,6 @@ public sealed class SetupCommandTests : IDisposable
 
         try
         {
-
             SetupWorld world = NewWorld();
 
             RecordingGrimoireCliInitialization initialization = new(
@@ -640,15 +612,11 @@ public sealed class SetupCommandTests : IDisposable
             Assert.Equal(0, world.PresetApplies);
 
             Assert.Null(world.WebResearchCredential);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, previous);
-
         }
-
     }
 
     [Theory]
@@ -658,7 +626,6 @@ public sealed class SetupCommandTests : IDisposable
     public async Task Noninteractive_apply_refusal_prevents_every_setup_commit_effect(
         string refusal)
     {
-
         SetupWorld world = NewWorld();
 
         RecordingGrimoireCliInitialization initialization = new(refusal);
@@ -699,13 +666,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Null(world.WebResearchCredential);
 
         Assert.Null(world.SavedContext);
-
     }
 
     [Fact]
     public async Task A_stored_credential_never_reaches_stdout_stderr_or_json()
     {
-
         SetupWorld world = NewWorld();
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -741,13 +706,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.DoesNotContain(ResearchSecret, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(ResearchSecret, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Validation_reuses_an_already_stored_credential_when_none_is_entered()
     {
-
         SetupWorld world = NewWorld();
 
         world.ProviderCredentials["alpha"] = ProviderSecret;
@@ -772,23 +735,19 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(ProviderSecret, world.ProviderCredentials["alpha"]);
 
         Assert.DoesNotContain(ProviderSecret, result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void An_unreachable_provider_blocks_the_commit_and_changes_nothing()
     {
-
         SetupWorld world = NewWorld() with
         {
-
             Connectivity = new SetupConnectivityResult(
                 SetupConnectivityStatus.AuthenticationFailed,
                 12,
                 0,
                 false,
                 "The endpoint rejected the credential with HTTP 401."),
-
         };
 
         CliTestResult result = CliTestHarness.Run(
@@ -811,23 +770,19 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Empty(world.ProviderCredentials);
 
         Assert.Contains("AuthenticationFailed", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void An_unreachable_provider_can_be_accepted_explicitly()
     {
-
         SetupWorld world = NewWorld() with
         {
-
             Connectivity = new SetupConnectivityResult(
                 SetupConnectivityStatus.Timeout,
                 5000,
                 0,
                 false,
                 "The provider probe timed out after 5 seconds."),
-
         };
 
         CliTestResult result = CliTestHarness.Run(
@@ -845,20 +800,16 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Equal(1, world.ConfigurationWrites);
-
     }
 
     [Fact]
     public async Task A_failed_preset_apply_restores_the_configuration_and_deletes_the_new_credential()
     {
-
         SetupWorld world = NewWorld() with
         {
-
             PresetFailure = new Error(
                 "Preset.PrerequisitesMissing",
                 "Preset 'general-assistant' is not applicable."),
-
         };
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -899,20 +850,16 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(
             "gpt-test",
             world.ExpectedCurrentSettings[1].DefaultModel);
-
     }
 
     [Fact]
     public async Task A_failed_configuration_write_deletes_the_new_credential_and_skips_the_preset()
     {
-
         SetupWorld world = NewWorld() with
         {
-
             ConfigurationWriteFailure = new Error(
                 "Configuration.Invalid",
                 "The candidate configuration failed validation."),
-
         };
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -937,18 +884,14 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal(0, world.PresetApplies);
 
         Assert.Null(world.SavedContext);
-
     }
 
     [Fact]
     public async Task Replacing_an_existing_credential_reports_an_actionable_partial_commit_state()
     {
-
         SetupWorld world = NewWorld() with
         {
-
             PresetFailure = new Error("Preset.PrerequisitesMissing", "not applicable"),
-
         };
 
         world.ProviderCredentials["alpha"] = "sk-previous-value";
@@ -978,13 +921,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.DoesNotContain("sk-previous-value", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("sk-previous-value", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Provider_environment_and_stored_coexistence_never_deletes_the_replaced_store_on_rollback()
     {
-
         const string variable = "ARCANUM_PROVIDER_ALPHA_API_KEY";
 
         string? previousEnvironment = global::System.Environment.GetEnvironmentVariable(variable);
@@ -993,12 +934,9 @@ public sealed class SetupCommandTests : IDisposable
 
         try
         {
-
             SetupWorld world = NewWorld() with
             {
-
                 PresetFailure = new Error("Preset.PrerequisitesMissing", "not applicable"),
-
             };
 
             world.ProviderCredentials["alpha"] = "sk-previous-stored-value";
@@ -1026,21 +964,16 @@ public sealed class SetupCommandTests : IDisposable
                 "arcanum key provider set alpha",
                 result.Error,
                 StringComparison.Ordinal);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, previousEnvironment);
-
         }
-
     }
 
     [Fact]
     public async Task Web_environment_and_stored_coexistence_never_deletes_the_replaced_store_on_rollback()
     {
-
         const string variable = EnvironmentCredentialResolver.DefaultPerplexityApiKeyEnvironmentVariable;
 
         string? previousEnvironment = global::System.Environment.GetEnvironmentVariable(variable);
@@ -1049,12 +982,9 @@ public sealed class SetupCommandTests : IDisposable
 
         try
         {
-
             SetupWorld world = NewWorld() with
             {
-
                 PresetFailure = new Error("Preset.PrerequisitesMissing", "not applicable"),
-
             };
 
             world.SetWebResearchCredential("pplx-previous-stored-value");
@@ -1083,28 +1013,22 @@ public sealed class SetupCommandTests : IDisposable
                 "arcanum key provider set perplexity",
                 result.Error,
                 StringComparison.Ordinal);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, previousEnvironment);
-
         }
-
     }
 
     [Fact]
     public void Re_running_setup_against_a_matching_installation_is_idempotent()
     {
-
         SetupWorld world = NewWorld();
 
         world.OriginalSettings.Providers =
         [
             new ProviderSettings
             {
-
                 Name = "alpha",
 
                 Type = AiProviderKind.OpenAICompatible,
@@ -1112,7 +1036,6 @@ public sealed class SetupCommandTests : IDisposable
                 Endpoint = "https://provider.test/v1",
 
                 Models = ["gpt-test"],
-
             },
         ];
 
@@ -1135,13 +1058,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.True(plan.GetProperty("isApplicable").GetBoolean());
 
         Assert.Empty(plan.GetProperty("configurationChanges").EnumerateArray());
-
     }
 
     [Fact]
     public void Setup_preserves_configuration_outside_the_wizards_declared_ownership()
     {
-
         SetupWorld world = NewWorld();
 
         world.OriginalSettings.Cli.ShowManaBar = false;
@@ -1164,13 +1085,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.False(world.WrittenSettings?.Cli.ShowManaBar);
 
         Assert.True(world.WrittenSettings?.Retention.AutomaticSweepsEnabled);
-
     }
 
     [Fact]
     public void A_secret_is_never_accepted_in_an_argument()
     {
-
         CliTestResult result = CliTestHarness.Run(
             CreateServices(NewWorld()),
             "setup",
@@ -1184,13 +1103,11 @@ public sealed class SetupCommandTests : IDisposable
             "Unrecognized command or argument",
             result.Error,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void An_invalid_environment_reference_is_rejected_before_anything_is_written()
     {
-
         SetupWorld world = NewWorld();
 
         CliTestResult result = CliTestHarness.Run(
@@ -1203,13 +1120,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Equal(0, world.ConfigurationWrites);
-
     }
 
     [Fact]
     public async Task The_research_flag_parses_bare_and_with_an_explicit_value()
     {
-
         SetupWorld world = NewWorld();
 
         CliTestResult bare = CliTestHarness.Run(
@@ -1251,7 +1166,6 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal((int)CliExitCode.Success, explicitFalse.ExitCode);
 
         Assert.DoesNotContain("web-research", explicitFalse.Output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -1262,7 +1176,6 @@ public sealed class SetupCommandTests : IDisposable
     [Fact]
     public void The_privacy_posture_flag_reaches_the_candidate_and_defers_to_canonical_validation()
     {
-
         SetupWorld world = NewWorld();
 
         CliTestResult result = CliTestHarness.Run(
@@ -1289,13 +1202,11 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Contains("Host.Https.Enabled must be true", result.Output, StringComparison.Ordinal);
 
         Assert.Equal(0, world.ConfigurationWrites);
-
     }
 
     [Fact]
     public void Loopback_posture_is_the_default_and_commits_cleanly()
     {
-
         SetupWorld world = NewWorld();
 
         CliTestResult result = CliTestHarness.Run(
@@ -1312,16 +1223,13 @@ public sealed class SetupCommandTests : IDisposable
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.False(world.WrittenSettings?.Host.ListenAny);
-
     }
 
     [Fact]
     public void The_draft_never_prints_credential_values()
     {
-
         SetupDraft draft = new()
         {
-
             ProviderName = "alpha",
 
             Model = "gpt-test",
@@ -1329,7 +1237,6 @@ public sealed class SetupCommandTests : IDisposable
             ProviderCredentialValue = ProviderSecret,
 
             WebResearchCredentialValue = ResearchSecret,
-
         };
 
         string text = draft.ToString();
@@ -1339,7 +1246,6 @@ public sealed class SetupCommandTests : IDisposable
         Assert.DoesNotContain(ResearchSecret, text, StringComparison.Ordinal);
 
         Assert.Contains("redacted", text, StringComparison.OrdinalIgnoreCase);
-
     }
 
     private SetupWorld NewWorld() =>
@@ -1349,7 +1255,6 @@ public sealed class SetupCommandTests : IDisposable
         SetupWorld world,
         IGrimoireCliInitialization? initialization = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -1382,7 +1287,6 @@ public sealed class SetupCommandTests : IDisposable
         services.AddSingleton<ISetupProviderProbe>(world);
 
         return services;
-
     }
 
     /// <summary>
@@ -1400,7 +1304,6 @@ public sealed class SetupCommandTests : IDisposable
         ICliContextExclusiveWriter,
         ISetupProviderProbe
     {
-
         public required string OriginalWorkspaceRoot { get; init; }
 
         private ArcanumSettings? _originalSettings;
@@ -1408,9 +1311,7 @@ public sealed class SetupCommandTests : IDisposable
         public ArcanumSettings OriginalSettings =>
             _originalSettings ??= new ArcanumSettings
             {
-
                 Workspaces = new WorkspaceSettings { DefaultRoot = OriginalWorkspaceRoot },
-
             };
 
         public Dictionary<string, string> ProviderCredentials { get; } =
@@ -1483,12 +1384,9 @@ public sealed class SetupCommandTests : IDisposable
             ArcanumSettings settings,
             CancellationToken cancellationToken)
         {
-
             if (ConfigurationWriteFailure is { } failure)
             {
-
                 return Task.FromResult(Result.Failure(failure));
-
             }
 
             ConfigurationWrites++;
@@ -1500,7 +1398,6 @@ public sealed class SetupCommandTests : IDisposable
             Order.Add("configuration");
 
             return Task.FromResult(Result.Success());
-
         }
 
         public Task<Result> WriteUnderExclusiveAsync(
@@ -1527,12 +1424,9 @@ public sealed class SetupCommandTests : IDisposable
             string idOrName,
             CancellationToken cancellationToken = default)
         {
-
             if (PresetFailure is { } failure)
             {
-
                 return Task.FromResult(Result<ConfigurationPresetApplyResult>.Failure(failure));
-
             }
 
             PresetApplies++;
@@ -1577,7 +1471,6 @@ public sealed class SetupCommandTests : IDisposable
                         Applied: !PresetIdempotent,
                         AlreadyApplied: PresetIdempotent,
                         ConfigurationPresetRollbackStatus.NotRequired)));
-
         }
 
         public Task<Result<ConfigurationPresetResetResult>> ResetAsync(
@@ -1626,22 +1519,18 @@ public sealed class SetupCommandTests : IDisposable
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             CredentialOrdinaryReadCount++;
 
             return ReadProvider(providerName);
-
         }
 
         public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             CredentialPeekReadCount++;
 
             return ReadProvider(providerName);
-
         }
 
         public Task SaveApiKeyAsync(
@@ -1649,7 +1538,6 @@ public sealed class SetupCommandTests : IDisposable
             string apiKey,
             CancellationToken cancellationToken = default)
         {
-
             CredentialWriteCount++;
 
             ProviderCredentials[providerName] = apiKey;
@@ -1657,47 +1545,39 @@ public sealed class SetupCommandTests : IDisposable
             Order.Add("provider-credential");
 
             return Task.CompletedTask;
-
         }
 
         public Task DeleteApiKeyAsync(
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             CredentialWriteCount++;
 
             _ = ProviderCredentials.Remove(providerName);
 
             return Task.CompletedTask;
-
         }
 
         public Task<SecretStoreReadResult> GetPerplexityApiKeyReadResultAsync(
             CancellationToken cancellationToken = default)
         {
-
             CredentialOrdinaryReadCount++;
 
             return ReadWebResearch();
-
         }
 
         public Task<SecretStoreReadResult> PeekPerplexityApiKeyReadResultAsync(
             CancellationToken cancellationToken = default)
         {
-
             CredentialPeekReadCount++;
 
             return ReadWebResearch();
-
         }
 
         public Task SavePerplexityApiKeyAsync(
             string apiKey,
             CancellationToken cancellationToken = default)
         {
-
             CredentialWriteCount++;
 
             WebResearchCredential = apiKey;
@@ -1705,18 +1585,15 @@ public sealed class SetupCommandTests : IDisposable
             Order.Add("web-research-credential");
 
             return Task.CompletedTask;
-
         }
 
         public Task DeletePerplexityApiKeyAsync(CancellationToken cancellationToken = default)
         {
-
             CredentialWriteCount++;
 
             WebResearchCredential = null;
 
             return Task.CompletedTask;
-
         }
 
         public void SetWebResearchCredential(string value) =>
@@ -1749,13 +1626,9 @@ public sealed class SetupCommandTests : IDisposable
             string? apiKey,
             CancellationToken cancellationToken)
         {
-
             ProbedApiKey = apiKey;
 
             return Task.FromResult(Connectivity);
-
         }
-
     }
-
 }

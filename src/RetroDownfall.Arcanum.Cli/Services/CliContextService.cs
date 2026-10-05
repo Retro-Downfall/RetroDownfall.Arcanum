@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Options;
-using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -309,16 +308,16 @@ internal sealed class CliContextService(
         CampaignDto selected,
         CancellationToken cancellationToken)
     {
-        (bool loaded, CampaignDto[] campaigns) = await GetCampaignsAsync(
-                cancellationToken)
+        Result<CampaignDto[]> listed = await apiClient
+            .GetAllCampaignsAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (!loaded)
+        if (listed.IsFailure)
         {
-            return RevalidationUnavailable("campaign");
+            return RevalidationUnavailable("campaign", listed.Error);
         }
 
-        CampaignDto? refreshed = campaigns.FirstOrDefault(
+        CampaignDto? refreshed = listed.Value.FirstOrDefault(
             candidate => candidate.Id == selected.Id
                 && candidate.CreatedAt == selected.CreatedAt);
 
@@ -422,12 +421,21 @@ internal sealed class CliContextService(
             current with { SessionId = refreshed.Id });
     }
 
+    /// <summary>
+    /// The refusal when the host cannot revalidate a selection. A <c>Connection.*</c> failure keeps its own
+    /// error, as the workspace, model and session revalidations do, so the command exits 3 like every other
+    /// unreachable-host failure instead of reporting a configuration problem; any other cause is the
+    /// generic "retry the selection".
+    /// </summary>
     private static Result<CliContextDocument> RevalidationUnavailable(
-        string resourceKind) =>
-        Result<CliContextDocument>.Failure(
-            new Error(
-                ErrorCodes.Data.ControlPathUnavailable,
-                $"The selected {resourceKind} could not be revalidated on the current host. Retry the selection."));
+        string resourceKind,
+        Error cause) =>
+        CliFailureExit.Classify(cause.Code, CliExitCode.ConfigurationError) == CliExitCode.NetworkError
+            ? Result<CliContextDocument>.Failure(cause)
+            : Result<CliContextDocument>.Failure(
+                new Error(
+                    ErrorCodes.Data.ControlPathUnavailable,
+                    $"The selected {resourceKind} could not be revalidated on the current host. Retry the selection."));
 
     private static Result<CliContextDocument> RevalidationMissing(
         string resourceKind,
@@ -936,43 +944,13 @@ internal sealed class CliContextService(
     private async Task<(bool IsSuccess, CampaignDto[] Items)> GetCampaignsAsync(
         CancellationToken cancellationToken)
     {
-        List<CampaignDto> campaigns = [];
+        // A host that cannot list its campaigns, or whose cursor does not advance, degrades the caller to
+        // "not loaded" rather than failing it.
+        Result<CampaignDto[]> campaigns = await apiClient.GetAllCampaignsAsync(cancellationToken).ConfigureAwait(false);
 
-        int offset = 0;
-
-        while (true)
-        {
-            Result<ListPageResult<CampaignDto>> result = await apiClient
-                .GetCampaignsPageAsync(
-                    null,
-                    100,
-                    offset,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (result.IsFailure)
-            {
-                return (false, []);
-            }
-
-            campaigns.AddRange(result.Value.Items);
-
-            if (!result.Value.HasMore
-                || result.Value.NextOffset is not { } nextOffset)
-            {
-                return (true, [.. campaigns]);
-            }
-
-            if (nextOffset <= offset)
-            {
-                // A cursor that does not advance would loop forever while the accumulator grows without
-                // bound. ArcanumApiClient.ListLoreAsync refuses the same shape; here the caller already
-                // degrades gracefully when campaigns cannot be listed.
-                return (false, []);
-            }
-
-            offset = nextOffset;
-        }
+        return campaigns.IsFailure
+            ? (false, [])
+            : (true, campaigns.Value);
     }
 
     private void AddRelationshipWarnings(

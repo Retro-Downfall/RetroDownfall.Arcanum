@@ -67,6 +67,31 @@ public sealed class CliInfrastructureBoundaryTests
         Assert.Equal(LocalOnlyHandlers.Order(StringComparer.Ordinal), naming);
     }
 
+    /// <summary>
+    /// Shared helpers that a service needs (the exit-code classifier is one) live in <c>Services</c>, so
+    /// a service never reaches up into the handlers that call it.
+    /// </summary>
+    [Fact]
+    public void Services_do_not_reference_the_Commands_namespace()
+    {
+        string services = Path.Combine(
+            TestRepositoryPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Cli",
+            "Services");
+
+        string[] reaching =
+        [
+            .. Directory
+                .EnumerateFiles(services, "*.cs", SearchOption.AllDirectories)
+                .Where(static path => File.ReadAllText(path).Contains("RetroDownfall.Arcanum.Cli.Commands", StringComparison.Ordinal))
+                .Select(path => Path.GetRelativePath(services, path).Replace(Path.DirectorySeparatorChar, '/'))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Empty(reaching);
+    }
+
     [Fact]
     public void The_orientation_file_states_the_boundary_the_projects_actually_have()
     {
