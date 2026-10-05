@@ -39,8 +39,6 @@ Progress is state, not elapsed time. The main loop's signature is the ordered to
 
 Buffered and streaming paths use the same semantic loop, so they terminate for the same reason. Streaming may emit intermediate status/tool/context frames; buffered mode records the same state internally. Neither projection invents a shorter deadline. Retained per-frame, allocation, provider request, concurrency, and post-cancellation cleanup bounds are local protections. A page or buffer must expose/follow continuation rather than silently becoming total work.
 
-The direct chat projection applies that rule to rendering: it lazily parses complete assistant Markdown in at-most-256-Ki-character Markdig chunks, retaining one-allocation protection without a total display cutoff.
-
 ### Host crash mid-turn
 
 A crash is not one of those outcomes: nothing runs, so nothing classifies the turn. The loop's own guarantees end at the process boundary, and what survives is only what reached the Grimoire. On the next start, durable-operation recovery (DESIGN §10.8) resolves the turn from that durable state rather than from anything the loop remembered.

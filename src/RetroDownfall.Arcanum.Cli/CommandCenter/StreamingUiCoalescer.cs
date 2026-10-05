@@ -3,8 +3,10 @@ using System.Threading.Channels;
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 /// <summary>
-/// Buffers streaming token UI refresh signals and flushes them on a short cadence,
-/// newlines, before non-token blocks, final/cancel, and dispose.
+/// Buffers streaming token UI refresh signals and flushes them on a short cadence, before non-token
+/// blocks, on final/cancel, and on dispose. A newline does not bypass the cadence: every flush copies
+/// the whole answer and re-wraps its entry, so flushing per line made a line-heavy answer cost one
+/// rebuild per line.
 /// Never mutates Terminal.Gui controls — only writes to a UI channel.
 /// </summary>
 internal sealed class StreamingUiCoalescer : IAsyncDisposable
@@ -54,9 +56,10 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
     }
 
     /// <summary>
-    /// Notes a token chunk. Flushes immediately on newline or when the flush interval elapsed.
+    /// Notes that a token chunk arrived. Flushes when the flush interval has elapsed since the last flush; otherwise
+    /// the chunk stays pending until the next chunk, block, or final flush.
     /// </summary>
-    public ValueTask NoteTokenAsync(string chunk, CancellationToken cancellationToken = default)
+    public ValueTask NoteTokenAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -64,9 +67,8 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
         lock (_gate)
         {
             _dirty = true;
-            bool hasNewline = chunk.Contains('\n', StringComparison.Ordinal);
             TimeSpan since = _utcNow() - _lastFlushUtc;
-            flushNow = hasNewline || since >= _flushInterval;
+            flushNow = since >= _flushInterval;
             if (flushNow)
             {
                 _dirty = false;
@@ -87,9 +89,15 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
     public ValueTask FlushFinalAsync(CancellationToken cancellationToken = default) =>
         FlushPendingAsync(cancellationToken);
 
-    /// <summary>Flushes any pending tokens on cancellation.</summary>
-    public ValueTask FlushCancelledAsync(CancellationToken cancellationToken = default) =>
-        FlushPendingAsync(cancellationToken);
+    /// <summary>
+    /// Flushes any pending tokens after a cancellation. This flush is what puts the cut-off text on the
+    /// screen, and it runs because <paramref name="cancelledToken"/> was cancelled, so that token must
+    /// never be allowed to abandon it: the write is made on <see cref="CancellationToken.None"/> (the UI
+    /// channel is unbounded, so it completes at once). The parameter exists so a caller can pass the
+    /// token it is unwinding from without having to know that.
+    /// </summary>
+    public ValueTask FlushCancelledAsync(CancellationToken cancelledToken = default) =>
+        FlushPendingAsync(CancellationToken.None);
 
     public async ValueTask DisposeAsync()
     {

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.Text;
 
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -134,6 +135,77 @@ public sealed class CommandCenterTranscriptRenderingTests
         Assert.Equal(freshAnchors, incrementalAnchors);
     }
 
+    /// <summary>
+    /// A streaming flush used to re-wrap the whole answer, so a long answer cost O(n) per flush and
+    /// O(n²) overall, on the UI thread. Lines the stream has already terminated cannot change, so only the
+    /// new ones (and the still-open tail) are wrapped.
+    /// </summary>
+    [Fact]
+    public void A_streaming_flush_wraps_only_the_new_lines_not_the_whole_answer()
+    {
+        SessionLogBuffer log = new();
+        SessionLogEntry entry = log.Append(SessionLogEntryKind.Assistant, string.Empty, streaming: true);
+        ObservableCollection<string> lines = [];
+        const int lineCount = 300;
+        StringBuilder answer = new();
+
+        for (int i = 0; i < lineCount; i++)
+        {
+            _ = answer.Append($"line {i} of the streamed answer, long enough that it needs wrapping at forty cells\n");
+            log.UpdateStreaming(entry, answer.ToString());
+            log.CopyLinesTo(lines, lineAnchors: null, wrapWidth: 40);
+        }
+
+        // Each flush wraps its one new terminated line plus the open tail segment; re-wrapping the whole
+        // entry each time would be on the order of lineCount * lineCount / 2.
+        Assert.True(
+            log.WrappedSegmentCount <= lineCount * 3,
+            $"expected linear wrapping work, saw {log.WrappedSegmentCount} segments for {lineCount} flushes");
+    }
+
+    [Theory]
+    [InlineData(1, 40)]
+    [InlineData(2, 12)]
+    [InlineData(3, 1)]
+    [InlineData(4, 25)]
+    public void Incremental_wrapping_matches_a_from_scratch_wrap_for_any_chunking(int seed, int wrapWidth)
+    {
+        string[] pieces =
+        [
+            "alpha ", "beta", " gamma delta ", "\n", "\n\n", "supercalifragilisticexpialidocious", "你好世界",
+            "🜁🜂", "tab\there ", "x", "  ", "\n", "ends here.",
+        ];
+        Random random = new(seed);
+        SessionLogBuffer incremental = new();
+        SessionLogEntry entry = incremental.Append(SessionLogEntryKind.Assistant, string.Empty, streaming: true);
+        ObservableCollection<string> lines = [];
+        StringBuilder text = new();
+
+        for (int step = 0; step < 120; step++)
+        {
+            _ = text.Append(pieces[random.Next(pieces.Length)]);
+            incremental.UpdateStreaming(entry, text.ToString());
+            incremental.CopyLinesTo(lines, lineAnchors: null, wrapWidth);
+
+            SessionLogBuffer fresh = new();
+            _ = fresh.Append(SessionLogEntryKind.Assistant, text.ToString(), streaming: true);
+            ObservableCollection<string> expected = [];
+            fresh.CopyLinesTo(expected, lineAnchors: null, wrapWidth);
+
+            Assert.Equal(expected, lines);
+        }
+
+        incremental.CompleteStreaming(entry);
+        incremental.CopyLinesTo(lines, lineAnchors: null, wrapWidth);
+
+        SessionLogBuffer completed = new();
+        _ = completed.Append(SessionLogEntryKind.Assistant, text.ToString());
+        ObservableCollection<string> completedLines = [];
+        completed.CopyLinesTo(completedLines, lineAnchors: null, wrapWidth);
+
+        Assert.Equal(completedLines, lines);
+    }
+
     [Fact]
     public void Trimming_and_clearing_do_not_leak_wrap_cache_entries()
     {
@@ -154,6 +226,92 @@ public sealed class CommandCenterTranscriptRenderingTests
 
         Assert.Single(after);
         Assert.Equal("Mage: fresh", after[0]);
+    }
+
+    /// <summary>
+    /// Model output is attacker-influenced (a fetched page can carry an OSC 52 clipboard write or a
+    /// title change), and the transcript hands its lines to the terminal. Streamed text must be
+    /// control-stripped where it enters the buffer.
+    /// </summary>
+    [Fact]
+    public void Escape_sequences_in_streamed_assistant_text_never_reach_the_transcript_lines()
+    {
+        SessionLogBuffer log = new();
+        _ = log.Append(SessionLogEntryKind.Assistant, "hi\u001b]52;c;AAAA\u0007\u001b[31mred");
+
+        ObservableCollection<string> lines = [];
+        log.CopyLinesTo(lines);
+
+        Assert.NotEmpty(lines);
+        Assert.All(
+            lines,
+            line =>
+            {
+                Assert.DoesNotContain('\u001b', line);
+                Assert.DoesNotContain('\u0007', line);
+            });
+        Assert.Contains("hi", string.Concat(lines), StringComparison.Ordinal);
+        Assert.Contains("red", string.Concat(lines), StringComparison.Ordinal);
+    }
+
+    public static TheoryData<string> EveryTextIngressPath() =>
+        ["append", "insert-before", "update-streaming", "complete-streaming", "history"];
+
+    [Theory]
+    [MemberData(nameof(EveryTextIngressPath))]
+    public void Every_path_that_stores_text_strips_control_characters(string path)
+    {
+        const string hostile = "a\u001b]0;pwned\u0007b\rc\u007fd\u009be\u0085f";
+        SessionLogBuffer log = new();
+        SessionLogEntry anchor = log.Append(SessionLogEntryKind.Assistant, "anchor", streaming: true);
+
+        switch (path)
+        {
+            case "append":
+                _ = log.Append(SessionLogEntryKind.Status, hostile);
+                break;
+            case "insert-before":
+                _ = log.InsertBefore(anchor, SessionLogEntryKind.Reasoning, hostile);
+                break;
+            case "update-streaming":
+                log.UpdateStreaming(anchor, hostile);
+                break;
+            case "complete-streaming":
+                log.CompleteStreaming(anchor, hostile);
+                break;
+            case "history":
+                log.ReplaceWithApiHistory([(SessionLogEntryKind.Assistant, hostile, null)], showOlderMessagesMarker: false);
+                break;
+            default:
+                throw new InvalidOperationException(path);
+        }
+
+        string stored = string.Concat(log.Snapshot().Select(static entry => entry.Text));
+        Assert.DoesNotContain(stored, static c => c < ' ' && c != '\n' || c is '\u007f' or (>= '\u0080' and <= '\u009f'));
+        Assert.Equal("abcdef", log.Snapshot().Select(static entry => entry.Text).First(static text => text.Contains("abcdef", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void Newlines_survive_and_tabs_expand_to_the_next_tab_stop()
+    {
+        SessionLogBuffer log = new();
+        SessionLogEntry entry = log.Append(SessionLogEntryKind.Assistant, "a\tb\nc\r\nd");
+
+        Assert.Equal("a" + new string(' ', ComposerLayout.TabStop - 1) + "b\nc\nd", entry.Text);
+    }
+
+    [Fact]
+    public void Text_without_control_characters_keeps_its_instance_so_the_wrap_cache_stays_effective()
+    {
+        SessionLogBuffer log = new();
+        string clean = "plain streamed answer\nwith two lines and glyphs 你好 🜁";
+
+        SessionLogEntry entry = log.Append(SessionLogEntryKind.Assistant, clean, streaming: true);
+        Assert.Same(clean, entry.Text);
+
+        string update = "plain streamed answer\nwith two lines and more";
+        log.UpdateStreaming(entry, update);
+        Assert.Same(update, entry.Text);
     }
 
     [Fact]

@@ -259,6 +259,72 @@ public sealed class CliOperatorSurfaceTests
         Assert.Equal(CliLineReadOutcome.Cancelled, result.Outcome);
     }
 
+    /// <summary>
+    /// A required line that is still empty when Enter arrives is not submitted, and the caret must not
+    /// move: echoing the newline put it on the next row at column 0 with no prompt, while every later
+    /// erase was still measured from the prompt's column on the row above.
+    /// </summary>
+    [Fact]
+    public void ReadInteractive_rejects_an_empty_required_line_without_moving_the_caret()
+    {
+        FakeLineTerminal terminal = new(
+            80,
+            EnterKey(),
+            Printable('o'),
+            Printable('k'),
+            EnterKey());
+
+        CliLineReadResult result = CliLineReader.ReadInteractive(
+            terminal,
+            allowEmpty: false,
+            originColumn: 8,
+            CancellationToken.None);
+
+        Assert.Equal(CliLineReadOutcome.Submitted, result.Outcome);
+
+        Assert.Equal("ok", result.Line);
+
+        // Exactly one newline, from the accepted Enter: the rejected one wrote nothing.
+        Assert.Equal("ok\n", terminal.Output);
+    }
+
+    [Fact]
+    public void ReadInteractive_rejects_a_blank_required_line_and_keeps_the_typed_blanks()
+    {
+        FakeLineTerminal terminal = new(80, Printable(' '), EnterKey(), Printable('x'), EnterKey());
+
+        CliLineReadResult result = CliLineReader.ReadInteractive(
+            terminal,
+            allowEmpty: false,
+            originColumn: 3,
+            CancellationToken.None);
+
+        Assert.Equal(" x", result.Line);
+
+        Assert.Equal(" x\n", terminal.Output);
+    }
+
+    [Fact]
+    public void ReadInteractive_submits_an_empty_line_when_empty_is_allowed()
+    {
+        FakeLineTerminal terminal = new(80, EnterKey());
+
+        CliLineReadResult result = CliLineReader.ReadInteractive(
+            terminal,
+            allowEmpty: true,
+            originColumn: 0,
+            CancellationToken.None);
+
+        Assert.Equal(CliLineReadOutcome.Submitted, result.Outcome);
+
+        Assert.Equal(string.Empty, result.Line);
+
+        Assert.Equal("\n", terminal.Output);
+    }
+
+    private static ConsoleKeyInfo EnterKey() =>
+        new('\r', ConsoleKey.Enter, shift: false, alt: false, control: false);
+
     private static ConsoleKeyInfo Printable(char value) =>
         new(value, ConsoleKey.None, shift: false, alt: false, control: false);
 

@@ -26,7 +26,6 @@ public sealed class ComposerTextViewConfigTests
     }
 }
 
-
 public sealed class ComposerLayoutTests
 {
     [Fact]
@@ -226,14 +225,15 @@ public sealed class CommandCenterSubmitTextTests
     }
 
     [Fact]
-    public void Turn_attachment_builder_preserves_embedded_blank_lines()
+    public async Task Turn_attachment_builder_preserves_embedded_blank_lines()
     {
         const string prompt = "line one\n\nline three";
-        TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             prompt,
             workingDirectory: Path.GetTempPath(),
             preStagedPaths: [],
-            settings: new ArcanumSettings());
+            settings: new ArcanumSettings(),
+            cancellationToken: CancellationToken.None);
 
         Assert.Equal(prompt, result.Prompt);
     }

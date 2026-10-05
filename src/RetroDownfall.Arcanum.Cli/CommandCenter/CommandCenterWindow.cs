@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 /// Terminal.Gui view tree for Command Center v2: header, left sessions, transcript, composer, footer.
 /// Absolute frames so Warp SIGWINCH resizes refill the screen.
 /// </summary>
-internal sealed class CommandCenterWindow : Window
+internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionWindow
 {
     private const int SidebarWidth = 28;
 

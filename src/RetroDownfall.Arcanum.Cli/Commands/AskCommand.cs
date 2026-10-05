@@ -331,7 +331,9 @@ public sealed class AskCommand(
                     case IntelligenceEventType.Result:
 
                         _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
-                        finalText = streamContent.AnswerText;
+                        // The answer already reached stdout token by token; a Result frame only says the
+                        // turn finished. An empty string marks "finished" without holding a second copy.
+                        finalText = string.Empty;
 
                         break;
 
@@ -401,14 +403,9 @@ public sealed class AskCommand(
             Console.CancelKeyPress -= OnCancelKeyPress;
         }
 
-        if (finalText is null)
+        if (finalText is null && streamContent.AnswerLength > 0)
         {
-            string accumulated = streamContent.AnswerText;
-
-            if (!string.IsNullOrEmpty(accumulated))
-            {
-                finalText = accumulated;
-            }
+            finalText = string.Empty;
         }
 
         if (finalText is null)

@@ -131,8 +131,6 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IAttachmentRevealLauncher, AttachmentRevealLauncher>();
 
-        services.AddSingleton<MarkdigSpectreRenderer>();
-
         // W6.4: shared secret/grimoire stack (Data Protection + digest cache + secret store +
         // CLI Grimoire), owned by Infrastructure so it cannot drift from the host wiring.
         services.AddArcanumCliClientStack();
@@ -410,10 +408,12 @@ internal static class CliApplicationFactory
                 ICommandCenterHost host =
                     serviceProvider.GetRequiredService<ICommandCenterHost>();
 
+                using CommandCenterTermination deepLinkTermination = new();
+
                 int hostExitCode = await host
                     .RunAsync(
                         deepLinkIntake.StartupSessionId,
-                        CancellationToken.None)
+                        deepLinkTermination.Token)
                     .ConfigureAwait(false);
 
                 return NormalizeExitCode(hostExitCode);
@@ -430,8 +430,12 @@ internal static class CliApplicationFactory
                 {
                     ICommandCenterHost host = serviceProvider.GetRequiredService<ICommandCenterHost>();
 
+                    // SIGTERM and SIGHUP cancel this token, so the host can unwind, stop the server it
+                    // launched and restore the terminal instead of being killed mid-run.
+                    using CommandCenterTermination termination = new();
+
                     int hostExitCode = await host
-                        .RunAsync(CancellationToken.None)
+                        .RunAsync(termination.Token)
                         .ConfigureAwait(false);
 
                     return NormalizeExitCode(hostExitCode);

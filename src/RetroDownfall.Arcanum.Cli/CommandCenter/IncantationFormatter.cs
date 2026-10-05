@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RetroDownfall.Arcanum.Cli.UX;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -244,6 +245,10 @@ internal static partial class IncantationFormatter
             return string.Empty;
         }
 
+        // Whole escape sequences go first, so coloured tool output reads as plain text instead of leaving
+        // "[31m" debris. Nothing without an ESC in front of it is treated as a sequence.
+        text = TerminalTextSanitizer.StripEscapeSequences(text);
+
         StringBuilder sb = new(text.Length);
 
         // Running column rather than re-measuring the accumulated buffer at every tab: the re-measure
@@ -272,8 +277,8 @@ internal static partial class IncantationFormatter
                 continue;
             }
 
-            // Strip C0/C1 controls and ANSI CSI-ish escapes (ESC).
-            if (value < 0x20 || value is 0x7F or 0x9B || value == 0x1B)
+            // Strip the remaining C0 controls, DEL and the whole 8-bit C1 range (0x80-0x9F).
+            if (TerminalTextSanitizer.IsDroppedControl(value))
             {
                 continue;
             }
@@ -290,8 +295,7 @@ internal static partial class IncantationFormatter
             col += ComposerLayout.MeasureGraphemeCellWidth(glyph, col);
         }
 
-        // Strip leftover CSI sequences like "[32m".
-        return AnsiSequenceRegex().Replace(sb.ToString(), string.Empty);
+        return sb.ToString();
     }
 
     internal static IEnumerable<string> WrapToCellWidth(string text, int width)
@@ -503,7 +507,4 @@ internal static partial class IncantationFormatter
         @"content|body|payload|base64|patch|diff|replacement|old.?string|new.?string|api.?key|password|secret|token|authorization|bearer|client.?secret",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SensitiveKeyRegex();
-
-    [GeneratedRegex(@"\x1B\[[0-9;?]*[ -/]*[@-~]|\[[0-9;]*m", RegexOptions.CultureInvariant)]
-    private static partial Regex AnsiSequenceRegex();
 }

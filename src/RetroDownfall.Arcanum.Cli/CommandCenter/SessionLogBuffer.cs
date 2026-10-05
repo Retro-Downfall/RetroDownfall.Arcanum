@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
@@ -101,6 +102,12 @@ internal sealed class SessionLogBuffer
 
     public int MaxReasoningChars { get; }
 
+    /// <summary>
+    /// How many newline-delimited segments have been wrapped over this buffer's lifetime. A diagnostic
+    /// that lets a test prove a streaming flush wraps only what is new instead of the whole answer.
+    /// </summary>
+    internal long WrappedSegmentCount { get; private set; }
+
     public int Count
     {
         get
@@ -119,7 +126,7 @@ internal sealed class SessionLogBuffer
 
     public SessionLogEntry Append(SessionLogEntryKind kind, string text, bool streaming = false)
     {
-        string clamped = ClampForKind(kind, text ?? string.Empty);
+        string clamped = SanitizeAndClamp(kind, text ?? string.Empty);
         SessionLogEntry entry = new(kind, clamped, streaming);
 
         lock (_gate)
@@ -138,7 +145,7 @@ internal sealed class SessionLogBuffer
         bool streaming = false)
     {
         ArgumentNullException.ThrowIfNull(before);
-        SessionLogEntry entry = new(kind, ClampForKind(kind, text ?? string.Empty), streaming);
+        SessionLogEntry entry = new(kind, SanitizeAndClamp(kind, text ?? string.Empty), streaming);
 
         lock (_gate)
         {
@@ -161,7 +168,7 @@ internal sealed class SessionLogBuffer
 
         lock (_gate)
         {
-            entry.Text = ClampForKind(entry.Kind, text ?? string.Empty);
+            entry.Text = SanitizeAndClamp(entry.Kind, text ?? string.Empty);
         }
     }
 
@@ -173,7 +180,7 @@ internal sealed class SessionLogBuffer
         {
             if (finalText is not null)
             {
-                entry.Text = ClampForKind(entry.Kind, finalText);
+                entry.Text = SanitizeAndClamp(entry.Kind, finalText);
             }
 
             entry.Streaming = false;
@@ -245,7 +252,7 @@ internal sealed class SessionLogBuffer
                 }
 
                 _entries.Add(new SessionLogEntry(
-                    kind, ClampForKind(kind, text ?? string.Empty), sourceEntryId: sourceEntryId));
+                    kind, SanitizeAndClamp(kind, text ?? string.Empty), sourceEntryId: sourceEntryId));
                 addedHistory = true;
             }
 
@@ -408,15 +415,72 @@ internal sealed class SessionLogBuffer
             return cached.Lines;
         }
 
-        IEnumerable<string> raw = FormatEntry(entry).Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Split('\n');
-        string[] lines = (wrapWidth > 1
-            ? raw.SelectMany(line => WrapLine(line, wrapWidth))
-            : raw).ToArray();
+        // Text only ever enters through SanitizeAndClamp, which strips every '\r', so the formatted text
+        // splits on '\n' alone.
+        string formatted = FormatEntry(entry);
 
-        _wrapCache[entry.Id] = new WrappedEntryLines(entry.Text, entry.Streaming, wrapWidth, lines);
+        // A streaming flush appends to the text it wrapped last time. Every line the stream has already
+        // terminated with '\n' is final, so its wrapped lines are reused and only the newly terminated
+        // lines and the still-open tail are wrapped. Reuse is decided by comparing the settled prefix
+        // itself, not by trusting that the entry only grew: the prefix label changes when streaming
+        // starts and ends, and a sanitized lone surrogate can change when its pair arrives.
+        string[] settledLines = [];
+        int settledLength = 0;
+        if (cached is not null
+            && cached.WrapWidth == wrapWidth
+            && cached.SettledLength > 0
+            && cached.SettledLength <= formatted.Length
+            && formatted.AsSpan(0, cached.SettledLength).SequenceEqual(
+                cached.FormattedText.AsSpan(0, cached.SettledLength)))
+        {
+            settledLines = cached.SettledLines;
+            settledLength = cached.SettledLength;
+        }
+
+        int newSettledLength = formatted.LastIndexOf('\n') + 1;
+        if (newSettledLength > settledLength)
+        {
+            List<string> settled = new(settledLines);
+            int start = settledLength;
+            while (start < newSettledLength)
+            {
+                int end = formatted.IndexOf('\n', start);
+                AddWrappedSegment(settled, formatted[start..end], wrapWidth);
+                start = end + 1;
+            }
+
+            settledLines = settled.ToArray();
+            settledLength = newSettledLength;
+        }
+
+        List<string> all = new(settledLines.Length + 1);
+        all.AddRange(settledLines);
+        AddWrappedSegment(all, formatted[settledLength..], wrapWidth);
+        string[] lines = all.ToArray();
+
+        _wrapCache[entry.Id] = new WrappedEntryLines(
+            entry.Text,
+            entry.Streaming,
+            wrapWidth,
+            lines,
+            formatted,
+            settledLength,
+            settledLines);
 
         return lines;
+    }
+
+    private void AddWrappedSegment(List<string> lines, string segment, int wrapWidth)
+    {
+        WrappedSegmentCount++;
+        if (wrapWidth > 1)
+        {
+            lines.AddRange(WrapLine(segment, wrapWidth));
+        }
+        else
+        {
+            lines.Add(segment);
+        }
     }
 
     private void PruneWrapCacheUnlocked()
@@ -520,8 +584,17 @@ internal sealed class SessionLogBuffer
         return prefix + entry.Text;
     }
 
-    private string ClampForKind(SessionLogEntryKind kind, string text)
+    /// <summary>
+    /// The one place text enters an entry. Control characters and escape sequences are stripped here —
+    /// not when a line is formatted — because model and tool text is attacker-influenced and the
+    /// transcript hands its lines to the terminal, and because stripping at the boundary leaves the
+    /// wrap cache's reference check on <see cref="SessionLogEntry.Text"/> effective: clean text keeps
+    /// its string instance. The cap is applied after the strip so a tab expansion cannot overshoot it.
+    /// </summary>
+    private string SanitizeAndClamp(SessionLogEntryKind kind, string text)
     {
+        text = TerminalTextSanitizer.SanitizeBlock(text);
+
         int max = kind switch
         {
             SessionLogEntryKind.Command => MaxCommandChars,
@@ -557,10 +630,17 @@ internal sealed class SessionLogBuffer
         PruneWrapCacheUnlocked();
     }
 
-    /// <summary>Cached wrapped display lines for one entry at one wrap width.</summary>
+    /// <summary>
+    /// Cached wrapped display lines for one entry at one wrap width. <paramref name="SettledLength"/> is
+    /// how much of <paramref name="FormattedText"/> ends in a newline, and <paramref name="SettledLines"/>
+    /// are the wrapped lines of exactly that prefix, kept so a growing entry re-wraps only its new tail.
+    /// </summary>
     private sealed record WrappedEntryLines(
         string SourceText,
         bool Streaming,
         int WrapWidth,
-        string[] Lines);
+        string[] Lines,
+        string FormattedText,
+        int SettledLength,
+        string[] SettledLines);
 }

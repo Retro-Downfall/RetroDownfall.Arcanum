@@ -29,6 +29,21 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
         "\u001b[?1003l\u001b[?1006l\u001b[?1015l\u001b[?1000l\u001b[?1002l"
         + "\u001b[?2004l\u001b[?1049l\u001b[?25h\u001b[0m\u001b[?7h";
 
+    /// <summary>
+    /// <see cref="Run"/> could not initialise Terminal.Gui or lay the window out: the interface never
+    /// appeared.
+    /// </summary>
+    public const int StartFailed = -1;
+
+    /// <summary>The terminal is smaller than <see cref="MinCols"/> by <see cref="MinRows"/>.</summary>
+    public const int TooSmall = -2;
+
+    /// <summary>
+    /// The interface started and then failed while it was running. Kept apart from
+    /// <see cref="StartFailed"/> so the operator is not told a working session failed to start.
+    /// </summary>
+    public const int CrashedAfterStart = -3;
+
     /// <summary>Last size observed by <see cref="Run"/> (for host error messages).</summary>
     public int LastDetectedCols { get; private set; }
 
@@ -82,8 +97,8 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
     }
 
     /// <summary>
-    /// Runs <paramref name="buildAndWire"/> after Init. Returns process exit code.
-    /// -2 = too small; -1 = init/run failure.
+    /// Runs <paramref name="buildAndWire"/> after Init. Returns process exit code, or one of
+    /// <see cref="StartFailed"/>, <see cref="TooSmall"/> and <see cref="CrashedAfterStart"/>.
     /// </summary>
     public int Run(Func<IApplication, CommandCenterWindow, int> buildAndWire, bool monochromeTheme = false)
     {
@@ -112,17 +127,18 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
 
             if (!IsViewportLargeEnough(cols, rows))
             {
-                return -2;
+                return TooSmall;
             }
 
             window = new CommandCenterWindow();
             window.ApplyAbsoluteLayout(cols, rows);
-            return buildAndWire(app, window);
+            CommandCenterWindow readyWindow = window;
+            return RunAfterStart(() => buildAndWire(app, readyWindow));
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Terminal.Gui Command Center failed to start.");
-            return -1;
+            return StartFailed;
         }
         finally
         {
@@ -148,6 +164,26 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
             {
                 RestoreTerminalModes();
             }
+        }
+    }
+
+    /// <summary>
+    /// Runs the part of the session that happens once the interface is up. A failure there is logged and
+    /// reported as <see cref="CrashedAfterStart"/>; the caller's <c>finally</c> still disposes the window
+    /// and the application and restores the terminal.
+    /// </summary>
+    internal int RunAfterStart(Func<int> body)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+
+        try
+        {
+            return body();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Terminal.Gui Command Center stopped unexpectedly.");
+            return CrashedAfterStart;
         }
     }
 

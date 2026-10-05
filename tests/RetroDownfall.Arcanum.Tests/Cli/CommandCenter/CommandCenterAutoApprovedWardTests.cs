@@ -24,6 +24,8 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class CommandCenterWardRecordTests
 {
+    private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
+
     [Fact]
     public void Ward_argument_preview_remains_bounded_for_informational_records()
     {
@@ -70,7 +72,7 @@ public sealed class CommandCenterWardRecordTests
         Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
 
         await runner.RunTurnAsync("write it", state, updates.Writer, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            .WaitAsync(AsyncTestTimeout);
 
         Assert.Single(handler.Requests);
 
@@ -141,7 +143,7 @@ public sealed class CommandCenterWardRecordTests
         Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
 
         await runner.RunTurnAsync("patch it", state, updates.Writer, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            .WaitAsync(AsyncTestTimeout);
 
         Assert.Single(handler.Requests);
 

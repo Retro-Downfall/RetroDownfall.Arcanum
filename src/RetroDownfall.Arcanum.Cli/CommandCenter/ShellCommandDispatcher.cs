@@ -119,7 +119,6 @@ internal sealed class ShellCommandDispatcher(
             case ShellCommandKind.AttachmentsRefresh:
 
                 return await RefreshAttachmentAsync(
-
                         state,
 
                         parsed.Argument,
@@ -378,7 +377,7 @@ internal sealed class ShellCommandDispatcher(
             return ShellDispatchResult.Continue;
         }
 
-        _ = state.StagedAttachmentPaths.Add(fullPath);
+        _ = state.StageAttachmentPath(fullPath);
         state.Log.Append(SessionLogEntryKind.Status, statusLine);
         return ShellDispatchResult.Continue;
     }
@@ -445,7 +444,7 @@ internal sealed class ShellCommandDispatcher(
             return ShellDispatchResult.Continue;
         }
 
-        _ = state.StagedAttachmentReferences.Add(row.Id);
+        _ = state.StageAttachmentReference(row.Id);
         state.Log.Append(
             SessionLogEntryKind.Status,
             $"Staged attachment reference: {row.LogicalKey} v{row.Version} ({row.Id:D})");
@@ -503,7 +502,6 @@ internal sealed class ShellCommandDispatcher(
     }
 
     private async Task<ShellDispatchResult> RefreshAttachmentAsync(
-
         CommandCenterState state,
 
         string? logicalName,
@@ -511,27 +509,21 @@ internal sealed class ShellCommandDispatcher(
         CancellationToken cancellationToken)
 
     {
-
         if (!TryRequireSession(state, out Guid sessionId))
 
         {
-
             return ShellDispatchResult.Continue;
-
         }
 
         if (string.IsNullOrWhiteSpace(logicalName))
 
         {
-
             state.Log.Append(
-
                 SessionLogEntryKind.Error,
 
                 "Usage: /attachments refresh <logicalName>");
 
             return ShellDispatchResult.Continue;
-
         }
 
         Result<SessionAttachmentDto[]> listed = await apiClient
@@ -543,15 +535,12 @@ internal sealed class ShellCommandDispatcher(
         if (listed.IsFailure)
 
         {
-
             state.Log.Append(SessionLogEntryKind.Error, listed.Error.Message);
 
             return ShellDispatchResult.Continue;
-
         }
 
         if (!TryResolveAttachment(
-
                 listed.Value ?? [],
 
                 logicalName,
@@ -563,25 +552,20 @@ internal sealed class ShellCommandDispatcher(
                 out string resolveError))
 
         {
-
             state.Log.Append(SessionLogEntryKind.Error, resolveError);
 
             return ShellDispatchResult.Continue;
-
         }
 
         if (row.SourceKind != AttachmentSourceKind.WorkspaceFile)
 
         {
-
             state.Log.Append(
-
                 SessionLogEntryKind.Error,
 
                 $"Attachment `{row.LogicalKey}` is a Snapshot and cannot be refreshed.");
 
             return ShellDispatchResult.Continue;
-
         }
 
         state.TransientStatus = $"Refreshing {row.LogicalKey}…";
@@ -589,7 +573,6 @@ internal sealed class ShellCommandDispatcher(
         try
 
         {
-
             Result<AttachmentRefreshEvent> refreshed = await apiClient
 
                 .RefreshSessionAttachmentAsync(sessionId, row.Id, cancellationToken)
@@ -599,11 +582,9 @@ internal sealed class ShellCommandDispatcher(
             if (refreshed.IsFailure || refreshed.Value is null)
 
             {
-
                 state.Log.Append(SessionLogEntryKind.Error, refreshed.Error.Message);
 
                 return ShellDispatchResult.Continue;
-
             }
 
             AttachmentRefreshEvent detail = refreshed.Value;
@@ -617,17 +598,13 @@ internal sealed class ShellCommandDispatcher(
             if (confirmed.IsSuccess)
 
             {
-
                 _ = CommandCenterAttachmentDriftMonitor.ApplyBackendSnapshot(
-
                     state,
 
                     confirmed.Value ?? []);
-
             }
 
             state.Log.Append(
-
                 SessionLogEntryKind.Status,
 
                 $"[Live] Refreshed {detail.LogicalKey} v{detail.Version} "
@@ -637,16 +614,12 @@ internal sealed class ShellCommandDispatcher(
                 + $"at {detail.SourceFreshnessTimestamp:O}.");
 
             return ShellDispatchResult.Continue;
-
         }
         finally
 
         {
-
             state.TransientStatus = null;
-
         }
-
     }
 
     private static bool TryRequireSession(CommandCenterState state, out Guid sessionId)
@@ -750,7 +723,6 @@ internal sealed class ShellCommandDispatcher(
         foreach (SessionAttachmentDto row in rows.OrderBy(static r => r.LogicalKey, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(static r => r.Version))
         {
-
             string badge = row.SourceKind == AttachmentSourceKind.SnapshotOnly
 
                 ? "Snapshot"
@@ -793,11 +765,9 @@ internal sealed class ShellCommandDispatcher(
     private static string ShortHash(string? value)
 
     {
-
         string hash = value?.Trim() ?? string.Empty;
 
         return hash.Length <= 8 ? hash : hash[..8];
-
     }
 
     private async Task<ShellDispatchResult> ListContextPinsAsync(
@@ -1539,13 +1509,10 @@ internal sealed class ShellCommandDispatcher(
         bool hasMore,
         string? nextCursor)
     {
-
         if (!hasMore
             || string.IsNullOrWhiteSpace(nextCursor))
         {
-
             return body;
-
         }
 
         return string.Join(
@@ -1556,7 +1523,6 @@ internal sealed class ShellCommandDispatcher(
                 $"Physical terminal-rendering boundary: showing {shown} items. Server state was not changed.",
                 $"Continue with `/spell list {nextCursor}`.",
             ]);
-
     }
 
     private static int ParseListOffset(string? value) =>
