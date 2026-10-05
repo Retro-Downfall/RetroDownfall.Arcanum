@@ -211,6 +211,15 @@ internal sealed partial class ArcanumInternalToolServer
                 return ToolError(
                     "execute_command: the invocation was blocked because OS-level resource limits could not be applied.");
 
+            case CappedChildProcessOutcome.MemoryMonitorStopped:
+
+                _logger?.LogError(
+                    runResult.FaultException,
+                    "execute_command: the memory monitor stopped while the command was running; the process tree was killed.");
+
+                return ToolError(
+                    ChildProcessMemoryMonitorMessages.Describe("execute_command"));
+
             case CappedChildProcessOutcome.ResourceLimitExceeded:
 
                 string denialMessage = await ResourceLimitDenialFormatter.RecordAndDescribeAsync(

@@ -397,6 +397,62 @@ public sealed class A2ASendingOutcomeTests
         Assert.Equal(ledger.Entries.Select(static e => e.OperationId), ledger.OpenEntries);
     }
 
+    /// <summary>
+    /// A continuation answers a remote task the Mage's parked row still points at. A transient malformed
+    /// reply — a task payload with no status — must not destroy that task: the poll path already leaves
+    /// the task and its row alone for reconciliation, and a cancel here would turn one bad answer into a
+    /// whole re-run.
+    /// </summary>
+    [Fact]
+    public async Task ContinueSendingAsync_PeerAnswersWithAStatuslessTask_LeavesTheParkedRemoteTaskAlone()
+    {
+        using TestServer server = await CreateAgentAsync(new SilentAgentHandler("unused"), streaming: false);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        using StatuslessTaskSendHandler handler = new(serverHandler);
+
+        A2AClientService client = CreateClient(handler);
+
+        Result<A2ADispatchResult> result = await client
+            .ContinueSendingAsync(DiscoveryUrl, "parked-remote-task", "staging")
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentUnreachable, result.Error.Code);
+
+        Assert.Equal(0, handler.CancelCount);
+    }
+
+    /// <summary>
+    /// The other side of the same rule: a fresh dispatch has recorded nothing durable yet, so a task the
+    /// peer named in a payload this client cannot follow is cancelled rather than left running and billing.
+    /// </summary>
+    [Fact]
+    public async Task DispatchSendingAsync_PeerAnswersWithAStatuslessTask_CancelsTheTaskItJustCreated()
+    {
+        using TestServer server = await CreateAgentAsync(new SilentAgentHandler("unused"), streaming: false);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        using StatuslessTaskSendHandler handler = new(serverHandler);
+
+        A2AClientService client = CreateClient(handler);
+
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentUnreachable, result.Error.Code);
+
+        Assert.True(
+            handler.CancelCount == 1,
+            $"Expected one cancel of the task the peer named, saw {handler.CancelCount}. Result: {result.Error.Message}");
+    }
+
     // ── harness ────────────────────────────────────────────────────────────────────────────────────
 
     private static A2AClientService CreateClient(
@@ -492,6 +548,48 @@ public sealed class A2ASendingOutcomeTests
                 {
                     Content = new StringContent("{ this is not json", System.Text.Encoding.UTF8, "application/json"),
                 };
+            }
+
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Answers every <c>SendMessage</c> with a task that names an id and carries no status, and counts the
+    /// <c>CancelTask</c> calls that follow. Every other request reaches the peer untouched.
+    /// </summary>
+    private sealed class StatuslessTaskSendHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        private int _cancels;
+
+        public int CancelCount => Volatile.Read(ref _cancels);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            string body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+            if (body.Contains("\"SendMessage\"", StringComparison.Ordinal))
+            {
+                using JsonDocument document = JsonDocument.Parse(body);
+
+                string requestId = document.RootElement.GetProperty("id").GetRawText();
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"jsonrpc":"2.0","id":""" + requestId + ""","result":{"task":{"id":"remote-task-1","contextId":"remote-context-1","status":null}}}""",
+                        System.Text.Encoding.UTF8,
+                        "application/json"),
+                };
+            }
+
+            if (body.Contains("\"CancelTask\"", StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref _cancels);
             }
 
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);

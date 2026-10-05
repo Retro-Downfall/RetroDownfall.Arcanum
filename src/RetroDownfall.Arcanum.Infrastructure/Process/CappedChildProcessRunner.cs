@@ -41,6 +41,14 @@ internal enum CappedChildProcessOutcome
     /// <summary>OS-level resource limits could not be applied before start, or the child could not be assigned to a Windows Job Object after start; when assignment fails the process tree is killed so the child is never left running unbounded.</summary>
     ResourceLimitApplyFailed,
 
+    /// <summary>
+    /// The macOS memory monitor stopped on a fault while the child was running, so nothing enforced the
+    /// memory ceiling any more and the process tree was killed. Unlike
+    /// <see cref="ResourceLimitApplyFailed"/> the child did start and run — for as long as the monitor
+    /// lasted — so its work may be partly done and its output is incomplete.
+    /// </summary>
+    MemoryMonitorStopped,
+
     /// <summary>The process was killed by the kernel for exceeding an OS-enforced resource limit (CPU time or memory).</summary>
     ResourceLimitExceeded,
 
@@ -433,8 +441,10 @@ internal static class CappedChildProcessRunner
 
             // Only a launcher that put the child in its own group (Linux setsid) leaves the runner a group
             // to kill. setpgid on an already-started child is refused once it has exec'd, which it always
-            // has by the time Process.Start returns, so there is no post-start fallback: on macOS the runner
-            // relies on the tree kill, the launcher's own cleanup trap and the descendant supervisor.
+            // has by the time Process.Start returns, so there is no post-start fallback. On macOS a
+            // cancellation or timeout is therefore the tree kill (SIGKILL to every descendant still attached
+            // to the root, which never lets the launcher's EXIT trap run) plus the descendant supervisor's
+            // identity tracking; the launcher's trap only covers the child's own exit.
             unixProcessGroupId = processGroupEstablishedByLauncher
                 ? startedPid
                 : null;
@@ -688,7 +698,8 @@ internal static class CappedChildProcessRunner
                     (stdout, stderr) = await AwaitPostExitOutputAsync(
                             stdoutTask,
                             stderrTask,
-                            PostExitOutputDrainGrace)
+                            PostExitOutputDrainGrace,
+                            TimeProvider.System)
                         .ConfigureAwait(false);
                 }
                 catch (TimeoutException)
@@ -1048,7 +1059,7 @@ internal static class CappedChildProcessRunner
         {
             logger?.LogError(
                 supervisor.MonitorFault,
-                "The descendant supervisor's monitor loop stopped on a fault; no memory ceiling was configured, so the process tree was not killed, but descendants forked after the fault were no longer tracked for containment.");
+                "The descendant supervisor's monitor loop stopped on a fault; no memory ceiling was configured, so the process tree was not killed, but the loop no longer tracked descendants as they forked, so one that reparented before the teardown's own last scan can escape containment.");
 
             return;
         }
@@ -1083,6 +1094,14 @@ internal static class CappedChildProcessRunner
     /// every path, including the ones that end in a cancel or a timeout and the ones with no ceiling, so
     /// <see cref="TearDownRunAsync"/> owns it.
     /// </summary>
+    /// <remarks>
+    /// <c>null</c> when the monitor had already recorded a breach before it faulted. That record is the
+    /// real cause — the monitor killed the tree for exceeding the ceiling — and the caller's own
+    /// classification (<see cref="CheckSignalKillAsync"/> reads it) reports the breach instead of a fault
+    /// that only came after it. The outcome is <see cref="CappedChildProcessOutcome.MemoryMonitorStopped"/>,
+    /// not an apply failure: the child ran for as long as the monitor lasted, so it must not be described as
+    /// a command that never started.
+    /// </remarks>
     private static CappedChildProcessRunResult? MemoryMonitorFaultResult(
         MacOsDescendantSupervisor? supervisor,
         ProcessResourceLimiterResult limiterResult,
@@ -1092,14 +1111,15 @@ internal static class CappedChildProcessRunner
         int exitCode)
     {
         if (supervisor?.MonitorFaulted != true
-            || limiterResult.MonitoredMemoryLimitBytes is null)
+            || limiterResult.MonitoredMemoryLimitBytes is null
+            || supervisor.MemoryLimitExceeded)
         {
             return null;
         }
 
         return new CappedChildProcessRunResult
         {
-            Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
+            Outcome = CappedChildProcessOutcome.MemoryMonitorStopped,
 
             Stdout = stdout,
 
@@ -1109,8 +1129,7 @@ internal static class CappedChildProcessRunner
 
             PerStreamCapBytes = perStreamCapBytes,
 
-            ResourceLimitApplyError =
-                "The child-process memory monitor stopped unexpectedly, so the memory limit could not be enforced; the process was killed.",
+            FaultException = supervisor.MonitorFault,
         };
     }
 
@@ -1371,18 +1390,24 @@ internal static class CappedChildProcessRunner
     /// fails surfaces its exception at once (stdout's first) rather than after the other reader's wait, and
     /// <see cref="TimeoutException"/> reports that either is still held when the grace runs out.
     /// </summary>
+    /// <param name="timeProvider">
+    /// The clock the grace is measured on. A test supplies one it advances itself, so "one deadline for both
+    /// pipes" is proved by when that deadline lapses rather than by how long a real run happened to take on a
+    /// loaded host.
+    /// </param>
     internal static async Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)>
         AwaitPostExitOutputAsync(
         Task<CappedStreamOutput> stdoutTask,
         Task<CappedStreamOutput> stderrTask,
-        TimeSpan grace)
+        TimeSpan grace,
+        TimeProvider timeProvider)
     {
         Task both = Task.WhenAll(stdoutTask, stderrTask);
 
         Task anyFailure = FirstFailureAsync(stdoutTask, stderrTask);
 
         _ = await Task.WhenAny(both, anyFailure)
-            .WaitAsync(grace)
+            .WaitAsync(grace, timeProvider)
             .ConfigureAwait(false);
 
         if (stdoutTask.IsFaulted || stdoutTask.IsCanceled)

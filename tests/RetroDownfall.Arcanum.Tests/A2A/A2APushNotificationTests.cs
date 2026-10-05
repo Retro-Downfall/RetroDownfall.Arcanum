@@ -452,6 +452,41 @@ public sealed class A2APushNotificationTests
         Assert.Null(handler.ConfigId);
     }
 
+    /// <summary>
+    /// A peer that cannot register a callback degrades to an inline wait — for an HTTP error, and equally
+    /// for an answer this client cannot read. The unreadable answer fell through to the catch-all that
+    /// follows a task being accepted, which ended the whole Sending as lost contact and left the remote
+    /// task running.
+    /// </summary>
+    [Fact]
+    public async Task DispatchSendingAsync_CallbackModeAgainstAPeerThatAnswersTheRegistrationWithGarbage_WaitsInlineInstead()
+    {
+        using GateAgentHandler agentHandler = new();
+
+        agentHandler.Release("answered inline");
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler, advertisesPush: true);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        using GarbageRegistrationAnswerHandler handler = new(serverHandler);
+
+        A2AClientService client = CreateClient(
+            handler,
+            Settings(pushEnabled: true, callbackBaseUrl: $"https://{PeerCallbackHost}"),
+            new A2ASendingCallbackRegistry(NullLogger<A2ASendingCallbackRegistry>.Instance));
+
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl, mode: A2ADispatchMode.Callback)
+            .WaitAsync(Patience);
+
+        Assert.True(handler.Answered, "the client never tried to register a callback, so this proves nothing.");
+
+        Assert.True(result.IsSuccess, result.IsFailure ? $"{result.Error.Code}: {result.Error.Message}" : string.Empty);
+
+        Assert.Equal("answered inline", result.Value.ResponseText);
+    }
+
     [Fact]
     public async Task DispatchSendingAsync_CallbackModeWithNoCallbackBaseUrl_WaitsInlineInstead()
     {
@@ -702,6 +737,38 @@ public sealed class A2APushNotificationTests
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    /// <summary>
+    /// Answers the callback registration with a body that is not JSON. Every other request reaches the peer
+    /// untouched.
+    /// </summary>
+    private sealed class GarbageRegistrationAnswerHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        private int _answered;
+
+        public bool Answered => Volatile.Read(ref _answered) > 0;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            string body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+            if (body.Contains("\"CreateTaskPushNotificationConfig\"", StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref _answered);
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{ this is not json", System.Text.Encoding.UTF8, "application/json"),
+                };
+            }
+
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Records the config id and secret the client handed the peer.</summary>

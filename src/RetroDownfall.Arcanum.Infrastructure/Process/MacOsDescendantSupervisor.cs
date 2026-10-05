@@ -68,7 +68,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         // Without a working kqueue nothing announces a fork, so the scan is the only detector and the
         // schedule must never back off.
         _scanSchedule = new DescendantScanSchedule(
-            eventDriven: kernelQueue >= 0 && eventBuffer != IntPtr.Zero,
+            eventDriven: KernelEventsAvailable,
             idleScanEveryTicks);
         _tracked.Add(rootIdentity);
         _monitorTask = MonitorAsync();
@@ -381,8 +381,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     /// The monitor loop stopped for a reason other than cancellation. Nothing awaits it until disposal, so
     /// an exception left on the task would surface there and skip the runner's teardown; it is recorded
     /// instead. When a memory ceiling is set this loop is the only thing enforcing it, so the tree is
-    /// ended rather than left running unmonitored — the runner then reports the run as a resource-limit
-    /// apply failure.
+    /// ended rather than left running unmonitored — the runner then reports the run as one whose memory
+    /// monitor stopped.
     /// </summary>
     private void FailClosedAfterMonitorFault(Exception fault)
     {
@@ -470,9 +470,24 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     }
 
     /// <summary>
+    /// Whether the kernel can announce a fork or exit of a watched process. Without it nothing but the scan
+    /// can detect a descendant, so the scan never backs off (<see cref="DescendantScanSchedule"/>).
+    /// </summary>
+    internal bool KernelEventsAvailable =>
+        _kernelQueue >= 0
+        && _eventBuffer != IntPtr.Zero;
+
+    /// <summary>
+    /// True once the watcher of a live process could not be registered, so its forks can no longer be heard
+    /// and the scan stops backing off for the rest of the run.
+    /// </summary>
+    internal bool WatcherGap => _watcherGap;
+
+    /// <summary>
     /// Number of full process-table scans performed so far. Compared against
-    /// <see cref="MonitorTickCount"/> so a test can prove the scan still runs on every tick without
-    /// depending on wall-clock rate, which varies with host load and coverage instrumentation.
+    /// <see cref="MonitorTickCount"/> so a test can prove how often the scan runs — on every tick while
+    /// something could have changed, rarely once it is quiescent (<see cref="DescendantScanSchedule"/>) —
+    /// without depending on wall-clock rate, which varies with host load and coverage instrumentation.
     /// </summary>
     internal long FullScanCount => Interlocked.Read(ref _fullScanCount);
 
@@ -491,7 +506,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     /// <summary>
     /// True once the monitor loop stopped on an exception rather than on cancellation. With a memory
     /// ceiling configured the tree was killed when that happened, because nothing was enforcing the
-    /// ceiling any more; the runner reports such a run as a resource-limit apply failure.
+    /// ceiling any more; the runner reports such a run as <see cref="CappedChildProcessOutcome.MemoryMonitorStopped"/>
+    /// unless a breach had already been recorded.
     /// </summary>
     internal bool MonitorFaulted => _monitorFaulted;
 

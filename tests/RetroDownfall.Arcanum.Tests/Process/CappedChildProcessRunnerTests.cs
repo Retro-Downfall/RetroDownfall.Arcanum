@@ -660,7 +660,10 @@ public sealed class CappedChildProcessRunnerTests
         // The post-exit drain documents one 5 s bound. Waiting for each pipe in turn made it up to twice
         // that: a descendant that closes stdout late but keeps stderr was given a fresh 5 s for stderr
         // once stdout finally reached EOF. Both pipes are held here — stdout for four seconds, stderr for
-        // good — so only a single shared deadline brings the run back in time.
+        // good. What proves the shared deadline is AwaitPostExitOutputAsync_gives_both_pipes_one_shared_
+        // deadline, on a clock the test advances; this run only shows the whole path ends and reports each
+        // pipe's own state, so its time bound is a hang detector, not a measurement (a measurement of
+        // seconds is not stable on a host that is busy with other work).
         string pidDirectory = Path.Combine(
             Path.GetTempPath(),
             "arcanum-two-pipe-descendant-test-" + Guid.NewGuid().ToString("N"));
@@ -700,11 +703,10 @@ public sealed class CappedChildProcessRunnerTests
 
             Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
 
-            // One grace from the start of the drain (~0.6 s) plus the short regrace, not two graces.
             // (dup2 over fd 1 is what really closes the pipe's write end; Ruby's STDOUT.close does not.)
             Assert.True(
-                stopwatch.Elapsed < TimeSpan.FromSeconds(8),
-                $"The post-exit drain took {stopwatch.Elapsed}; both pipes must share one 5 s deadline.");
+                stopwatch.Elapsed < TimeSpan.FromSeconds(30),
+                $"The post-exit drain took {stopwatch.Elapsed}; it should have given up after its 5 s deadline.");
 
             // The reader that did finish keeps its output; only the one still held is reported truncated.
             Assert.False(result.Stdout.Truncated);
@@ -717,6 +719,99 @@ public sealed class CappedChildProcessRunnerTests
 
             Directory.Delete(pidDirectory, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// The shared deadline, on a clock the test advances. Stdout reaches EOF four seconds in and stderr is
+    /// held for good; the drain's one 5 s deadline lapses at five seconds on the clock. A drain that waited
+    /// for each pipe in turn started stderr's wait only once stdout was done, so at five seconds it would
+    /// still be waiting.
+    /// </summary>
+    [Fact]
+    public async Task AwaitPostExitOutputAsync_gives_both_pipes_one_shared_deadline()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        TaskCompletionSource<CappedStreamOutput> stdout = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource<CappedStreamOutput> stderr = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)> drain =
+            CappedChildProcessRunner.AwaitPostExitOutputAsync(
+                stdout.Task,
+                stderr.Task,
+                TimeSpan.FromSeconds(5),
+                clock);
+
+        await clock.FirstTimerCreated.WaitAsync(TimeSpan.FromSeconds(10));
+
+        clock.Advance(TimeSpan.FromSeconds(4));
+
+        stdout.SetResult(new CappedStreamOutput("stdout", Truncated: false));
+
+        // Let the thread pool run whatever the drain does once stdout completes (a drain that waits for
+        // each pipe in turn arms stderr's own timer here). Correct code does not depend on it: the one
+        // deadline is armed already and nothing waits on this. It only decides whether a regression to
+        // the sequential waits is seen, so a slow host can miss that regression but never fail correct code.
+        await Task.Delay(TimeSpan.FromMilliseconds(250));
+
+        Assert.False(drain.IsCompleted);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // The real delay only runs when the deadline did not lapse, to turn a hang into a failure.
+        Task finished = await Task.WhenAny(drain, Task.Delay(TimeSpan.FromSeconds(10)));
+
+        Assert.True(
+            ReferenceEquals(drain, finished),
+            "The drain was still waiting at five seconds: stderr was given its own grace after stdout finished.");
+
+        await Assert.ThrowsAsync<TimeoutException>(() => drain);
+    }
+
+    [Fact]
+    public async Task AwaitPostExitOutputAsync_returns_both_outputs_and_leaves_no_timer_when_the_readers_finish_in_time()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        Task<CappedStreamOutput> stdout = Task.FromResult(new CappedStreamOutput("out", Truncated: false));
+
+        Task<CappedStreamOutput> stderr = Task.FromResult(new CappedStreamOutput("err", Truncated: true));
+
+        (CappedStreamOutput Stdout, CappedStreamOutput Stderr) outputs =
+            await CappedChildProcessRunner.AwaitPostExitOutputAsync(stdout, stderr, TimeSpan.FromSeconds(5), clock);
+
+        Assert.Equal("out", outputs.Stdout.Text);
+
+        Assert.Equal("err", outputs.Stderr.Text);
+
+        Assert.True(outputs.Stderr.Truncated);
+
+        Assert.Equal(0, clock.ActiveTimers);
+    }
+
+    [Fact]
+    public async Task AwaitPostExitOutputAsync_surfaces_a_failed_reader_without_waiting_out_the_grace()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        TaskCompletionSource<CappedStreamOutput> stdout = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource<CappedStreamOutput> stderr = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)> drain =
+            CappedChildProcessRunner.AwaitPostExitOutputAsync(
+                stdout.Task,
+                stderr.Task,
+                TimeSpan.FromSeconds(5),
+                clock);
+
+        stderr.SetException(new IOException("the pipe broke"));
+
+        // The clock never advances: a reader that already failed must not cost the grace.
+        IOException failure = await Assert.ThrowsAsync<IOException>(() => drain.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.Equal("the pipe broke", failure.Message);
     }
 
     [SkippableFact]
@@ -832,8 +927,9 @@ public sealed class CappedChildProcessRunnerTests
         TestCapturingLogger<CappedChildProcessRunnerTests> logger = new();
 
         // The monitor loop is the only thing enforcing a macOS memory ceiling. When it faults the
-        // supervisor ends the tree, and the run is reported as an apply failure — not as a normal
-        // completion of a child whose limit silently stopped being enforced.
+        // supervisor ends the tree, and the run is reported as one whose monitor stopped — not as a normal
+        // completion of a child whose limit silently stopped being enforced, and not as an apply failure
+        // either: the child did start and run, so a caller must not describe it as never having run.
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
@@ -848,12 +944,47 @@ public sealed class CappedChildProcessRunnerTests
                 monitorTickHold: () => throw new InvalidOperationException("injected monitor fault"),
                 memoryLimitBytes: limit));
 
-        Assert.Equal(CappedChildProcessOutcome.ResourceLimitApplyFailed, result.Outcome);
+        Assert.Equal(CappedChildProcessOutcome.MemoryMonitorStopped, result.Outcome);
 
-        Assert.Contains("memory monitor", result.ResourceLimitApplyError, StringComparison.Ordinal);
+        Assert.Null(result.ResourceLimitApplyError);
+
+        Assert.IsType<InvalidOperationException>(result.FaultException);
 
         // Reported once, not once by the result builder and again by the teardown that logs every fault.
         Assert.Single(MonitorFaultErrors(logger));
+    }
+
+    /// <summary>
+    /// A monitor that killed the tree for a breach and then faulted before the run ended has already
+    /// recorded the real cause. Reporting the fault instead discarded that evidence: the caller was told
+    /// the limit could not be enforced, when it had been enforced and had been exceeded.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunAsync_reports_the_memory_breach_when_the_monitor_faults_after_killing_the_tree()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        const long ceilingBytes = 64L * 1024 * 1024;
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            CreateSleepProcessStartInfo(30),
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(60),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 64 },
+            resourceLimiter: new MonitoredMemoryLimiter(ceilingBytes),
+            CancellationToken.None,
+            descendantSupervisorFactory: (pid, limit) => MacOsDescendantSupervisor.TryStart(
+                pid,
+                // The first tick measures the root over the ceiling and kills the tree; the hold that runs
+                // at the end of that same tick then faults the loop.
+                monitorTickHold: () => throw new InvalidOperationException("injected monitor fault"),
+                memoryLimitBytes: limit,
+                footprintReader: _ => ceilingBytes * 2));
+
+        Assert.Equal(CappedChildProcessOutcome.ResourceLimitExceeded, result.Outcome);
+
+        Assert.Equal(ResourceLimitKind.Memory, result.ExceededResource);
     }
 
     [SkippableFact]
@@ -1053,7 +1184,10 @@ public sealed class CappedChildProcessRunnerTests
 
             // No post-start setpgid can ever succeed (the child has already exec'd), so the runner has no
             // process group of its own to kill on macOS. What kills the forked sleep on cancellation is the
-            // tree kill and the launcher's own cleanup — proven here with the supervisor taken out of play.
+            // tree kill — SIGKILL to every descendant still attached to the root, which never lets the
+            // launcher's EXIT trap run — proven here with the supervisor taken out of play. The run passes
+            // on the code that still had the dead setpgid fallback too: it guards the behaviour, and
+            // UnixProcessGroupTests.No_production_code_calls_setpgid guards the fallback.
             CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
                 psi,
                 ChildProcessEnvironmentProfile.SpellScript,

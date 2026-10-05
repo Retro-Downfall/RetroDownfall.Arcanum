@@ -232,8 +232,10 @@ public sealed class A2AClientService : IA2AClientService
                         return Result<A2ADispatchResult>.Success(
                             new A2ADispatchResult(taskId.Trim(), "canceled"));
                     }
-                    catch (Exception ex) when (ex is HttpRequestException or A2AException)
+                    catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
                     {
+                        // The answer is remote-authored: one this client cannot read is a cancel that failed,
+                        // not an exception out of the cancel verb.
                         return Result<A2ADispatchResult>.Failure(new Error(
                             ErrorCodes.Sending.AgentUnreachable,
                             $"Could not cancel remote task '{taskId}': {ex.Message}"));
@@ -617,21 +619,29 @@ public sealed class A2AClientService : IA2AClientService
         }
 
         // Remote-authored: a response that names no task, or a task with no status, is a malformed peer and
-        // not an exception out of the tool call. When a task id did arrive the remote may be running it, so
-        // it is cancelled rather than abandoned (nothing is recorded durably yet — there is no usable
-        // snapshot to follow).
+        // not an exception out of the tool call.
         if (response.Task is not { Status: not null } accepted)
         {
             _logger.LogWarning("dispatch_sending: the remote agent accepted the message with no usable task payload.");
 
-            if (response.Task is { Id.Length: > 0 } unusable)
+            // A fresh dispatch has recorded nothing durably yet and there is no usable snapshot to follow, so
+            // a task id that did arrive names a task the remote may be running: it is cancelled rather than
+            // abandoned. A continuation is the opposite case. It answers a task the Mage's parked row still
+            // points at, and one malformed reply must not destroy it — the poll path treats a reply it cannot
+            // read the same way, leaving the task and its row for reconciliation.
+            bool continuation = !string.IsNullOrWhiteSpace(message.TaskId);
+
+            if (!continuation && response.Task is { Id.Length: > 0 } unusable)
             {
                 await TryCancelRemoteTaskAsync(client, unusable.Id).ConfigureAwait(false);
             }
 
             return Result<A2ADispatchResult>.Failure(new Error(
                 ErrorCodes.Sending.AgentUnreachable,
-                "The remote agent answered with neither a Message nor a usable Task payload."));
+                continuation
+                    ? "The remote agent answered with neither a Message nor a usable Task payload. "
+                      + $"The remote task '{message.TaskId}' may still be waiting for the answer; it was not cancelled."
+                    : "The remote agent answered with neither a Message nor a usable Task payload."));
         }
 
         AgentTask task = accepted;
@@ -881,8 +891,11 @@ public sealed class A2AClientService : IA2AClientService
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is HttpRequestException or A2AException)
+        catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
         {
+            // An answer this client cannot read is a peer that cannot register a callback, the same as an
+            // HTTP error: it must not reach the catch-all that follows an accepted task, which ends the whole
+            // Sending as lost contact and leaves the remote task running.
             _logger.LogInformation(
                 ex,
                 "dispatch_sending: the peer would not register a callback for remote task {TaskId}; "
@@ -1260,8 +1273,10 @@ public sealed class A2AClientService : IA2AClientService
         {
             throw;
         }
-        catch (Exception ex) when (ex is HttpRequestException or A2AException or IOException or InvalidOperationException)
+        catch (Exception ex) when (ex is HttpRequestException or A2AException or IOException or InvalidOperationException or JsonException)
         {
+            // A frame the peer sent that is not JSON is the same failure as a stream it refused or dropped:
+            // the Sending is still running on the far side, so it degrades to the poll.
             _logger.LogInformation(
                 ex,
                 "dispatch_sending: could not follow remote task {TaskId} by subscription; falling back to polling.",

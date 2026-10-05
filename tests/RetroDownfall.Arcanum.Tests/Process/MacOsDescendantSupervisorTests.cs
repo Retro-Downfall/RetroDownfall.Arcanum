@@ -27,12 +27,22 @@ public sealed class MacOsDescendantSupervisorTests
 
         try
         {
+            // Without a kernel event source the scan never backs off, by design; that is the host's
+            // condition, not a regression this test is here to catch.
+            Skip.IfNot(
+                supervisor!.KernelEventsAvailable,
+                "The kernel event queue could not watch the child on this host, so the scan never backs off.");
+
             // Count ticks, not seconds: the loop slows under coverage instrumentation on a loaded suite,
             // and the schedule is defined in ticks, so the ratio is load-independent.
             await WaitUntilAsync(
                 () => supervisor!.MonitorTickCount >= 250,
                 TimeSpan.FromSeconds(60),
                 "The monitor loop did not reach 250 ticks.");
+
+            Skip.If(
+                supervisor.WatcherGap,
+                "A watcher could not be registered on this host, so the scan never backs off.");
 
             long ticks = supervisor!.MonitorTickCount;
 
@@ -94,11 +104,22 @@ public sealed class MacOsDescendantSupervisorTests
 
         try
         {
+            // The premise is a scan that has backed off, and with no kernel event source or a watcher that
+            // could not be registered the scan never does: such a host cannot run this test, which is not
+            // the wiring failing.
+            Skip.IfNot(
+                supervisor!.KernelEventsAvailable,
+                "The kernel event queue could not watch the child on this host, so the scan never backs off.");
+
             // Well past the initial active window (DescendantScanSchedule.ActiveWindowTicks).
             await WaitUntilAsync(
                 () => supervisor!.MonitorTickCount >= 200,
                 TimeSpan.FromSeconds(60),
                 "The monitor loop did not reach 200 ticks.");
+
+            Skip.If(
+                supervisor.WatcherGap,
+                "A watcher could not be registered on this host, so the scan never backs off.");
 
             long scansWhileQuiet = supervisor!.FullScanCount;
 

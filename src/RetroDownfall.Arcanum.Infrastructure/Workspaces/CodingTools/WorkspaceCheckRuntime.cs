@@ -673,6 +673,12 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                         || run.Stdout.Truncated
                         || run.Stderr.Truncated,
                 };
+            case CappedChildProcessOutcome.MemoryMonitorStopped:
+                return MonitorStoppedResult(
+                    profileId,
+                    sdkVersion,
+                    parsed,
+                    run);
             case CappedChildProcessOutcome.PreStartValidationFailed:
                 return Outcome(
                     run.PreStartValidationCode
@@ -749,6 +755,44 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 || run.Stderr.Truncated,
         };
     }
+
+    /// <summary>
+    /// The result for a check whose memory monitor stopped while it was running. The check ran, so what it
+    /// printed and parsed is real but partial and is reported with it; the message says it ran, unlike
+    /// <c>resource_limit_unavailable</c>, whose runs never started or were killed right after start.
+    /// </summary>
+    internal static WorkspaceCheckToolResultEnvelope MonitorStoppedResult(
+        string profileId,
+        string sdkVersion,
+        WorkspaceCheckDiagnosticParseResult parsed,
+        CappedChildProcessRunResult run) =>
+        new()
+        {
+            Status = "failed",
+            Code = "resource_monitor_stopped",
+            Message = ChildProcessMemoryMonitorMessages.Describe(
+                ToolRiskClassifier.WorkspaceCheckToolName),
+            ProfileId = profileId,
+            SelectedSdkVersion = sdkVersion,
+            Diagnostics = parsed.Diagnostics,
+            TotalDiagnosticCount =
+                parsed.TotalDiagnosticCount,
+            OmittedDiagnosticCount =
+                parsed.TotalDiagnosticCount
+                - parsed.Diagnostics.Length,
+            ErrorCount = parsed.ErrorCount,
+            WarningCount = parsed.WarningCount,
+            TotalTestCount = parsed.TotalTestCount,
+            PassedTestCount = parsed.PassedTestCount,
+            FailedTestCount = parsed.FailedTestCount,
+            SkippedTestCount = parsed.SkippedTestCount,
+            StandardOutput = run.Stdout.Text,
+            StandardError = run.Stderr.Text,
+            Truncated =
+                parsed.Truncated
+                || run.Stdout.Truncated
+                || run.Stderr.Truncated,
+        };
 
     private WorkspaceCheckDiagnosticParseResult ParseDiagnostics(
         WorkspaceCheckDiagnosticParserKind parser,
