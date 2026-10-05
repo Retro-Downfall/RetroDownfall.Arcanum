@@ -101,6 +101,32 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         Assert.Equal(profilesBefore, ArcanumProfileCount());
     }
 
+    [SkippableFact]
+    [SupportedOSPlatform("windows")]
+    public void Broker_refusing_an_incomplete_payload_says_why_on_stderr()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The AppContainer broker is Windows-only.");
+
+        // Exit 70 used to be a bare number: the runner handed the model an exit code and no reason.
+        // Runs in-process, so it needs no published apphost.
+        using StringWriter error = new();
+        int profilesBefore = ArcanumProfileCount();
+
+        int exitCode = WindowsAppContainerLauncher.Run(
+            new SandboxExecHelperPayload
+            {
+                Target = @"C:\Windows\System32\cmd.exe",
+                WindowsProfileName = WindowsAppContainerPolicy.CreateProfileName(),
+                WindowsRestoreJournalPath = Path.Combine(_workspace, "undo.journal"),
+            },
+            error);
+
+        Assert.Equal(WindowsAppContainerBrokerExit.InvalidPayload, exitCode);
+        Assert.StartsWith("sandbox-exec: ", error.ToString(), StringComparison.Ordinal);
+        Assert.Contains("WindowsJobAssignedSignalPath", error.ToString(), StringComparison.Ordinal);
+        Assert.Equal(profilesBefore, ArcanumProfileCount());
+    }
+
     [SupportedOSPlatform("windows")]
     private static string Sddl(string path) =>
         new DirectoryInfo(path)

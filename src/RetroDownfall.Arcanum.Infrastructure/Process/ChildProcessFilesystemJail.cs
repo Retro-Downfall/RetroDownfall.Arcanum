@@ -231,11 +231,15 @@ internal static class ChildProcessFilesystemJail
         ILogger? logger)
     {
         bool restored;
+
+        // The replay blocks the tool call that owns it, so every root-lock wait in it shares one
+        // deadline rather than each taking a full timeout.
+        WindowsAppContainerRootLockBudget lockBudget = WindowsAppContainerRootLockBudget.StartPerRun();
         try
         {
             restored = WindowsAppContainerRestoreJournal.Replay(
                 journalPath,
-                WindowsAppContainerLauncher.RemoveGrant,
+                (path, sid) => WindowsAppContainerLauncher.RemoveGrant(path, sid, lockBudget),
                 WindowsAppContainerLauncher.DeleteProfile);
         }
         catch (Exception ex)
@@ -774,7 +778,7 @@ internal static class ChildProcessFilesystemJail
         }
     }
 
-    private static List<string> NormalizeExistingRoots(IReadOnlyList<string> roots)
+    internal static List<string> NormalizeExistingRoots(IReadOnlyList<string> roots)
     {
         List<string> result = [];
 
