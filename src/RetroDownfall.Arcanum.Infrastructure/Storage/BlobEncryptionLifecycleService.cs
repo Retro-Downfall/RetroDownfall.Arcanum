@@ -187,14 +187,12 @@ public sealed class BlobEncryptionLifecycleService(
                         .ConfigureAwait(false);
                 }
             }
-            // The same filter RunDurableAsync uses. A blob deleted out-of-band, a length/hash
-            // mismatch, or an unavailable key is an expected data condition, not a reason to
-            // abandon every candidate queued behind it. Recovery for these kinds runs once —
+            // The same filter RunDurableAsync uses. A blob deleted out-of-band or access-denied, a
+            // length/hash mismatch, or an unavailable key is an expected data condition, not a reason
+            // to abandon every candidate queued behind it. Recovery for these kinds runs once —
             // FindExpiredAsync re-selects only the DataRetention kinds — so an early unwind would
             // leave the remaining files legacy plaintext (or on the retired key) permanently.
-            catch (Exception ex) when (ex is IOException
-                                       or InvalidDataException
-                                       or System.Security.Cryptography.CryptographicException)
+            catch (Exception ex) when (BlobEncryptionFileProcessor.IsPerBlobFailure(ex))
             {
                 failed++;
             }
@@ -304,13 +302,12 @@ public sealed class BlobEncryptionLifecycleService(
                         Interlocked.Increment(ref processed);
                         Interlocked.Add(ref processedBytes, candidate.ExpectedPlaintextLength);
                     }
-                    catch (Exception ex) when (ex is IOException
-                                               or InvalidDataException
-                                               or System.Security.Cryptography.CryptographicException)
+                    catch (Exception ex) when (BlobEncryptionFileProcessor.IsPerBlobFailure(ex))
                     {
                         Interlocked.Increment(ref failed);
-                        BlobEncryptionVerificationResult verification = await processor
-                            .VerifyAsync(candidate, CancellationToken.None)
+                        BlobEncryptionVerificationResult verification = await VerifyCandidateAsync(
+                                candidate,
+                                CancellationToken.None)
                             .ConfigureAwait(false);
                         issues.AddOrUpdate(verification.Issue, 1, static (_, count) => count + 1);
                     }
@@ -434,8 +431,9 @@ public sealed class BlobEncryptionLifecycleService(
             {
                 ct.ThrowIfCancellationRequested();
                 await throttle.WaitAsync(candidate.ExpectedPlaintextLength, ct).ConfigureAwait(false);
-                BlobEncryptionVerificationResult result = await processor
-                    .VerifyAsync(candidate, CancellationToken.None)
+                BlobEncryptionVerificationResult result = await VerifyCandidateAsync(
+                        candidate,
+                        CancellationToken.None)
                     .ConfigureAwait(false);
                 if (result.IsValid && result.Descriptor is not null)
                 {
@@ -457,6 +455,24 @@ public sealed class BlobEncryptionLifecycleService(
             candidates.Sum(static candidate => candidate.ExpectedPlaintextLength) - validBytes,
             failed,
             issues);
+    }
+
+    /// <summary>
+    /// Verifies one candidate and never lets that one blob end the pass: a per-blob failure the
+    /// processor did not already classify is recorded as <see cref="BlobEncryptionVerificationIssue.IoError"/>.
+    /// </summary>
+    private async Task<BlobEncryptionVerificationResult> VerifyCandidateAsync(
+        BlobEncryptionCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await processor.VerifyAsync(candidate, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (BlobEncryptionFileProcessor.IsPerBlobFailure(exception))
+        {
+            return new BlobEncryptionVerificationResult(BlobEncryptionVerificationIssue.IoError);
+        }
     }
 
     private static byte[] BuildCheckpoint(int processedFiles, long processedBytes, int failedFiles)

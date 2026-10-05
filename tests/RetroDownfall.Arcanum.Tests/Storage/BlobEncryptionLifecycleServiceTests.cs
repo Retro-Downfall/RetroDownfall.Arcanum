@@ -93,6 +93,64 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
         Assert.Equal(LongRunningOperationErrorCodes.RecoveryFailed, result.ErrorCode);
     }
 
+    // UnauthorizedAccessException is what a locked or ACL-denied blob throws, and it is not an
+    // IOException. Recovery must count that one blob as failed and carry on to the next candidate,
+    // and the verification pass after it must record the blob rather than unwind.
+    [Fact]
+    public async Task Recover_continues_past_a_blob_that_throws_unauthorized_access()
+    {
+        InMemoryKeyRing keys = new();
+        EncryptedBlobStore blobs = new(keys);
+        BlobEncryptionCandidate denied = await WriteEncryptedAsync(blobs, "access-denied");
+        BlobEncryptionCandidate legacy = await WriteLegacyAsync("still-plaintext");
+        ObservedBlobStore observed = new(blobs, denied.Path);
+        RecordingMetadataStore metadata = new(denied, legacy);
+        BlobEncryptionLifecycleService service = new(
+            metadata,
+            new BlobEncryptionFileProcessor(metadata, observed),
+            observed,
+            keyRing: null!,
+            operationCoordinator: null!,
+            operationStore: null!,
+            TimeProvider.System);
+
+        LongRunningOperationRecoveryResult result = await service.RecoverAsync(
+            Operation(LongRunningOperationKinds.BlobEncryptionMigration),
+            CancellationToken.None);
+
+        Assert.True(blobs.HasEnvelope(legacy.Path));
+        Assert.Equal(legacy.Path, Assert.Single(metadata.Updated));
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+        Assert.Equal(LongRunningOperationErrorCodes.RecoveryFailed, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Verify_records_an_access_denied_blob_as_an_io_error()
+    {
+        InMemoryKeyRing keys = new();
+        EncryptedBlobStore blobs = new(keys);
+        BlobEncryptionCandidate denied = await WriteEncryptedAsync(blobs, "access-denied");
+        BlobEncryptionCandidate healthy = await WriteEncryptedAsync(blobs, "healthy");
+        ObservedBlobStore observed = new(blobs, denied.Path);
+        ListOnlyMetadataStore metadata = new([denied, healthy]);
+        BlobEncryptionLifecycleService service = new(
+            metadata,
+            new BlobEncryptionFileProcessor(metadata, observed),
+            observed,
+            keyRing: null!,
+            operationCoordinator: null!,
+            operationStore: null!,
+            TimeProvider.System);
+
+        BlobEncryptionOperationResult result = await service.VerifyAsync(
+            maxConcurrency: 1,
+            maxBytesPerSecond: long.MaxValue);
+
+        Assert.Equal(1, result.ProcessedFiles);
+        Assert.Equal(1, result.FailedFiles);
+        Assert.Equal(1, result.Issues[BlobEncryptionVerificationIssue.IoError]);
+    }
+
     private static LongRunningOperation Operation(string kind) =>
         new(
             Guid.NewGuid(),
@@ -219,6 +277,78 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
         {
             _updated.Add(candidate.Path);
             return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// Delegates to a real store, counts every body read, and makes one path throw the way an
+    /// access-denied file does.
+    /// </summary>
+    private sealed class ObservedBlobStore(IEncryptedBlobStore inner, string? deniedPath = null)
+        : IEncryptedBlobStore
+    {
+        private int _openReadCalls;
+
+        private int _inspectCalls;
+
+        public int OpenReadCalls => Volatile.Read(ref _openReadCalls);
+
+        public int InspectCalls => Volatile.Read(ref _inspectCalls);
+
+        public Task<EncryptedBlobDescriptor> WriteAsync(
+            string destinationPath,
+            Stream plaintext,
+            EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata = default,
+            long? plaintextLength = null,
+            CancellationToken cancellationToken = default)
+        {
+            ThrowIfDenied(destinationPath);
+            return inner.WriteAsync(
+                destinationPath,
+                plaintext,
+                purpose,
+                authenticatedMetadata,
+                plaintextLength,
+                cancellationToken);
+        }
+
+        public Task<Stream> OpenReadAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _openReadCalls);
+            ThrowIfDenied(path);
+            return inner.OpenReadAsync(path, purpose, cancellationToken);
+        }
+
+        public Task<EncryptedBlobWriter> CreateWriterAsync(
+            string destinationPath,
+            EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata = default,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Blob lifecycle work never streams a new writer.");
+
+        public Task<EncryptedBlobDescriptor> InspectAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            bool verifyAllChunks,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _inspectCalls);
+            ThrowIfDenied(path);
+            return inner.InspectAsync(path, purpose, verifyAllChunks, cancellationToken);
+        }
+
+        public bool HasEnvelope(string path) => inner.HasEnvelope(path);
+
+        private void ThrowIfDenied(string path)
+        {
+            if (deniedPath is not null && string.Equals(path, deniedPath, StringComparison.Ordinal))
+            {
+                throw new UnauthorizedAccessException("Access to the blob is denied.");
+            }
         }
     }
 

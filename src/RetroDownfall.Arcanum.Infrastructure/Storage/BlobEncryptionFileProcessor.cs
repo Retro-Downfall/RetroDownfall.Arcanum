@@ -7,6 +7,17 @@ public sealed class BlobEncryptionFileProcessor(
     IBlobEncryptionMetadataStore metadataStore,
     IEncryptedBlobStore blobStore)
 {
+    /// <summary>
+    /// The failures that belong to one blob rather than to the whole pass: an unreadable or
+    /// access-denied file, a corrupt or truncated envelope, or an unavailable key. Every lifecycle
+    /// loop counts these against the one candidate and carries on.
+    /// </summary>
+    internal static bool IsPerBlobFailure(Exception exception) =>
+        exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException
+            or CryptographicException;
+
     public async Task<BlobEncryptionFileResult> MigrateAsync(
         BlobEncryptionCandidate candidate,
         CancellationToken cancellationToken = default)
@@ -148,11 +159,25 @@ public sealed class BlobEncryptionFileProcessor(
         }
 
         bool encrypted = blobStore.HasEnvelope(candidate.Path);
-        BlobEncryptionVerificationResult inspected = await InspectContentAsync(
-                candidate,
-                encrypted,
-                cancellationToken)
-            .ConfigureAwait(false);
+        BlobEncryptionVerificationResult inspected;
+        try
+        {
+            inspected = await InspectContentAsync(
+                    candidate,
+                    encrypted,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return new(BlobEncryptionVerificationIssue.MissingFile);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new(BlobEncryptionVerificationIssue.IoError);
+        }
+
         if (!inspected.IsValid)
         {
             return inspected;
