@@ -68,6 +68,12 @@ public sealed class WindowsDaemonManager : IDaemonManager
     /// service that was created but did not start is deleted again, on a token that cannot be cancelled, so a
     /// failed or cancelled install never leaves a service with a stored credential behind.
     /// </para>
+    /// <para>
+    /// Every delete the install runs is compensation for a service this install made, so nothing is created until
+    /// <c>sc query</c> has shown that no <c>ArcanumDaemon</c> exists: a service an earlier version registered is
+    /// refused with the <c>uninstall</c> remedy and is never touched, whatever happens to the create that would
+    /// have followed. A query that cannot answer (an error, a timeout) stops the install the same way.
+    /// </para>
     /// </summary>
     public async Task<Result> InstallAsync(DaemonInstallRequest request, CancellationToken cancellationToken)
     {
@@ -93,6 +99,13 @@ public sealed class WindowsDaemonManager : IDaemonManager
         }
 
         string servicePath = string.Create(CultureInfo.InvariantCulture, $"\"{processPath}\" serve");
+
+        Result absent = await EnsureServiceDoesNotExistAsync(cancellationToken).ConfigureAwait(false);
+
+        if (absent.IsFailure)
+        {
+            return absent;
+        }
 
         DaemonProcessOutcome createOutcome;
 
@@ -138,10 +151,8 @@ public sealed class WindowsDaemonManager : IDaemonManager
 
         if (createOutcome.ExitCode == ErrorServiceExists)
         {
-            return Result.Failure(
-                new Error(
-                    "DaemonScCreate",
-                    "ArcanumDaemon already exists. Run 'arcanum daemon uninstall' to remove it, then install again."));
+            // Registered by someone else between the query and this create: not this install's to delete.
+            return Result.Failure(ExistingServiceError());
         }
 
         if (createOutcome.ExitCode != 0)
@@ -426,6 +437,11 @@ public sealed class WindowsDaemonManager : IDaemonManager
         return Result.Success();
     }
 
+    private static Error ExistingServiceError() =>
+        new(
+            "DaemonScCreate",
+            "ArcanumDaemon already exists. Run 'arcanum daemon uninstall' to remove it, then install again.");
+
     private static Error ServiceAccountRequiredError() =>
         new(
             "DaemonServiceAccountRequired",
@@ -450,29 +466,87 @@ public sealed class WindowsDaemonManager : IDaemonManager
     private static string Redact(string text, string password) =>
         string.IsNullOrEmpty(password) ? text : text.Replace(password, "<redacted>", StringComparison.Ordinal);
 
+    /// <summary>
+    /// Confirms that no <c>ArcanumDaemon</c> is registered, which is what makes every later delete in the install
+    /// the removal of a service this install made. Only the exit code 1060 ("does not exist") allows the create;
+    /// a service that exists is refused, and any answer that is not a clear no (an error, a timeout, a denial)
+    /// stops the install, because a create after an unknown could be followed by a delete of someone else's service.
+    /// </summary>
+    private async Task<Result> EnsureServiceDoesNotExistAsync(CancellationToken cancellationToken)
+    {
+        DaemonProcessOutcome queryOutcome = await RunScAsync(["query", ServiceName], cancellationToken)
+            .ConfigureAwait(false);
+
+        if (queryOutcome.FatalError is { } fatalQuery)
+        {
+            return Result.Failure(fatalQuery);
+        }
+
+        if (queryOutcome.ExitCode == ErrorServiceDoesNotExist)
+        {
+            return Result.Success();
+        }
+
+        if (IndicatesElevationDenied(queryOutcome.ExitCode, queryOutcome.StdErr))
+        {
+            return Result.Failure(ElevationError);
+        }
+
+        if (queryOutcome.ExitCode == 0)
+        {
+            return Result.Failure(ExistingServiceError());
+        }
+
+        return Result.Failure(
+            ToolError(
+                "DaemonScQuery",
+                "sc query failed, so Arcanum cannot tell whether ArcanumDaemon already exists and created nothing.",
+                queryOutcome.StdErr,
+                queryOutcome.ExitCode));
+    }
+
     private async Task<Result> FailAfterRollbackAsync(Error error)
     {
-        Result rolledBack = await RemoveCreatedServiceAsync().ConfigureAwait(false);
-
-        string suffix = rolledBack.IsSuccess
-            ? " The service was removed again."
-            : " The service could not be removed again; run 'arcanum daemon uninstall'.";
+        string suffix = await RemoveCreatedServiceAsync().ConfigureAwait(false) switch
+        {
+            ServiceRemoval.Removed => " The service was removed again.",
+            ServiceRemoval.NotPresent => " No service was left behind.",
+            _ => " The service could not be removed again; run 'arcanum daemon uninstall'.",
+        };
 
         return Result.Failure(new Error(error.Code, error.Message + suffix));
     }
 
     /// <summary>
-    /// Deletes the service this install just created. It runs after the create has taken effect, so it uses a token
-    /// that cannot be cancelled: a cancelled install must not strand a service that stores the account's password.
+    /// Deletes the service this install created; <see cref="EnsureServiceDoesNotExistAsync"/> has already shown that
+    /// the name was free, so the service is this install's own. It runs after the create may have taken effect, so
+    /// it uses a token that cannot be cancelled: a cancelled install must not strand a service that stores the
+    /// account's password. A delete that finds nothing (the create never registered the service) is reported apart
+    /// from one that removed it, so the message never claims a removal that did not happen.
     /// </summary>
-    private async Task<Result> RemoveCreatedServiceAsync()
+    private async Task<ServiceRemoval> RemoveCreatedServiceAsync()
     {
         DaemonProcessOutcome deleted = await RunScAsync(["delete", ServiceName], CancellationToken.None)
             .ConfigureAwait(false);
 
-        return deleted.FatalError is null && deleted.ExitCode is 0 or ErrorServiceDoesNotExist
-            ? Result.Success()
-            : Result.Failure(new Error("DaemonScDelete", "sc delete failed."));
+        if (deleted.FatalError is not null)
+        {
+            return ServiceRemoval.Failed;
+        }
+
+        return deleted.ExitCode switch
+        {
+            0 => ServiceRemoval.Removed,
+            ErrorServiceDoesNotExist => ServiceRemoval.NotPresent,
+            _ => ServiceRemoval.Failed,
+        };
+    }
+
+    private enum ServiceRemoval
+    {
+        Removed,
+        NotPresent,
+        Failed,
     }
 
     private async Task<DaemonProcessOutcome> RunScAsync(string[] arguments, CancellationToken cancellationToken)

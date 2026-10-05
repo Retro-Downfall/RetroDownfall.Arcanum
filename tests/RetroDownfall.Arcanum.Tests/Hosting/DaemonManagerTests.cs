@@ -191,8 +191,21 @@ public sealed class DaemonManagerTests : IDisposable
 
     private const string ServicePassword = "S3cret pass \"word\"";
 
+    private const string ExistingServiceState =
+        "SERVICE_NAME: ArcanumDaemon\r\n        TYPE               : 10  WIN32_OWN_PROCESS\r\n        STATE              : 4  RUNNING\r\n";
+
     private static readonly DaemonInstallRequest ServiceAccountRequest =
         new(new DaemonServiceCredential(@".\arcanum", ServicePassword));
+
+    /// <summary>
+    /// Scripts the <c>sc query</c> an install starts with as "no such service" (1060) and answers every other
+    /// call with <paramref name="respond"/>, so the install reaches the create it is being tested on.
+    /// </summary>
+    private static Func<string, IReadOnlyList<string>, DaemonProcessOutcome> NoServiceYet(
+        Func<string, IReadOnlyList<string>, DaemonProcessOutcome> respond) =>
+        (fileName, arguments) => arguments[0] == "query"
+            ? ScriptedDaemonProcessRunner.Exit(1060, stderr: "[SC] EnumQueryServicesStatus:OpenService FAILED 1060")
+            : respond(fileName, arguments);
 
     [Fact]
     public async Task Windows_install_without_an_account_refuses_and_directs_to_a_per_user_scheduled_task()
@@ -225,7 +238,7 @@ public sealed class DaemonManagerTests : IDisposable
     public async Task Windows_install_passes_an_explicit_service_account()
     {
         ScriptedDaemonProcessRunner runner = new(
-            static (_, _) => ScriptedDaemonProcessRunner.Exit(0));
+            NoServiceYet(static (_, _) => ScriptedDaemonProcessRunner.Exit(0)));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
@@ -233,9 +246,11 @@ public sealed class DaemonManagerTests : IDisposable
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
-        Assert.Equal(2, runner.Invocations.Count);
+        Assert.Equal(3, runner.Invocations.Count);
 
-        ScriptedInvocation create = runner.Invocations[0];
+        Assert.Equal(["query", "ArcanumDaemon"], runner.Invocations[0].Arguments);
+
+        ScriptedInvocation create = runner.Invocations[1];
 
         Assert.Equal("sc.exe", create.FileName);
 
@@ -255,7 +270,7 @@ public sealed class DaemonManagerTests : IDisposable
             ],
             create.Arguments);
 
-        Assert.Equal(["start", "ArcanumDaemon"], runner.Invocations[1].Arguments);
+        Assert.Equal(["start", "ArcanumDaemon"], runner.Invocations[2].Arguments);
     }
 
     [Theory]
@@ -309,9 +324,10 @@ public sealed class DaemonManagerTests : IDisposable
     public async Task Windows_install_never_echoes_the_password_in_a_failure_message()
     {
         ScriptedDaemonProcessRunner runner = new(
-            static (_, arguments) => arguments[0] == "create"
-                ? ScriptedDaemonProcessRunner.Exit(87, stderr: $"[SC] CreateService FAILED 87: bad value {ServicePassword}")
-                : ScriptedDaemonProcessRunner.Exit(0));
+            NoServiceYet(
+                static (_, arguments) => arguments[0] == "create"
+                    ? ScriptedDaemonProcessRunner.Exit(87, stderr: $"[SC] CreateService FAILED 87: bad value {ServicePassword}")
+                    : ScriptedDaemonProcessRunner.Exit(0)));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
@@ -329,12 +345,15 @@ public sealed class DaemonManagerTests : IDisposable
     }
 
     [Fact]
-    public async Task Windows_install_reports_an_existing_service_without_starting_or_deleting_it()
+    public async Task Windows_install_reports_a_service_created_in_the_meantime_without_starting_or_deleting_it()
     {
+        // The query found nothing, and another actor registered the name before this create ran: sc.exe answers
+        // 1073, and the service is not this install's to delete.
         ScriptedDaemonProcessRunner runner = new(
-            static (_, arguments) => arguments[0] == "create"
-                ? ScriptedDaemonProcessRunner.Exit(1073)
-                : ScriptedDaemonProcessRunner.Exit(0));
+            NoServiceYet(
+                static (_, arguments) => arguments[0] == "create"
+                    ? ScriptedDaemonProcessRunner.Exit(1073)
+                    : ScriptedDaemonProcessRunner.Exit(0)));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
@@ -346,11 +365,130 @@ public sealed class DaemonManagerTests : IDisposable
 
         Assert.Contains("arcanum daemon uninstall", result.Error.Message, StringComparison.Ordinal);
 
-        _ = Assert.Single(runner.Invocations);
+        Assert.Equal(["query", "create"], runner.Invocations.Select(static call => call.Arguments[0]));
     }
 
     [Fact]
     public async Task Windows_install_reports_elevation_when_sc_create_is_denied()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            NoServiceYet(
+                static (_, _) => new DaemonProcessOutcome(-1, string.Empty, string.Empty, null, AccessDenied: true)));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonElevationRequired", result.Error.Code);
+
+        Assert.Equal(["query", "create"], runner.Invocations.Select(static call => call.Arguments[0]));
+    }
+
+    [Fact]
+    public async Task Windows_install_refuses_a_service_that_already_exists_before_creating_or_deleting_anything()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "query"
+                ? ScriptedDaemonProcessRunner.Exit(0, stdout: ExistingServiceState)
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonScCreate", result.Error.Code);
+
+        Assert.Contains("already exists", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("arcanum daemon uninstall", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(ServicePassword, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(["query"], runner.Invocations.Select(static call => call.Arguments[0]));
+    }
+
+    [Fact]
+    public async Task Windows_install_leaves_an_existing_service_alone_even_when_a_create_would_have_been_cancelled()
+    {
+        // The compensating delete exists for a service this install created. With one already registered, a
+        // cancelled or timed-out create is never attempted, so nothing can remove the earlier version's service.
+        using CancellationTokenSource cancellation = new();
+
+        ScriptedDaemonProcessRunner runner = new(
+            (_, arguments) =>
+            {
+                if (arguments[0] == "query")
+                {
+                    return ScriptedDaemonProcessRunner.Exit(0, stdout: ExistingServiceState);
+                }
+
+                if (arguments[0] == "create")
+                {
+                    cancellation.Cancel();
+
+                    throw new OperationCanceledException(cancellation.Token);
+                }
+
+                return ScriptedDaemonProcessRunner.Exit(0);
+            });
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, cancellation.Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.DoesNotContain(runner.Invocations, static call => call.Arguments[0] is "create" or "delete");
+    }
+
+    [Fact]
+    public async Task Windows_install_stops_before_creating_when_it_cannot_tell_whether_the_service_exists()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "query"
+                ? ScriptedDaemonProcessRunner.Exit(87, stderr: "[SC] OpenService FAILED 87: The parameter is incorrect.")
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonScQuery", result.Error.Code);
+
+        Assert.Equal(["query"], runner.Invocations.Select(static call => call.Arguments[0]));
+    }
+
+    [Fact]
+    public async Task Windows_install_stops_before_creating_when_the_existence_query_times_out()
+    {
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, arguments) => arguments[0] == "query"
+                ? new DaemonProcessOutcome(
+                    -1,
+                    string.Empty,
+                    string.Empty,
+                    new Error(DaemonProcessRunner.TimeoutErrorCode, "'sc.exe' did not finish within 30 seconds and was stopped."))
+                : ScriptedDaemonProcessRunner.Exit(0));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(DaemonProcessRunner.TimeoutErrorCode, result.Error.Code);
+
+        Assert.Equal(["query"], runner.Invocations.Select(static call => call.Arguments[0]));
+    }
+
+    [Fact]
+    public async Task Windows_install_reports_elevation_when_the_existence_query_is_denied_and_creates_nothing()
     {
         ScriptedDaemonProcessRunner runner = new(
             static (_, _) => new DaemonProcessOutcome(-1, string.Empty, string.Empty, null, AccessDenied: true));
@@ -363,16 +501,17 @@ public sealed class DaemonManagerTests : IDisposable
 
         Assert.Equal("DaemonElevationRequired", result.Error.Code);
 
-        _ = Assert.Single(runner.Invocations);
+        Assert.Equal(["query"], runner.Invocations.Select(static call => call.Arguments[0]));
     }
 
     [Fact]
     public async Task Windows_install_removes_the_service_again_when_it_does_not_start()
     {
         ScriptedDaemonProcessRunner runner = new(
-            static (_, arguments) => arguments[0] == "start"
-                ? ScriptedDaemonProcessRunner.Exit(1069, stderr: "[SC] StartService FAILED 1069")
-                : ScriptedDaemonProcessRunner.Exit(0));
+            NoServiceYet(
+                static (_, arguments) => arguments[0] == "start"
+                    ? ScriptedDaemonProcessRunner.Exit(1069, stderr: "[SC] StartService FAILED 1069")
+                    : ScriptedDaemonProcessRunner.Exit(0)));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
@@ -389,10 +528,10 @@ public sealed class DaemonManagerTests : IDisposable
         Assert.Contains("removed again", result.Error.Message, StringComparison.Ordinal);
 
         Assert.Equal(
-            ["create", "start", "delete"],
+            ["query", "create", "start", "delete"],
             runner.Invocations.Select(static call => call.Arguments[0]));
 
-        Assert.Equal(["delete", "ArcanumDaemon"], runner.Invocations[2].Arguments);
+        Assert.Equal(["delete", "ArcanumDaemon"], runner.Invocations[3].Arguments);
 
         Assert.DoesNotContain(ServicePassword, result.Error.Message, StringComparison.Ordinal);
     }
@@ -401,12 +540,13 @@ public sealed class DaemonManagerTests : IDisposable
     public async Task Windows_install_says_so_when_the_service_that_did_not_start_cannot_be_removed()
     {
         ScriptedDaemonProcessRunner runner = new(
-            static (_, arguments) => arguments[0] switch
-            {
-                "start" => ScriptedDaemonProcessRunner.Exit(2, stderr: "[SC] StartService FAILED 2"),
-                "delete" => ScriptedDaemonProcessRunner.Exit(5, stderr: "Access is denied"),
-                _ => ScriptedDaemonProcessRunner.Exit(0),
-            });
+            NoServiceYet(
+                static (_, arguments) => arguments[0] switch
+                {
+                    "start" => ScriptedDaemonProcessRunner.Exit(2, stderr: "[SC] StartService FAILED 2"),
+                    "delete" => ScriptedDaemonProcessRunner.Exit(5, stderr: "Access is denied"),
+                    _ => ScriptedDaemonProcessRunner.Exit(0),
+                }));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
@@ -427,17 +567,18 @@ public sealed class DaemonManagerTests : IDisposable
         using CancellationTokenSource cancellation = new();
 
         ScriptedDaemonProcessRunner runner = new(
-            (_, arguments) =>
-            {
-                if (arguments[0] == "start")
+            NoServiceYet(
+                (_, arguments) =>
                 {
-                    cancellation.Cancel();
+                    if (arguments[0] == "start")
+                    {
+                        cancellation.Cancel();
 
-                    throw new OperationCanceledException(cancellation.Token);
-                }
+                        throw new OperationCanceledException(cancellation.Token);
+                    }
 
-                return ScriptedDaemonProcessRunner.Exit(0);
-            });
+                    return ScriptedDaemonProcessRunner.Exit(0);
+                }));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
@@ -445,11 +586,11 @@ public sealed class DaemonManagerTests : IDisposable
             () => manager.InstallAsync(ServiceAccountRequest, cancellation.Token));
 
         Assert.Equal(
-            ["create", "start", "delete"],
+            ["query", "create", "start", "delete"],
             runner.Invocations.Select(static call => call.Arguments[0]));
 
         Assert.False(
-            runner.Invocations[2].Token.CanBeCanceled,
+            runner.Invocations[3].Token.CanBeCanceled,
             "The rollback after a cancelled install must not be cancellable.");
     }
 
@@ -457,13 +598,14 @@ public sealed class DaemonManagerTests : IDisposable
     public async Task Windows_install_removes_a_service_that_a_timed_out_create_may_have_made()
     {
         ScriptedDaemonProcessRunner runner = new(
-            static (_, arguments) => arguments[0] == "create"
-                ? new DaemonProcessOutcome(
-                    -1,
-                    string.Empty,
-                    string.Empty,
-                    new Error(DaemonProcessRunner.TimeoutErrorCode, "'sc.exe' did not finish within 30 seconds and was stopped."))
-                : ScriptedDaemonProcessRunner.Exit(0));
+            NoServiceYet(
+                static (_, arguments) => arguments[0] == "create"
+                    ? new DaemonProcessOutcome(
+                        -1,
+                        string.Empty,
+                        string.Empty,
+                        new Error(DaemonProcessRunner.TimeoutErrorCode, "'sc.exe' did not finish within 30 seconds and was stopped."))
+                    : ScriptedDaemonProcessRunner.Exit(0)));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
@@ -473,18 +615,54 @@ public sealed class DaemonManagerTests : IDisposable
 
         Assert.Equal(DaemonProcessRunner.TimeoutErrorCode, result.Error.Code);
 
-        Assert.Equal(["create", "delete"], runner.Invocations.Select(static call => call.Arguments[0]));
+        Assert.Contains("removed again", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(["query", "create", "delete"], runner.Invocations.Select(static call => call.Arguments[0]));
+    }
+
+    [Fact]
+    public async Task Windows_install_does_not_claim_to_have_removed_a_service_that_was_never_there()
+    {
+        // A create that timed out before it registered anything: the compensating delete answers 1060, which is
+        // success for the cleanup, but the message must not say a service was removed.
+        ScriptedDaemonProcessRunner runner = new(
+            NoServiceYet(
+                static (_, arguments) => arguments[0] switch
+                {
+                    "create" => new DaemonProcessOutcome(
+                        -1,
+                        string.Empty,
+                        string.Empty,
+                        new Error(DaemonProcessRunner.TimeoutErrorCode, "'sc.exe' did not finish within 30 seconds and was stopped.")),
+                    "delete" => ScriptedDaemonProcessRunner.Exit(1060, stderr: "[SC] OpenService FAILED 1060"),
+                    _ => ScriptedDaemonProcessRunner.Exit(0),
+                }));
+
+        WindowsDaemonManager manager = new(runner, "sc.exe");
+
+        Result result = await manager.InstallAsync(ServiceAccountRequest, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(DaemonProcessRunner.TimeoutErrorCode, result.Error.Code);
+
+        Assert.DoesNotContain("removed again", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("could not be removed", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("No service was left behind", result.Error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task Windows_install_does_not_try_to_delete_when_sc_exe_could_not_even_start()
     {
         ScriptedDaemonProcessRunner runner = new(
-            static (_, _) => new DaemonProcessOutcome(
-                -1,
-                string.Empty,
-                string.Empty,
-                new Error(DaemonProcessRunner.StartErrorCode, "Could not start 'sc.exe'.")));
+            NoServiceYet(
+                static (_, _) => new DaemonProcessOutcome(
+                    -1,
+                    string.Empty,
+                    string.Empty,
+                    new Error(DaemonProcessRunner.StartErrorCode, "Could not start 'sc.exe'."))));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
@@ -492,7 +670,7 @@ public sealed class DaemonManagerTests : IDisposable
 
         Assert.Equal(DaemonProcessRunner.StartErrorCode, result.Error.Code);
 
-        _ = Assert.Single(runner.Invocations);
+        Assert.Equal(["query", "create"], runner.Invocations.Select(static call => call.Arguments[0]));
     }
 
     [Fact]
@@ -501,26 +679,48 @@ public sealed class DaemonManagerTests : IDisposable
         using CancellationTokenSource cancellation = new();
 
         ScriptedDaemonProcessRunner runner = new(
-            (_, arguments) =>
-            {
-                if (arguments[0] == "create")
+            NoServiceYet(
+                (_, arguments) =>
                 {
-                    cancellation.Cancel();
+                    if (arguments[0] == "create")
+                    {
+                        cancellation.Cancel();
 
-                    throw new OperationCanceledException(cancellation.Token);
-                }
+                        throw new OperationCanceledException(cancellation.Token);
+                    }
 
-                return ScriptedDaemonProcessRunner.Exit(0);
-            });
+                    return ScriptedDaemonProcessRunner.Exit(0);
+                }));
 
         WindowsDaemonManager manager = new(runner, "sc.exe");
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => manager.InstallAsync(ServiceAccountRequest, cancellation.Token));
 
-        Assert.Equal(["create", "delete"], runner.Invocations.Select(static call => call.Arguments[0]));
+        Assert.Equal(["query", "create", "delete"], runner.Invocations.Select(static call => call.Arguments[0]));
 
-        Assert.False(runner.Invocations[1].Token.CanBeCanceled);
+        Assert.False(runner.Invocations[2].Token.CanBeCanceled);
+    }
+
+    [SkippableFact]
+    public async Task Windows_real_sc_exe_answers_a_query_for_a_missing_service_with_1060()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Exercises the real sc.exe.");
+
+        // The install's existence check treats 1060 as "this install may create the service", so the premise is
+        // pinned against the real tool with a name no install ever registers.
+        string scExe = Path.Combine(
+            global::System.Environment.GetFolderPath(global::System.Environment.SpecialFolder.System),
+            "sc.exe");
+
+        DaemonProcessOutcome outcome = await DaemonProcessRunner.Default.RunAsync(
+            scExe,
+            ["query", "ArcanumDaemonAbsent" + Guid.NewGuid().ToString("N")],
+            CancellationToken.None);
+
+        Assert.Null(outcome.FatalError);
+
+        Assert.Equal(1060, outcome.ExitCode);
     }
 
     [SkippableFact]
