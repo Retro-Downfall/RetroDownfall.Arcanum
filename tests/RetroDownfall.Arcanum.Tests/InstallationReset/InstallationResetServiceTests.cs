@@ -1285,13 +1285,187 @@ public sealed partial class InstallationResetServiceTests
     }
 
     [Fact]
+    public async Task Workspace_resume_at_prepared_point_of_no_return_applies_through_the_stopped_host_authority()
+    {
+        // The issuer-free data service is the one the composition root registers, and it always
+        // answers InventoryUnavailable. A resumed Workspace reset that reached it was retired as a
+        // failure after its point of no return had already been durably recorded.
+        DataRetentionWorkspaceBinding workspace = new(
+            Guid.Parse("50505050-5050-5050-5050-505050505050"),
+            "/workspace");
+
+        FakeDataService data = new(CreateDataPlan("workspace-data"))
+        {
+            ApplyResult = Result<DataRetentionApplyResult>.Failure(new Error(
+                ErrorCodes.Data.InventoryUnavailable,
+                "The issuer-free data service is unavailable.")),
+        };
+
+        FakeActiveStore active = new();
+
+        FakeWorkspaceResolver resolver = new(workspace);
+
+        RecordingStoppedHostApplyDataService stoppedHost = new(
+            new TestStoppedHostDataService(data, resolver, active));
+
+        InstallationResetService service = CreateService(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: resolver,
+            stoppedHostDataService: stoppedHost);
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Workspace,
+            Path.Combine(workspace.WorkspaceRoot, "src"));
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        InstallationResetActiveRecord prepared = CreateActive(
+            plan,
+            InstallationResetPhase.Prepared,
+            pointOfNoReturn: true);
+
+        active.Seed(prepared);
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(InstallationResetPhase.Completed, result.Value.Phase);
+
+        Assert.False(result.Value.ResumeRequired);
+
+        Assert.Empty(data.ApplyRequests);
+
+        Assert.Equal(1, stoppedHost.ApplyCount);
+
+        Assert.Equal(prepared.OperationId, result.Value.OperationId);
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.Data.QuarantineRecoveryRequired)]
+    [InlineData(ErrorCodes.Data.OperationNotFinalized)]
+    [InlineData(ErrorCodes.Data.FileLocked)]
+    public async Task Failed_apply_after_the_point_of_no_return_keeps_the_record_unless_the_refusal_is_proven_pre_effect(
+        string dataErrorCode)
+    {
+        // A committed-but-unfinished ending is not a refusal. Retiring the record here would delete the
+        // only evidence that the reset had already reached its point of no return.
+        // A workspace reset: it claims no nested transition, so nothing but the classification of the
+        // error decides whether the record is kept.
+        DataRetentionWorkspaceBinding workspace = new(
+            Guid.Parse("50505050-5050-5050-5050-505050505050"),
+            "/workspace");
+
+        FakeDataService data = new(CreateDataPlan("workspace-data"))
+        {
+            ApplyResult = Result<DataRetentionApplyResult>.Failure(new Error(
+                dataErrorCode,
+                "The data reset ended after it may have committed.")),
+        };
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: new FakeWorkspaceResolver(workspace));
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Workspace,
+            Path.Combine(workspace.WorkspaceRoot, "src"));
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.True(result.Value.PointOfNoReturn);
+
+        Assert.False(active.Retired);
+
+        Assert.NotNull(active.Record);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, active.Record.LastErrorCode);
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.Data.PlanChanged)]
+    [InlineData(ErrorCodes.Data.Blocked)]
+    [InlineData(ErrorCodes.Data.InventoryUnavailable)]
+    public async Task Failed_apply_that_is_a_proven_pre_effect_refusal_retires_the_record_and_reports_the_failure(
+        string dataErrorCode)
+    {
+        FakeDataService data = new(CreateDataPlan("workspace-data"))
+        {
+            ApplyResult = Result<DataRetentionApplyResult>.Failure(new Error(
+                dataErrorCode,
+                "The data reset was refused before any effect.")),
+        };
+
+        DataRetentionWorkspaceBinding workspace = new(
+            Guid.Parse("50505050-5050-5050-5050-505050505050"),
+            "/workspace");
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            workspaceResolver: new FakeWorkspaceResolver(workspace));
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Workspace,
+            Path.Combine(workspace.WorkspaceRoot, "src"));
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(
+            service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(dataErrorCode, result.Error.Code);
+
+        Assert.True(active.Retired);
+    }
+
+    [Fact]
     public async Task Cancellation_after_active_publication_is_checkpointed_as_a_reset_result()
     {
+        // A real token, cancelled from inside the daemon step and handed to the apply: the checkpoint
+        // that follows has to be written on a token that is not the one that just tripped, and the
+        // store double throws on a cancelled token exactly as the real one does.
+        using CancellationTokenSource cancellation = new();
+
         FakeActiveStore active = new();
 
         FakePreDataMutation preData = new()
         {
-            Exception = new OperationCanceledException(),
+            CancelDuringExecute = cancellation,
         };
 
         InstallationResetService service = CreateService(
@@ -1311,7 +1485,9 @@ public sealed partial class InstallationResetServiceTests
 
         Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
             new InstallationResetApplyRequest(request, plan.PlanId),
-            CancellationToken.None);
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
 
         Assert.True(result.IsSuccess, result.Error.Message);
 
@@ -1327,11 +1503,82 @@ public sealed partial class InstallationResetServiceTests
     }
 
     [Fact]
+    public async Task Fresh_apply_cancelled_after_point_of_no_return_checkpoints_with_an_uncancelled_token()
+    {
+        // The fresh arm had no cancellation test at all, so deleting its catch, or writing its
+        // checkpoint on the token that had just tripped, left every test green.
+        DataRetentionCovenantInventory disclosure = new(
+            Rows: 1,
+            ManagedFiles: 1,
+            LocalArtifacts: 1,
+            AffectedSessions: 1,
+            PossibleDisclosures: 1,
+            DisclosureCountKind: CovenantDisclosureCountKind.Exact);
+
+        using CancellationTokenSource cancellation = new();
+
+        FakeDataService data = new(CreateDataPlan("fresh-cancelled-data") with
+        {
+            Covenant = disclosure,
+        })
+        {
+            CancelDuringApply = cancellation,
+        };
+
+        FakeActiveStore active = new();
+
+        InstallationResetService service = CreateService(
+            data,
+            new FakeCredentialInventory([]),
+            active,
+            new FakeOfflineCleanup(),
+            stateRoots: new FixedStateRoots(["/state"]));
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        Result<StoppedHostInstallationResetPlan> confirmed =
+            await PlanUnderTestLockAsync(service, service, request);
+
+        Assert.True(confirmed.IsSuccess, confirmed.Error.Message);
+
+        Result<InstallationResetResult> applied =
+            await ApplyFreshUnderTestLockAsync(
+                service,
+                request,
+                confirmed.Value,
+                cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        Assert.True(applied.Value.ResumeRequired);
+
+        Assert.True(applied.Value.PointOfNoReturn);
+
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(applied.Value.Verification.RemainingIssues).Code);
+
+        Assert.False(active.Retired);
+
+        Assert.NotNull(active.Record);
+
+        Assert.True(active.Record.PointOfNoReturn);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, active.Record.LastErrorCode);
+    }
+
+    [Fact]
     public async Task Cancellation_after_canonical_data_call_is_checkpointed_conservatively()
     {
+        using CancellationTokenSource cancellation = new();
+
         FakeDataService data = new(CreateDataPlan("global-data"))
         {
-            ApplyException = new OperationCanceledException(),
+            CancelDuringApply = cancellation,
         };
 
         FakeActiveStore active = new();
@@ -1352,7 +1599,9 @@ public sealed partial class InstallationResetServiceTests
 
         Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
             new InstallationResetApplyRequest(request, plan.PlanId),
-            CancellationToken.None);
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
 
         Assert.True(result.IsSuccess, result.Error.Message);
 
@@ -3181,7 +3430,8 @@ public sealed partial class InstallationResetServiceTests
         ApplyFreshUnderTestLockAsync(
             InstallationResetService service,
             InstallationResetPlanRequest request,
-            StoppedHostInstallationResetPlan confirmedPlan)
+            StoppedHostInstallationResetPlan confirmedPlan,
+            CancellationToken cancellationToken = default)
     {
         ArcanumMaintenanceLockAcquisitionResult acquired =
             ArcanumMaintenanceLock.AcquireDetailed(service.GuardedRoot);
@@ -3193,7 +3443,7 @@ public sealed partial class InstallationResetServiceTests
             request,
             confirmedPlan,
             heldInstallationLock,
-            CancellationToken.None).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<InstallationResetPlan> PlanWithInventoryAsync(
@@ -3435,6 +3685,72 @@ public sealed partial class InstallationResetServiceTests
             IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken) =>
             data.ApplyAsync(request, cancellationToken);
+    }
+
+    /// <summary>
+    /// Counts the authority-bearing applies and answers them itself, leaving every other call to the
+    /// wrapped double.
+    /// </summary>
+    private sealed class RecordingStoppedHostApplyDataService(
+        IInstallationResetStoppedHostDataService inner)
+        : IInstallationResetStoppedHostDataService
+    {
+        public int ApplyCount { get; private set; }
+
+        public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
+            InstallationResetDataPlanRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            inner.PlanUnderStoppedHostAuthorityAsync(
+                request,
+                issuer,
+                cancellationToken);
+
+        public Task<Result<InstallationResetWorkspaceResolution>>
+            ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+                string invocationDirectory,
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken) =>
+            inner.ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+                invocationDirectory,
+                issuer,
+                cancellationToken);
+
+        public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            inner.ReadIdentityUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken);
+
+        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
+            ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken) =>
+            inner.ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+                issuer,
+                cancellationToken);
+
+        public Task<Result<DataRetentionApplyResult>>
+            ApplyUnderStoppedHostAuthorityAsync(
+                DataRetentionApplyRequest request,
+                IStoppedHostGrimoireAuthorityIssuer issuer,
+                CancellationToken cancellationToken)
+        {
+            ApplyCount++;
+
+            return Task.FromResult(Result<DataRetentionApplyResult>.Success(
+                new DataRetentionApplyResult(
+                    Guid.NewGuid(),
+                    request.ExpectedPlanId!,
+                    RowsDeleted: 3,
+                    FilesDeleted: 0,
+                    EstimatedBytesDeleted: 0,
+                    DerivedRecordsDeleted: 2,
+                    Reconciled: true,
+                    Blockers: [],
+                    Conflicts: [])));
+        }
     }
 
     private sealed class SequentialStoppedHostDataService(
@@ -3712,6 +4028,9 @@ public sealed partial class InstallationResetServiceTests
 
         public Exception? ApplyException { get; set; }
 
+        /// <summary>Cancelled from inside the apply; see <see cref="FakePreDataMutation"/>.</summary>
+        public CancellationTokenSource? CancelDuringApply { get; set; }
+
         public Task<Result<DataRetentionPlan>> PlanAsync(
             InstallationResetDataPlanRequest request,
             CancellationToken cancellationToken = default)
@@ -3732,6 +4051,13 @@ public sealed partial class InstallationResetServiceTests
             ApplyRequests.Add(request);
 
             BeforeApply?.Invoke();
+
+            if (CancelDuringApply is { } cancellation)
+            {
+                cancellation.Cancel();
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
 
             if (ApplyException is { } exception)
             {
@@ -3950,6 +4276,10 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetActiveRecord record,
             CancellationToken cancellationToken)
         {
+            // The real store throws here, and a fake that does not would let a checkpoint written on
+            // the token that just cancelled the operation look like it worked.
+            cancellationToken.ThrowIfCancellationRequested();
+
             Writes.Add(record);
 
             if (WriteOverride is { } writeOverride)
@@ -4091,9 +4421,24 @@ public sealed partial class InstallationResetServiceTests
 
         public Exception? Exception { get; set; }
 
+        /// <summary>
+        /// Cancelled from inside the call, so the caller's own token is the one that trips. A fake
+        /// that throws a bare <see cref="OperationCanceledException"/> while the caller passes
+        /// <see cref="CancellationToken.None"/> cannot tell a checkpoint written on the cancelled
+        /// token from one written on a fresh token, and that is the whole defect class.
+        /// </summary>
+        public CancellationTokenSource? CancelDuringExecute { get; set; }
+
         public Task<Result> ExecuteAsync(CancellationToken cancellationToken)
         {
             Executed = true;
+
+            if (CancelDuringExecute is { } cancellation)
+            {
+                cancellation.Cancel();
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
 
             if (Exception is { } exception)
             {

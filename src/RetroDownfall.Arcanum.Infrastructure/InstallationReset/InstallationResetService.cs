@@ -1458,11 +1458,16 @@ internal sealed class InstallationResetService(
 
         try
         {
+            // The same stopped-host authority the fresh arm uses: the issuer-free data service is the
+            // one the composition root registers and it always answers InventoryUnavailable, so a
+            // resumed record that reached it was retired as a failure after its point of no return
+            // had already been recorded.
             return await ContinueApplyAsync(
                 writer,
                 progress,
                 plan,
-                cancellationToken)
+                cancellationToken,
+                stoppedHostIssuer: issuer)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -1485,6 +1490,21 @@ internal sealed class InstallationResetService(
                 : ResumableAfterCancellation(cancelled);
         }
     }
+
+    /// <summary>
+    /// The closed set of data-service refusals that are made before the service has changed anything.
+    /// </summary>
+    /// <remarks>
+    /// Closed on purpose: an unrecognised code is treated as possibly having committed, because the
+    /// two mistakes are not symmetric. Keeping a record that could have been retired costs the operator
+    /// one resume; retiring one whose reset had begun deletes the evidence that it did.
+    /// </remarks>
+    private static bool IsProvenPreEffectRefusal(Error error) =>
+        error.Code is ErrorCodes.Data.InvalidRequest
+            or ErrorCodes.Data.PlanChanged
+            or ErrorCodes.Data.Blocked
+            or ErrorCodes.Data.ConfirmationRequired
+            or ErrorCodes.Data.InventoryUnavailable;
 
     private StoppedHostGrimoireAuthorityIssuer
         CreateInstallationResetStoppedHostIssuer(
@@ -1664,8 +1684,12 @@ internal sealed class InstallationResetService(
                         // record, and retiring it would delete the one piece of evidence that journal
                         // needs to be resumed or retired - leaving a parked transition nothing can ever
                         // finish, and a slot no future transition can open.
-                        if (applied.Error.Code is ErrorCodes.Data.RecoveryRequired
-                                or ErrorCodes.Data.ReconciliationFailed
+                        //
+                        // The point of no return is already durable by here, so only a refusal the
+                        // data service proved it made before touching anything lets the record go. Any
+                        // other ending - including a committed-but-unfinished one - may have changed
+                        // state, and retiring the record would delete the only evidence of that.
+                        if (!IsProvenPreEffectRefusal(applied.Error)
                             || active.NestedTransitionReceipt is
                             {
                                 Phase: InstallationResetNestedTransitionPhase.Claimed,
