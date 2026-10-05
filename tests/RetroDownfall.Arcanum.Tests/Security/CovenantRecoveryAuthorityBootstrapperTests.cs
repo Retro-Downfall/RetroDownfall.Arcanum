@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Operations;
@@ -46,7 +48,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Trait("Category", "Integration")]
 public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 {
-
     private static readonly CancellationToken Token = CancellationToken.None;
 
     private static readonly Guid TargetDatasetGeneration =
@@ -69,14 +70,11 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
     public CovenantRecoveryAuthorityBootstrapperTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public async Task InitializeAsync()
     {
-
         await _workspace.InitializeAsync();
 
         _root = _workspace.CreateSubdir("recovery-authority");
@@ -88,40 +86,32 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         _db = _fixture.CreateContext(_dbPath);
 
         await _db.Database.OpenConnectionAsync(Token);
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection = Connection;
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         _lock?.Dispose();
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         await _workspace.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task An_agreeing_catalog_and_journal_load_and_write_nothing()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -149,7 +139,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.Equal(before, await RevisionAsync(seeded.OperationId));
 
         Assert.Equal(changesBefore, await TotalChangesAsync());
-
     }
 
     /// <summary>
@@ -160,7 +149,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
     [SkippableFact]
     public async Task An_exactly_applied_saturated_target_loads_and_writes_nothing()
     {
-
         RequireSqlCipher();
 
         CovenantOfflineTransitionSourceState current = await CurrentSourceAsync();
@@ -198,7 +186,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.Equal(before, await RevisionAsync(seeded.OperationId));
 
         Assert.Equal(changesBefore, await TotalChangesAsync());
-
     }
 
     /// <summary>
@@ -208,7 +195,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_divergent_saturated_target_tuple_refuses_and_writes_nothing()
     {
-
         RequireSqlCipher();
 
         CovenantOfflineTransitionSourceState current = await CurrentSourceAsync();
@@ -241,7 +227,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.Equal(before, await RevisionAsync(seeded.OperationId));
 
         Assert.Equal(changesBefore, await TotalChangesAsync());
-
     }
 
     /// <summary>
@@ -267,7 +252,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
     [InlineData(Disagreement.UnrelatedDatasetGeneration)]
     public async Task Every_disagreement_between_the_two_records_refuses(Disagreement disagreement)
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync(disagreement);
@@ -278,7 +262,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.True(loaded.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, loaded.Error.Code);
-
     }
 
     /// <summary>
@@ -294,7 +277,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_kind_this_build_cannot_run_refuses()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -315,13 +297,11 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.True(loaded.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, loaded.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task A_kind_registered_against_another_operation_refuses()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -342,13 +322,11 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.True(loaded.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, loaded.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task An_unpermitted_host_tools_policy_refuses_rather_than_warning()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -359,13 +337,11 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.True(loaded.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, loaded.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task Consumption_closes_the_gate_around_the_recovered_owner_exactly_once()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -398,13 +374,11 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.True(second.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, second.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task A_real_policy_denied_between_load_and_consume_vetoes_every_publication()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -456,7 +430,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.Same(before, composition.Runtime.Current);
 
         Assert.True((await composition.Gate.ResumeExclusiveAsync(seeded.Owner, Token)).IsFailure);
-
     }
 
     [SkippableFact]
@@ -526,7 +499,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
     [SkippableFact]
     public async Task Consumption_refuses_a_journal_that_has_moved_since_the_handoff_was_minted()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -547,12 +519,10 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Assert.True(consumed.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, consumed.Error.Code);
-
     }
 
     public enum Disagreement
     {
-
         None = 0,
 
         MissingRow = 1,
@@ -566,7 +536,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         RevisionBehindLaunch = 6,
 
         UnrelatedDatasetGeneration = 7,
-
     }
 
     private static CovenantRecoveryAuthorityBootstrapper Bootstrapper(
@@ -590,7 +559,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
     /// <summary>One uninitialized runtime and the four things that share it.</summary>
     private sealed class RecoveryComposition
     {
-
         internal CovenantRuntimeGenerationProvider Runtime { get; } = new();
 
         internal CovenantAvailability Availability { get; }
@@ -601,7 +569,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         internal RecoveryComposition()
         {
-
             Availability = new CovenantAvailability(Runtime);
 
             Keys = new CovenantEnvelopeMasterKeyProvider(Runtime);
@@ -609,10 +576,9 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             Gate = new CovenantOperationGate(
                 Runtime,
                 new FakeCovenantCampaignScopeProbe(),
+                NullLogger<CovenantOperationGate>.Instance,
                 TimeSpan.FromSeconds(5));
-
         }
-
     }
 
     private sealed class PausingApiKeySecretStore(string apiKey) : ISecretStore
@@ -649,7 +615,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
     private async Task<long> RevisionAsync(Guid operationId)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText =
@@ -664,7 +629,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         _ = command.Parameters.Add(parameter);
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(Token));
-
     }
 
     private static void RequireSqlCipher() =>
@@ -677,7 +641,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
     private async Task<Seeded> SeedAsync(Disagreement disagreement = Disagreement.None)
     {
-
         LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation created = await store.CreateAsync(
@@ -757,41 +720,29 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         if (disagreement == Disagreement.LaunchBindingDigest)
         {
-
             journal = journal with
             {
-
                 DatabaseOperationLaunchBindingDigest =
                     new CovenantDigest(Convert.FromHexString(new string('b', 64))),
-
             };
-
         }
 
         if (disagreement == Disagreement.EffectDigest)
         {
-
             journal = journal with
             {
-
                 EffectDigest = new CovenantDigest(Convert.FromHexString(new string('c', 64))),
-
             };
-
         }
 
         if (disagreement == Disagreement.RevisionBehindLaunch)
         {
-
             await ExecuteAsync("UPDATE \"LongRunningOperations\" SET \"Revision\" = 0;");
-
         }
 
         if (disagreement == Disagreement.MissingRow)
         {
-
             await ExecuteAsync("DELETE FROM \"LongRunningOperations\";");
-
         }
 
         return new Seeded(
@@ -803,12 +754,10 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
                 SlotEpoch: 1,
                 Revision: 4,
                 new CovenantDigest(Convert.FromHexString(new string('d', 64)))));
-
     }
 
     private async Task<CovenantOfflineTransitionSourceState> CurrentSourceAsync()
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -826,7 +775,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             (ulong)reader.GetInt64(1),
             (ulong)reader.GetInt64(2),
             (ulong)reader.GetInt64(3));
-
     }
 
     private async Task<Guid> InstallationIdentityAsync()
@@ -841,13 +789,11 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
     private async Task<long> TotalChangesAsync()
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = "SELECT total_changes();";
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(Token));
-
     }
 
     private async Task SetCanonicalTupleAsync(
@@ -856,7 +802,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         long keyReclamationEpoch,
         long envelopeKeyEpoch)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -877,33 +822,27 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         _ = command.Parameters.AddWithValue("$envelopeKeyEpoch", envelopeKeyEpoch);
 
         Assert.Equal(1, await command.ExecuteNonQueryAsync(Token));
-
     }
 
     private async Task ExecuteAsync(string sql)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(Token);
-
     }
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
         return result.Value;
-
     }
 
     private sealed class FixedHostProcessToolsRuntimePolicy(bool permitted)
         : IHostProcessToolsRuntimePolicy
     {
-
         public bool CovenantPermitted => permitted;
 
         public bool IsPublished => true;
@@ -915,7 +854,6 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         public HostProcessToolsStartupBlocker Blocker =>
             permitted ? HostProcessToolsStartupBlocker.None : HostProcessToolsStartupBlocker.MarkerMismatch;
-
     }
 
     private sealed class PermittedHostTools : IHostProcessToolsRuntimePolicy
@@ -933,5 +871,4 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         public HostProcessToolsStartupBlocker Blocker => HostProcessToolsStartupBlocker.None;
     }
-
 }

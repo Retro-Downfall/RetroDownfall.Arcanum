@@ -134,6 +134,42 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// R-167: the same invariant as the cancellation arm, for any other failure. Once the disposition is
+    /// spent, admission has reopened over the replacement and the marker children are complete, so a fault
+    /// in what is left (here the journal's Cleanup record, which fails with an IOException on a full disk)
+    /// must not put the prior installation back under a system that has begun to use the restored one.
+    /// </summary>
+    [Fact]
+    public async Task A_failure_after_the_disposition_is_spent_does_not_reverse_the_restore()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        harness.Options = harness.Options with
+        {
+            FailBeforePhase = BackupRestorePhase.Cleanup,
+        };
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        // The destination is committed and something after it failed: an operator is told, and nothing
+        // is described as rolled back.
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal("backup.restore_completion_failed", Assert.Single(result.Issues).Code);
+
+        // One disposition, the commit, and no abort after it.
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // The restored generation is still the live one. A reversal would have put the archived
+        // generation back.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+
+        Assert.Empty(harness.StagingRoots());
+    }
+
     [Fact]
     public async Task A_zero_marker_inventory_publishes_the_frozen_empty_child_vector_before_displacement()
     {

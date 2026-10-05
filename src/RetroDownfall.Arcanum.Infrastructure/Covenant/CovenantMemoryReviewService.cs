@@ -33,7 +33,7 @@ internal sealed class CovenantMemoryReviewService(
     CovenantCurationKernel curationKernel,
     TimeProvider timeProvider,
     CovenantAvailabilityRepublisher availabilityRepublisher,
-    ILogger<CovenantMemoryReviewService>? logger = null) : ICovenantMemoryReviewService
+    ILogger<CovenantMemoryReviewService> logger) : ICovenantMemoryReviewService
 {
     /// <summary>
     /// How long a busy database is retried before the apply gives up, or <see langword="null"/> for the
@@ -567,7 +567,7 @@ internal sealed class CovenantMemoryReviewService(
             // The transaction rolled back with the exception. Mapped to this store's code, the way
             // Lexicon maps its own, and logged by type and error code only: a driver message can carry
             // what it was trying to write.
-            logger?.LogError(
+            logger.LogError(
                 "Covenant memory review apply failed: {FailureType} (SQLite error {SqliteErrorCode}).",
                 failure.GetType(),
                 (failure as SqliteException)?.SqliteErrorCode);
@@ -589,7 +589,7 @@ internal sealed class CovenantMemoryReviewService(
             }
             catch (Exception failure) when (failure is not OperationCanceledException)
             {
-                logger?.LogError(
+                logger.LogError(
                     "Covenant availability republish after a committed review apply failed: {FailureType}.",
                     failure.GetType());
             }

@@ -2011,7 +2011,7 @@ public static class ServiceCollectionExtensions
             static sp => new CovenantOperationGate(
                 sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
                 sp.GetRequiredService<ICovenantCampaignScopeProbe>(),
-                logger: sp.GetService<ILogger<CovenantOperationGate>>()));
+                sp.GetRequiredService<ILogger<CovenantOperationGate>>()));
 
         services.AddSingleton<ICovenantOperationGate>(
             static sp => sp.GetRequiredService<CovenantOperationGate>());
@@ -2077,7 +2077,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
-            sp.GetService<ILogger<CovenantMemoryReviewService>>()));
+            sp.GetRequiredService<ILogger<CovenantMemoryReviewService>>()));
 
         services.AddScoped<ICovenantContextProvider>(
             static sp => new CovenantContextProvider(

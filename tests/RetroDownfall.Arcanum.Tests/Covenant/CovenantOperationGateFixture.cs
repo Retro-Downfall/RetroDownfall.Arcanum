@@ -87,6 +87,7 @@ internal static class CovenantOperationGateFixture
             return new CovenantOperationGate(
                 runtime,
                 campaigns ?? new FakeCovenantCampaignScopeProbe(),
+                NullLogger<CovenantOperationGate>.Instance,
                 drainTimeout ?? TimeSpan.FromSeconds(5));
         }
 
@@ -131,6 +132,7 @@ internal static class CovenantOperationGateFixture
         return new CovenantOperationGate(
             runtime,
             campaigns ?? new FakeCovenantCampaignScopeProbe(),
+            NullLogger<CovenantOperationGate>.Instance,
             drainTimeout ?? TimeSpan.FromSeconds(5));
     }
 }

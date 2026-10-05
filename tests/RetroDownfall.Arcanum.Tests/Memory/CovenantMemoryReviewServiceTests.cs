@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -1010,6 +1011,13 @@ public sealed class CovenantMemoryReviewServiceTests
 
         Assert.DoesNotContain("busy.key", busy.Error.Message, StringComparison.Ordinal);
 
+        // Not swallowed: the exhausted retry leaves exactly one error line, as content-free as the answer.
+        TestLogEntry logged = Assert.Single(runtime.Logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.Null(logged.Exception);
+
+        Assert.DoesNotContain("busy.key", logged.Message, StringComparison.Ordinal);
+
         await ExecuteAsync(writer, "ROLLBACK;");
 
         Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_decision_receipts;"));
@@ -1636,13 +1644,15 @@ public sealed class CovenantMemoryReviewServiceTests
             CovenantMemoryReviewService service,
             MemoryReviewTokenCodec codec,
             Guid datasetGeneration,
-            FakeTimeProvider time)
+            FakeTimeProvider time,
+            TestCapturingLogger<CovenantMemoryReviewService> logger)
         {
             Fixture = fixture;
             Service = service;
             Codec = codec;
             DatasetGeneration = datasetGeneration;
             Time = time;
+            Logger = logger;
         }
 
         internal CovenantCanonicalFixture Fixture { get; }
@@ -1652,6 +1662,8 @@ public sealed class CovenantMemoryReviewServiceTests
         internal MemoryReviewTokenCodec Codec { get; }
 
         internal FakeTimeProvider Time { get; }
+
+        internal TestCapturingLogger<CovenantMemoryReviewService> Logger { get; }
 
         private Guid DatasetGeneration { get; }
 
@@ -1670,6 +1682,7 @@ public sealed class CovenantMemoryReviewServiceTests
             Guid dataset = await fixture.ReadDatasetGenerationAsync(Token);
             FakeTimeProvider time = new();
             MemoryReviewTokenCodec codec = new(time);
+            TestCapturingLogger<CovenantMemoryReviewService> logger = new();
 
             CovenantMemoryReviewService service = new(
                 new FixedCovenantConnectionSource(fixture.Connection),
@@ -1680,7 +1693,8 @@ public sealed class CovenantMemoryReviewServiceTests
                     withErasureEvidence ? fixture.ErasureKeys : MemoryErasureTestKeys.Isolated()),
                 new CovenantCurationKernel(),
                 time,
-                DetachedAvailabilityRepublisher.Create())
+                DetachedAvailabilityRepublisher.Create(),
+                logger)
             {
                 // Retrying is real; only the clock it waits on is the test's, so exhausting it is instant.
                 BusyRetryDeadlineForTesting = busyRetryDeadline,
@@ -1688,7 +1702,7 @@ public sealed class CovenantMemoryReviewServiceTests
                     ?? (busyRetryDeadline is null ? null : static (_, _) => Task.CompletedTask),
             };
 
-            return new ReviewRuntime(fixture, service, codec, dataset, time);
+            return new ReviewRuntime(fixture, service, codec, dataset, time, logger);
         }
 
         internal CovenantReadLease ReadLease(Guid? campaignId = null) =>

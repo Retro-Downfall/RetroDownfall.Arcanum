@@ -44,7 +44,6 @@ namespace RetroDownfall.Arcanum.Covenant.Benchmarks;
 /// </remarks>
 internal sealed class CovenantWorkloadBed : IAsyncDisposable
 {
-
     /// <summary>Fixed, and not a secret: this installation exists for the length of one benchmark run.</summary>
     private const string Passphrase = "covenant-benchmark-passphrase";
 
@@ -64,11 +63,9 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
     private CovenantWorkloadBed(string directory, SqliteConnection connection)
     {
-
         _directory = directory;
 
         _connection = connection;
-
     }
 
     internal CovenantStore Store { get; private set; } = null!;
@@ -94,7 +91,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
         WorkloadManifest manifest,
         CancellationToken cancellationToken)
     {
-
         SqliteNativeRuntime.Instance.Initialize();
 
         string directory = Directory.CreateDirectory(
@@ -116,7 +112,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
         try
         {
-
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             await CovenantSqliteConnectionInitializer.Instance
@@ -130,27 +125,20 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             await bed.SeedAsync(manifest, cancellationToken).ConfigureAwait(false);
 
             return bed;
-
         }
         catch
         {
-
             await bed.DisposeAsync().ConfigureAwait(false);
 
             throw;
-
         }
-
     }
 
     private async Task InstallSchemaAsync(CancellationToken cancellationToken)
     {
-
         foreach (string name in (string[])["Campaigns", "campaign_registry_state", "owner_deletion_events"])
         {
-
             await ExecuteAsync(CoreObjectSql(name), cancellationToken).ConfigureAwait(false);
-
         }
 
         await ExecuteAsync(
@@ -159,11 +147,9 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
         foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.CovenantCanonicalObjects)
         {
-
             await ExecuteAsync(
                 GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions: null),
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         await using SqliteTransaction transaction =
@@ -184,12 +170,10 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             .ConfigureAwait(false);
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private void Compose()
     {
-
         Store = new CovenantStore(new FixedConnectionSource(_connection), _erasureKeys);
 
         CovenantRuntimeGenerationProvider runtime = new();
@@ -207,9 +191,7 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
         if (prepared.IsFailure)
         {
-
             throw new InvalidOperationException(prepared.Error.Message);
-
         }
 
         using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
@@ -220,16 +202,17 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
         if (initialized.IsFailure)
         {
-
             throw new InvalidOperationException(initialized.Error.Message);
-
         }
 
         Availability.Bind(runtime);
 
         Authority.Bind(runtime);
 
-        Gate = new CovenantOperationGate(runtime, new BenchmarkCampaignScopeProbe(() => Campaigns));
+        Gate = new CovenantOperationGate(
+            runtime,
+            new BenchmarkCampaignScopeProbe(() => Campaigns),
+            NullLogger<CovenantOperationGate>.Instance);
 
         CovenantEnvelopeCodec codec = new(keys, TimeProvider.System);
 
@@ -256,19 +239,15 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             new BenchmarkCampaignAvailabilityReader(() => Campaigns));
 
         Context = new CovenantContextProvider(Availability, Gate, Store, new CovenantLinker());
-
     }
 
     private async Task SeedAsync(WorkloadManifest manifest, CancellationToken cancellationToken)
     {
-
         Campaigns = [.. Enumerable.Range(0, manifest.Corpus.Campaigns).Select(CampaignIdentity)];
 
         foreach (Guid campaignId in Campaigns)
         {
-
             await AddCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
-
         }
 
         using IncrementalHash digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -278,7 +257,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
         // the same arithmetic. Two copies would agree with each other and drift from the file.
         foreach (BenchmarkCorpusEntry entry in BenchmarkCorpus.Entries(manifest.Corpus))
         {
-
             digest.AppendData(Encoding.UTF8.GetBytes(entry.Key));
 
             digest.AppendData(Encoding.UTF8.GetBytes(entry.Content));
@@ -289,11 +267,9 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
                 entry.Key,
                 entry.Content,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         CorpusDigest = Convert.ToHexStringLower(digest.GetHashAndReset());
-
     }
 
     private async Task WriteAsync(
@@ -303,7 +279,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
         string content,
         CancellationToken cancellationToken)
     {
-
         CovenantOperationScope operationScope = campaignId is { } campaign
             ? CovenantOperationScope.ForCampaign(campaign)
             : CovenantOperationScope.Global;
@@ -314,7 +289,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
         if (campaignId is null)
         {
-
             await using CovenantInstallationReadLease read =
                 Unwrap(await Gate.AcquireInstallationReadAsync(cancellationToken).ConfigureAwait(false));
 
@@ -322,11 +296,9 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
                 new CovenantSetPrepareRequest(scope, campaignId, key, content, 0, mutationId, false),
                 read,
                 cancellationToken).ConfigureAwait(false)).PreflightToken;
-
         }
         else
         {
-
             await using CovenantReadLease read =
                 Unwrap(await Gate.AcquireReadAsync(operationScope, cancellationToken).ConfigureAwait(false));
 
@@ -334,7 +306,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
                 new CovenantSetPrepareRequest(scope, campaignId, key, content, 0, mutationId, false),
                 read,
                 cancellationToken).ConfigureAwait(false)).PreflightToken;
-
         }
 
         await using CovenantWriteLease write =
@@ -344,13 +315,11 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             new CovenantSetRequest(scope, campaignId, key, content, 0, mutationId, false, preflight),
             write,
             cancellationToken).ConfigureAwait(false));
-
     }
 
     /// <summary>A stable Campaign identity per ordinal, so two runs seed the same installation.</summary>
     private static Guid CampaignIdentity(int ordinal)
     {
-
         Span<byte> bytes = stackalloc byte[16];
 
         "7e1d9c4205b84f63"u8.CopyTo(bytes);
@@ -366,12 +335,10 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
         bytes[15] = (byte)ordinal;
 
         return new Guid(bytes);
-
     }
 
     private async Task AddCampaignAsync(Guid campaignId, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         // The identity is bound as a Guid rather than as formatted text, so the provider stores exactly
@@ -393,29 +360,24 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$now", DateTimeOffset.UnixEpoch.ToString("O", CultureInfo.InvariantCulture));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task ExecuteAsync(string sql, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static string CoreObjectSql(string name)
     {
-
         GrimoireSchemaObject definition = GrimoireSchemaCatalog.CoreObjects
             .FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal))
             ?? throw new InvalidOperationException($"The core schema catalog has no object named '{name}'.");
 
         return GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions: null);
-
     }
 
     /// <summary>Hands every service the one open connection this benchmark installation has.</summary>
@@ -427,10 +389,8 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
     /// </remarks>
     private sealed class FixedConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
         {
-
             // The production source latches this on every acquisition, so a bed that skipped it would
             // measure a canonical read that costs slightly less than the one the product performs.
             CovenantProcessResidence.MarkOpened();
@@ -438,12 +398,10 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
 
             return ValueTask.FromResult(connection);
-
         }
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
             GetOpenConnectionAsync(cancellationToken);
-
     }
 
     internal static T Unwrap<T>(Result<T> result) =>
@@ -451,7 +409,6 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-
         _erasureKeys.Dispose();
 
         await _connection.DisposeAsync().ConfigureAwait(false);
@@ -460,18 +417,12 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
         try
         {
-
             Directory.Delete(_directory, recursive: true);
-
         }
         catch (IOException)
         {
-
             // A benchmark that failed to clean up has still produced its numbers, and refusing to
             // report them because a temp directory was busy would be the wrong failure to surface.
-
         }
-
     }
-
 }

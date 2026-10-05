@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -1005,6 +1006,18 @@ public sealed class SagaMemoryReviewServiceTests
 
         Assert.Equal(ErrorCodes.Saga.WriteFailed, failed.Error.Code);
 
+        // Not swallowed: the storage fault leaves exactly one error line, and it is as content-free as the
+        // error the caller gets.
+        TestLogEntry logged = Assert.Single(runtime.Logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.Null(logged.Exception);
+
+        Assert.DoesNotContain(FailingContent, logged.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("m-1", logged.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("injected", logged.Message, StringComparison.Ordinal);
+
         // Content-free: the message names neither the memory nor the replacement text.
         Assert.DoesNotContain(FailingContent, failed.Error.Message, StringComparison.Ordinal);
 
@@ -1380,6 +1393,8 @@ public sealed class SagaMemoryReviewServiceTests
     {
         FakeTimeProvider time = new();
 
+        TestCapturingLogger<SagaMemoryReviewService> logger = new();
+
         time.SetUtcNow(DateTimeOffset.Parse(
             "2026-09-28T13:00:00Z",
             System.Globalization.CultureInfo.InvariantCulture));
@@ -1394,9 +1409,10 @@ public sealed class SagaMemoryReviewServiceTests
             Settings(campaignScopedMemory),
             MemoryErasureTestKeys.Isolated(),
             new OperatorAuthorityContextIssuer(new FakeCovenantAuthorityProvider()),
-            time);
+            time,
+            logger);
 
-        return new ReviewRuntime(service, codec, time);
+        return new ReviewRuntime(service, codec, time, logger);
     }
 
     private static async Task<Result<SagaReviewPageDto>> ListAfterReleaseAsync(
@@ -1496,5 +1512,6 @@ public sealed class SagaMemoryReviewServiceTests
     private sealed record ReviewRuntime(
         SagaMemoryReviewService Service,
         MemoryReviewTokenCodec Codec,
-        FakeTimeProvider Time);
+        FakeTimeProvider Time,
+        TestCapturingLogger<SagaMemoryReviewService> Logger);
 }

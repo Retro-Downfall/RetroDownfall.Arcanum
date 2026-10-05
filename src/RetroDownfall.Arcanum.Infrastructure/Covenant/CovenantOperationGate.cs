@@ -40,7 +40,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
     private readonly TimeSpan _drainTimeout;
 
-    private readonly ILogger<CovenantOperationGate>? _logger;
+    private readonly ILogger<CovenantOperationGate> _logger;
 
     private readonly Lock _sync = new();
 
@@ -57,12 +57,14 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     internal CovenantOperationGate(
         CovenantRuntimeGenerationProvider runtime,
         ICovenantCampaignScopeProbe campaigns,
-        TimeSpan? drainTimeout = null,
-        ILogger<CovenantOperationGate>? logger = null)
+        ILogger<CovenantOperationGate> logger,
+        TimeSpan? drainTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(runtime);
 
         ArgumentNullException.ThrowIfNull(campaigns);
+
+        ArgumentNullException.ThrowIfNull(logger);
 
         _runtime = runtime;
 
@@ -1333,7 +1335,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 // Cancel() runs every registered callback and then throws what they threw. The token is
                 // already cancelled, which is all a revocation asks for; a consumer's fault must not
                 // abort the close that revoked it or leave its closure installed.
-                _gate._logger?.LogWarning(
+                _gate._logger.LogWarning(
                     "{Count} Covenant revocation callback(s) faulted; the lease is revoked regardless.",
                     faulted.InnerExceptions.Count);
             }

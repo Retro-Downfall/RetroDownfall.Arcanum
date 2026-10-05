@@ -1250,6 +1250,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 }
             }
 
+            _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Cleanup);
+
             journal = BackupRestoreJournal.Advance(staging.Path, journal, BackupRestorePhase.Cleanup);
 
             Record(phases, BackupRestorePhase.Cleanup, "Removed protected restore staging.");
@@ -1301,6 +1303,26 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 or System.Security.Cryptography.CryptographicException
                 or InvalidOperationException)
         {
+            // The same rule as the cancellation arm above, for every other fault: a spent disposition means
+            // admission has reopened over the replacement and the marker children are complete, so the
+            // restore is committed whatever fails next (the journal's Cleanup record on a full disk, say).
+            // The prior installation is not put back, and the operator is told a step after the commit
+            // failed rather than that the restore was rolled back.
+            if (covenant is { Dispositioned: true })
+            {
+                Record(
+                    phases,
+                    BackupRestorePhase.Cleanup,
+                    "The restore is committed and Covenant admission has reopened; a step after that failed.");
+
+                return CompletionFailed(
+                    operationId,
+                    effectivePlan,
+                    phases,
+                    safetyBackupPath,
+                    exception);
+            }
+
             if (commit is { Succeeded: true })
             {
                 ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
@@ -2640,6 +2662,36 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     + "displaced installation are preserved under " + stagingRoot
                     + " and are resolved at the next start. Diagnostics: "
                     + (reversal.Diagnostics ?? "the reversal did not complete")),
+            ]);
+
+    /// <summary>
+    /// The outcome when a step failed after the Covenant disposition was spent. The restore is committed
+    /// and admission is open over it, so nothing is reversed; the destination is the restored generation
+    /// and an operator is asked to check it.
+    /// </summary>
+    private static BackupRestoreResult CompletionFailed(
+        Guid operationId,
+        BackupRestorePlan plan,
+        List<BackupRestorePhaseRecord> phases,
+        string? safetyBackupPath,
+        Exception exception) =>
+        new(
+            BackupRestoreStatus.ReconciliationRequired,
+            plan.ArchivePath,
+            operationId,
+            plan.ConflictMode,
+            plan.DestinationRoot,
+            safetyBackupPath,
+            plan,
+            Manifest: null,
+            Reconciliation: null,
+            [.. phases],
+            [
+                new BackupVerifyIssue(
+                    "backup.restore_completion_failed",
+                    "The restore committed and Covenant admission reopened over the restored installation, "
+                    + "so it was not reversed. A step after that point failed; check the installation "
+                    + "before relying on it. Diagnostics: " + exception.GetType().Name),
             ]);
 
     private static BackupRestoreResult RolledBack(

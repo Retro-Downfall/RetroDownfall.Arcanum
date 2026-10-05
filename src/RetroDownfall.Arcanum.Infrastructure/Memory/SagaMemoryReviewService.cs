@@ -33,7 +33,7 @@ internal sealed class SagaMemoryReviewService(
     IMemoryErasureKeyProvider erasureKeys,
     IOperatorAuthorityContextIssuer releaseAuthority,
     TimeProvider timeProvider,
-    ILogger<SagaMemoryReviewService>? logger = null) : ISagaMemoryReviewService
+    ILogger<SagaMemoryReviewService> logger) : ISagaMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
@@ -423,7 +423,7 @@ internal sealed class SagaMemoryReviewService(
             // A storage fault inside the transaction already rolled it back. Mapped here, the way Lexicon
             // maps its own, so the host reports this store's code instead of a bare 500. Logged by type
             // and error code only: a driver message can carry what it was trying to write.
-            logger?.LogError(
+            logger.LogError(
                 "Saga memory review apply failed: {FailureType} (SQLite error {SqliteErrorCode}).",
                 failure.GetType(),
                 (failure as SqliteException)?.SqliteErrorCode);
