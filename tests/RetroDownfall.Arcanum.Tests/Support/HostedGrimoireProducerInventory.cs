@@ -44485,7 +44485,7 @@ internal static class HostedGrimoireProducerInventory
 
             if (type is "System.IO.FileSystemInfo" or "System.IO.DriveInfo"
                 || type == "System.Diagnostics.Process"
-                    && property.Name is "ExitCode" or "HasExited" or "StandardError" or "StandardOutput"
+                    && property.Name is "ExitCode" or "HasExited" or "StandardError" or "StandardOutput" or "StartTime"
                 || type.StartsWith("System.Security.AccessControl.", StringComparison.Ordinal)
                     || type == "System.Security.Principal.WindowsIdentity")
             {
