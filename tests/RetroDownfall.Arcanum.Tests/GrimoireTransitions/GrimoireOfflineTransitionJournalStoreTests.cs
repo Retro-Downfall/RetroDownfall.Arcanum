@@ -1484,6 +1484,92 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
         Assert.False(File.Exists(current.Location.RetiringPath));
     }
 
+    /// <summary>
+    /// The Windows exchange is two renames, so a crash between them leaves the anchor-current file at
+    /// the previous name, optionally the one-ahead file at the working name, and no canonical file.
+    /// </summary>
+    [Theory]
+    [InlineData("with-working")]
+    [InlineData("previous-only")]
+    public async Task Recover_restores_canonical_from_previous_when_canonical_absent(string shape)
+    {
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(ReadyStore());
+
+        GrimoireOfflineTransitionJournalLocation location = current.Location;
+
+        if (shape is "with-working")
+        {
+            GrimoireOfflineTransitionEnvelopeV1 next = SealForTest(
+                location,
+                current.Envelope,
+                revision: 2,
+                current.EnvelopeDigest,
+                Bytes("second"));
+
+            WriteOwnerOnly(
+                location.WorkingPath,
+                Value(GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(next)));
+        }
+
+        File.Move(location.JournalPath, location.PreviousPath);
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None));
+
+        Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated, recovered.Outcome);
+
+        ulong expectedRevision = shape is "with-working" ? 2UL : 1UL;
+
+        Assert.Equal(expectedRevision, recovered.Publication?.Anchor.Revision);
+
+        Assert.Equal(
+            recovered.Publication?.Anchor,
+            Value(new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(location)));
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await new GrimoireOfflineTransitionJournalFileStore().InspectEvidenceAsync(
+                location,
+                CancellationToken.None));
+
+        Assert.NotNull(evidence.Canonical);
+
+        Assert.Equal(
+            expectedRevision,
+            Value(GrimoireOfflineTransitionJournalAuthenticator.DecodeEnvelope(
+                evidence.Canonical.Bytes.Span)).Revision);
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
+    }
+
+    [Fact]
+    public async Task Recover_refuses_an_unauthenticated_previous_when_canonical_absent()
+    {
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(ReadyStore());
+
+        File.Delete(current.Location.JournalPath);
+
+        WriteOwnerOnly(current.Location.PreviousPath, Bytes("not the anchored revision").Span);
+
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovered = await Store().RecoverAsync(
+            _lock,
+            _guarded,
+            CancellationToken.None);
+
+        Assert.True(recovered.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
+
+        Assert.True(File.Exists(current.Location.PreviousPath));
+
+        Assert.False(File.Exists(current.Location.JournalPath));
+    }
+
     [Fact]
     public async Task Recover_finishes_exact_predecessor_retirement_before_adopting_one_ahead()
     {

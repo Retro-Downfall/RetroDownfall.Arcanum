@@ -787,6 +787,18 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 .ConfigureAwait(false);
         }
 
+        if (evidence.Canonical is null && evidence.Previous is not null && evidence.Retiring is null)
+        {
+            return await RestorePreviousAsync(
+                    heldInstallationLock,
+                    guardedDirectory,
+                    location,
+                    anchor,
+                    evidence,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         if (anchor.Revision == 0 && evidence.Canonical is null)
         {
             return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
@@ -1198,6 +1210,62 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         return AllAbsent(evidence)
             ? _files.ProveAbsentDurably(heldInstallationLock, terminal.Location)
             : RecoveryRequired();
+    }
+
+    /// <summary>
+    /// Converges an exchange interrupted between its two Windows renames.
+    /// </summary>
+    /// <remarks>
+    /// The previous file must authenticate as exactly the anchor-current revision and a working file,
+    /// when present, as exactly one ahead of it. The predecessor goes back to the canonical name and the
+    /// ordinary recovery then resumes the working publication or accepts the restored file. A rename that
+    /// landed is the point of no return, so that recovery runs on <see cref="CancellationToken.None"/>.
+    /// </remarks>
+    private async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RestorePreviousAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionAnchorV1 anchor,
+        GrimoireOfflineTransitionJournalEvidence evidence,
+        CancellationToken cancellationToken)
+    {
+        GrimoireOfflineTransitionJournalFileRead previous = evidence.Previous!;
+
+        Result<GrimoireOfflineTransitionJournalPublication> current =
+            AuthenticateEvidence(location, previous, anchor);
+
+        if (current.IsFailure)
+        {
+            return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(current.Error);
+        }
+
+        if (evidence.Working is not null)
+        {
+            Result<GrimoireOfflineTransitionJournalPublication> next =
+                AuthenticateOneAhead(location, evidence.Working, anchor);
+
+            if (next.IsFailure)
+            {
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(next.Error);
+            }
+        }
+
+        Result restored = await _files.RestorePreviousAsCanonicalAsync(
+                heldInstallationLock,
+                location,
+                previous.Metadata,
+                previous.Bytes,
+                evidence.Working?.Metadata.Identity,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (restored.IsFailure)
+        {
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+        }
+
+        return await RecoverAsync(heldInstallationLock, guardedDirectory, CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     private async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverClosedAsync(

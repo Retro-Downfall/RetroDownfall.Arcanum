@@ -2232,6 +2232,202 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     /// <summary>
+    /// The Windows exchange is two no-replace renames, so the second can fail after the first moved the
+    /// canonical file aside. This drives the production composition the Windows arm calls over the real
+    /// primitives of whichever host runs it, failing only the second rename, and requires the canonical
+    /// file back in place with the working file cleaned up as a pre-publication failure.
+    /// </summary>
+    [Fact]
+    public async Task Windows_exchange_second_rename_failure_restores_canonical()
+    {
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] firstBytes = Bytes("two-rename-first").ToArray();
+
+        FileHandleIdentity firstIdentity = await PublishFirstAsync(initial, held, location, firstBytes);
+
+        TwoRenameExchangePrimitives? renaming = null;
+
+        GrimoireOfflineTransitionJournalFileStore store = TwoRenameStore(
+            opened => renaming = new TwoRenameExchangePrimitives(
+                opened,
+                (location.WorkingLeaf, location.JournalLeaf)));
+
+        Result replaced = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            Bytes("two-rename-second"),
+            firstIdentity,
+            CancellationToken.None);
+
+        Assert.True(replaced.IsFailure);
+
+        Assert.NotNull(renaming);
+
+        Assert.Equal(
+            (IEnumerable<(string, string)>)
+            [
+                (location.JournalLeaf, location.PreviousLeaf),
+                (location.WorkingLeaf, location.JournalLeaf),
+                (location.PreviousLeaf, location.JournalLeaf),
+            ],
+            renaming.Renames);
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.NotNull(evidence.Canonical);
+
+        Assert.True(FileHandleIdentity.IdentitiesMatch(firstIdentity, evidence.Canonical.Metadata.Identity));
+
+        Assert.Equal(firstBytes, evidence.Canonical.Bytes.ToArray());
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
+    }
+
+    /// <summary>
+    /// When the rollback rename fails too, the working file is the newer revision recovery may still
+    /// adopt, so the store must leave it beside the retained predecessor instead of unlinking it.
+    /// </summary>
+    [Fact]
+    public async Task Windows_exchange_rollback_failure_keeps_previous_and_working_for_recovery()
+    {
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] firstBytes = Bytes("two-rename-first").ToArray();
+
+        byte[] secondBytes = Bytes("two-rename-second").ToArray();
+
+        FileHandleIdentity firstIdentity = await PublishFirstAsync(initial, held, location, firstBytes);
+
+        GrimoireOfflineTransitionJournalFileStore store = TwoRenameStore(
+            opened => new TwoRenameExchangePrimitives(
+                opened,
+                (location.WorkingLeaf, location.JournalLeaf),
+                (location.PreviousLeaf, location.JournalLeaf)));
+
+        Result replaced = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            CancellationToken.None);
+
+        Assert.True(replaced.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, replaced.Error.Code);
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Null(evidence.Canonical);
+
+        Assert.NotNull(evidence.Previous);
+
+        Assert.True(FileHandleIdentity.IdentitiesMatch(firstIdentity, evidence.Previous.Metadata.Identity));
+
+        Assert.Equal(firstBytes, evidence.Previous.Bytes.ToArray());
+
+        Assert.NotNull(evidence.Working);
+
+        Assert.Equal(secondBytes, evidence.Working.Bytes.ToArray());
+
+        Assert.Null(evidence.Retiring);
+    }
+
+    /// <summary>
+    /// The Windows lane runs the real two-rename exchange end to end with its rollback composition and
+    /// proves a healthy second publication still lands with the predecessor retired.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_exchange_by_no_replace_renames_publishes_through_the_real_primitives()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: the two-rename exchange is the Windows arm.");
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        FileHandleIdentity firstIdentity = await PublishFirstAsync(
+            initial,
+            held,
+            location,
+            Bytes("windows-two-rename-first").ToArray());
+
+        byte[] secondBytes = Bytes("windows-two-rename-second").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            CancellationToken.None)).IsSuccess);
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Equal(secondBytes, evidence.Canonical?.Bytes.ToArray());
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
+    }
+
+    private static async Task<FileHandleIdentity> PublishFirstAsync(
+        GrimoireOfflineTransitionJournalFileStore store,
+        ArcanumMaintenanceLock held,
+        GrimoireOfflineTransitionJournalLocation location,
+        byte[] bytes)
+    {
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        using GrimoireOfflineTransitionJournalFileRead first = Assert.IsType<
+            GrimoireOfflineTransitionJournalFileRead>(
+            Value(await store.ReadIfPresentAsync(location, CancellationToken.None)));
+
+        return first.Metadata.Identity;
+    }
+
+    private static GrimoireOfflineTransitionJournalFileStore TwoRenameStore(
+        Func<IGrimoireOfflineTransitionJournalFilePrimitives, TwoRenameExchangePrimitives> wrap) =>
+        new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                return opened.IsFailure
+                    ? Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(opened.Error)
+                    : Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(wrap(opened.Value));
+            });
+
+    /// <summary>
     /// Weakening a published file's ACL is otherwise untested on the platform the owner-only
     /// posture is named after. Granting a second SID read access, rather than gutting a method, is the
     /// change an actual attacker or misconfiguration would produce.
@@ -2605,6 +2801,64 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
             return FlushParentOverride?.Invoke() ?? inner.FlushParent();
         }
+
+        public void Dispose() => inner.Dispose();
+    }
+
+    /// <summary>
+    /// Stands in for the Windows primitives on any host: its exchange is the production two-rename
+    /// composition the Windows arm calls, running over this decorator's own <see cref="MoveNoReplace"/>,
+    /// which records every rename and fails exactly the named source/destination pairs.
+    /// </summary>
+    private sealed class TwoRenameExchangePrimitives(
+        IGrimoireOfflineTransitionJournalFilePrimitives inner,
+        params (string Source, string Destination)[] failingRenames)
+        : IGrimoireOfflineTransitionJournalFilePrimitives
+    {
+        internal List<(string Source, string Destination)> Renames { get; } = [];
+
+        public FileHandleMetadata ParentMetadata => inner.ParentMetadata;
+
+        public Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(
+            string workingLeaf) => inner.CreateWorkingExclusive(workingLeaf);
+
+        public Result PublishFirstNoReplace(string journalLeaf, string workingLeaf) =>
+            inner.PublishFirstNoReplace(journalLeaf, workingLeaf);
+
+        public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(
+            string journalLeaf,
+            string workingLeaf,
+            string previousLeaf) =>
+            GrimoireOfflineTransitionJournalFilePrimitives.ExchangeByNoReplaceRenames(
+                this,
+                journalLeaf,
+                workingLeaf,
+                previousLeaf);
+
+        public Result MoveNoReplace(string sourceLeaf, string destinationLeaf)
+        {
+            Renames.Add((sourceLeaf, destinationLeaf));
+
+            return failingRenames.Contains((sourceLeaf, destinationLeaf))
+                ? new Error(ErrorCodes.Covenant.Unavailable, "Injected rename failure.")
+                : inner.MoveNoReplace(sourceLeaf, destinationLeaf);
+        }
+
+        public Result ApplyOwnerOnlyAndVerify(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.ApplyOwnerOnlyAndVerify(expected, relativeLeaf);
+
+        public Result CompareUnlink(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
+
+        public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
+            IReadOnlyList<string> exactLeaves) => inner.EnumerateExactChildren(exactLeaves);
+
+        public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>
+            inner.FlushWorking(file);
+
+        public Result FlushParent() => inner.FlushParent();
 
         public void Dispose() => inner.Dispose();
     }
