@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 [Collection("WorkspacePathPolicy")]
 public sealed class BackupArchiveCodecTests : IDisposable
 {
-
     private const string GoldenPassphrase = "golden recovery passphrase";
 
     private readonly string _root = Path.Combine(
@@ -28,20 +27,15 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
     public void Dispose()
     {
-
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Encrypted_archive_round_trips_empty_and_large_entries_without_plaintext_leakage()
     {
-
         string empty = WriteSource("empty.bin", []);
 
         byte[] largeBytes = RandomNumberGenerator.GetBytes((2 * 1024 * 1024) + 17);
@@ -56,11 +50,9 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             ChunkSize = 64 * 1024,
 
             KdfIterations = 10_000,
-
         });
 
         await codec.WriteAsync(
@@ -108,13 +100,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
             string.Join(global::System.Environment.NewLine, verification.Issues));
 
         Assert.Equal(largeBytes.LongLength, privateInspection.Manifest?.Entries[1].Size);
-
     }
 
     [Fact]
     public async Task Verify_rejects_wrong_passphrase_and_single_byte_header_or_payload_corruption()
     {
-
         string source = WriteSource("payload.txt", Encoding.UTF8.GetBytes("sensitive payload"));
 
         string archive = Path.Combine(_root, "corrupt.arcbackup");
@@ -124,11 +114,9 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             ChunkSize = 32,
 
             KdfIterations = 10_000,
-
         });
 
         await codec.WriteAsync(
@@ -152,7 +140,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         foreach (int offset in new[] { 12, original.Length - 17 })
         {
-
             byte[] corrupted = [.. original];
 
             corrupted[offset] ^= 0x01;
@@ -167,22 +154,17 @@ public sealed class BackupArchiveCodecTests : IDisposable
                 CancellationToken.None);
 
             Assert.False(result.IsValid);
-
         }
-
     }
 
     [Fact]
     public async Task Huge_nonnegative_plaintext_length_is_reported_as_invalid_archive()
     {
-
         string archive = Path.Combine(_root, "huge-length.arcbackup");
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
-
         });
 
         await codec.WriteAsync(
@@ -217,13 +199,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
         Assert.Contains(
             verification.Issues,
             issue => issue.Code == "backup.invalid_archive");
-
     }
 
     [Fact]
     public async Task Cancellation_and_existing_destination_never_publish_a_partial_archive()
     {
-
         string source = WriteSource("payload.txt", Encoding.UTF8.GetBytes("new payload"));
 
         string archive = Path.Combine(_root, "existing.arcbackup");
@@ -234,9 +214,7 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
-
         });
 
         BackupManifest manifest = Manifest(
@@ -271,22 +249,71 @@ public sealed class BackupArchiveCodecTests : IDisposable
         Assert.False(File.Exists(cancelledArchive));
 
         Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
+    }
 
+    [Fact]
+    public async Task Cancellation_during_staged_verification_removes_the_temp_archive_and_publishes_nothing()
+    {
+        string firstSource = WriteSource("first.txt", Encoding.UTF8.GetBytes("first payload"));
+
+        string secondSource = WriteSource("second.txt", Encoding.UTF8.GetBytes("second payload"));
+
+        string archive = Path.Combine(_root, "cancelled-during-verify.arcbackup");
+
+        using CancellationTokenSource cancellation = new();
+
+        List<string> temporaryArchivesSeenDuringVerification = [];
+
+        BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
+        {
+            KdfIterations = 10_000,
+
+            AfterExtractedEntryForTests = _ =>
+            {
+                // The staged archive is fully written and verification is mid-extraction, so the
+                // temporary archive exists on disk when the cancellation lands.
+                temporaryArchivesSeenDuringVerification.AddRange(
+                    Directory.GetFiles(_root, ".*.tmp.*"));
+
+                cancellation.Cancel();
+            },
+        });
+
+        BackupManifest manifest = Manifest(
+            Entry("content/first.txt", firstSource, BackupComponent.Configuration),
+            Entry("content/second.txt", secondSource, BackupComponent.Configuration));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => codec.WriteAsync(
+                archive,
+                manifest,
+                [
+                    new BackupArchiveSource("content/first.txt", firstSource),
+                    new BackupArchiveSource("content/second.txt", secondSource),
+                ],
+                "passphrase".AsMemory(),
+                overwrite: false,
+                cancellation.Token));
+
+        Assert.NotEmpty(temporaryArchivesSeenDuringVerification);
+
+        Assert.False(File.Exists(archive));
+
+        Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
+
+        Assert.Empty(Directory.GetDirectories(_root));
     }
 
     [SkippableFact]
     public async Task Published_archive_is_owner_only_on_Unix()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string source = WriteSource("payload.txt", Encoding.UTF8.GetBytes("payload"));
@@ -295,9 +322,7 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
-
         });
 
         BackupManifest manifest = Manifest(
@@ -314,13 +339,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
         Assert.Equal(
             UnixFileMode.UserRead | UnixFileMode.UserWrite,
             File.GetUnixFileMode(archive));
-
     }
 
     [Fact]
     public async Task Write_preserves_an_existing_destination_parent_and_creates_a_missing_one()
     {
-
         string existingParent = Path.Combine(_root, "shared-output");
 
         Directory.CreateDirectory(existingParent);
@@ -334,16 +357,12 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(existingParent, existingMode);
-
         }
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
-
         });
 
         string existingParentArchive = Path.Combine(
@@ -360,11 +379,9 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         if (!OperatingSystem.IsWindows())
         {
-
             Assert.Equal(
                 existingMode,
                 File.GetUnixFileMode(existingParent));
-
         }
 
         string missingParent = Path.Combine(_root, "new-output", "nested");
@@ -384,13 +401,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
         Assert.True(Directory.Exists(missingParent));
 
         Assert.True(File.Exists(missingParentArchive));
-
     }
 
     [SkippableFact]
     public async Task Source_replacement_after_open_aborts_without_publishing_an_archive()
     {
-
         // The seam swaps the source while the codec holds it open with FileShare.Read |
         // FileShare.Delete and no write sharing. Windows denies the replacement of a file held that
         // way, so the exception escaping WriteAsync is the test's own File.Move failing rather than
@@ -411,11 +426,9 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             ChunkSize = 1024,
 
             KdfIterations = 10_000,
-
         });
 
         BackupManifest manifest = Manifest(
@@ -425,20 +438,15 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         SecureFileReader.AfterOpenForTests = openedPath =>
         {
-
             if (string.Equals(openedPath, source, StringComparison.Ordinal)
                 && Interlocked.Exchange(ref replacements, 1) == 0)
             {
-
                 File.Move(replacementPath, source, overwrite: true);
-
             }
-
         };
 
         try
         {
-
             Exception error = await FilesystemRefusal.ThrowsAsync(
                 () => codec.WriteAsync(
                     archive,
@@ -449,13 +457,10 @@ public sealed class BackupArchiveCodecTests : IDisposable
                     CancellationToken.None));
 
             Assert.Contains("changed", error.Message, StringComparison.OrdinalIgnoreCase);
-
         }
         finally
         {
-
             SecureFileReader.AfterOpenForTests = null;
-
         }
 
         Assert.Equal(1, replacements);
@@ -463,13 +468,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
         Assert.False(File.Exists(archive));
 
         Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
-
     }
 
     [Fact]
     public async Task Sensitive_generated_entries_stream_from_memory_without_plaintext_staging()
     {
-
         byte[] sensitive = Encoding.UTF8.GetBytes(
             "portable-recovery-secret-that-must-never-be-staged");
 
@@ -483,9 +486,7 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
-
         });
 
         await codec.WriteAsync(
@@ -506,7 +507,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
             CancellationToken.None);
 
         Assert.True(result.IsValid);
-
     }
 
     [Theory]
@@ -523,7 +523,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
         GoldenArchiveShape shape,
         string expectedSha256)
     {
-
         GoldenArchiveVector vector = BuildGoldenVector(shape);
 
         string archive = Path.Combine(
@@ -552,13 +551,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
         Assert.True(
             verification.IsValid,
             string.Join(global::System.Environment.NewLine, verification.Issues));
-
     }
 
     [Fact]
     public async Task Corrupt_golden_vector_has_stable_bytes_and_is_rejected()
     {
-
         GoldenArchiveVector vector = BuildGoldenVector(
             GoldenArchiveShape.Minimal);
 
@@ -598,13 +595,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
         Assert.Contains(
             verification.Issues,
             issue => issue.Code == "backup.authentication_failed");
-
     }
 
     private static BackupArchiveCodec GoldenCodec() =>
         new(new BackupArchiveCodecOptions
         {
-
             ChunkSize = 32,
 
             KdfIterations = 10_000,
@@ -614,7 +609,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
             NoncePrefixFactory = static () =>
                 Convert.FromHexString("1011121314151617"),
-
         });
 
     private static GoldenArchiveVector BuildGoldenVector(
@@ -629,7 +623,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
     private static GoldenArchiveVector EmptyGoldenVector()
     {
-
         BackupManifest manifest = GoldenManifest(
             BackupScope.MetadataOnly,
             sessionId: null,
@@ -640,12 +633,10 @@ public sealed class BackupArchiveCodecTests : IDisposable
             entries: []);
 
         return new GoldenArchiveVector(manifest, []);
-
     }
 
     private static GoldenArchiveVector MinimalGoldenVector()
     {
-
         byte[] content = Encoding.UTF8.GetBytes("minimal golden payload\n");
 
         BackupManifestEntry entry = MemoryEntry(
@@ -670,12 +661,10 @@ public sealed class BackupArchiveCodecTests : IDisposable
         return new GoldenArchiveVector(
             manifest,
             [BackupArchiveSource.FromMemory(entry.Path, content)]);
-
     }
 
     private static GoldenArchiveVector FullishGoldenVector()
     {
-
         byte[] attachment = Encoding.UTF8.GetBytes(
             "session attachment golden bytes\n");
 
@@ -766,7 +755,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
                 BackupArchiveSource.FromMemory(entries[3].Path, upload),
                 BackupArchiveSource.FromMemory(entries[4].Path, recovery),
             ]);
-
     }
 
     private static BackupManifest GoldenManifest(
@@ -823,7 +811,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
         IReadOnlyList<BackupManifestEntry> entries,
         IReadOnlyList<BackupManifestComponent>? overrides = null)
     {
-
         Dictionary<BackupComponent, BackupManifestComponent> overridden =
             overrides?.ToDictionary(static component => component.Component)
             ?? [];
@@ -831,14 +818,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
         return Enum.GetValues<BackupComponent>()
             .Select(component =>
             {
-
                 if (overridden.TryGetValue(
                         component,
                         out BackupManifestComponent? specified))
                 {
-
                     return specified;
-
                 }
 
                 BackupManifestEntry[] owned = entries
@@ -853,10 +837,8 @@ public sealed class BackupArchiveCodecTests : IDisposable
                     owned.Length == 0 ? "omitted" : "included",
                     owned.LongLength,
                     owned.Sum(static entry => entry.Size));
-
             })
             .ToArray();
-
     }
 
     private static BackupManifestEntry MemoryEntry(
@@ -874,13 +856,11 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
     private string WriteSource(string name, byte[] content)
     {
-
         string path = Path.Combine(_root, name);
 
         File.WriteAllBytes(path, content);
 
         return path;
-
     }
 
     private static BackupManifestEntry Entry(
@@ -888,7 +868,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
         string sourcePath,
         BackupComponent component)
     {
-
         byte[] bytes = File.ReadAllBytes(sourcePath);
 
         return new BackupManifestEntry(
@@ -896,7 +875,6 @@ public sealed class BackupArchiveCodecTests : IDisposable
             bytes.LongLength,
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
             component);
-
     }
 
     private static BackupManifest Manifest(params BackupManifestEntry[] entries) =>
@@ -927,17 +905,14 @@ public sealed class BackupArchiveCodecTests : IDisposable
 
     public enum GoldenArchiveShape
     {
-
         Empty = 0,
 
         Minimal = 1,
 
         Fullish = 2,
-
     }
 
     private sealed record GoldenArchiveVector(
         BackupManifest Manifest,
         BackupArchiveSource[] Sources);
-
 }

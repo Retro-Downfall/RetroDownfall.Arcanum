@@ -8,6 +8,8 @@ using System.Text;
 
 using Microsoft.Win32.SafeHandles;
 
+using RetroDownfall.Arcanum.Core.Backup;
+
 namespace RetroDownfall.Arcanum.Cli.Services;
 
 internal enum BackupPassphraseReadPurpose
@@ -78,7 +80,9 @@ internal sealed class BackupPassphraseInputException : Exception
 
 /// <summary>
 /// Resource-safety ceilings only. Passphrases retain arbitrary content and complexity up to
-/// 1 MiB of decoded interactive characters or 1 MiB of inherited-descriptor UTF-8 input.
+/// 1 MiB of decoded interactive characters or 1 MiB of inherited-descriptor UTF-8 input. The one
+/// content rule, the creation floor in <see cref="BackupPassphrasePolicy"/>, is applied by the reader
+/// to a passphrase being chosen for a new archive and to nothing else.
 /// </summary>
 internal static class BackupPassphraseLimits
 {
@@ -204,6 +208,16 @@ internal sealed class BackupPassphraseReader : IBackupPassphraseReader
             }
 
             EnsureValid(characters);
+
+            // Creation only, and before the confirmation prompt so the operator is not asked to retype
+            // a passphrase that was never going to be accepted. Opening an archive takes whatever
+            // passphrase it was written under, however short.
+            if (request.Purpose == BackupPassphraseReadPurpose.CreateArchive
+                && !BackupPassphrasePolicy.MeetsCreateMinimum(characters))
+            {
+                throw new BackupPassphraseInputException(
+                    BackupPassphrasePolicy.CreateMinimumMessage);
+            }
 
             if (!hasEnvironmentSource
                 && !hasFileDescriptorSource

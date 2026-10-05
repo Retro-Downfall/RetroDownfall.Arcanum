@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 public sealed class BackupService : IBackupService
 {
-
     // Instance member, matching BackupRestoreServiceOptions.BeforePhaseForTests. As a settable
     // static this single-shot hook could be consumed by a different test's CreateAsync, which both
     // stole the callback and mutated the owning test's tree before its own inventory was built.
@@ -89,7 +88,6 @@ public sealed class BackupService : IBackupService
             operationCoordinator: null,
             operationStore: null)
     {
-
     }
 
     internal BackupService(
@@ -104,7 +102,6 @@ public sealed class BackupService : IBackupService
         ILongRunningOperationStore? operationStore,
         CovenantBackupServices? covenant = null)
     {
-
         _paths = paths;
 
         _planner = planner;
@@ -124,25 +121,21 @@ public sealed class BackupService : IBackupService
         _operationStore = operationStore;
 
         _covenant = covenant;
-
     }
 
     public async Task<BackupPlan> PlanAsync(
         BackupPlanRequest request,
         CancellationToken cancellationToken = default)
     {
-
         HashSet<BackupComponent> selected = ResolveSelectedComponents(request);
 
         string databasePassphrase = string.Empty;
 
         if (selected.Overlaps(DatabaseBackedComponents[1..]))
         {
-
             using DatabaseUnlockMaterial unlock = await ReadDatabaseUnlockAsync().ConfigureAwait(false);
 
             databasePassphrase = unlock.DatabasePassphrase;
-
         }
 
         BackupInventory inventory = await _planner.BuildAsync(
@@ -152,7 +145,6 @@ public sealed class BackupService : IBackupService
             cancellationToken).ConfigureAwait(false);
 
         return inventory.Plan;
-
     }
 
     public async Task<BackupCreateResult> CreateAsync(
@@ -160,8 +152,19 @@ public sealed class BackupService : IBackupService
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
+
+        // First, before the output directory, the staging root or any other effect exists: a refused
+        // passphrase must cost nothing. Applied here, at creation, because this is where a passphrase
+        // is chosen; opening, verifying and restoring an archive written under a shorter one is not
+        // touched by it (see BackupPassphrasePolicy).
+        if (!request.ReusesExistingPassphrase
+            && !BackupPassphrasePolicy.MeetsCreateMinimum(recoveryPassphrase.Span))
+        {
+            throw new ArgumentException(
+                BackupPassphrasePolicy.CreateMinimumMessage,
+                nameof(recoveryPassphrase));
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -198,7 +201,6 @@ public sealed class BackupService : IBackupService
 
         try
         {
-
             HashSet<BackupComponent> selected = ResolveSelectedComponents(request.Plan);
 
             bool needsDatabaseSnapshot = selected.Overlaps(DatabaseBackedComponents);
@@ -209,29 +211,24 @@ public sealed class BackupService : IBackupService
 
             if (needsDatabaseSnapshot)
             {
-
                 unlock = await ReadDatabaseUnlockAsync().ConfigureAwait(false);
 
                 databasePassphrase = unlock.DatabasePassphrase;
 
                 if (_covenant is { } covenant)
                 {
-
                     Result<CovenantInstallationReadLease> acquired = await covenant.Gate
                         .AcquireInstallationReadAsync(cancellationToken)
                         .ConfigureAwait(false);
 
                     if (acquired.IsFailure)
                     {
-
                         throw new InvalidOperationException(
                             "A protected backup could not acquire its installation read lease: "
                             + acquired.Error.Message);
-
                     }
 
                     installationRead = acquired.Value;
-
                 }
 
                 durableOperation = await StartDurableOperationAsync(
@@ -241,7 +238,6 @@ public sealed class BackupService : IBackupService
 
                 if (durableOperation is not null)
                 {
-
                     operationId = durableOperation.OperationId;
 
                     await SaveCheckpointAsync(
@@ -253,16 +249,13 @@ public sealed class BackupService : IBackupService
                         "staging-planned",
                         "Backup staging is planned on the destination filesystem.",
                         cancellationToken).ConfigureAwait(false);
-
                 }
-
             }
 
             stagingDirectory = OwnedTemporaryDirectory.Create(stagingRoot);
 
             if (durableOperation is not null)
             {
-
                 await SaveCheckpointAsync(
                     durableOperation,
                     request,
@@ -272,12 +265,10 @@ public sealed class BackupService : IBackupService
                     "staging-created",
                     "Backup staging was created with a verified filesystem identity.",
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             if (needsDatabaseSnapshot)
             {
-
                 inventoryDatabasePath = Path.Combine(
                     stagingRoot,
                     BackupArchivePaths.GrimoireDatabase.Replace(
@@ -294,22 +285,18 @@ public sealed class BackupService : IBackupService
 
                 if (durableOperation is null)
                 {
-
                     await _snapshotter.CreateAsync(
                         _paths.DatabasePath,
                         inventoryDatabasePath,
                         databasePassphrase,
                         cancellationToken).ConfigureAwait(false);
-
                 }
                 else
                 {
-
                     _ = await RunWithDurableLeaseAsync(
                         durableOperation,
                         async token =>
                         {
-
                             await _snapshotter.CreateAsync(
                                 _paths.DatabasePath,
                                 inventoryDatabasePath,
@@ -317,10 +304,8 @@ public sealed class BackupService : IBackupService
                                 token).ConfigureAwait(false);
 
                             return true;
-
                         },
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await CopyProtectedFileAsync(
@@ -330,15 +315,12 @@ public sealed class BackupService : IBackupService
 
                 if (durableOperation is not null)
                 {
-
                     await RemoveOperationFromSnapshotAsync(
                         inventoryDatabasePath,
                         databasePassphrase,
                         durableOperation.OperationId,
                         cancellationToken).ConfigureAwait(false);
-
                 }
-
             }
 
             BackupInventory inventory = durableOperation is null
@@ -361,7 +343,6 @@ public sealed class BackupService : IBackupService
             if (inventory.Plan.Components.Any(
                     static component => component.Status == BackupComponentStatus.Failed))
             {
-
                 await FailDurableOperationBestEffortAsync(
                     durableOperation,
                     "backup.inventory_incomplete").ConfigureAwait(false);
@@ -373,7 +354,6 @@ public sealed class BackupService : IBackupService
                     inventory.Plan,
                     "backup.inventory_incomplete",
                     "Required backup bytes are missing or unsafe to capture.");
-
             }
 
             List<PreparedBackupSource> sources = inventory.Files
@@ -393,7 +373,6 @@ public sealed class BackupService : IBackupService
 
             if (master?.Issue is not null)
             {
-
                 await FailDurableOperationBestEffortAsync(
                     durableOperation,
                     master.Issue.Code).ConfigureAwait(false);
@@ -413,22 +392,18 @@ public sealed class BackupService : IBackupService
                     Manifest: null,
                     effectivePlan,
                     [master.Issue]);
-
             }
 
             if (master is not null)
             {
-
                 // Registered for zeroing the moment the bytes exist, not where they are added to the
                 // archive: the recovery block below has early returns of its own, and a plaintext
                 // credential must not outlive one of them.
                 sensitiveMemorySources.Add(master.Bytes!);
-
             }
 
             if (selected.Contains(BackupComponent.PortableRecoveryKeys))
             {
-
                 unlock ??= await ReadDatabaseUnlockAsync().ConfigureAwait(false);
 
                 GeneratedSensitiveSource recovery = await BuildRecoveryMaterialAsync(
@@ -439,7 +414,6 @@ public sealed class BackupService : IBackupService
 
                 if (recovery.Issue is not null)
                 {
-
                     await FailDurableOperationBestEffortAsync(
                         durableOperation,
                         recovery.Issue.Code).ConfigureAwait(false);
@@ -459,7 +433,6 @@ public sealed class BackupService : IBackupService
                         Manifest: null,
                         effectivePlan,
                         [recovery.Issue]);
-
                 }
 
                 sensitiveMemorySources.Add(recovery.Bytes!);
@@ -468,22 +441,18 @@ public sealed class BackupService : IBackupService
                     BackupComponent.PortableRecoveryKeys,
                     BackupArchivePaths.PortableRecoveryKeys,
                     recovery.Bytes!));
-
             }
 
             if (master is not null)
             {
-
                 sources.Add(PreparedBackupSource.FromMemory(
                     BackupComponent.MasterApiKey,
                     BackupArchivePaths.MasterApiKey,
                     master.Bytes!));
-
             }
 
             if (durableOperation is not null)
             {
-
                 await SaveCheckpointAsync(
                     durableOperation,
                     request,
@@ -493,26 +462,22 @@ public sealed class BackupService : IBackupService
                     "inventory-complete",
                     $"Backup inventory contains {sources.Count} files.",
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             sources.Sort(static (left, right) =>
                 StringComparer.Ordinal.Compare(left.ArchivePath, right.ArchivePath));
 
             BackupManifestEntry[] entries = durableOperation is null
-                ? await BuildEntriesAsync(
-                    sources,
-                    cancellationToken).ConfigureAwait(false)
+                ? BuildEntries(sources, cancellationToken)
                 : await RunWithDurableLeaseAsync(
                     durableOperation,
-                    token => BuildEntriesAsync(sources, token),
+                    token => Task.FromResult(BuildEntries(sources, token)),
                     cancellationToken).ConfigureAwait(false);
 
             effectivePlan = RecalculatePlan(effectivePlan, entries);
 
             if (durableOperation is not null)
             {
-
                 await SaveCheckpointAsync(
                     durableOperation,
                     request,
@@ -522,7 +487,6 @@ public sealed class BackupService : IBackupService
                     "checksums-complete",
                     $"Backup checksums cover {entries.LongLength} files and {entries.Sum(static entry => entry.Size)} bytes.",
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             string schemaVersion = needsDatabaseSnapshot
@@ -574,7 +538,6 @@ public sealed class BackupService : IBackupService
 
             if (durableOperation is not null)
             {
-
                 await SaveCheckpointAsync(
                     durableOperation,
                     request,
@@ -590,7 +553,6 @@ public sealed class BackupService : IBackupService
                 await CompleteDurableOperationAsync(
                     durableOperation,
                     CancellationToken.None).ConfigureAwait(false);
-
             }
 
             return new BackupCreateResult(
@@ -601,51 +563,39 @@ public sealed class BackupService : IBackupService
                 effectiveManifest,
                 effectivePlan,
                 Issues: []);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             await AbandonDurableOperationBestEffortAsync(durableOperation).ConfigureAwait(false);
 
             throw;
-
         }
         catch
         {
-
             await FailDurableOperationBestEffortAsync(
                 durableOperation,
                 "backup.create_failed").ConfigureAwait(false);
 
             throw;
-
         }
         finally
         {
-
             unlock?.Dispose();
 
             foreach (byte[] sensitive in sensitiveMemorySources)
             {
-
                 CryptographicOperations.ZeroMemory(sensitive);
-
             }
 
             // Released only here: after the archive writer has completed or failed, never between the
             // snapshot and the last output byte.
             if (installationRead is not null)
             {
-
                 await installationRead.DisposeAsync().ConfigureAwait(false);
-
             }
 
             _ = stagingDirectory?.TryDelete();
-
         }
-
     }
 
     /// <summary>
@@ -660,12 +610,9 @@ public sealed class BackupService : IBackupService
         string outputPath,
         CancellationToken cancellationToken)
     {
-
         if (_covenant is not { } covenant)
         {
-
             return null;
-
         }
 
         Result<CovenantBackupDisclosureAcknowledgement> acknowledged = await covenant.Boundary
@@ -681,7 +628,6 @@ public sealed class BackupService : IBackupService
             : throw new InvalidOperationException(
                 "A protected backup could not commit its snapshot-read disclosure: "
                 + acknowledged.Error.Message);
-
     }
 
     /// <summary>
@@ -692,12 +638,9 @@ public sealed class BackupService : IBackupService
         string outputPath,
         CancellationToken cancellationToken)
     {
-
         if (_covenant is not { } covenant)
         {
-
             return null;
-
         }
 
         Result<CovenantBackupDisclosureAcknowledgement> acknowledged = await covenant.Boundary
@@ -713,7 +656,6 @@ public sealed class BackupService : IBackupService
             : throw new InvalidOperationException(
                 "A protected backup could not commit its archive-write disclosure: "
                 + acknowledged.Error.Message);
-
     }
 
     /// <summary>
@@ -768,7 +710,6 @@ public sealed class BackupService : IBackupService
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken = default)
     {
-
         string scratchPath = Path.Combine(
             Path.GetFullPath(Path.GetTempPath()),
             "arcanum-backup-verify-" + Guid.NewGuid().ToString("N"));
@@ -777,7 +718,6 @@ public sealed class BackupService : IBackupService
 
         try
         {
-
             return await _codec
                 .VerifyAsync(
                     archivePath,
@@ -785,22 +725,17 @@ public sealed class BackupService : IBackupService
                     scratch.Path,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         finally
         {
-
             _ = scratch.TryDelete();
-
         }
-
     }
 
     public async Task<IReadOnlyList<BackupListItem>> ListAsync(
         string? directory,
         CancellationToken cancellationToken = default)
     {
-
         string fullDirectory = Path.GetFullPath(
             string.IsNullOrWhiteSpace(directory)
                 ? _paths.BackupsDirectory
@@ -808,9 +743,7 @@ public sealed class BackupService : IBackupService
 
         if (!Directory.Exists(fullDirectory))
         {
-
             return [];
-
         }
 
         List<BackupListItem> items = [];
@@ -820,12 +753,10 @@ public sealed class BackupService : IBackupService
                      "*" + BackupArchiveFormat.Extension,
                      SearchOption.TopDirectoryOnly))
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             try
             {
-
                 BackupInspectResult inspection = await _codec.InspectAsync(
                     path,
                     passphrase: null,
@@ -835,7 +766,6 @@ public sealed class BackupService : IBackupService
                     inspection.ArchivePath,
                     inspection.ArchiveBytes,
                     inspection.Header));
-
             }
             catch (Exception ex) when (
                 ex is InvalidDataException
@@ -843,21 +773,17 @@ public sealed class BackupService : IBackupService
                     or UnauthorizedAccessException
                     or NotSupportedException)
             {
-
             }
-
         }
 
         return items
             .OrderByDescending(static item => item.Header.CreatedAt)
             .ThenBy(static item => item.ArchivePath, StringComparer.Ordinal)
             .ToArray();
-
     }
 
     private async Task<DatabaseUnlockMaterial> ReadDatabaseUnlockAsync()
     {
-
         SecretStoreReadResult result = await _secrets
             .ReadGrimoireSecretAsync()
             .ConfigureAwait(false);
@@ -865,11 +791,9 @@ public sealed class BackupService : IBackupService
         if (result.Status != SecretStoreReadStatus.Ok
             || string.IsNullOrEmpty(result.Value))
         {
-
             throw new InvalidDataException(
                 result.Message
                     ?? "The Grimoire encryption secret is unavailable for backup.");
-
         }
 
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(_paths.DatabasePath);
@@ -878,7 +802,6 @@ public sealed class BackupService : IBackupService
 
         try
         {
-
             string passphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
                 result.Value,
                 salt);
@@ -886,15 +809,11 @@ public sealed class BackupService : IBackupService
             _passphraseSource?.SetPassphrase(passphrase);
 
             return new DatabaseUnlockMaterial(result.Value, passphrase);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(salt);
-
         }
-
     }
 
     private async Task<DurableBackupOperation?> StartDurableOperationAsync(
@@ -902,12 +821,9 @@ public sealed class BackupService : IBackupService
         string outputPath,
         CancellationToken cancellationToken)
     {
-
         if (_operationCoordinator is null || _operationStore is null)
         {
-
             return null;
-
         }
 
         string owner = $"{System.Environment.MachineName}:{System.Environment.ProcessId}:backup:{Guid.NewGuid():N}";
@@ -925,13 +841,10 @@ public sealed class BackupService : IBackupService
 
         if (!lease.Acquired)
         {
-
             throw new InvalidOperationException("Could not acquire the durable backup-operation lease.");
-
         }
 
         return new DurableBackupOperation(lease.Operation.Id, owner);
-
     }
 
     private async Task SaveCheckpointAsync(
@@ -946,12 +859,9 @@ public sealed class BackupService : IBackupService
         CovenantBackupDisclosureAcknowledgement? snapshotReceipt = null,
         CovenantBackupDisclosureAcknowledgement? archiveReceipt = null)
     {
-
         if (_operationCoordinator is null || _operationStore is null)
         {
-
             return;
-
         }
 
         LongRunningOperation current = await _operationStore.GetAsync(
@@ -983,7 +893,6 @@ public sealed class BackupService : IBackupService
 
         try
         {
-
             bool saved = await _operationCoordinator.CheckpointAsync(
                 operation.OperationId,
                 operation.Owner,
@@ -996,31 +905,22 @@ public sealed class BackupService : IBackupService
 
             if (!saved)
             {
-
                 throw new InvalidOperationException("The durable backup checkpoint lease was lost.");
-
             }
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(payload);
-
         }
-
     }
 
     private async Task CompleteDurableOperationAsync(
         DurableBackupOperation operation,
         CancellationToken cancellationToken)
     {
-
         if (_operationCoordinator is null || _operationStore is null)
         {
-
             return;
-
         }
 
         LongRunningOperation current = await _operationStore.GetAsync(
@@ -1036,11 +936,8 @@ public sealed class BackupService : IBackupService
 
         if (!completed)
         {
-
             throw new InvalidOperationException("The durable backup completion lease was lost.");
-
         }
-
     }
 
     private async Task<T> RunWithDurableLeaseAsync<T>(
@@ -1048,12 +945,9 @@ public sealed class BackupService : IBackupService
         Func<CancellationToken, Task<T>> action,
         CancellationToken cancellationToken)
     {
-
         if (_operationStore is null)
         {
-
             return await action(cancellationToken).ConfigureAwait(false);
-
         }
 
         DataRetentionLeaseMaintainer leaseMaintainer = new(
@@ -1073,30 +967,24 @@ public sealed class BackupService : IBackupService
             operation.Owner,
             action,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task AbandonDurableOperationBestEffortAsync(
         DurableBackupOperation? operation)
     {
-
         if (operation is null || _operationStore is null)
         {
-
             return;
-
         }
 
         try
         {
-
             LongRunningOperation? current = await _operationStore.GetAsync(
                 operation.OperationId,
                 CancellationToken.None).ConfigureAwait(false);
 
             if (current is not null)
             {
-
                 _ = await _operationStore.TryTransitionAsync(
                     operation.OperationId,
                     current.Revision,
@@ -1104,56 +992,43 @@ public sealed class BackupService : IBackupService
                     LongRunningOperationState.Abandoned,
                     _timeProvider.GetUtcNow(),
                     cancellationToken: CancellationToken.None).ConfigureAwait(false);
-
             }
-
         }
         catch
         {
-
         }
-
     }
 
     private async Task FailDurableOperationBestEffortAsync(
         DurableBackupOperation? operation,
         string errorCode)
     {
-
         if (operation is null
             || _operationCoordinator is null
             || _operationStore is null)
         {
-
             return;
-
         }
 
         try
         {
-
             LongRunningOperation? current = await _operationStore.GetAsync(
                 operation.OperationId,
                 CancellationToken.None).ConfigureAwait(false);
 
             if (current is not null)
             {
-
                 _ = await _operationCoordinator.FailAsync(
                     operation.OperationId,
                     operation.Owner,
                     current.Revision,
                     errorCode,
                     CancellationToken.None).ConfigureAwait(false);
-
             }
-
         }
         catch
         {
-
         }
-
     }
 
     private async Task<GeneratedSensitiveSource> BuildRecoveryMaterialAsync(
@@ -1162,12 +1037,10 @@ public sealed class BackupService : IBackupService
         bool includeActiveFileKey,
         byte[]? masterApiKeyUtf8 = null)
     {
-
         BackupRecoveryKeySnapshot? fileKeys = null;
 
         if (requiredFileKeyIds.Count > 0 || includeActiveFileKey)
         {
-
             SecretStoreReadResult fileSecret = await _secrets
                 .ReadFileEncryptionKeysAsync()
                 .ConfigureAwait(false);
@@ -1175,50 +1048,39 @@ public sealed class BackupService : IBackupService
             if (fileSecret.Status == SecretStoreReadStatus.Ok
                 && !string.IsNullOrEmpty(fileSecret.Value))
             {
-
                 try
                 {
-
                     fileKeys = BackupFileEncryptionKeyExporter.Export(
                         fileSecret.Value,
                         requiredFileKeyIds,
                         includeActiveFileKey);
-
                 }
                 catch (InvalidDataException ex)
                 {
-
                     return GeneratedSensitiveSource.Failed(
                         new BackupVerifyIssue(
                             "backup.recovery_keys_invalid",
                             ex.Message,
                             BackupArchivePaths.PortableRecoveryKeys));
-
                 }
-
             }
             else if (requiredFileKeyIds.Count > 0 || includeActiveFileKey)
             {
-
                 return GeneratedSensitiveSource.Failed(
                     new BackupVerifyIssue(
                         "backup.recovery_keys_missing",
                         fileSecret.Message
                             ?? "File-encryption keys required for portable recovery are unavailable.",
                         BackupArchivePaths.PortableRecoveryKeys));
-
             }
-
         }
 
         byte[] secretBytes = Encoding.UTF8.GetBytes(grimoireSecret);
 
         try
         {
-
             using PortableBackupRecoveryMaterial recovery = new()
             {
-
                 Version = 1,
 
                 GrimoireEncryptionSecretUtf8 = secretBytes,
@@ -1238,7 +1100,6 @@ public sealed class BackupService : IBackupService
                 MasterApiKeyUtf8 = masterApiKeyUtf8 is { Length: > 0 }
                     ? [.. masterApiKeyUtf8]
                     : null,
-
             };
 
             byte[] json = JsonSerializer.SerializeToUtf8Bytes(
@@ -1246,22 +1107,17 @@ public sealed class BackupService : IBackupService
                 BackupJsonContext.Default.PortableBackupRecoveryMaterial);
 
             return GeneratedSensitiveSource.Succeeded(json);
-
         }
         finally
         {
-
             fileKeys?.Dispose();
 
             CryptographicOperations.ZeroMemory(secretBytes);
-
         }
-
     }
 
     private async Task<GeneratedSensitiveSource> BuildMasterApiKeyAsync()
     {
-
         SecretStoreReadResult master = await _secrets
             .ReadMasterApiKeyAsync()
             .ConfigureAwait(false);
@@ -1269,18 +1125,15 @@ public sealed class BackupService : IBackupService
         if (master.Status != SecretStoreReadStatus.Ok
             || string.IsNullOrEmpty(master.Value))
         {
-
             return GeneratedSensitiveSource.Failed(
                 new BackupVerifyIssue(
                     "backup.master_api_key_missing",
                     master.Message ?? "The explicitly requested master API key is unavailable.",
                     BackupArchivePaths.MasterApiKey));
-
         }
 
         return GeneratedSensitiveSource.Succeeded(
             Encoding.UTF8.GetBytes(master.Value));
-
     }
 
     private static async Task CopyProtectedFileAsync(
@@ -1288,7 +1141,6 @@ public sealed class BackupService : IBackupService
         string destinationPath,
         CancellationToken cancellationToken)
     {
-
         SecureFileOpenStatus status = SecureFileReader.TryOpenRegularFile(
             sourcePath,
             expectedIdentity: null,
@@ -1297,9 +1149,7 @@ public sealed class BackupService : IBackupService
 
         if (status != SecureFileOpenStatus.Success || source is null)
         {
-
             throw new IOException("A required backup source is missing or is not an unaliased regular file.");
-
         }
 
         string directory = Path.GetDirectoryName(destinationPath)
@@ -1310,34 +1160,38 @@ public sealed class BackupService : IBackupService
         await using (source)
         await using (FileStream destination = SecureFilePermissions.CreateOwnerOnlyTempFile(destinationPath))
         {
-
             await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
 
             await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
 
             destination.Flush(flushToDisk: true);
-
         }
-
     }
 
-    private static async Task<BackupManifestEntry[]> BuildEntriesAsync(
+    /// <summary>
+    /// The manifest's entries, taking each file's size and checksum from the inventory capture.
+    /// </summary>
+    /// <remarks>
+    /// A file is fingerprinted once, by the inventory, and re-verified once, by the archive pass
+    /// (<c>BackupArchiveCodec.WriteSourceRecordAsync</c>), which reopens it against the inventory's
+    /// identity and refuses a changed size, checksum, link or replacement while it streams the bytes
+    /// into the archive. A third read here proved nothing the archive pass does not prove again.
+    /// In-memory sources have no inventory capture, so they are hashed from their bytes.
+    /// </remarks>
+    private static BackupManifestEntry[] BuildEntries(
         IReadOnlyList<PreparedBackupSource> files,
         CancellationToken cancellationToken)
     {
-
         BackupManifestEntry[] entries = new BackupManifestEntry[files.Count];
 
         for (int index = 0; index < files.Count; index++)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             PreparedBackupSource file = files[index];
 
             if (file.Memory is not null)
             {
-
                 byte[] digest = SHA256.HashData(file.Memory);
 
                 entries[index] = new BackupManifestEntry(
@@ -1349,69 +1203,16 @@ public sealed class BackupService : IBackupService
                 CryptographicOperations.ZeroMemory(digest);
 
                 continue;
-
             }
 
-            SecureFileOpenStatus status = SecureFileReader.TryOpenRegularFile(
-                file.SourcePath!,
-                file.ExpectedIdentity,
-                out FileStream? stream,
-                out _);
-
-            if (status != SecureFileOpenStatus.Success || stream is null)
-            {
-
-                throw new IOException(
-                    $"A backup source is missing or is not an unaliased regular file: {file.ArchivePath}");
-
-            }
-
-            await using (stream)
-            {
-
-                long size = stream.Length;
-
-                if (size != file.PlannedSize)
-                {
-
-                    throw new IOException(
-                        $"A backup source changed size after inventory: {file.ArchivePath}");
-
-                }
-
-                byte[] digest = await SHA256.HashDataAsync(
-                    stream,
-                    cancellationToken).ConfigureAwait(false);
-
-                string sha256 = Convert.ToHexString(digest).ToLowerInvariant();
-
-                if (!string.Equals(
-                        sha256,
-                        file.PlannedSha256,
-                        StringComparison.Ordinal))
-                {
-
-                    CryptographicOperations.ZeroMemory(digest);
-
-                    throw new IOException(
-                        $"A backup source changed content after inventory: {file.ArchivePath}");
-
-                }
-
-                entries[index] = new BackupManifestEntry(
-                    file.ArchivePath,
-                    size,
-                    sha256,
-                    file.Component);
-
-                CryptographicOperations.ZeroMemory(digest);
-
-            }
-
+            entries[index] = new BackupManifestEntry(
+                file.ArchivePath,
+                file.PlannedSize,
+                file.PlannedSha256!,
+                file.Component);
         }
 
         return entries;
-
     }
 
     private BackupManifest BuildManifest(
@@ -1420,7 +1221,6 @@ public sealed class BackupService : IBackupService
         string schemaVersion,
         BackupManifestEntry[] entries)
     {
-
         Assembly assembly = typeof(BackupService).Assembly;
 
         string version = assembly.GetName().Version?.ToString() ?? "unknown";
@@ -1461,18 +1261,15 @@ public sealed class BackupService : IBackupService
                     component.EstimatedBytes))
                 .ToArray(),
             entries);
-
     }
 
     private static BackupPlan RecalculatePlan(
         BackupPlan plan,
         BackupManifestEntry[] entries)
     {
-
         BackupPlanComponent[] components = plan.Components
             .Select(component =>
             {
-
                 BackupManifestEntry[] componentEntries = entries
                     .Where(entry => entry.Component == component.Component)
                     .ToArray();
@@ -1481,29 +1278,23 @@ public sealed class BackupService : IBackupService
                     ? component
                     : component with
                     {
-
                         Status = BackupComponentStatus.Complete,
 
                         Files = componentEntries.LongLength,
 
                         EstimatedBytes = componentEntries.Sum(static entry => entry.Size),
-
                     };
-
             })
             .ToArray();
 
         return plan with
         {
-
             Components = components,
 
             EstimatedFiles = entries.LongLength,
 
             EstimatedBytes = entries.Sum(static entry => entry.Size),
-
         };
-
     }
 
     private static BackupPlan MarkComponentFailed(
@@ -1512,12 +1303,10 @@ public sealed class BackupService : IBackupService
         string detail) =>
         plan with
         {
-
             Components = plan.Components
                 .Select(component => component.Component == target
                     ? component with
                     {
-
                         Status = BackupComponentStatus.Failed,
 
                         Detail = detail,
@@ -1525,11 +1314,9 @@ public sealed class BackupService : IBackupService
                         Files = 0,
 
                         EstimatedBytes = 0,
-
                     }
                     : component)
                 .ToArray(),
-
         };
 
     private static BackupCreateResult Incomplete(
@@ -1557,7 +1344,6 @@ public sealed class BackupService : IBackupService
         string databasePassphrase,
         CancellationToken cancellationToken)
     {
-
         // This opener builds its own connection string rather than going through
         // BackupRestoreDatabaseWorker, so the provider installation it would have inherited has to be
         // made here: the SQLCipher provider this project references carries no bundle and no
@@ -1567,7 +1353,6 @@ public sealed class BackupService : IBackupService
         await using SqliteConnection connection = new(
             new SqliteConnectionStringBuilder
             {
-
                 DataSource = databasePath,
 
                 Password = databasePassphrase,
@@ -1575,13 +1360,11 @@ public sealed class BackupService : IBackupService
                 Mode = SqliteOpenMode.ReadOnly,
 
                 Pooling = false,
-
             }.ToString());
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
         return await GrimoireSchemaIdentity.ComputeAsync(connection, cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task RemoveOperationFromSnapshotAsync(
@@ -1590,13 +1373,11 @@ public sealed class BackupService : IBackupService
         Guid operationId,
         CancellationToken cancellationToken)
     {
-
         SqliteNativeRuntime.Instance.Initialize();
 
         await using SqliteConnection connection = new(
             new SqliteConnectionStringBuilder
             {
-
                 DataSource = databasePath,
 
                 Password = databasePassphrase,
@@ -1604,7 +1385,6 @@ public sealed class BackupService : IBackupService
                 Mode = SqliteOpenMode.ReadWrite,
 
                 Pooling = false,
-
             }.ToString());
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -1620,9 +1400,7 @@ public sealed class BackupService : IBackupService
 
         if (await table.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
         {
-
             return;
-
         }
 
         await using SqliteTransaction transaction = (SqliteTransaction)await connection
@@ -1641,9 +1419,7 @@ public sealed class BackupService : IBackupService
 
         if (deleted > 1)
         {
-
             throw new InvalidDataException("The backup operation snapshot cleanup was not unique.");
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -1656,17 +1432,13 @@ public sealed class BackupService : IBackupService
 
         if (!string.Equals(result as string, "ok", StringComparison.OrdinalIgnoreCase))
         {
-
             throw new InvalidDataException(
                 "The Grimoire snapshot failed verification after operation-state normalization.");
-
         }
-
     }
 
     private string ResolveOutputPath(string? requestedPath)
     {
-
         string path = string.IsNullOrWhiteSpace(requestedPath)
             ? Path.Combine(
                 _paths.BackupsDirectory,
@@ -1674,13 +1446,11 @@ public sealed class BackupService : IBackupService
             : requestedPath;
 
         return Path.GetFullPath(path);
-
     }
 
     private static HashSet<BackupComponent> ResolveSelectedComponents(
         BackupPlanRequest request)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         HashSet<BackupComponent> selected = request.Scope switch
@@ -1738,7 +1508,6 @@ public sealed class BackupService : IBackupService
         selected.ExceptWith(request.Exclude);
 
         return selected;
-
     }
 
     private sealed record PreparedBackupSource(
@@ -1750,7 +1519,6 @@ public sealed class BackupService : IBackupService
         string? PlannedSha256,
         FileHandleIdentity? ExpectedIdentity)
     {
-
         public static PreparedBackupSource FromFile(BackupInventoryFile file) =>
             new(
                 file.Component,
@@ -1777,45 +1545,40 @@ public sealed class BackupService : IBackupService
         public BackupArchiveSource ToArchiveSource() =>
             Memory is null
                 ? new BackupArchiveSource(ArchivePath, SourcePath!)
+                {
+                    ExpectedIdentity = ExpectedIdentity,
+                }
                 : BackupArchiveSource.FromMemory(ArchivePath, Memory);
-
     }
 
     private sealed record GeneratedSensitiveSource(
         byte[]? Bytes,
         BackupVerifyIssue? Issue)
     {
-
         public static GeneratedSensitiveSource Succeeded(byte[] bytes) =>
             new(bytes, Issue: null);
 
         public static GeneratedSensitiveSource Failed(BackupVerifyIssue issue) =>
             new(Bytes: null, issue);
-
     }
 
     private sealed class DatabaseUnlockMaterial(
         string grimoireSecret,
         string databasePassphrase) : IDisposable
     {
-
         public string GrimoireSecret { get; private set; } = grimoireSecret;
 
         public string DatabasePassphrase { get; private set; } = databasePassphrase;
 
         public void Dispose()
         {
-
             GrimoireSecret = string.Empty;
 
             DatabasePassphrase = string.Empty;
-
         }
-
     }
 
     private sealed record DurableBackupOperation(
         Guid OperationId,
         string Owner);
-
 }

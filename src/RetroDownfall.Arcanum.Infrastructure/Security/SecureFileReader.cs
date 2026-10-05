@@ -94,6 +94,13 @@ internal static partial class SecureFileReader
     /// </summary>
     internal static Action<string>? AfterOpenForTests { get; set; }
 
+    /// <summary>
+    /// Deterministic test seam invoked with the requested path each time
+    /// <see cref="TryOpenRegularFile"/> returns an open handle; it lets a test count how many times a
+    /// flow reads one file.
+    /// </summary>
+    internal static Action<string>? AfterRegularFileOpenedForTests { get; set; }
+
     internal static SecureFileOpenStatus TryOpenRegularFile(
         string path,
         FileHandleIdentity? expectedIdentity,
@@ -155,6 +162,8 @@ internal static partial class SecureFileReader
                     isAsync: OperatingSystem.IsWindows());
 
                 handle = null;
+
+                AfterRegularFileOpenedForTests?.Invoke(path);
 
                 return SecureFileOpenStatus.Success;
             }

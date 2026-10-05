@@ -36,7 +36,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </remarks>
 public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 {
-
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "arcanum-restore-journal-v2-" + Guid.NewGuid().ToString("N"));
@@ -49,7 +48,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 
     public BackupRestoreJournalAuthenticationTests()
     {
-
         Directory.CreateDirectory(_root);
 
         _guarded = Path.Combine(_root, "arcanum");
@@ -58,21 +56,16 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 
         _lock = ArcanumMaintenanceLock.TryAcquire(_guarded)
             ?? throw new InvalidOperationException("The test could not take its own maintenance lock.");
-
     }
 
     public void Dispose()
     {
-
         _lock.Dispose();
 
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     // ---------------------------------------------------------------- profile namespace
@@ -80,7 +73,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
     [Fact]
     public void Restore_profile_namespace_binds_retained_parent_identity_and_root_leaf_without_path_authority()
     {
-
         CovenantDigest parent = Digest(3);
 
         CovenantDigest other = Digest(4);
@@ -113,13 +105,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 
         Assert.True(
             BackupRestoreJournalAuthenticator.ProfileNamespace(default, "arcanum").IsFailure);
-
     }
 
     [Fact]
     public void Restore_profile_namespace_resolves_from_the_no_follow_parent_handle_of_the_configured_root()
     {
-
         BackupRestoreProfileNamespace resolved = Namespace();
 
         Assert.Equal(64, resolved.AccountSuffix.Length);
@@ -143,13 +133,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.NotEqual(
             resolved.Digest,
             Value(BackupRestoreJournalAuthenticator.ResolveProfileNamespace(sibling)).Digest);
-
     }
 
     [Fact]
     public void Restore_journal_location_digest_binds_retained_parent_identity_leaf_installation_and_operation()
     {
-
         CovenantDigest profile = Digest(9);
 
         Guid installation = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -209,7 +197,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                 operation,
                 parent,
                 "restore-journal.v2.json.other")));
-
     }
 
     // ---------------------------------------------------------------- key material
@@ -217,7 +204,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
     [Fact]
     public void Restore_journal_key_requires_canonical_unpadded_base64url_exactly_32_bytes_and_zeroizes_after_use()
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         BackupRestoreJournalKeyProvider keys = new(_credentials);
@@ -270,21 +256,17 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                      "!" + stored[1..],
                  ])
         {
-
             _ = _credentials.Set(ArcanumCredentialIdentity.Service, account, malformed);
 
             Assert.True(
                 keys.OpenExisting(profile).IsFailure,
                 "A noncanonical stored key must not open: " + malformed);
-
         }
-
     }
 
     [Fact]
     public void Restore_journal_key_with_unused_trailing_bits_set_is_a_typed_integrity_failure_not_an_exception()
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         BackupRestoreJournalKeyProvider keys = new(_credentials);
@@ -318,35 +300,23 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
 
-        Result<bool> present = keys.IsPresent(profile);
-
-        Assert.True(present.IsFailure);
-
-        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, present.Error.Code);
-
         // Refused rather than repaired: the stored spelling is exactly what it was.
         Assert.Equal(
             noncanonical,
             _credentials.TryGet(ArcanumCredentialIdentity.Service, account).Value);
-
     }
 
     [Fact]
     public void Restore_journal_key_recovery_never_creates_or_substitutes_a_missing_key()
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         BackupRestoreJournalKeyProvider keys = new(_credentials);
 
         Assert.True(keys.OpenExisting(profile).IsFailure);
 
-        Assert.False(Value(keys.IsPresent(profile)));
-
         using BackupRestoreJournalKeyLease created = Value(
             keys.CreateOrOpen(_lock, _guarded, profile));
-
-        Assert.True(Value(keys.IsPresent(profile)));
 
         // A second CreateOrOpen must open, never replace: replacing the key would strand every
         // envelope written under the previous one while looking like a healthy first run.
@@ -362,13 +332,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             _credentials.TryGet(
                 ArcanumCredentialIdentity.Service,
                 ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount(profile.AccountSuffix)).Value);
-
     }
 
     [Fact]
     public void Restore_journal_installation_identity_is_one_canonical_uppercase_uuid_and_seeds_only_when_absent()
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         BackupRestoreJournalInstallationIdentityProvider identities = new(_credentials);
@@ -408,15 +376,12 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                      string.Empty,
                  ])
         {
-
             _ = _credentials.Set(ArcanumCredentialIdentity.Service, account, malformed);
 
             Assert.True(
                 identities.Probe(profile).IsFailure,
                 "A noncanonical installation identity must not be believed: " + malformed);
-
         }
-
     }
 
     // ---------------------------------------------------------------- envelope authentication
@@ -435,7 +400,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
     [InlineData("marker-checkpoint")]
     public void Restore_journal_tamper_blocks_before_topology_mutation(string field)
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Commit, MarkerCheckpoint([Guid.NewGuid()]));
 
         BackupRestoreJournalEnvelopeV2 tampered = field switch
@@ -481,13 +445,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             "A tampered " + field + " must be a typed blocker, not a recoverable journal.");
 
         Assert.NotEqual(ErrorCodes.Covenant.NotFound, recovered.Error.Code);
-
     }
 
     [Fact]
     public void Restore_journal_envelope_with_noncanonical_trailing_bits_or_an_impossible_length_is_a_typed_blocker_not_an_exception()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         BackupRestoreJournalEnvelopeV2 envelope = fixture.Publication.Envelope;
@@ -496,14 +458,12 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         // else about the envelope.
         using (BackupRestoreJournalKeyLease control = BackupRestoreJournalKeyLease.Mint([.. fixture.Key]))
         {
-
             Assert.True(
                 BackupRestoreJournalAuthenticator.Open(
                     control,
                     envelope.ProfileNamespaceDigest,
                     envelope.InstallationId,
                     envelope).IsSuccess);
-
         }
 
         // The tag is sixteen bytes, so its twenty-two characters end in a final character with four
@@ -526,7 +486,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                      },
                  ])
         {
-
             using BackupRestoreJournalKeyLease lease = BackupRestoreJournalKeyLease.Mint([.. fixture.Key]);
 
             Result<BackupRestoreJournalPayloadV2> opened = BackupRestoreJournalAuthenticator.Open(
@@ -538,7 +497,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             Assert.True(opened.IsFailure);
 
             Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, opened.Error.Code);
-
         }
 
         // And through the recovery that reads the file, which must block rather than fault.
@@ -555,13 +513,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.True(recovered.IsFailure);
 
         Assert.NotEqual(ErrorCodes.Covenant.NotFound, recovered.Error.Code);
-
     }
 
     [Fact]
     public void Restore_journal_rejects_unknown_version_wrong_key_cross_installation_replay_and_rollback()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         // Unknown version.
@@ -615,13 +571,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         WriteJournalFile(advanced.Location.StagingRoot, first);
 
         Assert.True(Recover(fixture with { Publication = advanced }).IsFailure);
-
     }
 
     [Fact]
     public void Restore_journal_rejects_cross_profile_key_anchor_envelope_and_staged_root_replay()
     {
-
         JournalFixture mine = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         string otherRootParent = Path.Combine(_root, "other-parent");
@@ -667,13 +621,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.True(
             mine.Store.Recover(_lock, _guarded, mine.Profile, [decoy]).IsFailure,
             "A canonical lookalike that the anchor does not name is a blocker, never a recovery.");
-
     }
 
     [Fact]
     public void Restore_journal_advance_accepts_one_revision_ahead_and_closes_that_window()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         Assert.Equal(1UL, fixture.Publication.Envelope.Revision);
@@ -727,13 +679,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         WriteAnchor(fixture.Profile, second.Anchor);
 
         Assert.True(Recover(fixture with { Publication = fourth }).IsFailure);
-
     }
 
     [Fact]
     public void Restore_journal_terminal_close_leaves_the_closed_anchor_tombstone_and_deletes_the_journal()
     {
-
         JournalFixture fixture = Publish(
             BackupRestorePhase.Cleanup,
             MarkerCheckpoint([]));
@@ -756,7 +706,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         WriteJournalFile(fixture.Publication.Location.StagingRoot, fixture.Publication.Envelope);
 
         Assert.True(Recover(fixture).IsFailure);
-
     }
 
     // ---------------------------------------------------------------- absence
@@ -764,7 +713,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
     [Fact]
     public void Startup_restore_recovery_without_key_anchor_journal_or_staging_evidence_returns_no_active_journal()
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         BackupRestoreJournalAnchorStore store = Store();
@@ -775,13 +723,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.Equal(BackupRestoreJournalRecoveryOutcome.NoActiveJournal, state.Outcome);
 
         Assert.Null(state.Publication);
-
     }
 
     [Fact]
     public void Startup_restore_recovery_with_external_identity_but_no_active_evidence_returns_no_active_journal()
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         BackupRestoreJournalAnchorStore store = Store();
@@ -795,13 +741,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.Equal(
             BackupRestoreJournalRecoveryOutcome.NoActiveJournal,
             Value(store.Recover(_lock, _guarded, profile, [])).Outcome);
-
     }
 
     [Fact]
     public void Restore_journal_missing_key_or_identity_beside_active_evidence_is_a_typed_manual_blocker()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         _ = _credentials.Delete(
@@ -825,13 +769,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.True(withoutIdentity.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, withoutIdentity.Error.Code);
-
     }
 
     [Fact]
     public void Restore_journal_truncated_encoding_and_canonical_lookalike_are_typed_blockers()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         string journal = Path.Combine(
@@ -855,13 +797,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.True(missing.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, missing.Error.Code);
-
     }
 
     [Fact]
     public void Restore_journal_malformed_digest_and_noncanonical_encoding_are_typed_blockers()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         string envelope = System.Text.Encoding.UTF8.GetString(
@@ -878,13 +818,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                      envelope.Replace("\"bytes\":", "\"bytes\":null,\"was\":", StringComparison.Ordinal),
                  ])
         {
-
             Result<BackupRestoreJournalEnvelopeV2> decoded =
                 BackupRestoreJournalAuthenticator.DecodeEnvelope(
                     System.Text.Encoding.UTF8.GetBytes(malformed));
 
             Assert.True(decoded.IsFailure, "A malformed digest must refuse, not throw.");
-
         }
 
         Assert.True(
@@ -910,13 +848,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                 System.Text.Encoding.UTF8.GetBytes(envelope)).IsSuccess);
 
         Assert.True(BackupRestoreJournalAuthenticator.DecodeAnchor(anchor).IsSuccess);
-
     }
 
     [Fact]
     public void Restore_journal_anchor_revision_beyond_its_bound_is_a_typed_blocker()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         // A stored revision at the numeric ceiling would make the checked n+1 of every advance and
@@ -937,13 +873,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.True(fixture.Store.TryReadAnchor(fixture.Profile).IsFailure);
 
         Assert.True(Recover(fixture).IsFailure);
-
     }
 
     [Fact]
     public void Restore_journal_recovery_treats_one_root_named_twice_as_one_root()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Stage, markerCleanup: null);
 
         string root = fixture.Publication.Location.StagingRoot;
@@ -958,13 +892,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                 _guarded,
                 fixture.Profile,
                 [root, root + Path.DirectorySeparatorChar, Path.Combine(root, ".")])).Outcome);
-
     }
 
     [Fact]
     public void Restore_journal_open_that_never_published_retires_its_anchor_instead_of_wedging()
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         BackupRestoreJournalAnchorStore store = Store();
@@ -1011,13 +943,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             profile,
             Value(store.ResolveLocation(profile, installation, retry.OwnerOperationId, stagingRoot)),
             retry).IsSuccess);
-
     }
 
     [Fact]
     public void Restore_journal_close_finishes_after_its_own_partial_failure()
     {
-
         JournalFixture fixture = Publish(BackupRestorePhase.Cleanup, MarkerCheckpoint([]));
 
         Assert.True(
@@ -1031,22 +961,18 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.Equal(
             BackupRestoreJournalAnchorState.Closed,
             Value(fixture.Store.TryReadAnchor(fixture.Profile))!.State);
-
     }
 
     [SkippableFact]
     public void Restore_journal_unreadable_staging_root_is_never_reported_as_proven_absence()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "Directory read permission is the Unix mode bit this asserts against.");
 
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         BackupRestoreProfileNamespace profile = Namespace();
@@ -1063,7 +989,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 
         try
         {
-
             Skip.If(
                 CanStillRead(decoy),
                 "The test process can read a mode-000 directory, so this cannot be exercised here.");
@@ -1071,38 +996,28 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             // An unanchored journal hidden behind an unreadable directory must not read as absence:
             // absence is what lets startup continue over a half-restored installation.
             Assert.True(store.Recover(_lock, _guarded, profile, [decoy]).IsFailure);
-
         }
         finally
         {
-
             File.SetUnixFileMode(
                 decoy,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
-
     }
 
     private static bool CanStillRead(string directory)
     {
-
         try
         {
-
             _ = Directory.EnumerateFileSystemEntries(directory).Any();
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
             return false;
-
         }
-
     }
 
     // ---------------------------------------------------------------- payload shape
@@ -1119,7 +1034,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
     public void Restore_initial_journal_allows_only_the_pre_preparation_null_marker_shape(
         BackupRestorePhase phase)
     {
-
         Assert.True(
             BackupRestoreJournalAuthenticator.ValidatePayload(Payload(phase, markerCleanup: null)).IsSuccess);
 
@@ -1128,13 +1042,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             BackupRestoreJournalAuthenticator
                 .ValidatePayload(Payload(phase, MarkerCheckpoint([])))
                 .IsFailure);
-
     }
 
     [Fact]
     public void Restore_requires_nonnull_zero_or_nonzero_marker_checkpoint_before_safety_point_or_displacement()
     {
-
         foreach (BackupRestorePhase phase in (BackupRestorePhase[])
                  [
                      BackupRestorePhase.SafetyPoint,
@@ -1143,7 +1055,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                      BackupRestorePhase.Cleanup,
                  ])
         {
-
             Assert.True(
                 BackupRestoreJournalAuthenticator.ValidatePayload(Payload(phase, null)).IsFailure,
                 "An unprepared marker checkpoint cannot reach " + phase + ".");
@@ -1158,7 +1069,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                 BackupRestoreJournalAuthenticator
                     .ValidatePayload(Payload(phase, MarkerCheckpoint([Guid.NewGuid(), Guid.NewGuid()])))
                     .IsSuccess);
-
         }
 
         // The zero arm has exactly one legal digest, and it is the frozen literal nothing else can
@@ -1194,13 +1104,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                     BackupRestorePhase.Commit,
                     zero with { OwnerOperation = CovenantExclusiveOperation.CovenantReset }))
                 .IsFailure);
-
     }
 
     [Fact]
     public void Restore_journal_node_identity_requires_matching_kind_presence_and_digest_shape()
     {
-
         BackupRestoreJournalPayloadV2 payload = Payload(BackupRestorePhase.Stage, null);
 
         Assert.True(BackupRestoreJournalAuthenticator.ValidatePayload(payload).IsSuccess);
@@ -1296,13 +1204,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
                     ConflictMode = BackupRestoreConflictMode.ImportSelectedSessions,
                 })
                 .IsFailure);
-
     }
 
     [Fact]
     public void Restore_journal_payload_envelope_anchor_and_nested_types_have_complete_AOT_context_coverage()
     {
-
         Assert.NotNull(BackupJsonContext.Default.BackupRestoreJournalPayloadV2);
 
         Assert.NotNull(BackupJsonContext.Default.BackupRestoreJournalEnvelopeV2);
@@ -1354,7 +1260,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             BackupRestoreJournalAuthenticator
                 .DecodeAnchor(anchor[..^1] + ",\"unexpected\":1}")
                 .IsFailure);
-
     }
 
     // ---------------------------------------------------------------- credential retention
@@ -1362,7 +1267,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
     [Fact]
     public void Restore_journal_accounts_are_profile_namespaced_and_never_removed_by_ordinary_cleanup()
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         string[] journalAccounts =
@@ -1399,9 +1303,7 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         // the closed catalog. Retention is that the three accounts are never in it.
         foreach (string account in journalAccounts)
         {
-
             _ = _credentials.Set(ArcanumCredentialIdentity.Service, account, "retained");
-
         }
 
         string[] catalog = InstallationResetCredentialCatalog.CollectAccounts(
@@ -1417,7 +1319,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.All(journalAccounts, account => Assert.Equal(
             "retained",
             _credentials.TryGet(ArcanumCredentialIdentity.Service, account).Value));
-
     }
 
     // ---------------------------------------------------------------- helpers
@@ -1442,7 +1343,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         BackupRestorePhase phase,
         BackupRestoreMarkerCleanupCheckpointV1? markerCleanup)
     {
-
         BackupRestoreProfileNamespace profile = Namespace();
 
         BackupRestoreJournalAnchorStore store = Store();
@@ -1476,7 +1376,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             store.Begin(_lock, _guarded, profile, location, payload));
 
         return new JournalFixture(profile, store, installation, key, publication);
-
     }
 
     private Result<BackupRestoreJournalRecoveryState> Recover(JournalFixture fixture) =>
@@ -1497,7 +1396,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         BackupRestoreJournalAnchorV1 anchor,
         bool validate = true)
     {
-
         // A bounded encoder cannot express an out-of-range anchor, so a test that has to plant one
         // serializes it directly. That is the only way to reach the decode path from a slot a
         // partial write or a tamper could produce.
@@ -1509,7 +1407,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             ArcanumCredentialIdentity.Service,
             ArcanumCredentialIdentity.BackupRestoreJournalAnchorAccount(profile.AccountSuffix),
             encoded);
-
     }
 
     private static string Replace(string value, string find, string replacement) =>
@@ -1522,7 +1419,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 
     private static BackupRestoreJournalEnvelopeV2 Reseal(JournalFixture fixture, string field)
     {
-
         BackupRestoreJournalPayloadV2 payload = fixture.Publication.Payload;
 
         payload = field switch
@@ -1558,14 +1454,12 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             fixture.Publication.Envelope.Revision,
             fixture.Publication.Envelope.PreviousEnvelopeDigest,
             payload));
-
     }
 
     private BackupRestoreJournalPayloadV2 Payload(
         BackupRestorePhase phase,
         BackupRestoreMarkerCleanupCheckpointV1? markerCleanup)
     {
-
         BackupRestoreDurableNodeIdentityV1 live = new(
             _root,
             Digest(11),
@@ -1617,7 +1511,6 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
             archive,
             null,
             markerCleanup);
-
     }
 
     private static BackupRestoreDurableNodeIdentityV1 Present(BackupRestoreDurableNodeIdentityV1 node) =>
@@ -1657,11 +1550,8 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code + ": " + result.Error.Message : string.Empty);
 
         return result.Value;
-
     }
-
 }

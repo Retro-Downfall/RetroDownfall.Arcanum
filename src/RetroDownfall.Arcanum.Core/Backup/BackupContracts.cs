@@ -6,17 +6,14 @@ namespace RetroDownfall.Arcanum.Core.Backup;
 
 public static class BackupArchiveFormat
 {
-
     public const int CurrentVersion = 1;
 
     public const string Extension = ".arcbackup";
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupScope>))]
 public enum BackupScope
 {
-
     Full = 0,
 
     ConfigurationAndAuthoredAssets = 1,
@@ -26,13 +23,11 @@ public enum BackupScope
     SpecificSession = 3,
 
     MetadataOnly = 4,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupComponent>))]
 public enum BackupComponent
 {
-
     GrimoireDatabase = 0,
 
     GrimoireKdfMetadata = 1,
@@ -68,13 +63,11 @@ public enum BackupComponent
     GuardrailLogs = 16,
 
     MasterApiKey = 17,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupComponentStatus>))]
 public enum BackupComponentStatus
 {
-
     Complete = 0,
 
     OmittedByPolicy = 1,
@@ -82,17 +75,14 @@ public enum BackupComponentStatus
     Unavailable = 2,
 
     Failed = 3,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupCreateStatus>))]
 public enum BackupCreateStatus
 {
-
     Complete = 0,
 
     Incomplete = 1,
-
 }
 
 public sealed record BackupPlanRequest(
@@ -101,10 +91,17 @@ public sealed record BackupPlanRequest(
     BackupComponent[] Include,
     BackupComponent[] Exclude);
 
+/// <param name="ReusesExistingPassphrase">
+/// The passphrase is not one chosen for this archive but the one that already protects an archive the
+/// operator holds, as with the safety backup a restore takes under the passphrase of the archive it is
+/// restoring. It is exempt from <see cref="BackupPassphrasePolicy"/>, because refusing it would
+/// refuse the restore of an archive written before the floor existed.
+/// </param>
 public sealed record BackupCreateRequest(
     BackupPlanRequest Plan,
     string? OutputPath,
-    bool Overwrite);
+    bool Overwrite,
+    bool ReusesExistingPassphrase = false);
 
 public sealed record BackupPlanComponent(
     BackupComponent Component,
@@ -211,7 +208,6 @@ public sealed record BackupListItem(
 
 public interface IBackupService
 {
-
     Task<BackupPlan> PlanAsync(
         BackupPlanRequest request,
         CancellationToken cancellationToken = default);
@@ -234,5 +230,4 @@ public interface IBackupService
     Task<IReadOnlyList<BackupListItem>> ListAsync(
         string? directory,
         CancellationToken cancellationToken = default);
-
 }

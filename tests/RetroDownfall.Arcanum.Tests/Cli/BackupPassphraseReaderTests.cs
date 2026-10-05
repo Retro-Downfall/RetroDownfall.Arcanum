@@ -4,6 +4,8 @@ using System.Text;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
+using RetroDownfall.Arcanum.Core.Backup;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class BackupPassphraseReaderTests
@@ -215,11 +217,94 @@ public sealed class BackupPassphraseReaderTests
         Assert.All(confirmation, character => Assert.Equal('\0', character));
     }
 
+    /// <summary>
+    /// Opening an existing archive has no length rule: the passphrase is whatever the archive was
+    /// written under, and the creation floor must never lock an older archive out.
+    /// </summary>
     [Theory]
     [InlineData("x")]
     [InlineData(" ")]
-    public async Task ReadAsync_has_no_length_or_complexity_rule_beyond_nonempty(string value)
+    public async Task ReadAsync_has_no_length_or_complexity_rule_beyond_nonempty_when_opening(string value)
     {
+        BackupPassphraseReader reader = CreateReader(
+            new RecordingPrompt([]),
+            new RecordingFileDescriptorReader(),
+            _ => value);
+
+        BackupPassphraseReadRequest request = new(
+            "ARCANUM_BACKUP_PASSPHRASE",
+            null,
+            BackupPassphraseReadPurpose.OpenArchive);
+
+        using SensitiveBackupPassphrase passphrase = Assert.IsType<SensitiveBackupPassphrase>(
+            await reader.ReadAsync(request, CancellationToken.None));
+
+        Assert.Equal(value, new string(passphrase.Value.Span));
+    }
+
+    [Theory]
+    [InlineData("x")]
+    [InlineData("           ")]
+    public async Task ReadAsync_refuses_a_creation_passphrase_shorter_than_the_documented_minimum(string value)
+    {
+        Assert.True(value.Length < BackupPassphrasePolicy.MinimumCreateCharacters);
+
+        BackupPassphraseReader reader = CreateReader(
+            new RecordingPrompt([]),
+            new RecordingFileDescriptorReader(),
+            _ => value);
+
+        BackupPassphraseReadRequest request = new(
+            "ARCANUM_BACKUP_PASSPHRASE",
+            null,
+            BackupPassphraseReadPurpose.CreateArchive);
+
+        BackupPassphraseInputException exception = await Assert.ThrowsAsync<BackupPassphraseInputException>(
+            () => reader.ReadAsync(request, CancellationToken.None).AsTask());
+
+        Assert.Contains(
+            BackupPassphrasePolicy.MinimumCreateCharacters.ToString(),
+            exception.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadAsync_refuses_a_short_interactive_creation_passphrase_before_asking_for_confirmation()
+    {
+        char[] entered = "too short".ToCharArray();
+
+        RecordingPrompt prompt = new([entered]);
+
+        BackupPassphraseReader reader = CreateReader(
+            prompt,
+            new RecordingFileDescriptorReader(),
+            _ => null);
+
+        BackupPassphraseReadRequest request = new(
+            null,
+            null,
+            BackupPassphraseReadPurpose.CreateArchive);
+
+        BackupPassphraseInputException exception = await Assert.ThrowsAsync<BackupPassphraseInputException>(
+            () => reader.ReadAsync(request, CancellationToken.None).AsTask());
+
+        Assert.Contains(
+            BackupPassphrasePolicy.MinimumCreateCharacters.ToString(),
+            exception.Message,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("too short", exception.Message, StringComparison.Ordinal);
+
+        Assert.Equal(["Backup passphrase: "], prompt.Prompts);
+
+        Assert.All(entered, character => Assert.Equal('\0', character));
+    }
+
+    [Fact]
+    public async Task ReadAsync_accepts_a_creation_passphrase_of_exactly_the_documented_minimum()
+    {
+        string value = new('p', BackupPassphrasePolicy.MinimumCreateCharacters);
+
         BackupPassphraseReader reader = CreateReader(
             new RecordingPrompt([]),
             new RecordingFileDescriptorReader(),
