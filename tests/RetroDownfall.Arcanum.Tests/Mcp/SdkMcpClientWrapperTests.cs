@@ -298,6 +298,29 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task InitializeAsync_does_not_relabel_a_timeout_from_below_the_handshake_as_a_handshake_deadline()
+    {
+        await using SdkMcpClientWrapper client = new(
+            new TimingOutTransport("the transport gave up connecting to the endpoint"),
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+            },
+            initializationTimeout: TimeSpan.FromSeconds(60),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
+
+        // Only the handshake deadlines (the wrapper's own, or the SDK's) mean "did not complete the
+        // initialize handshake". A TimeoutException raised by the transport is a different failure, and the
+        // restart-backoff message the manager records has to name the real cause, not the handshake.
+        TimeoutException timeout = await Assert.ThrowsAsync<TimeoutException>(
+            () => client.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal("the transport gave up connecting to the endpoint", timeout.Message);
+    }
+
+    [Fact]
     public async Task InitializeAsync_still_propagates_caller_cancellation_as_cancellation()
     {
         Channel<string> toServer = Channel.CreateUnbounded<string>();
@@ -586,5 +609,13 @@ public Task RecordResourceLimitBreachAsync(
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
+    }
+
+    private sealed class TimingOutTransport(string message) : IClientTransport
+    {
+        public string Name => "timing-out";
+
+        public Task<ITransport> ConnectAsync(CancellationToken cancellationToken = default) =>
+            throw new TimeoutException(message);
     }
 }

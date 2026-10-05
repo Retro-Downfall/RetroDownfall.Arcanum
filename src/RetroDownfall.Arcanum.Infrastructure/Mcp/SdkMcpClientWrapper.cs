@@ -145,7 +145,7 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
             }
             catch (Exception exception)
                 when (!cancellationToken.IsCancellationRequested
-                    && (exception is TimeoutException
+                    && (IsSdkHandshakeTimeout(exception)
                         || (exception is OperationCanceledException && initialization.IsCancellationRequested)))
             {
                 // Only a handshake deadline fired, this wrapper's own or the SDK client's (both are armed
@@ -170,6 +170,13 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
             _initLock.Release();
         }
     }
+
+    // The SDK reports its own handshake deadline as a TimeoutException wrapping the cancellation that
+    // raised it. A TimeoutException without one came from somewhere else (a transport's connect timeout,
+    // say), and relabelling it would record "did not complete the initialize handshake" for a failure that
+    // had a different cause.
+    private static bool IsSdkHandshakeTimeout(Exception exception) =>
+        exception is TimeoutException { InnerException: OperationCanceledException };
 
     // McpClient.Completion completes both on graceful disposal and on unexpected closure (process
     // crash, dropped session, closed channel). _disposed is only set at the start of our own
