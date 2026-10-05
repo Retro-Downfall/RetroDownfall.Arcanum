@@ -429,6 +429,57 @@ public sealed class CampaignEndpointTests
         Assert.Contains("broken", body.Error.Value.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// <c>GET /api/campaigns</c> takes <c>limit</c> and <c>offset</c> as well as <c>type</c>, and the API
+    /// reference now says so; this pins the behaviour it documents.
+    /// </summary>
+    [SkippableFact]
+    public async Task GetCampaigns_pages_with_limit_and_offset_and_clamps_both()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        for (int i = 0; i < 3; i++)
+        {
+            _ = await CreateCampaignWithOnePromptAsync(factory, client, $"paged-{i}");
+        }
+
+        ListPageResult<CampaignDto> first = await ListCampaignsAsync(client, "limit=1&offset=0");
+
+        CampaignDto only = Assert.Single(first.Items);
+
+        Assert.True(first.HasMore);
+
+        Assert.Equal(1, first.NextOffset);
+
+        ListPageResult<CampaignDto> second = await ListCampaignsAsync(client, "limit=1&offset=1");
+
+        Assert.NotEqual(only.Id, Assert.Single(second.Items).Id);
+
+        // A negative offset is treated as 0, and a limit below 1 is clamped up to 1.
+        Assert.Equal(only.Id, Assert.Single((await ListCampaignsAsync(client, "limit=1&offset=-5")).Items).Id);
+
+        Assert.Single((await ListCampaignsAsync(client, "limit=0")).Items);
+
+        Assert.Empty((await ListCampaignsAsync(client, "limit=10000&offset=100000")).Items);
+    }
+
+    private static async Task<ListPageResult<CampaignDto>> ListCampaignsAsync(HttpClient client, string query)
+    {
+        HttpResponseMessage response = await client.GetAsync($"/api/campaigns?{query}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<ListPageResult<CampaignDto>>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto);
+
+        return body!.Data!;
+    }
+
     [SkippableFact]
     public async Task GetCampaignPrompts_truncated_page_reports_hasMore_and_nextOffset()
     {
