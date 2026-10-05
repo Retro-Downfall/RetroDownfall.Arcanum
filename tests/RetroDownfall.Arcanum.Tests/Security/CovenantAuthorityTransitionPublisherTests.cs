@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </summary>
 public sealed class CovenantAuthorityTransitionPublisherTests
 {
-
     private static readonly Guid Installation = Guid.Parse("2C4A5E3B-9F17-4D0C-8A6E-1B3D5F70921A");
 
     private static readonly Guid Dataset = Guid.Parse("0D1E2F30-4152-4637-8899-AABBCCDDEEFF");
@@ -28,7 +27,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
     [Fact]
     public async Task A_committed_reset_switches_dataset_keys_and_rejects_every_old_token()
     {
-
         using Harness harness = Harness.Create();
 
         Dictionary<CovenantEnvelopePurpose, string> tokens = Enum
@@ -72,13 +70,44 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         // The new generation is fully usable, which is what "publish before reopening admission" buys.
         Assert.True(harness.Codec.Encode(CovenantEnvelopePurpose.Cursor, [1], TimeSpan.FromMinutes(1)).IsSuccess);
         Assert.True(harness.Issuer.Issue(CovenantAuthorityRequirement.CovenantManage).IsSuccess);
+    }
 
+    [Fact]
+    public async Task Publication_completes_when_the_caller_cancels_after_commit()
+    {
+        using Harness harness = Harness.Create();
+
+        string predecessorToken = harness.Codec.Encode(
+            CovenantEnvelopePurpose.Cursor,
+            [0x42],
+            TimeSpan.FromMinutes(30)).Value;
+
+        // The transition is already durable when the publisher runs, so a caller whose token is cancelled
+        // from that point on must still get the new generation published; abandoning it would leave the
+        // process holding keys the committed transition invalidated.
+        using CancellationTokenSource cancelled = new();
+
+        await cancelled.CancelAsync();
+
+        Result published = await harness.Publisher.PublishCommittedAsync(
+            Transition(authorityEpoch: 11, canonicalEnvelopeEpoch: 4, dataset: NextDataset),
+            harness.Lease,
+            cancelled.Token);
+
+        Assert.True(published.IsSuccess);
+
+        Assert.False(harness.Runtime.Current.AuthorityRetired);
+
+        Assert.Equal(11, harness.Authority.Current!.AuthorityEpoch);
+
+        Assert.True(harness.Codec.Decode(CovenantEnvelopePurpose.Cursor, predecessorToken).IsFailure);
+
+        Assert.True(harness.Codec.Encode(CovenantEnvelopePurpose.Cursor, [1], TimeSpan.FromMinutes(1)).IsSuccess);
     }
 
     [Fact]
     public async Task Final_publication_exposes_one_entire_predecessor_then_one_entire_successor()
     {
-
         using BlockingCovenantRuntimePublicationCheckpoint checkpoint = new(
             CovenantRuntimePublicationStep.CommittedBeforeSwap,
             CovenantRuntimePublicationStep.CommittedAfterSwap);
@@ -131,13 +160,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
         Task<Result<CovenantEnvelopeBody>> codecReader = RunLongRunning(() =>
         {
-
             codecStarted.Set();
 
             return harness.Codec.Decode(
                 CovenantEnvelopePurpose.Cursor,
                 predecessorToken);
-
         });
 
         using ManualResetEventSlim gateStarted = new(initialState: false);
@@ -148,7 +175,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
         Task<CovenantReadLease> gateReader = RunLongRunningAsync(async () =>
         {
-
             gateStarted.Set();
 
             Result<CovenantReadLease> whileClosed = await harness.Gate.AcquireReadAsync(
@@ -166,7 +192,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             return (await harness.Gate.AcquireReadAsync(
                 CovenantOperationScope.Global,
                 CancellationToken.None)).Value;
-
         });
 
         Assert.True(codecStarted.Wait(TimeSpan.FromSeconds(10)));
@@ -253,7 +278,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.Equal(successor.ActiveAuthority!.AuthorityEpoch, after.AuthorityEpoch);
 
         Assert.False(harness.Issuer.Revalidate(predecessorContext).IsSuccess);
-
     }
 
     [Theory]
@@ -266,7 +290,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         CovenantExclusiveOperation operation,
         CovenantHealthTransition expectedHealthTransition)
     {
-
         using Harness harness = Harness.Create(operation: operation);
 
         Result published = await harness.Publisher.PublishCommittedAsync(
@@ -277,13 +300,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.True(published.IsSuccess);
 
         Assert.Equal(expectedHealthTransition, harness.Availability.Current.LastHealthTransition);
-
     }
 
     [Fact]
     public async Task A_revoked_lease_publishes_nothing()
     {
-
         using Harness harness = Harness.Create();
 
         harness.Lease.Live = false;
@@ -304,13 +325,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.Null(harness.Authority.Current);
         Assert.True(harness.Runtime.Current.AuthorityRetired);
         Assert.Equal(harness.Lease.Snapshot.RecoveryOwner, harness.Runtime.Current.RecoveryOwner);
-
     }
 
     [Fact]
     public async Task A_stale_lease_invoked_after_a_committed_winner_cannot_retire_that_winner()
     {
-
         using Harness harness = Harness.Create();
 
         CovenantRuntimeGenerationState expected = harness.Runtime.Current;
@@ -366,13 +385,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.False(winner.AuthorityRetired);
 
         Assert.Null(winner.RecoveryOwner);
-
     }
 
     [Fact]
     public async Task A_transition_cannot_move_an_authority_counter_backwards()
     {
-
         foreach (CovenantCommittedAuthorityTransition regression in new[]
         {
             Transition(authorityEpoch: 10),
@@ -381,7 +398,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             Transition(recoveryEnvelopeEpoch: 1),
         })
         {
-
             using Harness harness = Harness.Create();
 
             Result published = await harness.Publisher.PublishCommittedAsync(
@@ -393,15 +409,12 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, published.Error.Code);
             Assert.Null(harness.Authority.Current);
             Assert.True(harness.Runtime.Current.AuthorityRetired);
-
         }
-
     }
 
     [Fact]
     public async Task A_retired_exact_owner_cannot_publish_a_lower_canonical_envelope_epoch()
     {
-
         using Harness harness = Harness.Create();
 
         CovenantExclusiveRecoveryOwner owner = harness.Lease.Snapshot.RecoveryOwner!.Value;
@@ -447,13 +460,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.Equal(3, harness.Runtime.Current.CanonicalEnvelopeEpoch);
 
         Assert.Null(harness.Authority.Current);
-
     }
 
     [Fact]
     public async Task A_transition_cannot_change_the_installation_identity()
     {
-
         using Harness harness = Harness.Create();
 
         Result published = await harness.Publisher.PublishCommittedAsync(
@@ -471,22 +482,18 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
         Assert.False(published.IsSuccess);
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, published.Error.Code);
-
     }
 
     [Fact]
     public async Task An_availability_winner_makes_final_publication_stale_and_survives_retirement()
     {
-
         using Harness harness = Harness.Create();
 
         CovenantAvailabilitySnapshot? winner = null;
 
         harness.Lease.BeforeExecute = () =>
         {
-
             winner = harness.Availability.PublishFeatureEnabled(featureEnabled: false);
-
         };
 
         Result published = await harness.Publisher.PublishCommittedAsync(
@@ -511,13 +518,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.Equal("sha256-canonical", harness.Runtime.Current.Availability.CanonicalInstalledFingerprint);
 
         Assert.Equal("sha256-accelerator", harness.Runtime.Current.Availability.AcceleratorInstalledFingerprint);
-
     }
 
     [Fact]
     public async Task An_erasure_capture_before_a_feature_race_is_stale_and_retires_the_captured_generation()
     {
-
         using Harness harness = Harness.Create();
 
         CovenantRuntimeGenerationState captured = harness.Runtime.Current;
@@ -542,20 +547,17 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.Same(winner, harness.Runtime.Current.Availability);
 
         Assert.Equal(harness.Lease.Snapshot.RecoveryOwner, harness.Runtime.Current.RecoveryOwner);
-
     }
 
     [Fact]
     public async Task A_different_authority_generation_winner_survives_the_losing_publishers_retirement()
     {
-
         using Harness harness = Harness.Create();
 
         CovenantRuntimeGenerationState? winner = null;
 
         harness.Lease.BeforeExecute = () =>
         {
-
             CovenantRuntimeGenerationState expected = harness.Runtime.Current;
 
             CovenantCommittedAuthorityTransition competing = Transition(
@@ -583,7 +585,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
                 built.Value).IsSuccess);
 
             winner = harness.Runtime.Current;
-
         };
 
         Result published = await harness.Publisher.PublishCommittedAsync(
@@ -611,13 +612,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             CovenantEnvelopePurpose.Cursor,
             [1],
             TimeSpan.FromMinutes(1)).IsSuccess);
-
     }
 
     [Fact]
     public async Task The_exact_retired_owner_resumes_and_republishes_from_the_resident_root()
     {
-
         using Harness harness = Harness.Create();
 
         CovenantExclusiveRecoveryOwner owner = harness.Lease.Snapshot.RecoveryOwner!.Value;
@@ -737,33 +736,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.Equal(
             harness.Runtime.Current.RuntimeAuthorityGeneration,
             read.Snapshot.RuntimeAuthorityGeneration);
-
-    }
-
-    [Fact]
-    public async Task Already_cancelled_publication_retires_the_observed_generation()
-    {
-
-        using Harness harness = Harness.Create();
-
-        using CancellationTokenSource cancellation = new();
-
-        cancellation.Cancel();
-
-        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => harness.Publisher.PublishCommittedAsync(
-                Transition(authorityEpoch: 12, canonicalEnvelopeEpoch: 4, dataset: NextDataset),
-                harness.Lease,
-                cancellation.Token).AsTask());
-
-        AssertRetired(harness);
-
     }
 
     [Fact]
     public async Task A_thrown_lease_revalidation_retires_the_observed_generation()
     {
-
         using Harness harness = Harness.Create();
 
         harness.Lease.RevalidationException = new InvalidOperationException("Injected lease proof failure.");
@@ -775,13 +752,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
                 CancellationToken.None).AsTask());
 
         AssertRetired(harness);
-
     }
 
     [Fact]
     public async Task A_thrown_exact_held_proof_retires_the_observed_generation()
     {
-
         using Harness harness = Harness.Create();
 
         harness.Lease.ExecutionException = new InvalidOperationException("Injected exact-held proof failure.");
@@ -793,13 +768,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
                 CancellationToken.None).AsTask());
 
         AssertRetired(harness);
-
     }
 
     [Fact]
     public async Task Derivation_failure_retires_the_observed_generation()
     {
-
         ThrowingDerivationCheckpoint checkpoint = new();
 
         using Harness harness = Harness.Create(checkpoint);
@@ -816,13 +789,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, published.Error.Code);
 
         AssertRetired(harness);
-
     }
 
     [Fact]
     public async Task A_post_disposition_lease_cannot_publish_and_retires_the_observed_generation()
     {
-
         using Harness harness = Harness.Create();
 
         CovenantExclusiveLease lease = (await harness.Gate.AcquireExclusiveAsync(
@@ -843,13 +814,11 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         AssertRetired(harness);
 
         await lease.DisposeAsync();
-
     }
 
     [Fact]
     public async Task A_replaced_registration_cannot_publish_and_retires_the_observed_generation()
     {
-
         using Harness harness = Harness.Create();
 
         CovenantExclusiveRecoveryOwner owner = harness.Lease.Snapshot.RecoveryOwner!.Value;
@@ -872,38 +841,32 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.True(published.IsFailure);
 
         AssertRetired(harness);
-
     }
 
     [Fact]
     public void A_committed_transition_validates_its_own_shape()
     {
-
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Transition(authorityEpoch: 0));
 
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Transition(masterKeyVersion: 0));
 
         _ = Assert.Throws<ArgumentException>(() => Transition(dataset: Guid.Empty));
-
     }
 
     [Fact]
     public void Committed_capability_validated_fields_have_no_mutation_setters()
     {
-
         PropertyInfo[] properties = typeof(CovenantCommittedCapabilityTransition)
             .GetProperties(BindingFlags.Instance | BindingFlags.Public);
 
         Assert.NotEmpty(properties);
 
         Assert.All(properties, property => Assert.Null(property.GetSetMethod(nonPublic: true)));
-
     }
 
     [Fact]
     public void Committed_capability_constructor_rejects_malformed_state()
     {
-
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Capability(
             Dataset,
             canonical: (CovenantCapabilityState)0));
@@ -937,7 +900,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Capability(
             Dataset,
             cleanupAppliedSessionSequence: -1));
-
     }
 
     private static CovenantCommittedAuthorityTransition Transition(
@@ -997,7 +959,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
     private static void AssertRetired(Harness harness)
     {
-
         Assert.True(harness.Runtime.Current.AuthorityRetired);
 
         Assert.Null(harness.Runtime.Current.Keys);
@@ -1005,12 +966,10 @@ public sealed class CovenantAuthorityTransitionPublisherTests
         Assert.Null(harness.Authority.Current);
 
         Assert.Equal(harness.Lease.Snapshot.RecoveryOwner, harness.Runtime.Current.RecoveryOwner);
-
     }
 
     private sealed class Harness : IDisposable
     {
-
         private Harness(
             CovenantRuntimeGenerationProvider runtime,
             CovenantEnvelopeMasterKeyProvider keys,
@@ -1022,7 +981,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             CovenantAuthorityTransitionPublisher publisher,
             StubExclusiveLease lease)
         {
-
             Runtime = runtime;
 
             Keys = keys;
@@ -1040,7 +998,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             Publisher = publisher;
 
             Lease = lease;
-
         }
 
         public CovenantRuntimeGenerationProvider Runtime { get; }
@@ -1066,7 +1023,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             CovenantExclusiveOperation operation = CovenantExclusiveOperation.CovenantReset,
             ICovenantRuntimePublicationCheckpoint? publicationCheckpoint = null)
         {
-
             CovenantRuntimeGenerationProvider runtime = publicationCheckpoint is null
                 ? new CovenantRuntimeGenerationProvider()
                 : new CovenantRuntimeGenerationProvider(publicationCheckpoint);
@@ -1123,16 +1079,13 @@ public sealed class CovenantAuthorityTransitionPublisherTests
                 new OperatorAuthorityContextIssuer(authority),
                 new CovenantAuthorityTransitionPublisher(runtime, keys, availability),
                 new StubExclusiveLease(operation));
-
         }
 
         public void Dispose()
         {
-
             Keys.Dispose();
 
             Runtime.Dispose();
-
         }
 
         private static CovenantAvailabilitySnapshot InitialAvailability() =>
@@ -1157,15 +1110,12 @@ public sealed class CovenantAuthorityTransitionPublisherTests
                 LastHealthTransition: CovenantHealthTransition.Bootstrap,
                 CanonicalDiagnosticCode: null,
                 AcceleratorDiagnosticCode: null);
-
     }
 
     private sealed class StubExclusiveLease : ICovenantExclusiveOperationLease
     {
-
         public StubExclusiveLease(CovenantExclusiveOperation operation)
         {
-
             Snapshot = new CovenantOperationLeaseSnapshot(
                 RegistrationId: Guid.Parse("5F6E7D8C-9B0A-4132-8455-667788990011"),
                 RuntimeAuthorityGeneration: 1,
@@ -1185,7 +1135,6 @@ public sealed class CovenantAuthorityTransitionPublisherTests
                     operation,
                     new CovenantDigest([.. Enumerable.Repeat((byte)0x44, CovenantLimits.DigestBytes)])),
                 CleanupOnlyHistoricalCampaign: false);
-
         }
 
         public bool Live { get; set; } = true;
@@ -1202,42 +1151,32 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
         public Result ExecuteWhileHeld(Func<Result> callback)
         {
-
             if (ExecutionException is { } executionException)
             {
-
                 throw executionException;
-
             }
 
             if (!Live)
             {
-
                 return Result.Failure(new Error(ErrorCodes.Covenant.StaleSnapshot, "This lease was revoked."));
-
             }
 
             BeforeExecute?.Invoke();
 
             return callback();
-
         }
 
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken)
         {
-
             if (RevalidationException is { } revalidationException)
             {
-
                 throw revalidationException;
-
             }
 
             return ValueTask.FromResult(
                 Live
                     ? Result.Success()
                     : Result.Failure(new Error(ErrorCodes.Covenant.StaleSnapshot, "This lease was revoked.")));
-
         }
 
         public ValueTask<Result> CompleteAsync(
@@ -1246,17 +1185,14 @@ public sealed class CovenantAuthorityTransitionPublisherTests
             ValueTask.FromResult(Result.Success());
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class NoCampaignProbe : ICovenantCampaignScopeProbe
     {
-
         public ValueTask<Result<CovenantCampaignScopeState>> ResolveAsync(
             Guid campaignId,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult<Result<CovenantCampaignScopeState>>(CovenantCampaignScopeState.Live);
-
     }
 
     private static Task<TResult> RunLongRunning<TResult>(Func<TResult> action) =>
@@ -1276,38 +1212,28 @@ public sealed class CovenantAuthorityTransitionPublisherTests
 
     private sealed class ThrowingDerivationCheckpoint : ICovenantEnvelopeDerivationCheckpoint
     {
-
         internal bool Enabled { get; set; }
 
         public void Reached(CovenantEnvelopeDerivationStep step, int purposeKeysDerived)
         {
-
             if (Enabled && step == CovenantEnvelopeDerivationStep.PurposeKeyDerived)
             {
-
                 throw new InvalidOperationException("Injected key derivation failure.");
-
             }
-
         }
 
         public void Zeroized(CovenantEnvelopeSensitiveBufferKind kind, bool isZero)
         {
         }
-
     }
-
 
     /// <summary>A fixed clock, so envelope timestamps and expiry are exact rather than approximate.</summary>
     private static FakeTimeProvider FakeClock(DateTimeOffset now)
     {
-
         FakeTimeProvider provider = new();
 
         provider.SetUtcNow(now);
 
         return provider;
-
     }
-
 }
