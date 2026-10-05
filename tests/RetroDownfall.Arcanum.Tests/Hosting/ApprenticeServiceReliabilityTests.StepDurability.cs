@@ -286,6 +286,48 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.Equal(1, intelligence.StreamCalls);
     }
 
+    /// <summary>
+    /// A successful turn always ends with a terminal Result frame. A stream that simply stops — a dropped
+    /// transport, a provider that closed early — has not produced the step's result, so it must not be
+    /// recorded as a completed step with empty text.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteStepStream_EndsWithoutResultFrame_IsRetryableNotCompleted()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        ScriptedStreamIntelligence intelligence = new(
+            new IntelligenceEvent(
+                IntelligenceEventType.ToolResult,
+                Message: "read_file",
+                Data: "partial work",
+                ToolCall: new IntelligenceToolCallEvent(
+                    "read-call",
+                    "read_file",
+                    "{}")));
+
+        ApprenticeService service = CreateService(
+            new InMemoryApprenticeRepository(),
+            new ArcanumSettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        ApprenticeService.StepExecutionOutcome outcome = await ExecuteStepStreamAsync(
+            service,
+            intelligence,
+            TestApprentice(apprenticeId));
+
+        Assert.True(outcome.StepFailed);
+
+        Assert.True(outcome.IsRetryable);
+
+        Assert.False(outcome.ToolDenied);
+
+        Assert.False(outcome.PauseOrCancel);
+
+        Assert.False(string.IsNullOrWhiteSpace(outcome.ErrorMessage));
+    }
+
     private static void AssertStepCommittedThenPaused(Apprentice persisted)
     {
         Assert.Equal(ApprenticeStatus.Paused.ToString(), persisted.Status);

@@ -3325,6 +3325,8 @@ internal sealed class ApprenticeService(
 
         bool alreadyAlerted = false;
 
+        bool sawResult = false;
+
         string? stepError = null;
 
         string? escalationReason = null;
@@ -3420,9 +3422,14 @@ internal sealed class ApprenticeService(
                     // ToolError for a pending petition → not alerted (alreadyAlerted unchanged).
                 }
 
-                if (frame.Type == IntelligenceEventType.Result && !string.IsNullOrWhiteSpace(frame.Message))
+                if (frame.Type == IntelligenceEventType.Result)
                 {
-                    stepResultText = frame.Message;
+                    sawResult = true;
+
+                    if (!string.IsNullOrWhiteSpace(frame.Message))
+                    {
+                        stepResultText = frame.Message;
+                    }
                 }
 
                 if (frame.Type == IntelligenceEventType.Error)
@@ -3478,6 +3485,14 @@ internal sealed class ApprenticeService(
             stepFailed = true;
 
             stepError = escalationReason ?? "The Apprentice petitioned the Dungeon Master for guidance.";
+        }
+        else if (!stepFailed && !pauseOrCancel && !sawResult)
+        {
+            // A successful turn always ends with a terminal Result frame. A stream that merely stopped
+            // produced no result to record, so the step is retried rather than completed with empty text.
+            stepFailed = true;
+
+            stepError = "The step stream ended without a result.";
         }
 
         return new StepExecutionOutcome(
