@@ -79,6 +79,7 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Core.Weave;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -608,8 +609,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         try
         {
-            harness._client = new HttpClient(harness.Factory.Server.CreateHandler(context =>
-                context.Connection.RemoteIpAddress = IPAddress.Loopback))
+            harness._client = new HttpClient(harness.Factory.Server.CreateHandler(LoopbackTransportPeer.Apply))
             {
                 BaseAddress = new Uri("http://localhost"),
             };
