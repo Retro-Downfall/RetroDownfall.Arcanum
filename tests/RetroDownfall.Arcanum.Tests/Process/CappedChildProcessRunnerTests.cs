@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.ProcessExecution;
 
@@ -841,6 +843,8 @@ public sealed class CappedChildProcessRunnerTests
 
         ProcessStartInfo psi = CreateSleepProcessStartInfo(30);
 
+        TestCapturingLogger<CappedChildProcessRunnerTests> logger = new();
+
         // The monitor loop is the only thing enforcing a macOS memory ceiling. When it faults the
         // supervisor ends the tree, and the run is reported as an apply failure — not as a normal
         // completion of a child whose limit silently stopped being enforced.
@@ -852,6 +856,7 @@ public sealed class CappedChildProcessRunnerTests
             resourceLimits: new ResourceLimits { MaxMemoryMb = 4096 },
             resourceLimiter: new MonitoredMemoryLimiter(4096L * 1024 * 1024),
             CancellationToken.None,
+            logger: logger,
             descendantSupervisorFactory: (pid, limit) => MacOsDescendantSupervisor.TryStart(
                 pid,
                 monitorTickHold: () => throw new InvalidOperationException("injected monitor fault"),
@@ -860,7 +865,97 @@ public sealed class CappedChildProcessRunnerTests
         Assert.Equal(CappedChildProcessOutcome.ResourceLimitApplyFailed, result.Outcome);
 
         Assert.Contains("memory monitor", result.ResourceLimitApplyError, StringComparison.Ordinal);
+
+        // Reported once, not once by the result builder and again by the teardown that logs every fault.
+        Assert.Single(MonitorFaultErrors(logger));
     }
+
+    [SkippableFact]
+    public async Task RunAsync_logs_a_faulted_monitor_when_no_memory_ceiling_is_configured()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        TestCapturingLogger<CappedChildProcessRunnerTests> logger = new();
+
+        // Without a ceiling nothing is killed and the run still completes, but the loop that tracks
+        // descendants before they reparent (the workspace_check containment boundary) has stopped, which
+        // an operator must be able to see.
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            CreateSleepProcessStartInfo(1),
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(60),
+            resourceLimits: null,
+            resourceLimiter: null,
+            CancellationToken.None,
+            logger: logger,
+            descendantSupervisorFactory: FaultingMonitorFactory);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+        Assert.Single(MonitorFaultErrors(logger));
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_logs_a_faulted_monitor_when_the_run_is_canceled()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        TestCapturingLogger<CappedChildProcessRunnerTests> logger = new();
+
+        using CancellationTokenSource cancellation = new();
+
+        cancellation.CancelAfter(TimeSpan.FromSeconds(2));
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            CreateSleepProcessStartInfo(30),
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: Timeout.InfiniteTimeSpan,
+            resourceLimits: null,
+            resourceLimiter: null,
+            cancellation.Token,
+            logger: logger,
+            descendantSupervisorFactory: FaultingMonitorFactory);
+
+        Assert.Equal(CappedChildProcessOutcome.Canceled, result.Outcome);
+
+        Assert.Single(MonitorFaultErrors(logger));
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_logs_a_faulted_monitor_when_the_run_times_out()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        TestCapturingLogger<CappedChildProcessRunnerTests> logger = new();
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            CreateSleepProcessStartInfo(30),
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(2),
+            resourceLimits: null,
+            resourceLimiter: null,
+            CancellationToken.None,
+            logger: logger,
+            descendantSupervisorFactory: FaultingMonitorFactory);
+
+        Assert.Equal(CappedChildProcessOutcome.TimedOut, result.Outcome);
+
+        Assert.Single(MonitorFaultErrors(logger));
+    }
+
+    private static MacOsDescendantSupervisor? FaultingMonitorFactory(int pid, long? memoryLimitBytes) =>
+        MacOsDescendantSupervisor.TryStart(
+            pid,
+            monitorTickHold: () => throw new InvalidOperationException("injected monitor fault"),
+            memoryLimitBytes: memoryLimitBytes);
+
+    private static TestLogEntry[] MonitorFaultErrors(TestCapturingLogger<CappedChildProcessRunnerTests> logger) =>
+        [.. logger.Entries.Where(entry =>
+            entry.Level == LogLevel.Error
+            && entry.Exception is InvalidOperationException { Message: "injected monitor fault" })];
 
     [SkippableFact]
     public async Task RunAsync_cancellation_kills_a_forked_descendant_without_the_descendant_supervisor()

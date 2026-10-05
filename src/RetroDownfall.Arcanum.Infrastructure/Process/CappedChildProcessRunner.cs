@@ -730,8 +730,7 @@ internal static class CappedChildProcessRunner
                             perStreamCapBytes,
                             abandonedStdout,
                             abandonedStderr,
-                            abandonedExitCode,
-                            logger) is { } abandonedMonitorFault)
+                            abandonedExitCode) is { } abandonedMonitorFault)
                     {
                         return abandonedMonitorFault;
                     }
@@ -840,8 +839,7 @@ internal static class CappedChildProcessRunner
                         perStreamCapBytes,
                         stdout,
                         stderr,
-                        exitCode,
-                        logger) is { } monitorFault)
+                        exitCode) is { } monitorFault)
                 {
                     return monitorFault;
                 }
@@ -947,6 +945,11 @@ internal static class CappedChildProcessRunner
             {
                 logger?.LogWarning(ex, "Disposing the descendant supervisor failed; the remaining teardown continues.");
             }
+
+            LogMonitorFault(
+                descendantSupervisor,
+                limiterResult.MonitoredMemoryLimitBytes,
+                logger);
         }
 
         // The child is gone by now, killed with TerminateProcess on every abnormal path, so the
@@ -1028,9 +1031,42 @@ internal static class CappedChildProcessRunner
     }
 
     /// <summary>
+    /// Records a stopped monitor loop. The supervisor has no logger of its own and nothing else reads its
+    /// fault, so without this a faulted loop is invisible whenever the run ends in anything but the
+    /// memory-ceiling failure: the loop that tracks descendants before they reparent (the
+    /// workspace_check containment boundary) simply stops. Read after disposal, when the loop has
+    /// finished and the fault is final.
+    /// </summary>
+    private static void LogMonitorFault(
+        MacOsDescendantSupervisor supervisor,
+        long? memoryLimitBytes,
+        ILogger? logger)
+    {
+        if (!supervisor.MonitorFaulted)
+        {
+            return;
+        }
+
+        if (memoryLimitBytes is null)
+        {
+            logger?.LogError(
+                supervisor.MonitorFault,
+                "The descendant supervisor's monitor loop stopped on a fault; no memory ceiling was configured, so the process tree was not killed, but descendants forked after the fault were no longer tracked for containment.");
+
+            return;
+        }
+
+        logger?.LogError(
+            supervisor.MonitorFault,
+            "The child-process memory monitor stopped on a fault; the process tree was killed.");
+    }
+
+    /// <summary>
     /// The result for a run whose macOS memory monitor stopped on a fault: nothing enforced the ceiling
     /// from then on (the supervisor ends the tree when that happens), so the run is not a normal
-    /// completion whatever the child's exit status was.
+    /// completion whatever the child's exit status was. Logging the fault is not done here: it is owed on
+    /// every path, including the ones that end in a cancel or a timeout and the ones with no ceiling, so
+    /// <see cref="TearDownRunAsync"/> owns it.
     /// </summary>
     private static CappedChildProcessRunResult? MemoryMonitorFaultResult(
         MacOsDescendantSupervisor? supervisor,
@@ -1038,18 +1074,13 @@ internal static class CappedChildProcessRunner
         long perStreamCapBytes,
         CappedStreamOutput stdout,
         CappedStreamOutput stderr,
-        int exitCode,
-        ILogger? logger)
+        int exitCode)
     {
         if (supervisor?.MonitorFaulted != true
             || limiterResult.MonitoredMemoryLimitBytes is null)
         {
             return null;
         }
-
-        logger?.LogError(
-            supervisor.MonitorFault,
-            "The child-process memory monitor stopped on a fault; the process tree was killed.");
 
         return new CappedChildProcessRunResult
         {

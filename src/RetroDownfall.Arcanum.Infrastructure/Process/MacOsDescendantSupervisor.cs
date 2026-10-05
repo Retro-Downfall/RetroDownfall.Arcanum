@@ -50,7 +50,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         IntPtr eventBuffer,
         Func<Task>? monitorTickHold,
         long? memoryLimitBytes,
-        Func<int, long?>? footprintReader)
+        Func<int, long?>? footprintReader,
+        int idleScanEveryTicks)
     {
         _rootPid = rootPid;
         _rootIdentity = rootIdentity;
@@ -62,7 +63,9 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
 
         // Without a working kqueue nothing announces a fork, so the scan is the only detector and the
         // schedule must never back off.
-        _scanSchedule = new DescendantScanSchedule(eventDriven: kernelQueue >= 0 && eventBuffer != IntPtr.Zero);
+        _scanSchedule = new DescendantScanSchedule(
+            eventDriven: kernelQueue >= 0 && eventBuffer != IntPtr.Zero,
+            idleScanEveryTicks);
         _tracked.Add(rootIdentity);
         _monitorTask = MonitorAsync();
     }
@@ -84,11 +87,17 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     /// Always <c>null</c> in production (the real <c>proc_pid_rusage</c> read). A test supplies it to make
     /// a descendant's footprint unreadable, which no real process does on demand.
     /// </param>
+    /// <param name="idleScanEveryTicks">
+    /// Always the schedule's default in production. A test stretches the quiescent safety cadence so far
+    /// that a kqueue fork or exit event is the only thing that can resume scanning; at the default cadence
+    /// the safety scan, and the window a newly found process reopens, would resume it without any event.
+    /// </param>
     internal static MacOsDescendantSupervisor? TryStart(
         int rootPid,
         Func<Task>? monitorTickHold = null,
         long? memoryLimitBytes = null,
-        Func<int, long?>? footprintReader = null)
+        Func<int, long?>? footprintReader = null,
+        int idleScanEveryTicks = DescendantScanSchedule.IdleScanEveryTicks)
     {
         Func<int, long?> readFootprint = footprintReader ?? ReadPhysicalFootprintOrNull;
 
@@ -150,7 +159,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 events,
                 monitorTickHold,
                 memoryLimitBytes,
-                footprintReader);
+                footprintReader,
+                idleScanEveryTicks);
         }
         catch
         {

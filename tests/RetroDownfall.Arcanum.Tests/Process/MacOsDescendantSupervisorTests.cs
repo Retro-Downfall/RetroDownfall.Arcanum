@@ -57,6 +57,14 @@ public sealed class MacOsDescendantSupervisorTests
     /// <summary>
     /// Backing off must not blind the supervisor to a descendant that appears later: the root's kqueue
     /// fork event has to bring the per-tick scan back so the new process is tracked immediately.
+    /// <para>
+    /// The safety scan is stretched far beyond the test's lifetime, because at the real cadence it (and
+    /// the window a scan that finds a new process reopens) resumes scanning with no kqueue event at all,
+    /// which is how a test of this wiring once passed with <c>TrackKernelEvents</c> returning false. With
+    /// it out of the way the kernel event is the only thing that can end the quiet, so the scan count
+    /// rising is proof of the event-to-schedule wiring. The fork is released by the test, not by a timer,
+    /// so the quiet baseline is taken before it with no race.
+    /// </para>
     /// </summary>
     [SkippableFact]
     public async Task Fork_event_resumes_per_tick_scanning()
@@ -65,23 +73,28 @@ public sealed class MacOsDescendantSupervisorTests
 
         using System.Diagnostics.Process child = new();
 
-        // Quiet for long enough to back off, then forks a descendant and keeps running.
+        // `read` is a builtin, so the shell does nothing (no fork, no exec) until the test writes a line;
+        // then it forks `sleep 30`, which is the event that has to wake the scan.
         child.StartInfo = new ProcessStartInfo("/bin/sh")
         {
             UseShellExecute = false,
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            ArgumentList = { "-c", "sleep 3; sleep 30 & wait" },
+            ArgumentList = { "-c", "read go; sleep 30 & wait" },
         };
 
         _ = child.Start();
 
-        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(child.Id);
+        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(
+            child.Id,
+            idleScanEveryTicks: int.MaxValue);
 
         Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
 
         try
         {
+            // Well past the initial active window (DescendantScanSchedule.ActiveWindowTicks).
             await WaitUntilAsync(
                 () => supervisor!.MonitorTickCount >= 200,
                 TimeSpan.FromSeconds(60),
@@ -89,11 +102,27 @@ public sealed class MacOsDescendantSupervisorTests
 
             long scansWhileQuiet = supervisor!.FullScanCount;
 
-            // The shell forks `sleep 30` once the first sleep ends; that fork is what must wake the scan.
+            await WaitUntilAsync(
+                () => supervisor.MonitorTickCount >= 300,
+                TimeSpan.FromSeconds(60),
+                "The monitor loop did not reach 300 ticks.");
+
+            Assert.True(
+                scansWhileQuiet == supervisor.FullScanCount,
+                "The quiet baseline is not quiet: with the safety scan stretched and nothing forking, the "
+                + $"supervisor still scanned ({scansWhileQuiet} then {supervisor.FullScanCount}), so this test "
+                + "could not tell a kernel event from the cadence.");
+
+            await child.StandardInput.WriteLineAsync("go");
+
+            await child.StandardInput.FlushAsync();
+
+            // A full active window of per-tick scans, and nothing else can have started it.
             await WaitUntilAsync(
                 () => supervisor.FullScanCount >= scansWhileQuiet + DescendantScanSchedule.ActiveWindowTicks - 5,
-                TimeSpan.FromSeconds(60),
-                "A fork in the tracked tree did not resume per-tick scanning.");
+                TimeSpan.FromSeconds(30),
+                "A fork in the tracked tree did not resume per-tick scanning: the kqueue event never reached "
+                + "the scan schedule.");
         }
         finally
         {

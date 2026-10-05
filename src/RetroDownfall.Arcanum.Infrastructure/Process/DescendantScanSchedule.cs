@@ -19,7 +19,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// the monitor loop. Not thread-safe: only the monitor loop calls it.
 /// </para>
 /// </remarks>
-internal sealed class DescendantScanSchedule(bool eventDriven)
+/// <param name="eventDriven">Whether a kernel event source is attached; without one the scan never backs off.</param>
+/// <param name="idleScanEveryTicks">
+/// The quiescent safety cadence. Production uses <see cref="IdleScanEveryTicks"/>; a test stretches it so
+/// far that only a kernel event can resume scanning, which the safety scan would otherwise mask.
+/// </param>
+internal sealed class DescendantScanSchedule(
+    bool eventDriven,
+    int idleScanEveryTicks = DescendantScanSchedule.IdleScanEveryTicks)
 {
     /// <summary>
     /// Ticks scanned back to back after a kernel event or a scan that found a new process: a quarter of
@@ -66,7 +73,7 @@ internal sealed class DescendantScanSchedule(bool eventDriven)
             return true;
         }
 
-        if (++_idleTicks >= IdleScanEveryTicks)
+        if (++_idleTicks >= idleScanEveryTicks)
         {
             _idleTicks = 0;
 
