@@ -2683,7 +2683,7 @@ internal sealed partial class DataRetentionService(
     /// A null predicate is the whole table, which is what an untargeted reset has always meant. Ordered
     /// dependents-first so a delete's subquery still sees the rows it selects on.
     /// </remarks>
-    private readonly record struct MemoryResetSelection(
+    internal readonly record struct MemoryResetSelection(
         string Table,
         string? Predicate,
         (string Name, object Value)[] Parameters);
@@ -6139,8 +6139,9 @@ internal sealed partial class DataRetentionService(
     /// batched arm. The question is about the artifact set rather than the label's own
     /// <c>CampaignId</c>, because that column records a historical owner and a memory can have moved
     /// scope since it was labelled; a label filter would miss exactly that memory and the delete would
-    /// orphan its label. A row whose identity is not a Guid cannot carry a label (the label table names
-    /// artifacts by Guid), so it is not asked about.</para>
+    /// orphan its label. A selected row whose identity is not a Guid is one the guard cannot be asked
+    /// about at all, so it refuses the reset with <c>Covenant.Unavailable</c> rather than being left for
+    /// the delete unexamined.</para>
     ///
     /// <para>Saga and Lexicon are the two stores asked about, because they are the two kinds the
     /// label table names for a store's own rows. The embedding scopes truncate derived rows whose
@@ -6182,31 +6183,27 @@ internal sealed partial class DataRetentionService(
         }
         else
         {
-            MemoryResetSelection? members = null;
+            Result<Guid[]> memberIds = await ReadResetMemberIdsInTransactionAsync(
+                connection,
+                transaction,
+                selections,
+                protectedStore.Table,
+                cancellationToken).ConfigureAwait(false);
 
-            foreach (MemoryResetSelection selection in selections)
+            if (memberIds.IsFailure)
             {
-                if (string.Equals(selection.Table, protectedStore.Table, StringComparison.Ordinal))
-                {
-                    members = selection;
-                }
+                throw new RetentionCovenantLabelException(memberIds.Error);
             }
 
-            if (members is not { } targeted)
+            if (memberIds.Value.Length == 0)
             {
                 return;
             }
 
-            Guid[] memberIds = await ReadResetMemberIdsInTransactionAsync(
-                connection,
-                transaction,
-                targeted,
-                cancellationToken).ConfigureAwait(false);
-
             unlabeled = await labeledArtifactGuard
                 .EnsureAllUnlabeledAsync(
                     protectedStore.Kind,
-                    memberIds,
+                    memberIds.Value,
                     connection,
                     transaction,
                     cancellationToken)
@@ -6221,42 +6218,69 @@ internal sealed partial class DataRetentionService(
 
     /// <summary>
     /// The identities of the store rows one Campaign-targeted reset selects, read inside its
-    /// transaction by the same predicate and bindings the delete uses.
+    /// transaction by the same predicates and bindings the deletes use.
     /// </summary>
-    private static async Task<Guid[]> ReadResetMemberIdsInTransactionAsync(
+    /// <remarks>
+    /// Read through every selection that deletes from <paramref name="table"/>, not only the last one,
+    /// and answered as the union, each identity once: a list that ever named the store's table twice
+    /// would otherwise leave the first selection's rows unasked about while its delete still removed
+    /// them.
+    ///
+    /// <para>A selected row whose identity does not read as a Guid refuses the reset with
+    /// <c>Covenant.Unavailable</c> rather than being skipped. The column has no format check, so such a
+    /// row is corruption or tampering and the guard cannot show it is unlabelled; skipping it let the
+    /// predicate delete remove a row nothing had been asked about. It is the condition, and the answer,
+    /// the embeddings reset gives a label it cannot parse, and the refusal names no artifact.</para>
+    /// </remarks>
+    internal static async Task<Result<Guid[]>> ReadResetMemberIdsInTransactionAsync(
         DbConnection connection,
         DbTransaction transaction,
-        MemoryResetSelection selection,
+        IReadOnlyList<MemoryResetSelection> selections,
+        string table,
         CancellationToken cancellationToken)
     {
-        await using DbCommand command = connection.CreateCommand();
+        HashSet<Guid> ids = [];
 
-        command.Transaction = transaction;
-
-        command.CommandText = selection.Predicate is null
-            ? $"SELECT \"Id\" FROM \"{selection.Table}\""
-            : $"SELECT \"Id\" FROM \"{selection.Table}\" WHERE {selection.Predicate}";
-
-        foreach ((string name, object value) in selection.Parameters)
+        foreach (MemoryResetSelection selection in selections)
         {
-            Add(command, name, value);
-        }
-
-        List<Guid> ids = [];
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(
-            cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (!reader.IsDBNull(0)
-                && Guid.TryParse(reader.GetString(0), CultureInfo.InvariantCulture, out Guid id))
+            if (!string.Equals(selection.Table, table, StringComparison.Ordinal))
             {
-                ids.Add(id);
+                continue;
+            }
+
+            await using DbCommand command = connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = selection.Predicate is null
+                ? $"SELECT \"Id\" FROM \"{selection.Table}\""
+                : $"SELECT \"Id\" FROM \"{selection.Table}\" WHERE {selection.Predicate}";
+
+            foreach ((string name, object value) in selection.Parameters)
+            {
+                Add(command, name, value);
+            }
+
+            await using DbDataReader reader = await command.ExecuteReaderAsync(
+                cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (reader.IsDBNull(0)
+                    || !Guid.TryParse(reader.GetString(0), CultureInfo.InvariantCulture, out Guid id))
+                {
+                    return Result<Guid[]>.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.Unavailable,
+                            "A memory this reset selects has an identity the sensitivity labels cannot name, "
+                                + "so the reset was refused before its first delete."));
+                }
+
+                _ = ids.Add(id);
             }
         }
 
-        return [.. ids];
+        return Result<Guid[]>.Success([.. ids]);
     }
 
     /// <summary>
