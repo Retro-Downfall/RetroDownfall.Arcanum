@@ -280,9 +280,14 @@ internal sealed partial class WorkspaceIndexingService(
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
-        int filesIndexed = demand.FilesIndexed;
+        int startingFilesIndexed = demand.FilesIndexed;
+
+        int filesIndexed = startingFilesIndexed;
 
         bool failed = false;
+
+        // Set when a changed file is left for later because the per-checkpoint budget ran out.
+        bool budgetStopped = false;
 
         IEnumerable<string> candidates =
             EnumerateCandidateFiles(workspacePath, extensions);
@@ -313,11 +318,10 @@ internal sealed partial class WorkspaceIndexingService(
 
                 seenRelativePaths.Add(relativePath);
 
-                if (filesIndexed >= maxFilesToIndex)
+                if (budgetStopped)
                 {
-                    // Per-tick re-embed budget exhausted — the file is still "seen" (above) so a
-                    // later orphan-cleanup pass never mistakes it for deleted, but re-indexing it is
-                    // deferred to a future tick.
+                    // Deferred work is already known; what remains is only inventory, so the file is
+                    // "seen" (above) and a later orphan-cleanup pass never mistakes it for deleted.
                     continue;
                 }
 
@@ -352,6 +356,15 @@ internal sealed partial class WorkspaceIndexingService(
                     && existing.FileLength == fileLength)
                 {
                     // Unchanged since last index — skip without consuming the per-tick file budget.
+                    continue;
+                }
+
+                if (filesIndexed >= maxFilesToIndex)
+                {
+                    // Per-checkpoint re-embed budget exhausted with changed work still waiting: stop
+                    // indexing here and let the scheduler continue with a follow-up unit.
+                    budgetStopped = true;
+
                     continue;
                 }
 
@@ -398,6 +411,10 @@ internal sealed partial class WorkspaceIndexingService(
         }
 
         await DeleteOrphanedChunksAsync(db, workspacePath, seenRelativePaths, cancellationToken).ConfigureAwait(false);
+
+        // A unit that made no progress never asks for a continuation, so a budget that cannot be
+        // spent cannot become a hot loop; every continuation indexes at least one more file.
+        demand.ContinuationRequired = budgetStopped && filesIndexed > startingFilesIndexed;
 
         return failed ? WorkspaceUnitOutcome.Failed : WorkspaceUnitOutcome.Completed;
     }

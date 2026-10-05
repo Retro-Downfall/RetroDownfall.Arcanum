@@ -40,6 +40,12 @@ internal sealed partial class WorkspaceIndexingService
     internal Action? BeforeHandleDispatchForTests { get; set; }
 
     /// <summary>
+    /// Replaces the code-owned per-checkpoint file budget for the units the scheduler runs, so a test
+    /// can exhaust it with a handful of files.
+    /// </summary>
+    internal int? MaxFilesToIndexOverride { get; set; }
+
+    /// <summary>
     /// The first retry delay of a failed entry; it doubles per consecutive failure up to the
     /// reconciliation interval. A property so a test can shorten the ladder.
     /// </summary>
@@ -409,6 +415,11 @@ internal sealed partial class WorkspaceIndexingService
                     {
                         EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
+                        if (MaxFilesToIndexOverride is { } fileBudget)
+                        {
+                            embeddings.Codebase.MaxFilesToIndex = fileBudget;
+                        }
+
                         outcome = !embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled
                             ? WorkspaceUnitOutcome.Failed
                             : demand.Full
@@ -426,7 +437,15 @@ internal sealed partial class WorkspaceIndexingService
                             }
                             else if (outcome == WorkspaceUnitOutcome.Completed)
                             {
-                                if (demand.Full)
+                                if (demand.Full && demand.ContinuationRequired)
+                                {
+                                    // The budget stopped this unit with changed files left: progress, not
+                                    // a finished reconciliation.
+                                    entry.Status.MarkSuccessfulIndex();
+
+                                    entry.Pending.ContinueFullReconciliation(demand);
+                                }
+                                else if (demand.Full)
                                 {
                                     entry.Status.MarkReconciled();
 
@@ -445,6 +464,11 @@ internal sealed partial class WorkspaceIndexingService
                                 if (!demand.Full)
                                 {
                                     entry.Pending.RequestForcedReconciliation();
+                                }
+                                else if (demand.ContinuationRequired)
+                                {
+                                    // One file failing must not strand the changed files the budget deferred.
+                                    entry.Pending.ContinueFullReconciliation(demand);
                                 }
                             }
                         }
@@ -761,6 +785,12 @@ internal sealed partial class WorkspaceIndexingService
 
         internal int FilesIndexed { get; set; }
 
+        /// <summary>
+        /// Set by a full unit that stopped on the per-checkpoint file budget with changed files left and
+        /// had indexed at least one file itself; the scheduler answers with a follow-up full unit.
+        /// </summary>
+        internal bool ContinuationRequired { get; set; }
+
         internal bool HasDemand => Full || Actions.Count != 0;
 
         internal bool ShouldForceFile(string path) =>
@@ -773,6 +803,26 @@ internal sealed partial class WorkspaceIndexingService
             if (ForceAll)
             {
                 (_completedForcedPaths ??= new HashSet<string>(CanonicalDirectoryComparer)).Add(path);
+            }
+        }
+
+        /// <summary>
+        /// Queues the next full unit of a reconciliation that stopped on its file budget. Unlike
+        /// <see cref="RestoreOlder"/> it starts a fresh budget, and it keeps a forced reconciliation
+        /// forced, with the files it already re-embedded recorded as done.
+        /// </summary>
+        internal void ContinueFullReconciliation(WorkspaceDemand finished)
+        {
+            Full = true;
+
+            if (finished.ForceAll)
+            {
+                if (!ForceAll)
+                {
+                    _completedForcedPaths = finished._completedForcedPaths;
+                }
+
+                ForceAll = true;
             }
         }
 
