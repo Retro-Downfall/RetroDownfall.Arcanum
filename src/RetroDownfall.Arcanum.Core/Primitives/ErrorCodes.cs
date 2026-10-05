@@ -1109,8 +1109,9 @@ public static class ErrorCodes
         public const string MaintenanceFailed = "Covenant.MaintenanceFailed";
 
         /// <summary>
-        /// A durable Covenant write did not commit, or the database stayed busy past the retry bound. The
-        /// transaction wrote nothing.
+        /// A durable Covenant write did not commit, or a storage read before it failed. The transaction wrote
+        /// nothing. A database that stayed busy past the retry bound is <see cref="Unavailable"/> instead,
+        /// because retrying the same request is the right answer to it.
         /// </summary>
         public const string WriteFailed = "Covenant.WriteFailed";
 
