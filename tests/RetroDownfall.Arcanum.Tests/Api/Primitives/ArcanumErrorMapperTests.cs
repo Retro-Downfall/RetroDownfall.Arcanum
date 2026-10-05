@@ -243,8 +243,11 @@ public sealed class ArcanumErrorMapperTests
 
     /// <summary>
     /// A memory-review <c>apply</c> whose transaction could not commit is a storage fault with nothing
-    /// written (API section 8.23), and the review routes resolve through the bad-request default, which
-    /// would otherwise present it as the caller's own malformed request.
+    /// written (API section 8.23), and answers <c>Saga.WriteFailed</c> or <c>Covenant.WriteFailed</c>; the
+    /// API reference lists both under the explicit failures the default-400 resolver never downgrades. The
+    /// review routes resolve through the bad-request default, which would otherwise present a failed write
+    /// as the caller's own malformed request, and a failed write is a server fault whichever route family
+    /// carries it.
     /// </summary>
     [Theory]
     [InlineData(ErrorCodes.Saga.WriteFailed)]

@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 /// <summary>
 /// Real-parser test harness replacing Spectre.Console.Cli.Testing's <c>CommandAppTester</c>.
-/// Builds the DI container, runs the actual ConsoleAppFramework command tree via
+/// Builds the DI container, runs the actual System.CommandLine command tree via
 /// <see cref="CliApplicationFactory.RunAsync"/> (the same entrypoint <c>Program.Main</c> uses),
 /// captures stdout/stderr, and returns the process exit code. Callers using fakes (HTTP,
 /// secret store, etc.) register them on the passed <see cref="IServiceCollection"/> before

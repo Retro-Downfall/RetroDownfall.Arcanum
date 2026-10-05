@@ -67,7 +67,7 @@ The projects have deliberately different responsibilities:
 | `RetroDownfall.Arcanum.Cli` | The shipping executable, command tree, API clients, terminal rendering, Command Center, and the `serve` host. |
 | `RetroDownfall.Arcanum.Api.DevHost` | A debug-only host that mirrors server wiring without shipping as the product entry point. |
 | `RetroDownfall.Compendium.Ux` | The Avalonia editor for the supported `arcanum.json` surface; it consumes Core preset contracts and the shared Infrastructure composition/persistence rather than duplicating them. |
-| `RetroDownfall.TheForge.Core` and `.Ux` | The HTTP-only desktop inference client and workbench. |
+| `RetroDownfall.TheForge.Core` and `.Ux` | The desktop inference client and workbench: an HTTP client of the API whose only direct Infrastructure uses are the installation mutation coordination and the shared outbound address policy. |
 | `tests/*` | Separate Arcanum, Compendium, and Forge verification graphs. |
 
 The boundary rule is simple: clients do not reach into server persistence or the server filesystem. They ask the API to do the work.

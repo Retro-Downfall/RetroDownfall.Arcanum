@@ -39,8 +39,22 @@ public sealed class ApiErrorCatalogDocumentationTests
         RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(5));
 
+    /// <summary>
+    /// A row's claim that the default-400 resolver leaves its status alone, in any of the phrasings the
+    /// catalog has used or could reasonably use: "never downgraded", "not rewritten to 400", "never
+    /// remapped", "never turned into a 400".
+    /// </summary>
     private static readonly Regex NoDowngradeClaim = new(
-        @"\b(?:never|not) downgraded by\b",
+        @"\b(?:never|not)\s+(?:be\s+)?(?:downgrad(?:ed|es?)|rewrit(?:ten|es?)|remap(?:ped|s)?)\b"
+            + @"|\b(?:never|not)\s+(?:turned|changed|mapped)\s+(?:in)?to\s+(?:a\s+)?(?:\*\*)?400\b",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// The opposite statement: the resolver does not protect the row's codes and would rewrite them.
+    /// </summary>
+    private static readonly Regex ResolverDisclaimer = new(
+        @"\b(?:does\s+not|doesn't)\s+protect\b|\bwould\s+(?:rewrite|downgrade|remap)\b",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
         TimeSpan.FromSeconds(5));
 
@@ -174,6 +188,169 @@ public sealed class ApiErrorCatalogDocumentationTests
             $"{offenders.Count} no-downgrade claim(s) in section 8.23 are false for the resolver:\n{string.Join('\n', offenders)}");
     }
 
+    /// <summary>
+    /// The opposite claim is held to the resolver too: a row that says the resolver would rewrite its
+    /// codes names only codes it does rewrite, so the sentence goes stale the day someone adds the code
+    /// to the resolver's protected set.
+    /// </summary>
+    [Fact]
+    public void A_row_that_says_the_resolver_would_rewrite_its_codes_names_only_codes_it_rewrites()
+    {
+        List<string> offenders = [];
+
+        int disclaimers = 0;
+
+        foreach (string line in CatalogSection(ReadApi()).Split('\n'))
+        {
+            Match row = CatalogRow.Match(line);
+
+            if (!row.Success
+                || row.Groups["status"].Value == "—"
+                || !ResolverDisclaimer.IsMatch(row.Groups["meaning"].Value))
+            {
+                continue;
+            }
+
+            disclaimers++;
+
+            int status = int.Parse(row.Groups["status"].Value, CultureInfo.InvariantCulture);
+
+            foreach (string code in CodesIn(row.Groups["codes"].Value))
+            {
+                int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(code);
+
+                if (actual == status)
+                {
+                    offenders.Add(
+                        $"{code}: the row says the resolver would rewrite it from {status.ToString(CultureInfo.InvariantCulture)}, but ResolveStatusCodeDefaultBadRequest keeps it there");
+                }
+            }
+        }
+
+        // A reading that found no disclaimer would let the contract above pass vacuously.
+        Assert.True(disclaimers >= 1, "No resolver disclaimer was read from section 8.23.");
+
+        Assert.True(
+            offenders.Count == 0,
+            $"{offenders.Count} resolver disclaimer(s) in section 8.23 are false:\n{string.Join('\n', offenders)}");
+    }
+
+    /// <summary>
+    /// A row that mentions the resolver says one thing or the other. A third phrasing the two readings
+    /// above do not recognise would slip past both, so a mention that matches neither fails here, and
+    /// the sentence is reworded or the reading is widened.
+    /// </summary>
+    [Fact]
+    public void Every_row_that_mentions_the_default_400_resolver_states_a_claim_or_a_disclaimer()
+    {
+        List<string> unclassified = [];
+
+        int mentions = 0;
+
+        foreach (string line in CatalogSection(ReadApi()).Split('\n'))
+        {
+            Match row = CatalogRow.Match(line);
+
+            if (!row.Success
+                || !row.Groups["meaning"].Value.Contains("DefaultBadRequest", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            mentions++;
+
+            string meaning = row.Groups["meaning"].Value;
+
+            if (!NoDowngradeClaim.IsMatch(meaning) && !ResolverDisclaimer.IsMatch(meaning))
+            {
+                unclassified.Add(row.Groups["codes"].Value);
+            }
+        }
+
+        Assert.True(mentions >= 3, $"Only {mentions} row(s) in section 8.23 mention the resolver.");
+
+        Assert.True(
+            unclassified.Count == 0,
+            "A section 8.23 row mentions ResolveStatusCodeDefaultBadRequest without a claim or disclaimer the guards read:\n"
+                + string.Join('\n', unclassified));
+    }
+
+    [Theory]
+    [InlineData("Explicit infra/search failures (never downgraded by DefaultBadRequest)", true)]
+    [InlineData("Never downgraded by `ResolveStatusCodeDefaultBadRequest`", true)]
+    [InlineData("Stays 500: it is not rewritten to 400 by the resolver", true)]
+    [InlineData("The default-400 resolver never remaps it", true)]
+    [InlineData("It is never turned into a 400", true)]
+    [InlineData("`ResolveStatusCodeDefaultBadRequest` does not protect them and would rewrite any of them to **400**", false)]
+    [InlineData("A client error, not a server fault", false)]
+    public void The_no_downgrade_reading_recognises_the_phrasings_a_row_can_use(
+        string meaning,
+        bool isClaim)
+    {
+        Assert.Equal(isClaim, NoDowngradeClaim.IsMatch(meaning));
+    }
+
+    [Theory]
+    [InlineData("`ResolveStatusCodeDefaultBadRequest` does not protect them and would rewrite any of them to **400**", true)]
+    [InlineData("The resolver would downgrade it", true)]
+    [InlineData("Never downgraded by `ResolveStatusCodeDefaultBadRequest`", false)]
+    public void The_resolver_disclaimer_reading_recognises_what_a_row_says_about_codes_it_does_not_protect(
+        string meaning,
+        bool isDisclaimer)
+    {
+        Assert.Equal(isDisclaimer, ResolverDisclaimer.IsMatch(meaning));
+    }
+
+    /// <summary>
+    /// The paragraph that opens section 8.23 lists the explicit <b>500</b> codes the default-400 resolver
+    /// honours, and the sentence after the table refers back to "the explicit 500 set above", so the
+    /// list is the one place a reader learns which codes are not rewritten. It is read against the
+    /// resolver's own answers, over every code <c>ErrorCodes</c> declares, so a code added to the protected
+    /// set (or dropped from it) fails here until the paragraph says so.
+    /// </summary>
+    [Fact]
+    public void The_paragraph_that_lists_the_explicit_500_set_lists_exactly_the_codes_the_resolver_keeps_at_500()
+    {
+        string[] kept =
+        [
+            .. DeclaredErrorCodes()
+                .Where(static code => ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(code) == 500)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        // A reading that found nothing would let the comparison below pass vacuously.
+        Assert.Contains(ErrorCodes.Hub.Error, kept);
+
+        Assert.Contains(ErrorCodes.Saga.WriteFailed, kept);
+
+        string paragraph = Assert.Single(
+            CatalogSection(ReadApi()).Split('\n'),
+            static line => line.Contains("`ResolveStatusCodeDefaultBadRequest` treats unmapped codes as", StringComparison.Ordinal));
+
+        Match list = Regex.Match(
+            paragraph,
+            @"explicit \*\*500\*\* mappings \((?<codes>[^)]*)\)",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(5));
+
+        Assert.True(list.Success, "The paragraph no longer lists the explicit 500 mappings in a parenthesis after 'explicit **500** mappings'.");
+
+        string[] documented =
+        [
+            .. BacktickedToken
+                .Matches(list.Groups["codes"].Value)
+                .Select(static match => match.Groups["token"].Value)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.True(
+            kept.SequenceEqual(documented, StringComparer.Ordinal),
+            "The explicit 500 set in the paragraph that opens section 8.23 is not the set ResolveStatusCodeDefaultBadRequest keeps at 500.\n"
+                + $"Resolver keeps: {string.Join(", ", kept)}\nParagraph lists: {string.Join(", ", documented)}");
+    }
+
     [Fact]
     public void A_section_cited_by_a_catalog_row_exists_and_documents_the_route_the_row_names()
     {
@@ -193,6 +370,14 @@ public sealed class ApiErrorCatalogDocumentationTests
 
         Assert.Contains("/api/mcp/tools/invoke", cited, StringComparison.Ordinal);
     }
+
+    /// <summary>Every code <c>ErrorCodes</c> declares, in any of its nested groups.</summary>
+    private static IEnumerable<string> DeclaredErrorCodes() =>
+        typeof(ErrorCodes)
+            .GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
+            .SelectMany(static group => group.GetFields(BindingFlags.Public | BindingFlags.Static))
+            .Where(static field => field is { IsLiteral: true } && field.FieldType == typeof(string))
+            .Select(static field => (string)field.GetRawConstantValue()!);
 
     private static IEnumerable<(string Code, int Status)> MapperArmedCodes()
     {

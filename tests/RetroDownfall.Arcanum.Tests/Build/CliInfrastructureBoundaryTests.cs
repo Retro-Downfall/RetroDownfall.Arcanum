@@ -12,9 +12,16 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// <para>The orientation file used to say the Cli "calls the running host's API rather than reaching
 /// into Infrastructure directly", which is true of the server-backed verbs and false of the local-only
 /// ones: <c>key</c>, <c>config</c>, <c>backup</c>, <c>setup</c>, <c>serve</c> and the rest read or write
-/// the installation on this machine and need no running host. A contributor who believed the sentence
-/// would route a new local verb through a new endpoint, or, worse, treat an Infrastructure reference
-/// in a server-backed handler as ordinary.</para>
+/// the installation on this machine and do not depend on a running host for that work. "Local-only"
+/// names the Infrastructure side and nothing else: <c>doctor</c>, <c>serve quit</c>,
+/// <c>completion resolve</c>, <c>data factory-reset</c>, <c>config</c> and <c>setup</c> also call a
+/// running host's API when there is one (the last two through <c>ConfigurationCommandService</c>, which
+/// asks the host first and falls back to the local bootstrap only when it cannot be reached), and the
+/// orientation file says so without a count, because a contributor who read "local-only" as "never
+/// calls the host" would treat that call as a violation, and a count of the verbs that do goes false the
+/// day one is added. A contributor who believed the old sentence would
+/// route a new local verb through a new endpoint, or, worse, treat an Infrastructure reference in a
+/// server-backed handler as ordinary.</para>
 /// <para>The inventory is the command handlers that name an Infrastructure type. Server-backed
 /// handlers do not appear in it, which is the claim the orientation file makes about them, so a new
 /// entry is a decision: either the verb is local-only and belongs in the list and in that file, or it
@@ -29,7 +36,9 @@ public sealed class CliInfrastructureBoundaryTests
 {
     /// <summary>
     /// The command-handler sources under <c>Commands</c> that name Infrastructure, each of them a verb
-    /// (or the plumbing of a verb) that works on the local installation without a running host. The
+    /// (or the plumbing of a verb) that works on the local installation directly. None of them requires
+    /// a running host for that work, and a few also call the host when one is up (see
+    /// <see cref="LocalOnlyVerbsThatAlsoReachTheHost"/>). The
     /// server-backed <c>mcp trust</c> is not among them: its confirmation preview is the host's own reading
     /// of its own <c>mcp.json</c> (<c>POST /api/mcp/trust-workspace/preview</c>), so the operator approves
     /// the bytes the host will trust even when the host is on another machine, and the CLI reads no file.
@@ -66,6 +75,67 @@ public sealed class CliInfrastructureBoundaryTests
         "Services/TheForgeLocalMutationRunner.cs",
     ];
 
+    /// <summary>
+    /// The local-only verbs the orientation file says also reach a running host, with the call in the
+    /// source that makes it true.
+    /// </summary>
+    public static TheoryData<string, string> LocalOnlyVerbsThatAlsoReachTheHost => new()
+    {
+        { "Commands/DoctorCommand.cs", "RequestHttpClientName" },
+        { "Commands/ServeCommand.cs", "QuitServerAsync" },
+        { "Services/CliCompletionResolver.cs", "apiClient.GetModelsAsync" },
+        { "Commands/InstallationFactoryResetCommand.cs", "PlanFactoryResetDataAsync" },
+
+        // config reads, validates and writes through the host when it answers, and setup plans and commits
+        // through the same service.
+        { "Services/ConfigurationCommandService.cs", ".GetConfigurationAsync(" },
+        { "Services/ConfigurationCommandService.cs", ".ValidateConfigurationAsync(" },
+        { "Services/ConfigurationCommandService.cs", ".UpdateConfigurationAsync(" },
+        { "Services/ConfigurationCommandService.cs", "CanUseLocalBootstrap" },
+        { "Services/Setup/SetupPlanner.cs", "IConfigurationCommandService" },
+    };
+
+    /// <summary>
+    /// What names a client of the running host: the typed API client, the HTTP client factory the
+    /// health probe uses, and the configuration service that asks the host first.
+    /// </summary>
+    private static readonly string[] HostClientTokens =
+    [
+        "ArcanumApiClient",
+        "IHttpClientFactory",
+        "IConfigurationCommandService",
+    ];
+
+    /// <summary>
+    /// The local-only handler sources that name a host client, each with the verb the orientation file
+    /// names for it. A handler that reaches the host through a service it calls (<c>completion resolve</c>
+    /// and <c>setup</c>) is pinned by <see cref="LocalOnlyVerbsThatAlsoReachTheHost"/> instead.
+    /// </summary>
+    private static readonly Dictionary<string, string> HostReachingHandlerVerbs = new(StringComparer.Ordinal)
+    {
+        ["Configuration/ConfigCommands.cs"] = "`config`",
+        ["DoctorCommand.cs"] = "`doctor`",
+        ["InstallationFactoryResetCommand.cs"] = "`data factory-reset`",
+        ["InstallationResetApplyBoundary.cs"] = "`data factory-reset`",
+        ["ServeCommand.cs"] = "`serve quit`",
+    };
+
+    [Theory]
+    [MemberData(nameof(LocalOnlyVerbsThatAlsoReachTheHost))]
+    public void A_local_only_verb_the_orientation_file_says_reaches_a_running_host_does(
+        string source,
+        string call)
+    {
+        string text = File.ReadAllText(
+            Path.Combine(
+                TestRepositoryPaths.RepositoryRoot(),
+                "src",
+                "RetroDownfall.Arcanum.Cli",
+                source.Replace('/', Path.DirectorySeparatorChar)));
+
+        Assert.Contains(call, text, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Only_local_only_command_handlers_name_Infrastructure()
     {
@@ -85,6 +155,49 @@ public sealed class CliInfrastructureBoundaryTests
         ];
 
         Assert.Equal(LocalOnlyHandlers.Order(StringComparer.Ordinal), naming);
+    }
+
+    /// <summary>
+    /// The list of local-only verbs that also reach a running host is complete as far as the handlers
+    /// show it: a local-only handler that names a host client is one the orientation file names, so a
+    /// host call added to <c>backup</c> or <c>key</c> fails here until the file says so.
+    /// </summary>
+    [Fact]
+    public void The_local_only_handlers_that_name_a_host_client_are_the_verbs_the_orientation_file_names()
+    {
+        string commands = Path.Combine(
+            TestRepositoryPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Cli",
+            "Commands");
+
+        string[] reaching =
+        [
+            .. LocalOnlyHandlers
+                .Where(handler => HostClientTokens.Any(token => File
+                    .ReadAllText(Path.Combine(commands, handler.Replace('/', Path.DirectorySeparatorChar)))
+                    .Contains(token, StringComparison.Ordinal)))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.True(
+            HostReachingHandlerVerbs.Keys.Order(StringComparer.Ordinal).SequenceEqual(reaching),
+            "A local-only handler now names (or no longer names) a client of the running host. Say so in the Cli line of AGENTS.md"
+                + " (the verbs that also call a host) and update HostReachingHandlerVerbs in this test. Handlers naming one: "
+                + string.Join(", ", reaching));
+
+        string cliLine = Assert.Single(
+            File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "AGENTS.md")).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'),
+            static line => line.StartsWith("- **`Cli`**", StringComparison.Ordinal));
+
+        string afterDependency = cliLine[cliLine.IndexOf("do not depend on a running host", StringComparison.Ordinal)..];
+
+        foreach ((string handler, string verb) in HostReachingHandlerVerbs)
+        {
+            Assert.True(
+                afterDependency.Contains(verb, StringComparison.Ordinal),
+                $"{handler} names a host client, and the Cli line of AGENTS.md does not name {verb} among the verbs that also call a host.");
+        }
     }
 
     /// <summary>
@@ -128,6 +241,24 @@ public sealed class CliInfrastructureBoundaryTests
             static line => line.StartsWith("- **`Cli`**", StringComparison.Ordinal));
 
         Assert.Contains("local-only verbs", cliLine, StringComparison.Ordinal);
+
+        // "Local-only" is about reaching Infrastructure, not about never calling the host: the line says
+        // the verbs do not depend on a running host, and names the ones that also call one, without a
+        // count that the next host call would make false.
+        Assert.DoesNotContain("need no host", cliLine, StringComparison.Ordinal);
+
+        Assert.DoesNotMatch(
+            new Regex(@"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) of them\b", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(5)),
+            cliLine);
+
+        Assert.Contains("do not depend on a running host", cliLine, StringComparison.Ordinal);
+
+        string afterDependency = cliLine[cliLine.IndexOf("do not depend on a running host", StringComparison.Ordinal)..];
+
+        foreach (string reaching in (string[])["`doctor`", "`serve quit`", "`completion resolve`", "`data factory-reset`", "`config`", "`setup`"])
+        {
+            Assert.Contains(reaching, afterDependency, StringComparison.Ordinal);
+        }
 
         foreach (string verb in (string[])["`key`", "`config`", "`doctor`", "`backup`", "`setup`"])
         {
@@ -188,6 +319,35 @@ public sealed class CliInfrastructureBoundaryTests
         ];
 
         Assert.Equal(ForgeInfrastructureUses.Order(StringComparer.Ordinal), naming);
+    }
+
+    /// <summary>
+    /// The Forge is an HTTP client with two named Infrastructure uses, and the design documents that
+    /// describe it say so instead of calling it HTTP-only, which the orientation file and the project
+    /// table already contradict.
+    /// </summary>
+    [Theory]
+    [InlineData("Arcanum.Engineering.md", "`TheForge.Core` / `TheForge.Ux`")]
+    [InlineData("Arcanum.Design.Human.md", "`RetroDownfall.TheForge.Core` and `.Ux`")]
+    public void A_design_document_row_for_the_Forge_names_its_Infrastructure_uses_and_does_not_call_it_HTTP_only(
+        string document,
+        string subject)
+    {
+        string text = File
+            .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", document))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        string row = Assert.Single(
+            text.Split('\n'),
+            line => line.StartsWith('|') && line.Contains(subject, StringComparison.Ordinal));
+
+        Assert.DoesNotContain("HTTP-only", row, StringComparison.Ordinal);
+
+        Assert.Contains("HTTP client", row, StringComparison.Ordinal);
+
+        Assert.Contains("mutation coordination", row, StringComparison.Ordinal);
+
+        Assert.Contains("outbound address policy", row, StringComparison.Ordinal);
     }
 
     [Theory]

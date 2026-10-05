@@ -646,6 +646,90 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("`Arcanum:Features:ScalarUi`", scalarRoute, StringComparison.Ordinal);
 
         Assert.Contains("default false", scalarRoute, StringComparison.Ordinal);
+
+        // The paragraph that says both are registered on the keyed group states the gate too, so it does
+        // not read as if Scalar were mapped unconditionally beside the always-mapped OpenAPI document.
+        string keyedGroup = Assert.Single(
+            lines,
+            static line => line.Contains("`MapScalarApiReference`", StringComparison.Ordinal));
+
+        Assert.Contains("`MapOpenApi`", keyedGroup, StringComparison.Ordinal);
+
+        Assert.Contains("`Arcanum:Features:ScalarUi`", keyedGroup, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("are registered on the same keyed group", keyedGroup, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>WebResearch.UnsupportedOperation</c> is what the native web workflows answer when
+    /// <c>Arcanum:Features:WebBrowsing</c> is off, and that is the cause an operator meets first, so the
+    /// catalog row names it beside the provider causes.
+    /// </summary>
+    [Fact]
+    public void The_api_catalog_says_WebResearch_UnsupportedOperation_also_means_the_web_workflows_are_off()
+    {
+        string workflow = ReadSource("Api", "Intelligence", "WebResearchWorkflowService.cs");
+
+        Assert.Contains("Native web workflows are disabled. Enable Arcanum:Features:WebBrowsing.", workflow, StringComparison.Ordinal);
+
+        string row = Assert.Single(
+            ReadDocument("Arcanum.API.md").Split('\n'),
+            static line => line.StartsWith("| `Lexicon.CurationUnavailable`; `WebResearch.MissingCredential`", StringComparison.Ordinal));
+
+        Assert.Contains("`Arcanum:Features:WebBrowsing`", row, StringComparison.Ordinal);
+
+        Assert.Contains("an unavailable provider or static reader", row, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The A2A server routes are mapped when <c>Arcanum:Features:A2AServer</c> is true, and the documents
+    /// say that flag alone gates them. The Conclave flag is derived from it, so a document that lists
+    /// both as conditions sends an operator to set a flag the host sets for them.
+    /// </summary>
+    [Fact]
+    public void The_a2a_server_routes_are_documented_as_gated_by_the_A2AServer_flag_alone()
+    {
+        // The three source facts the sentences below rest on.
+        string defaults = ReadSource("Core", "Configuration", "ArcanumRuntimeDefaults.cs");
+
+        Assert.Contains("Enabled = features.Conclave || a2a.Enabled,", defaults, StringComparison.Ordinal);
+
+        Assert.Contains("Enabled = serverEnabled || clientEnabled,", defaults, StringComparison.Ordinal);
+
+        string mapping = ReadSource("Api", "A2A", "A2AServerEndpoints.cs");
+
+        Assert.Contains("!startupSettings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ServerEnabled", mapping, StringComparison.Ordinal);
+
+        string[] apiLines = ReadDocument("Arcanum.API.md").Split('\n');
+
+        string[] routeRows =
+        [
+            .. apiLines.Where(static line =>
+                line.StartsWith("| — | `/api/conclave/a2a/*`", StringComparison.Ordinal)
+                || line.StartsWith("| `GET /api/conclave/a2a/agent-card`", StringComparison.Ordinal)
+                || line.StartsWith("| `POST /api/conclave/a2a`", StringComparison.Ordinal)),
+        ];
+
+        Assert.Equal(3, routeRows.Length);
+
+        foreach (string row in routeRows)
+        {
+            Assert.DoesNotContain("`Arcanum:Features:Conclave` and `Arcanum:Features:A2AServer` are true", row, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("`Arcanum:Features:Conclave && Arcanum:Features:A2AServer`", row, StringComparison.Ordinal);
+
+            Assert.Contains("`Arcanum:Features:A2AServer`", row, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("which derives `Arcanum:Features:Conclave`", routeRows[0], StringComparison.Ordinal);
+
+        Assert.Contains("which derives `Arcanum:Features:Conclave`", routeRows[1], StringComparison.Ordinal);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.DoesNotContain("The **only** gates are `Arcanum:Features:Conclave` plus", design, StringComparison.Ordinal);
+
+        Assert.Contains("either of which derives `Arcanum:Features:Conclave`", design, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -738,6 +822,58 @@ public sealed class DocumentationCodeContradictionTests
             missing.Count == 0,
             "The testing chapter of docs/Arcanum.DESIGN.md names identifiers that occur nowhere in the repository:\n"
                 + string.Join('\n', missing.Order(StringComparer.Ordinal)));
+    }
+
+    /// <summary>
+    /// The documents name the command framework the CLI uses, System.CommandLine, and not the one it
+    /// left. The testing chapter check above reads one chapter; this one reads every governed document,
+    /// because the stale vocabulary lived in the CLI composition and parsing sections, and it named a
+    /// type (<c>RepeatableOptionMerger</c>) that exists nowhere in the source.
+    /// </summary>
+    [Fact]
+    public void The_documents_do_not_name_the_command_framework_the_cli_left()
+    {
+        string root = TestRepositoryPaths.RepositoryRoot();
+
+        string[] documents =
+        [
+            Path.Combine(root, "README.md"),
+            Path.Combine(root, "AGENTS.md"),
+            .. Directory.EnumerateFiles(Path.Combine(root, "docs"), "*.md", SearchOption.TopDirectoryOnly),
+        ];
+
+        Regex retired = new(
+            @"\bCAF\b|ConsoleAppFramework|RepeatableOptionMerger",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(5));
+
+        List<string> offenders = [];
+
+        foreach (string document in documents)
+        {
+            string[] lines = File.ReadAllText(document).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+            for (int index = 0; index < lines.Length; index++)
+            {
+                Match match = retired.Match(lines[index]);
+
+                if (match.Success)
+                {
+                    offenders.Add($"{Path.GetRelativePath(root, document).Replace(Path.DirectorySeparatorChar, '/')}:{index + 1}: {match.Value}");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A document names the retired command framework or a type that exists nowhere:\n" + string.Join('\n', offenders));
+
+        // The sentences that replaced them name the behavior the run and watch tests pin.
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.Contains("A repeated flag accumulates into its array-valued option", design, StringComparison.Ordinal);
+
+        Assert.Contains("System.CommandLine command tree", design, StringComparison.Ordinal);
     }
 
     private static IEnumerable<string> CorpusFiles(string root)
