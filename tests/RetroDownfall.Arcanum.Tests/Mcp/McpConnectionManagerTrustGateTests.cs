@@ -1006,7 +1006,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         ScriptedMcpClient replacement = Assert.Single(clients.Created);
 
-        Assert.Same(replacement, entry.Client);
+        _ = Assert.IsType<McpClientGeneration>(entry.Client);
 
         Assert.Equal(0, replacement.DisposeCount);
     }
@@ -1051,7 +1051,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         ScriptedMcpClient started = Assert.Single(clients.Created);
 
-        Assert.Same(started, entry.Client);
+        _ = Assert.IsType<McpClientGeneration>(entry.Client);
 
         Assert.Equal(0, started.DisposeCount);
     }
