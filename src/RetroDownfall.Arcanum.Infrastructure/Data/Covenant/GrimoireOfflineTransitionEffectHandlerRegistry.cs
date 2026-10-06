@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal interface IGrimoireOfflineTransitionEffectHandler
 {
-
     /// <summary>The journal kind this handler answers for.</summary>
     GrimoireOfflineTransitionKind Kind { get; }
 
@@ -38,7 +37,8 @@ internal interface IGrimoireOfflineTransitionEffectHandler
     bool RequiresOrdinaryContinuation { get; }
 
     /// <summary>
-    /// Runs that ordinary work, once, inside the closed period's admitted ledger window.
+    /// Whether this transition still owes that ordinary work: refused when the kind requires it and the
+    /// run carries none, otherwise owed exactly until the journal records it.
     /// </summary>
     /// <remarks>
     /// Idempotent by consulting the journal rather than by being safe to repeat. Whether the
@@ -46,31 +46,18 @@ internal interface IGrimoireOfflineTransitionEffectHandler
     /// tell a run that completed it from one that crashed before starting it — both sit at the same
     /// phase, which is exactly the ambiguity a resumed transition has to resolve.
     ///
-    /// <para>The progress record is handed in and mutated rather than returned. Several of the paths
-    /// that reach here go on to fail, and a failure that has already changed the installation has to
-    /// keep saying so: a shape that carried progress back in the success value would drop it on
-    /// precisely the paths where it decides whether admission may reopen.</para>
+    /// <para>The coordinator runs owed work itself, once, inside the closed period's admitted ledger
+    /// window, and then records it in the journal. The window is the coordinator's to open and close:
+    /// it opens the promoted connection, runs the work, closes it, clears the pool and reports the
+    /// close, and handing the continuation straight to that window keeps it bound to exactly the
+    /// window that runs it.</para>
     /// </remarks>
-    Task<Result> RunOrdinaryContinuationAsync(
-        GrimoireOfflineTransitionEffectContext context,
-        CovenantErasureProgress progress,
-        CancellationToken cancellationToken);
-
+    /// <param name="continuationSupplied">Whether the run carries an ordinary continuation.</param>
+    /// <param name="continuationRecorded">Whether the journal already records the continuation as done.</param>
+    Result<bool> OwesOrdinaryContinuation(
+        bool continuationSupplied,
+        bool continuationRecorded);
 }
-
-/// <summary>
-/// What a handler is given to do its work with, and nothing else.
-/// </summary>
-/// <remarks>
-/// The ledger window is a delegate rather than a connection because the window is the coordinator's
-/// to open and close: it opens the promoted connection, runs the work, closes it, clears the pool and
-/// reports the close, and a handler that held the connection instead would hold it across a phase
-/// boundary the coordinator deliberately does not.
-/// </remarks>
-internal sealed record GrimoireOfflineTransitionEffectContext(
-    GrimoireOfflineTransitionPhaseSession Session,
-    Func<CancellationToken, Task<Result>>? OrdinaryContinuation,
-    Func<Func<CancellationToken, Task<Result>>, CancellationToken, Task<Result>> InLedgerWindow);
 
 /// <summary>
 /// The one handler both registered kinds are instances of.
@@ -86,7 +73,6 @@ internal sealed class CovenantOfflineTransitionEffectHandler(
     CovenantExclusiveOperation operation,
     bool requiresOrdinaryContinuation) : IGrimoireOfflineTransitionEffectHandler
 {
-
     public GrimoireOfflineTransitionKind Kind { get; } = kind;
 
     public byte PayloadVersion => 1;
@@ -95,61 +81,24 @@ internal sealed class CovenantOfflineTransitionEffectHandler(
 
     public bool RequiresOrdinaryContinuation { get; } = requiresOrdinaryContinuation;
 
-    public async Task<Result> RunOrdinaryContinuationAsync(
-        GrimoireOfflineTransitionEffectContext context,
-        CovenantErasureProgress progress,
-        CancellationToken cancellationToken)
+    public Result<bool> OwesOrdinaryContinuation(
+        bool continuationSupplied,
+        bool continuationRecorded)
     {
-
-        ArgumentNullException.ThrowIfNull(context);
-
-        ArgumentNullException.ThrowIfNull(progress);
-
         if (!RequiresOrdinaryContinuation)
         {
-
-            return Result.Success();
-
+            return false;
         }
 
-        if (context.OrdinaryContinuation is not { } continuation)
+        if (!continuationSupplied)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "A healthy-catalog factory erasure requires its ordinary cleanup continuation.");
-
         }
 
-        if (context.Session.OrdinaryFactoryContinuationCompleted)
-        {
-
-            return Result.Success();
-
-        }
-
-        // Ordinary database work — it rebuilds a retention plan and deletes through the ordinary
-        // store — so it needs the same admitted ledger window every other durable step of this closed
-        // period runs in.
-        Result continued = await context
-            .InLedgerWindow(continuation, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (continued.IsFailure)
-        {
-
-            return continued;
-
-        }
-
-        progress.DurablyMutated = true;
-
-        return await context.Session
-            .RecordFactoryContinuationAsync(cancellationToken)
-            .ConfigureAwait(false);
-
+        return !continuationRecorded;
     }
-
 }
 
 /// <summary>
@@ -169,7 +118,6 @@ internal sealed class CovenantOfflineTransitionEffectHandler(
 /// </remarks>
 internal sealed class GrimoireOfflineTransitionEffectHandlerRegistry
 {
-
     private readonly IReadOnlyDictionary<
         (GrimoireOfflineTransitionKind Kind, byte Version),
         IGrimoireOfflineTransitionEffectHandler> _handlers;
@@ -179,9 +127,7 @@ internal sealed class GrimoireOfflineTransitionEffectHandlerRegistry
             (GrimoireOfflineTransitionKind Kind, byte Version),
             IGrimoireOfflineTransitionEffectHandler> handlers)
     {
-
         _handlers = handlers;
-
     }
 
     /// <summary>Every pair this table answers for, which is what a closure assertion compares.</summary>
@@ -200,12 +146,9 @@ internal sealed class GrimoireOfflineTransitionEffectHandlerRegistry
     internal static Result<GrimoireOfflineTransitionEffectHandlerRegistry> Create(
         IEnumerable<IGrimoireOfflineTransitionEffectHandler> handlers)
     {
-
         if (handlers is null)
         {
-
             return Unregistered<GrimoireOfflineTransitionEffectHandlerRegistry>();
-
         }
 
         Dictionary<
@@ -214,25 +157,20 @@ internal sealed class GrimoireOfflineTransitionEffectHandlerRegistry
 
         foreach (IGrimoireOfflineTransitionEffectHandler? handler in handlers)
         {
-
             if (handler is null
                 || !Enum.IsDefined(handler.Kind)
                 || !Enum.IsDefined(handler.Operation)
                 || handler.PayloadVersion == 0
                 || !registrations.TryAdd((handler.Kind, handler.PayloadVersion), handler))
             {
-
                 return Unregistered<GrimoireOfflineTransitionEffectHandlerRegistry>();
-
             }
-
         }
 
         return registrations.Count == 0
             ? Unregistered<GrimoireOfflineTransitionEffectHandlerRegistry>()
             : Result<GrimoireOfflineTransitionEffectHandlerRegistry>.Success(
                 new GrimoireOfflineTransitionEffectHandlerRegistry(registrations));
-
     }
 
     /// <summary>The two kinds this build ships, which is the only composition production uses.</summary>
@@ -275,5 +213,4 @@ internal sealed class GrimoireOfflineTransitionEffectHandlerRegistry
             + "names, so it cannot run or resume that transition.");
 
     private static Result<T> Unregistered<T>() => Result<T>.Failure(Unregistered());
-
 }

@@ -18,14 +18,12 @@ namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 /// </remarks>
 public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
 {
-
     /// <summary>
     /// The effect table and the payload table answer for exactly the same pairs.
     /// </summary>
     [Fact]
     public void The_effect_table_is_closed_over_the_same_keys_as_the_payload_table()
     {
-
         GrimoireOfflineTransitionEffectHandlerRegistry effects = Production();
 
         // Every declared kind, at the one version this build ships, and nothing else. Stated as the
@@ -44,13 +42,10 @@ public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
 
         foreach ((GrimoireOfflineTransitionKind kind, byte version) in expected)
         {
-
             Assert.True(
                 GrimoireOfflineTransitionHandlerRegistry.Production.Resolve(kind, version).IsSuccess,
                 $"The payload table has no handler for the pair the effect table answers for: {kind}.");
-
         }
-
     }
 
     /// <summary>Each registered kind is the one durable operation it is allowed to be.</summary>
@@ -73,7 +68,6 @@ public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
         CovenantExclusiveOperation operation,
         bool ordinaryContinuation)
     {
-
         Result<IGrimoireOfflineTransitionEffectHandler> resolved = Production().Resolve(kind, 1);
 
         Assert.True(resolved.IsSuccess);
@@ -81,7 +75,63 @@ public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
         Assert.Equal(operation, resolved.Value.Operation);
 
         Assert.Equal(ordinaryContinuation, resolved.Value.RequiresOrdinaryContinuation);
+    }
 
+    /// <summary>
+    /// Ordinary work is owed only by a kind that requires it, and only until the journal records it.
+    /// </summary>
+    /// <remarks>
+    /// The kind says whether any is owed and the journal says whether it has been paid; the coordinator
+    /// runs what is owed inside its own ledger window. A reset owes nothing whatever it is handed, and a
+    /// factory erasure owes its continuation exactly while the journal's one-way sub-state is unset.
+    /// </remarks>
+    [Theory]
+    [InlineData(GrimoireOfflineTransitionKind.CovenantReset, false, false, false)]
+    [InlineData(GrimoireOfflineTransitionKind.CovenantReset, true, false, false)]
+    [InlineData(GrimoireOfflineTransitionKind.CovenantReset, false, true, false)]
+    [InlineData(GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure, true, false, true)]
+    [InlineData(GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure, true, true, false)]
+    internal void A_kind_owes_its_ordinary_work_only_until_the_journal_records_it(
+        GrimoireOfflineTransitionKind kind,
+        bool continuationSupplied,
+        bool continuationRecorded,
+        bool owed)
+    {
+        Result<IGrimoireOfflineTransitionEffectHandler> resolved = Production().Resolve(kind, 1);
+
+        Assert.True(resolved.IsSuccess);
+
+        Result<bool> decision = resolved.Value.OwesOrdinaryContinuation(
+            continuationSupplied,
+            continuationRecorded);
+
+        Assert.True(decision.IsSuccess);
+
+        Assert.Equal(owed, decision.Value);
+    }
+
+    /// <summary>
+    /// A factory erasure handed no continuation is refused as an invalid scope, whatever the journal
+    /// records, because the ordinary cleanup it owes cannot be skipped by omitting it.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    internal void A_factory_erasure_without_its_continuation_is_refused(bool continuationRecorded)
+    {
+        Result<IGrimoireOfflineTransitionEffectHandler> resolved = Production().Resolve(
+            GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            1);
+
+        Assert.True(resolved.IsSuccess);
+
+        Result<bool> decision = resolved.Value.OwesOrdinaryContinuation(
+            continuationSupplied: false,
+            continuationRecorded);
+
+        Assert.True(decision.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.InvalidScope, decision.Error.Code);
     }
 
     /// <summary>
@@ -100,7 +150,6 @@ public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
         GrimoireOfflineTransitionKind kind,
         byte version)
     {
-
         Result<IGrimoireOfflineTransitionEffectHandler> resolved = Production().Resolve(kind, version);
 
         Assert.True(resolved.IsFailure);
@@ -108,7 +157,6 @@ public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, resolved.Error.Code);
 
         Assert.DoesNotContain(kind.ToString(), resolved.Error.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -123,7 +171,6 @@ public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
     [Fact]
     public void A_table_that_cannot_answer_with_exactly_one_handler_is_refused()
     {
-
         Assert.True(
             GrimoireOfflineTransitionEffectHandlerRegistry.Create([]).IsFailure,
             "An empty effect table was composed.");
@@ -161,12 +208,10 @@ public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
                     requiresOrdinaryContinuation: false),
             ]).IsFailure,
             "A handler naming an undeclared operation was registered.");
-
     }
 
     private static GrimoireOfflineTransitionEffectHandlerRegistry Production()
     {
-
         Result<GrimoireOfflineTransitionEffectHandlerRegistry> created =
             GrimoireOfflineTransitionEffectHandlerRegistry.Create(
                 GrimoireOfflineTransitionEffectHandlerRegistry.Declared);
@@ -174,7 +219,5 @@ public sealed class GrimoireOfflineTransitionEffectHandlerRegistryTests
         Assert.True(created.IsSuccess, created.IsFailure ? created.Error.Message : null);
 
         return created.Value;
-
     }
-
 }

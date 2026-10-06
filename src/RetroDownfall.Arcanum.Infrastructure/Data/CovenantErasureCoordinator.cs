@@ -38,7 +38,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </remarks>
 internal interface ICovenantErasureTransition
 {
-
     /// <summary>
     /// Erases the canonical family in one exclusive initialized secure-delete transaction and reports
     /// the generation of the single new dataset it created.
@@ -140,62 +139,49 @@ internal interface ICovenantErasureTransition
         ICovenantExclusiveOperationLease lease,
         CovenantVerifiedCandidateState candidate,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>The checked fold of nonrevocable disclosure buckets preserved across local erasure.</summary>
 internal sealed record CovenantDisclosureExposure
 {
-
     internal CovenantDisclosureExposure(
         long possibleAttempts,
         CovenantDisclosureCountKind countKind)
     {
-
         if (possibleAttempts < 0)
         {
-
             throw new ArgumentOutOfRangeException(nameof(possibleAttempts));
-
         }
 
         if (countKind is not CovenantDisclosureCountKind.Exact
             and not CovenantDisclosureCountKind.LowerBound)
         {
-
             throw new ArgumentOutOfRangeException(nameof(countKind));
-
         }
 
         PossibleAttempts = possibleAttempts;
 
         CountKind = countKind;
-
     }
 
     internal long PossibleAttempts { get; }
 
     internal CovenantDisclosureCountKind CountKind { get; }
-
 }
 
 /// <summary>Effect-free facts retained from the complete pre-canonical inventory pass.</summary>
 internal sealed record CovenantErasureInventorySummary
 {
-
     internal CovenantErasureInventorySummary(
         long databaseArtifactCount,
         long managedFileArtifactCount,
         CovenantDisclosureExposure exposure)
     {
-
         ArgumentNullException.ThrowIfNull(exposure);
 
         if (databaseArtifactCount < 0 || managedFileArtifactCount < 0)
         {
-
             throw new ArgumentOutOfRangeException(nameof(databaseArtifactCount));
-
         }
 
         DatabaseArtifactCount = databaseArtifactCount;
@@ -203,7 +189,6 @@ internal sealed record CovenantErasureInventorySummary
         ManagedFileArtifactCount = managedFileArtifactCount;
 
         Exposure = exposure;
-
     }
 
     internal long DatabaseArtifactCount { get; }
@@ -211,24 +196,19 @@ internal sealed record CovenantErasureInventorySummary
     internal long ManagedFileArtifactCount { get; }
 
     internal CovenantDisclosureExposure Exposure { get; }
-
 }
 
 /// <summary>One raw-label keyset step and at most one database-kernel page.</summary>
 internal sealed record CovenantDatabaseErasureBatch
 {
-
     internal CovenantDatabaseErasureBatch(
         Guid? nextCursor,
         bool isComplete,
         CovenantProtectedArtifactErasurePage? page)
     {
-
         if (nextCursor == Guid.Empty || (!isComplete && nextCursor is null))
         {
-
             throw new ArgumentException("An incomplete database erasure batch requires a nonempty cursor.");
-
         }
 
         NextCursor = nextCursor;
@@ -236,7 +216,6 @@ internal sealed record CovenantDatabaseErasureBatch
         IsComplete = isComplete;
 
         Page = page;
-
     }
 
     internal Guid? NextCursor { get; }
@@ -244,13 +223,11 @@ internal sealed record CovenantDatabaseErasureBatch
     internal bool IsComplete { get; }
 
     internal CovenantProtectedArtifactErasurePage? Page { get; }
-
 }
 
 /// <summary>One raw-label keyset step and at most 256 managed-file kernel requests.</summary>
 internal sealed record CovenantManagedFileErasureBatch
 {
-
     private readonly CovenantManagedFileErasureRequest[] _requests;
 
     internal CovenantManagedFileErasureBatch(
@@ -258,21 +235,16 @@ internal sealed record CovenantManagedFileErasureBatch
         bool isComplete,
         IReadOnlyList<CovenantManagedFileErasureRequest> requests)
     {
-
         ArgumentNullException.ThrowIfNull(requests);
 
         if (nextCursor == Guid.Empty || (!isComplete && nextCursor is null))
         {
-
             throw new ArgumentException("An incomplete managed erasure batch requires a nonempty cursor.");
-
         }
 
         if (requests.Count > CovenantProtectedArtifactErasurePage.MaxItems)
         {
-
             throw new ArgumentOutOfRangeException(nameof(requests));
-
         }
 
         NextCursor = nextCursor;
@@ -280,7 +252,6 @@ internal sealed record CovenantManagedFileErasureBatch
         IsComplete = isComplete;
 
         _requests = [.. requests];
-
     }
 
     internal Guid? NextCursor { get; }
@@ -288,7 +259,6 @@ internal sealed record CovenantManagedFileErasureBatch
     internal bool IsComplete { get; }
 
     internal IReadOnlyList<CovenantManagedFileErasureRequest> Requests => _requests;
-
 }
 
 /// <summary>
@@ -296,7 +266,6 @@ internal sealed record CovenantManagedFileErasureBatch
 /// </summary>
 internal interface ICovenantErasureInventorySource
 {
-
     Task<Result<CovenantErasureInventorySummary>> PreflightBeforeCanonicalAsync(
         CovenantExclusiveOperation operation,
         Guid datasetGeneration,
@@ -325,7 +294,6 @@ internal interface ICovenantErasureInventorySource
 
     Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -344,7 +312,6 @@ internal sealed record CovenantErasureCheckpointState(
     CovenantResetPhase Phase,
     CovenantCanonicalDatasetTransition Dataset)
 {
-
     /// <summary>
     /// The exact gate identity this checkpoint describes, and the only one it may be resumed under.
     /// </summary>
@@ -377,15 +344,12 @@ internal sealed record CovenantErasureCheckpointState(
         ReadOnlySpan<byte> payload,
         out bool describesCovenantErasure)
     {
-
         describesCovenantErasure =
             checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion;
 
         if (!describesCovenantErasure)
         {
-
             return Unresumable();
-
         }
 
         Result<CovenantOfflineTransitionLaunchV4> decoded =
@@ -397,7 +361,6 @@ internal sealed record CovenantErasureCheckpointState(
                 operationId,
                 CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value),
                 DatasetTransition(decoded.Value.SourceDatasetGeneration, decoded.Value.SourceEpochs, decoded.Value.TargetDatasetGeneration, decoded.Value.TargetEpochs));
-
     }
 
     /// <summary>
@@ -414,12 +377,9 @@ internal sealed record CovenantErasureCheckpointState(
         int checkpointVersion,
         ReadOnlySpan<byte> payload)
     {
-
         if (checkpointVersion != DataRetentionFactoryTransitionLaunchV2.CurrentVersion)
         {
-
             return Unresumable();
-
         }
 
         Result<DataRetentionFactoryTransitionLaunchV2> decoded =
@@ -431,7 +391,6 @@ internal sealed record CovenantErasureCheckpointState(
                 operationId,
                 CovenantRecoveryCheckpointCodec.RecoveryOwner(decoded.Value),
                 DatasetTransition(decoded.Value.SourceDatasetGeneration, decoded.Value.SourceEpochs, decoded.Value.TargetDatasetGeneration, decoded.Value.TargetEpochs));
-
     }
 
     private static CovenantCanonicalDatasetTransition DatasetTransition(
@@ -471,7 +430,6 @@ internal sealed record CovenantErasureCheckpointState(
             new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "This Covenant erasure checkpoint cannot be resumed by this build."));
-
 }
 
 /// <summary>
@@ -492,10 +450,8 @@ internal sealed record CovenantErasureCompletion(
     CovenantDisclosureExposure Exposure,
     string? BlockingErrorCode)
 {
-
     /// <summary>The legacy projection, derived only from irreversible disclosure evidence.</summary>
     internal bool ExternalDisclosuresNotRevocable => Exposure.PossibleAttempts > 0;
-
 }
 
 /// <summary>
@@ -511,7 +467,6 @@ internal sealed record CovenantErasureCompletion(
 /// </remarks>
 internal enum CovenantErasureFaultBoundary : byte
 {
-
     /// <summary>Nothing of this phase has been published or performed.</summary>
     BeforePhaseBegin = 1,
 
@@ -523,7 +478,6 @@ internal enum CovenantErasureFaultBoundary : byte
 
     /// <summary>The completion landed; the next phase has not begun.</summary>
     AfterPhaseComplete = 4,
-
 }
 
 /// <summary>
@@ -622,7 +576,6 @@ internal sealed class CovenantErasureCoordinator(
     CovenantErasureFaultSeam? faultSeam = null,
     GrimoireOfflineTransitionTerminalSuffixFaultSeam? terminalSuffixFaultSeam = null)
 {
-
     /// <summary>
     /// How long the one reopening decision may take, on a token this coordinator owns.
     /// </summary>
@@ -762,7 +715,6 @@ internal sealed class CovenantErasureCoordinator(
         ICovenantClosedPeriodLedgerConnection ledgerConnection,
         ICovenantConnectionDrain drain)
     {
-
         private int _spent;
 
         private bool _ioClosed;
@@ -787,12 +739,9 @@ internal sealed class CovenantErasureCoordinator(
 
         internal async Task CloseIoAsync()
         {
-
             if (_ioClosed)
             {
-
                 return;
-
             }
 
             // Each ledger window already physically closes and clears its handle. Revoke the
@@ -802,19 +751,15 @@ internal sealed class CovenantErasureCoordinator(
             await lane.DisposeAsync().ConfigureAwait(false);
 
             _ioClosed = true;
-
         }
 
         internal async Task<Result> ReleaseAsync(
             CovenantExclusiveLeaseDisposition disposition,
             CancellationToken cancellationToken)
         {
-
             if (Interlocked.Exchange(ref _spent, 1) != 0)
             {
-
                 return Result.Success();
-
             }
 
             await CloseIoAsync().ConfigureAwait(false);
@@ -828,9 +773,7 @@ internal sealed class CovenantErasureCoordinator(
             await closingOwner.DisposeAsync().ConfigureAwait(false);
 
             return completed;
-
         }
-
     }
 
     /// <summary>
@@ -1068,7 +1011,6 @@ internal sealed class CovenantErasureCoordinator(
     /// <summary>The one in-progress or complete closure a run owns across its terminal suffix.</summary>
     private sealed class GrimoireClosureSlot
     {
-
         internal IGrimoireClosingOwner? ClosingOwner { get; set; }
 
         internal IGrimoireExclusiveClosedLease? ClosedLease { get; set; }
@@ -1078,7 +1020,6 @@ internal sealed class CovenantErasureCoordinator(
         internal IGrimoireScopedConnectionPermit? Permit { get; set; }
 
         internal CovenantGrimoireClosure? Closure { get; set; }
-
     }
 
     /// <summary>
@@ -1115,7 +1056,6 @@ internal sealed class CovenantErasureCoordinator(
         GrimoireClosureSlot? stranded,
         bool keepClosedOnFailure)
     {
-
         // The request that asked for this erasure runs it, so its own lease is in the set stage one
         // is about to wait on. Promotion takes that one lease out and binds this scope's exact
         // connection, which is what keeps the initiator able to reach the ledger while ordinary
@@ -1130,20 +1070,16 @@ internal sealed class CovenantErasureCoordinator(
 
         if (closing.IsFailure)
         {
-
             return Result<CovenantGrimoireClosure>.Failure(closing.Error);
-
         }
 
         IGrimoireClosingOwner closingOwner = closing.Value;
 
         if (!keepClosedOnFailure)
         {
-
             ArgumentNullException.ThrowIfNull(stranded);
 
             stranded.ClosingOwner = closingOwner;
-
         }
 
         Result drained;
@@ -1152,58 +1088,45 @@ internal sealed class CovenantErasureCoordinator(
 
         try
         {
-
             drained = await _admissionGate
                 .DrainRequestAndWorkAsync(closingOwner, cancellationToken)
                 .ConfigureAwait(false);
 
             if (drained.IsFailure)
             {
-
                 if (!keepClosedOnFailure
                     && _admissionGate.CurrentGeneration != closingOwner.Generation)
                 {
-
                     throw new GrimoireClosureRetainedException(
                         new CovenantErasureStepFailedException(drained.Error));
-
                 }
 
                 return keepClosedOnFailure
                     ? await AbandonClosingAsync(closingOwner, drained.Error).ConfigureAwait(false)
                     : Result<CovenantGrimoireClosure>.Failure(drained.Error);
-
             }
 
             closed = await _admissionGate
                 .CloseConnectionAdmissionAsync(closingOwner, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception failed) when (!keepClosedOnFailure)
         {
-
             if (failed is GrimoireClosureRetainedException)
             {
-
                 throw;
-
             }
 
             if (_admissionGate.CurrentGeneration != closingOwner.Generation)
             {
-
                 throw new GrimoireClosureRetainedException(failed);
-
             }
 
             throw;
-
         }
 
         if (closed.IsFailure)
         {
-
             // The owner is kept, not abandoned. Stage two commits the gate to Closed on a burned
             // generation before it waits on terminal callbacks and drains, so a failure here may
             // already be past the point of no return - and the gate's only route back to ordinary
@@ -1214,21 +1137,16 @@ internal sealed class CovenantErasureCoordinator(
             if (!keepClosedOnFailure
                 && _admissionGate.CurrentGeneration != closingOwner.Generation)
             {
-
                 throw new GrimoireClosureRetainedException(
                     new CovenantErasureStepFailedException(closed.Error));
-
             }
 
             return Result<CovenantGrimoireClosure>.Failure(closed.Error);
-
         }
 
         if (stranded is not null)
         {
-
             stranded.ClosedLease = closed.Value;
-
         }
 
         // Everything from here to the closure being handed back runs inside a catch. The lease is
@@ -1239,7 +1157,6 @@ internal sealed class CovenantErasureCoordinator(
         // any refusal, because even the retry the gate offers is then refused.
         try
         {
-
             Result<IGrimoireMaintenanceIoLane> lane = await closed.Value
                 .AcquireMaintenanceIoLaneAsync(
                     (laneOwner, _, token) => RevalidateAsync(lease, laneOwner, owner, token),
@@ -1248,29 +1165,23 @@ internal sealed class CovenantErasureCoordinator(
 
             if (lane.IsFailure)
             {
-
                 if (keepClosedOnFailure)
                 {
-
                     return await KeepIncompleteAuthenticatedGrimoireClosedAsync(
                         closed.Value,
                         closingOwner,
                         lane.Error).ConfigureAwait(false);
-
                 }
 
                 throw await KeepIncompleteGrimoireClosureClosedAsync(
                     stranded!,
                     closingOwner,
                     new CovenantErasureStepFailedException(lane.Error)).ConfigureAwait(false);
-
             }
 
             if (stranded is not null)
             {
-
                 stranded.Lane = lane.Value;
-
             }
 
             // The durable ledger is promoted and physically opened for the whole closed period, not
@@ -1281,24 +1192,20 @@ internal sealed class CovenantErasureCoordinator(
             // is the one way past an interceptor that is correctly saying no.
             if (_ledgerConnection.Connection is not SqliteConnection ledgerConnection)
             {
-
                 if (keepClosedOnFailure)
                 {
-
                     await lane.Value.DisposeAsync().ConfigureAwait(false);
 
                     return await KeepIncompleteAuthenticatedGrimoireClosedAsync(
                         closed.Value,
                         closingOwner,
                         MaintenanceFailure()).ConfigureAwait(false);
-
                 }
 
                 throw await KeepIncompleteGrimoireClosureClosedAsync(
                     stranded!,
                     closingOwner,
                     new CovenantErasureStepFailedException(MaintenanceFailure())).ConfigureAwait(false);
-
             }
 
             Result<IGrimoireScopedConnectionPermit> ledger =
@@ -1306,31 +1213,25 @@ internal sealed class CovenantErasureCoordinator(
 
             if (ledger.IsFailure)
             {
-
                 if (keepClosedOnFailure)
                 {
-
                     await lane.Value.DisposeAsync().ConfigureAwait(false);
 
                     return await KeepIncompleteAuthenticatedGrimoireClosedAsync(
                         closed.Value,
                         closingOwner,
                         ledger.Error).ConfigureAwait(false);
-
                 }
 
                 throw await KeepIncompleteGrimoireClosureClosedAsync(
                     stranded!,
                     closingOwner,
                     new CovenantErasureStepFailedException(ledger.Error)).ConfigureAwait(false);
-
             }
 
             if (stranded is not null)
             {
-
                 stranded.Permit = ledger.Value;
-
             }
 
             CovenantGrimoireClosure closure = new(
@@ -1343,16 +1244,13 @@ internal sealed class CovenantErasureCoordinator(
 
             if (stranded is not null)
             {
-
                 if (!ReferenceEquals(stranded.ClosingOwner, closingOwner)
                     || !ReferenceEquals(stranded.ClosedLease, closed.Value)
                     || !ReferenceEquals(stranded.Lane, lane.Value)
                     || !ReferenceEquals(stranded.Permit, ledger.Value))
                 {
-
                     throw new InvalidOperationException(
                         "A staged Grimoire authority changed before its closure was transferred.");
-
                 }
 
                 stranded.ClosingOwner = null;
@@ -1364,29 +1262,22 @@ internal sealed class CovenantErasureCoordinator(
                 stranded.Permit = null;
 
                 stranded.Closure = closure;
-
             }
 
             return Result<CovenantGrimoireClosure>.Success(closure);
-
         }
         catch (GrimoireClosureRetainedException)
         {
-
             throw;
-
         }
         catch (Exception failed)
         {
-
             if (!keepClosedOnFailure)
             {
-
                 throw await KeepIncompleteGrimoireClosureClosedAsync(
                     stranded!,
                     closingOwner,
                     failed).ConfigureAwait(false);
-
             }
 
             // Reopened and rethrown. The caller's own unwinding is entitled to see the exception it
@@ -1408,9 +1299,7 @@ internal sealed class CovenantErasureCoordinator(
                 + "Grimoire closure; ordinary admission remains closed.");
 
             throw;
-
         }
-
     }
 
     /// <summary>
@@ -1441,12 +1330,9 @@ internal sealed class CovenantErasureCoordinator(
         Func<CancellationToken, Task<T>> work,
         CancellationToken cancellationToken)
     {
-
         if (closure is null)
         {
-
             return await work(cancellationToken).ConfigureAwait(false);
-
         }
 
         Result<IGrimoireTrackedMaintenanceHandle> admitted = closure.Permit.AcquireOpen(
@@ -1457,9 +1343,7 @@ internal sealed class CovenantErasureCoordinator(
 
         if (admitted.IsFailure)
         {
-
             throw new CovenantErasureStepFailedException(admitted.Error);
-
         }
 
         await using IGrimoireTrackedMaintenanceHandle handle = admitted.Value;
@@ -1468,11 +1352,9 @@ internal sealed class CovenantErasureCoordinator(
 
         if (started.IsFailure)
         {
-
             _ = handle.ReportNotOpened();
 
             throw new CovenantErasureStepFailedException(started.Error);
-
         }
 
         T result = default!;
@@ -1483,7 +1365,6 @@ internal sealed class CovenantErasureCoordinator(
 
         try
         {
-
             // Through the ledger rather than on the connection object. A bare open here would run
             // none of this installation's connection policy, and the two pragmas it would silently
             // drop - secure_delete and foreign_keys - are the difference between an erasure that
@@ -1491,100 +1372,70 @@ internal sealed class CovenantErasureCoordinator(
             await closure.Ledger.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             result = await work(cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception workException)
         {
-
             workFailure = workException;
-
         }
         finally
         {
-
             bool closeCompleted = false;
 
             try
             {
-
                 await closure.LedgerConnection.CloseAsync().ConfigureAwait(false);
 
                 closeCompleted = true;
-
             }
             catch (Exception)
             {
-
                 cleanupError = MaintenanceFailure();
-
             }
 
             try
             {
-
                 if (closure.Drain.ClearExactPoolAfterClose(closure.LedgerConnection).IsFailure)
                 {
-
                     cleanupError = MaintenanceFailure();
-
                 }
-
             }
             catch (Exception)
             {
-
                 cleanupError = MaintenanceFailure();
-
             }
 
             if (closeCompleted)
             {
-
                 try
                 {
-
                     if (handle.ReportPhysicallyClosed().IsFailure)
                     {
-
                         cleanupError = MaintenanceFailure();
-
                     }
-
                 }
                 catch (Exception)
                 {
-
                     cleanupError = MaintenanceFailure();
-
                 }
-
             }
-
         }
 
         if (workFailure is DataRetentionLeaseLostException or OperationCanceledException)
         {
-
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(workFailure).Throw();
-
         }
 
         if (cleanupError is { } failed)
         {
-
             throw new CovenantErasureStepFailedException(failed);
-
         }
 
         if (workFailure is not null)
         {
-
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(workFailure).Throw();
-
         }
 
         return result;
-
     }
 
     /// <summary>
@@ -1664,10 +1515,8 @@ internal sealed class CovenantErasureCoordinator(
 
             if (closeCompleted)
             {
-
                 try
                 {
-
                     if (handle.ReportPhysicallyClosed().IsFailure)
                     {
                         cleanupError = MaintenanceFailure();
@@ -1835,34 +1684,26 @@ internal sealed class CovenantErasureCoordinator(
             IGrimoireClosingOwner closingOwner,
             Exception failure)
     {
-
         try
         {
-
             if (stranded.Permit is { } permit)
             {
-
                 await permit.DisposeAsync().ConfigureAwait(false);
 
                 stranded.Permit = null;
-
             }
 
             if (stranded.Lane is { } lane)
             {
-
                 await lane.DisposeAsync().ConfigureAwait(false);
 
                 stranded.Lane = null;
-
             }
 
             if (stranded.ClosedLease is not { } closed)
             {
-
                 return new GrimoireClosureRetainedException(
                     new CovenantErasureStepFailedException(MaintenanceFailure()));
-
             }
 
             Result kept = await closed
@@ -1873,10 +1714,8 @@ internal sealed class CovenantErasureCoordinator(
 
             if (kept.IsFailure)
             {
-
                 return new GrimoireClosureRetainedException(
                     new CovenantErasureStepFailedException(MaintenanceFailure()));
-
             }
 
             await closed.DisposeAsync().ConfigureAwait(false);
@@ -1887,21 +1726,15 @@ internal sealed class CovenantErasureCoordinator(
 
             if (ReferenceEquals(stranded.ClosingOwner, closingOwner))
             {
-
                 stranded.ClosingOwner = null;
-
             }
 
             return new GrimoireClosureRetainedException(failure);
-
         }
         catch (Exception cleanupFailure)
         {
-
             return new GrimoireClosureRetainedException(cleanupFailure);
-
         }
-
     }
 
     /// <summary>Lets go of a half-taken closure so ordinary admission is not left shut behind it.</summary>
@@ -1909,11 +1742,9 @@ internal sealed class CovenantErasureCoordinator(
         IGrimoireClosingOwner closingOwner,
         Error error)
     {
-
         await closingOwner.DisposeAsync().ConfigureAwait(false);
 
         return Result<CovenantGrimoireClosure>.Failure(error);
-
     }
 
     /// <summary>Keeps authenticated recovery closed when its complete closure cannot be reconstructed.</summary>
@@ -1923,7 +1754,6 @@ internal sealed class CovenantErasureCoordinator(
             IGrimoireClosingOwner closingOwner,
             Error error)
     {
-
         _ = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.KeepClosed,
             CancellationToken.None).ConfigureAwait(false);
@@ -1931,7 +1761,6 @@ internal sealed class CovenantErasureCoordinator(
         await closed.DisposeAsync().ConfigureAwait(false);
 
         return await AbandonClosingAsync(closingOwner, error).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -2019,7 +1848,6 @@ internal sealed class CovenantErasureCoordinator(
         AuthenticatedCovenantErasureRecoveryAdmission? authenticatedAdmission,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         ArgumentNullException.ThrowIfNull(checkpoint);
@@ -2028,23 +1856,19 @@ internal sealed class CovenantErasureCoordinator(
             || requiredOperation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
                 && factoryContinuation is null)
         {
-
             return Result<CovenantErasureCompletion>.Failure(
                 new Error(
                     ErrorCodes.Covenant.InvalidScope,
                     requiredOperation == CovenantExclusiveOperation.CovenantReset
                         ? "The reset erasure entry point accepts only a Covenant reset."
                         : "A healthy-catalog factory erasure requires its ordinary cleanup continuation."));
-
         }
 
         Result admissible = RequireResumableCheckpoint(operation, checkpoint);
 
         if (admissible.IsFailure)
         {
-
             return Result<CovenantErasureCompletion>.Failure(admissible.Error);
-
         }
 
         CovenantExclusiveRecoveryOwner owner = new(
@@ -2100,12 +1924,10 @@ internal sealed class CovenantErasureCoordinator(
 
             if (datasetGeneration is null || datasetGeneration == Guid.Empty)
             {
-
                 return Result<CovenantErasureCompletion>.Failure(
                     new Error(
                         ErrorCodes.Covenant.IntegrityFailure,
                         "The exclusive Covenant lease did not capture a dataset generation."));
-
             }
 
             Result<CovenantArtifactErasureAuthority> authority =
@@ -2113,9 +1935,7 @@ internal sealed class CovenantErasureCoordinator(
 
             if (authority.IsFailure)
             {
-
                 return Result<CovenantErasureCompletion>.Failure(authority.Error);
-
             }
 
             // Claimed for the length of the run because the durable lease stops being renewed once the
@@ -2123,12 +1943,10 @@ internal sealed class CovenantErasureCoordinator(
             // apparently abandoned row and starting a second recovery beside this one.
             if (!ownership.TryClaim(operation.Id, out Guid claim))
             {
-
                 return Result<CovenantErasureCompletion>.Failure(
                     new Error(
                         ErrorCodes.Covenant.LifecycleConflict,
                         "This process is already running the operation this erasure was asked to run."));
-
             }
 
             try
@@ -2146,13 +1964,10 @@ internal sealed class CovenantErasureCoordinator(
                     preparedGrimoire,
                     authenticatedAdmission?.Evidence.Journal,
                     cancellationToken).ConfigureAwait(false);
-
             }
             finally
             {
-
                 _ = ownership.Release(operation.Id, claim);
-
             }
         }
         finally
@@ -2189,12 +2004,10 @@ internal sealed class CovenantErasureCoordinator(
         GrimoireOfflineTransitionRecoveryEvidence? authenticatedEvidence,
         CancellationToken cancellationToken)
     {
-
         GrimoireClosureSlot stranded = new() { Closure = preparedGrimoire };
 
         try
         {
-
             return await RunClosedAsync(
                 operation,
                 checkpoint,
@@ -2207,24 +2020,18 @@ internal sealed class CovenantErasureCoordinator(
                 preparedGrimoire,
                 authenticatedEvidence,
                 cancellationToken).ConfigureAwait(false);
-
         }
         finally
         {
-
             if (stranded.Closure is { } unspent)
             {
-
                 _ = await unspent
                     .ReleaseAsync(
                         CovenantExclusiveLeaseDisposition.KeepClosed,
                         CancellationToken.None)
                     .ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private async Task<Result<CovenantErasureCompletion>> RunClosedAsync(
@@ -2240,7 +2047,6 @@ internal sealed class CovenantErasureCoordinator(
         GrimoireOfflineTransitionRecoveryEvidence? authenticatedEvidence,
         CancellationToken cancellationToken)
     {
-
         CovenantErasureCheckpointState state = checkpoint;
 
         // Spent in the terminal suffix beside the Covenant lease, and kept closed by the unwind below
@@ -2270,7 +2076,6 @@ internal sealed class CovenantErasureCoordinator(
 
         try
         {
-
             // Quiescing is not a phase. It is idempotent, it writes nothing, and it has to happen
             // before the first artifact is touched: the disclosure writer is the one component still
             // able to append after admission closed, and a receipt appended over a row this erasure is
@@ -2286,7 +2091,6 @@ internal sealed class CovenantErasureCoordinator(
             // it had a phase to run would have given that edge up for nothing.
             if (quiesced.IsSuccess)
             {
-
                 // Authority order, and the order matters: the held installation lock, then the
                 // validated launch binding, then the exact Covenant lease, then the journal. A
                 // journal opened before the lease would be durable authority for an operation that
@@ -2305,7 +2109,6 @@ internal sealed class CovenantErasureCoordinator(
 
                 if (opened.IsSuccess)
                 {
-
                     phases = opened.Value;
 
                     Result<IGrimoireOfflineTransitionEffectHandler> resolved = _effects.Resolve(
@@ -2314,9 +2117,7 @@ internal sealed class CovenantErasureCoordinator(
 
                     if (resolved.IsFailure)
                     {
-
                         throw new CovenantErasureStepFailedException(resolved.Error);
-
                     }
 
                     effect = resolved.Value;
@@ -2329,13 +2130,11 @@ internal sealed class CovenantErasureCoordinator(
                     if (effect.Operation != state.Operation
                         || effect.Operation != phases.Launch.Operation)
                     {
-
                         throw new CovenantErasureStepFailedException(
                             new Error(
                                 ErrorCodes.Covenant.InvalidScope,
                                 "An authenticated offline transition names a kind whose effect is not "
                                 + "the operation this run claims to be."));
-
                     }
 
                     // The journal says how far this transition got, not the row. The row records what
@@ -2355,7 +2154,6 @@ internal sealed class CovenantErasureCoordinator(
 
                     if (quiesced.IsSuccess)
                     {
-
                         // The Grimoire's own closure is the last item of the authority order, and it
                         // is held for the whole closed period: it is what every database open below
                         // is performed under, and a second closure part-way through would invalidate
@@ -2388,24 +2186,17 @@ internal sealed class CovenantErasureCoordinator(
                                 _maintenanceConnections,
                                 _maintenancePaths,
                                 _passphrase);
-
                         }
-
                     }
-
                 }
                 else
                 {
-
                     quiesced = Result.Failure(opened.Error);
-
                 }
-
             }
 
             if (quiesced.IsFailure)
             {
-
                 return await AbortBeforeErasureOrRetainAuthenticatedAsync(
                     operation,
                     state,
@@ -2417,7 +2208,6 @@ internal sealed class CovenantErasureCoordinator(
                     stranded,
                     authenticatedEvidence is not null,
                     quiesced.Error).ConfigureAwait(false);
-
             }
 
             // The pre-canonical preflight asks a question about the family this transition is about
@@ -2428,15 +2218,12 @@ internal sealed class CovenantErasureCoordinator(
             // exposure is read on its own and the replacement is replayed to converge.
             if (maintenance is null || phases is null || effect is null)
             {
-
                 throw new CovenantErasureStepFailedException(MaintenanceFailure());
-
             }
 
             if (state.Phase == CovenantResetPhase.InventoryPrepared
                 && phases?.InFlightPhase is not CovenantResetPhase.CanonicalApplied)
             {
-
                 Result<CovenantErasureInventorySummary> inventory = await _inventory
                     .PreflightBeforeCanonicalAsync(
                         state.Operation,
@@ -2447,7 +2234,6 @@ internal sealed class CovenantErasureCoordinator(
 
                 if (inventory.IsFailure)
                 {
-
                     return await AbortBeforeErasureOrRetainAuthenticatedAsync(
                         operation,
                         state,
@@ -2459,44 +2245,34 @@ internal sealed class CovenantErasureCoordinator(
                         stranded,
                         authenticatedEvidence is not null,
                         inventory.Error).ConfigureAwait(false);
-
                 }
 
                 progress.Exposure = inventory.Value.Exposure;
-
             }
             else
             {
-
                 Result<CovenantDisclosureExposure> exposure = await _inventory
                     .ReadDisclosureExposureAsync(maintenance, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (exposure.IsFailure)
                 {
-
                     throw new CovenantErasureStepFailedException(exposure.Error);
-
                 }
 
                 progress.Exposure = exposure.Value;
 
                 if (resumedAtCanonical || phases?.InFlightPhase is CovenantResetPhase.CanonicalApplied)
                 {
-
                     Result managedPreflight = await _inventory
                         .PreflightRemainingManagedAsync(maintenance, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (managedPreflight.IsFailure)
                     {
-
                         throw new CovenantErasureStepFailedException(managedPreflight.Error);
-
                     }
-
                 }
-
             }
 
             // The journal and the Grimoire closure both exist from here on: the quiesce succeeded,
@@ -2505,9 +2281,7 @@ internal sealed class CovenantErasureCoordinator(
             // against, and a run that reached this point without them has no authority to erase.
             if (phases is null || maintenance is null)
             {
-
                 throw new CovenantErasureStepFailedException(MaintenanceFailure());
-
             }
 
             state = await AdvanceAsync(
@@ -2516,7 +2290,6 @@ internal sealed class CovenantErasureCoordinator(
                 CovenantResetPhase.CanonicalApplied,
                 async (_, token) =>
                 {
-
                     Result erased = await WithLedgerAsync(
                         closure,
                         ledgerToken => EraseDatabaseArtifactsAsync(
@@ -2529,9 +2302,7 @@ internal sealed class CovenantErasureCoordinator(
 
                     if (erased.IsFailure)
                     {
-
                         return Result.Failure(erased.Error);
-
                     }
 
                     progress.EffectAttempted = true;
@@ -2541,7 +2312,6 @@ internal sealed class CovenantErasureCoordinator(
                         .ConfigureAwait(false);
 
                     return applied.IsFailure ? Result.Failure(applied.Error) : Result.Success();
-
                 },
                 progress,
                 cancellationToken).ConfigureAwait(false);
@@ -2566,19 +2336,38 @@ internal sealed class CovenantErasureCoordinator(
             // and whether it has already been paid is the journal's. Neither is inferred here: the
             // phase window cannot tell a run that completed the continuation from one that crashed
             // before starting it, because both sit at the same phase.
-            Result continued = await effect.RunOrdinaryContinuationAsync(
-                new GrimoireOfflineTransitionEffectContext(
-                    phases,
-                    factoryContinuation,
-                    (work, token) => WithLedgerAsync(closure, work, token)),
-                progress,
-                cancellationToken).ConfigureAwait(false);
+            Result<bool> owed = effect.OwesOrdinaryContinuation(
+                factoryContinuation is not null,
+                phases.OrdinaryFactoryContinuationCompleted);
 
-            if (continued.IsFailure)
+            if (owed.IsFailure)
             {
+                throw new CovenantErasureStepFailedException(owed.Error);
+            }
 
-                throw new CovenantErasureStepFailedException(continued.Error);
+            if (owed.Value && factoryContinuation is not null)
+            {
+                // Ordinary database work — it rebuilds a retention plan and deletes through the
+                // ordinary store — so it runs in the same admitted ledger window every other durable
+                // step of this closed period runs in, handed straight to that window.
+                Result continued = await WithLedgerAsync(closure, factoryContinuation, cancellationToken)
+                    .ConfigureAwait(false);
 
+                if (continued.IsFailure)
+                {
+                    throw new CovenantErasureStepFailedException(continued.Error);
+                }
+
+                progress.DurablyMutated = true;
+
+                Result recorded = await phases
+                    .RecordFactoryContinuationAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (recorded.IsFailure)
+                {
+                    throw new CovenantErasureStepFailedException(recorded.Error);
+                }
             }
 
             state = await AdvanceAsync(
@@ -2633,17 +2422,13 @@ internal sealed class CovenantErasureCoordinator(
 
             if (verified.IsFailure)
             {
-
                 throw new CovenantErasureStepFailedException(verified.Error);
-
             }
 
             candidate = verified.Value;
-
         }
         catch (GrimoireClosureRetainedException retained)
         {
-
             return await RetainInterruptedGrimoireClosureAsync(
                 operation,
                 state,
@@ -2651,16 +2436,13 @@ internal sealed class CovenantErasureCoordinator(
                 progress,
                 phases,
                 retained).ConfigureAwait(false);
-
         }
         catch (CovenantErasureStepFailedException failed)
         {
-
             bool effectOutcomeUncertain = progress.EffectAttempted || progress.DurablyMutated;
 
             if (effectOutcomeUncertain)
             {
-
                 // The refusing step's own sentence travels with the code. One code covers several
                 // steps — MaintenanceFailed alone is emitted by the drain and by three points of the
                 // canonical transaction — so the warning retains the exact failed step.
@@ -2682,7 +2464,6 @@ internal sealed class CovenantErasureCoordinator(
                     failed.Error.Code,
                         phases,
                         closure).ConfigureAwait(false);
-
             }
 
             // When no in-memory effect was observed, the durable journal still owns the final
@@ -2699,11 +2480,9 @@ internal sealed class CovenantErasureCoordinator(
                 stranded,
                 authenticatedEvidence is not null,
                 failed.Error).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             Error interrupted = MaintenanceFailure();
 
             return progress.EffectAttempted || progress.DurablyMutated
@@ -2728,17 +2507,13 @@ internal sealed class CovenantErasureCoordinator(
                     stranded,
                     authenticatedEvidence is not null,
                     interrupted).ConfigureAwait(false);
-
         }
         catch (DataRetentionLeaseLostException)
         {
-
             throw;
-
         }
         catch (Exception)
         {
-
             Error interrupted = MaintenanceFailure();
 
             return progress.EffectAttempted || progress.DurablyMutated
@@ -2763,7 +2538,6 @@ internal sealed class CovenantErasureCoordinator(
                     stranded,
                     authenticatedEvidence is not null,
                     interrupted).ConfigureAwait(false);
-
         }
 
         // The caller no longer owns cancellation after the immutable proof succeeds. The checkpoint,
@@ -2774,7 +2548,6 @@ internal sealed class CovenantErasureCoordinator(
 
         try
         {
-
             // ReopenedVerified records that a proof succeeded, not the proof object itself, and a
             // resumed pass has no value to recover from it either way — so it repeats the immutable
             // verification rather than trusting a recorded phase. The ordering is still checked,
@@ -2782,26 +2555,20 @@ internal sealed class CovenantErasureCoordinator(
             // not happen.
             if (state.Phase < CovenantResetPhase.ReopenedVerified)
             {
-
                 Result ordered = CovenantResetPhaseMachine.RequireAdvance(
                     state.Phase,
                     CovenantResetPhase.ReopenedVerified);
 
                 if (ordered.IsFailure)
                 {
-
                     throw new CovenantErasureStepFailedException(ordered.Error);
-
                 }
 
                 state = state with { Phase = CovenantResetPhase.ReopenedVerified };
-
             }
-
         }
         catch (CovenantErasureStepFailedException failed)
         {
-
             _logger.LogWarning(
                 "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
                 + "with {ErrorCode}: {ErrorMessage}; admission stays closed.",
@@ -2820,11 +2587,9 @@ internal sealed class CovenantErasureCoordinator(
                 failed.Error.Code,
                     phases,
                     closure).ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             Error interrupted = MaintenanceFailure();
 
             return await CloseAsync(
@@ -2837,7 +2602,6 @@ internal sealed class CovenantErasureCoordinator(
                 interrupted.Code,
                     phases,
                     closure).ConfigureAwait(false);
-
         }
 
         // The erasure is proven. Everything below can still fail, and none of it can make the erasure
@@ -2854,7 +2618,6 @@ internal sealed class CovenantErasureCoordinator(
 
         if (published.IsFailure)
         {
-
             _logger.LogWarning(
                 "The Covenant authority transition for durable operation {OperationId} did not publish; "
                 + "old contexts stay unusable and admission stays closed.",
@@ -2870,7 +2633,6 @@ internal sealed class CovenantErasureCoordinator(
                 published.Error.Code,
                     phases,
                     closure).ConfigureAwait(false);
-
         }
 
         // Ready-but-cold restoration opens no ordinary handle while Grimoire is closed. A restart
@@ -2889,7 +2651,6 @@ internal sealed class CovenantErasureCoordinator(
 
         if (writer.IsFailure)
         {
-
             return await CloseAsync(
                 operation,
                 state,
@@ -2900,7 +2661,6 @@ internal sealed class CovenantErasureCoordinator(
                 writer.Error.Code,
                     phases,
                     closure).ConfigureAwait(false);
-
         }
 
         CovenantExclusiveLeaseDisposition disposition = CovenantExclusiveDisposition.Select(
@@ -2920,7 +2680,6 @@ internal sealed class CovenantErasureCoordinator(
             blockingErrorCode: null,
             phases,
             closure).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -2934,43 +2693,34 @@ internal sealed class CovenantErasureCoordinator(
         GrimoireOfflineTransitionPhaseSession? phases,
         Exception failure)
     {
-
         using CancellationTokenSource retention = new(DispositionBound, _timeProvider);
 
         Result parked;
 
         try
         {
-
             parked = phases is null
                 ? Result.Failure(MaintenanceFailure())
                 : await phases.ParkAsync(retention.Token).ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             parked = Result.Failure(MaintenanceFailure());
-
         }
 
         Result covenant;
 
         try
         {
-
             covenant = await lease
                 .CompleteAsync(
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     retention.Token)
                 .ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             covenant = Result.Failure(MaintenanceFailure());
-
         }
 
         _logger.LogWarning(
@@ -2983,9 +2733,7 @@ internal sealed class CovenantErasureCoordinator(
 
         if (parked.IsFailure || covenant.IsFailure)
         {
-
             return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
         }
 
         return Result<CovenantErasureCompletion>.Success(
@@ -2995,7 +2743,6 @@ internal sealed class CovenantErasureCoordinator(
                 progress.LocalSecureErasureComplete,
                 progress.Exposure,
                 ErrorCodes.Covenant.MaintenanceFailed));
-
     }
 
     /// <summary>
@@ -3015,10 +2762,8 @@ internal sealed class CovenantErasureCoordinator(
             bool authenticatedRecovery,
             Error error)
     {
-
         if (!authenticatedRecovery)
         {
-
             return await AbortBeforeErasureAsync(
                 operation,
                 checkpoint,
@@ -3029,7 +2774,6 @@ internal sealed class CovenantErasureCoordinator(
                 closure,
                 stranded,
                 error).ConfigureAwait(false);
-
         }
 
         if (phases is not null && closure is not null)
@@ -3055,14 +2799,11 @@ internal sealed class CovenantErasureCoordinator(
                 error.Code,
                 phases,
                 closure).ConfigureAwait(false);
-
         }
 
         if (closure is null)
         {
-
             return Result<CovenantErasureCompletion>.Failure(error);
-
         }
 
         _logger.LogWarning(
@@ -3078,52 +2819,41 @@ internal sealed class CovenantErasureCoordinator(
 
         try
         {
-
             grimoire = await closure
                 .ReleaseAsync(
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     retention.Token)
                 .ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             grimoire = Result.Failure(MaintenanceFailure());
-
         }
         finally
         {
-
             // ReleaseAsync is one-shot even when its physical cleanup fails. Keeping the slot would
             // only issue a misleading second success from the run-level finally.
             stranded.Closure = null;
-
         }
 
         Result covenant;
 
         try
         {
-
             covenant = await lease
                 .CompleteAsync(
                     CovenantExclusiveLeaseDisposition.KeepClosed,
                     retention.Token)
                 .ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             covenant = Result.Failure(MaintenanceFailure());
-
         }
 
         return grimoire.IsFailure || covenant.IsFailure
             ? Result<CovenantErasureCompletion>.Failure(MaintenanceFailure())
             : Result<CovenantErasureCompletion>.Failure(error);
-
     }
 
     /// <summary>
@@ -3147,24 +2877,19 @@ internal sealed class CovenantErasureCoordinator(
         GrimoireClosureSlot stranded,
         Error error)
     {
-
         using CancellationTokenSource restoration = new(WriterRestorationBound, _timeProvider);
 
         Result restored;
 
         try
         {
-
             restored = await _disclosureWriter
                 .ReopenAsync(restoration.Token)
                 .ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             restored = Result.Failure(MaintenanceFailure());
-
         }
 
         CovenantExclusiveLeaseDisposition disposition = restored.IsSuccess
@@ -3191,15 +2916,12 @@ internal sealed class CovenantErasureCoordinator(
         if (completion.IsSuccess
             && completion.Value.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen)
         {
-
             _logger.LogWarning(
                 "A Covenant erasure aborted before any artifact was touched with {ErrorCode}; admission reopens.",
                 error.Code);
-
         }
         else if (completion.IsSuccess)
         {
-
             _logger.LogWarning(
                 "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
                 + "with {ErrorCode}: {ErrorMessage}; admission stays closed.",
@@ -3207,11 +2929,9 @@ internal sealed class CovenantErasureCoordinator(
                 operation.Id,
                 error.Code,
                 error.Message);
-
         }
 
         return completion;
-
     }
 
     private async Task<Result> EraseDatabaseArtifactsAsync(
@@ -3221,36 +2941,29 @@ internal sealed class CovenantErasureCoordinator(
         CovenantErasureProgress progress,
         CancellationToken cancellationToken)
     {
-
         Guid? cursor = null;
 
         while (true)
         {
-
             Result<CovenantDatabaseErasureBatch> batch = await _inventory
                 .ReadNextDatabaseBatchAsync(datasetGeneration, cursor, maintenance, cancellationToken)
                 .ConfigureAwait(false);
 
             if (batch.IsFailure)
             {
-
                 return Result.Failure(batch.Error);
-
             }
 
             if (!batch.Value.IsComplete && batch.Value.NextCursor == cursor)
             {
-
                 return Result.Failure(
                     new Error(
                         ErrorCodes.Covenant.IntegrityFailure,
                         "A bounded Covenant database inventory page did not advance its cursor."));
-
             }
 
             if (batch.Value.Page is { } page)
             {
-
                 progress.EffectAttempted = true;
 
                 Result<CovenantArtifactErasureProgress> erased = await _artifacts
@@ -3259,41 +2972,30 @@ internal sealed class CovenantErasureCoordinator(
 
                 if (erased.IsFailure)
                 {
-
                     return Result.Failure(erased.Error);
-
                 }
 
                 if (erased.Value.ErasedCount > 0)
                 {
-
                     progress.DurablyMutated = true;
-
                 }
 
                 if (erased.Value.IsBlocked)
                 {
-
                     return Result.Failure(
                         new Error(
                             ErrorCodes.Covenant.ManualArtifactErasureRequired,
                             "A protected artifact could not be erased, so the canonical erasure did not run."));
-
                 }
-
             }
 
             if (batch.Value.IsComplete)
             {
-
                 return Result.Success();
-
             }
 
             cursor = batch.Value.NextCursor;
-
         }
-
     }
 
     private async Task<Result> EraseManagedFilesAsync(
@@ -3303,36 +3005,29 @@ internal sealed class CovenantErasureCoordinator(
         CovenantErasureProgress progress,
         CancellationToken cancellationToken)
     {
-
         Guid? cursor = null;
 
         while (true)
         {
-
             Result<CovenantManagedFileErasureBatch> batch = await _inventory
                 .ReadNextManagedFileBatchAsync(operationId, cursor, maintenance, cancellationToken)
                 .ConfigureAwait(false);
 
             if (batch.IsFailure)
             {
-
                 return Result.Failure(batch.Error);
-
             }
 
             if (!batch.Value.IsComplete && batch.Value.NextCursor == cursor)
             {
-
                 return Result.Failure(
                     new Error(
                         ErrorCodes.Covenant.IntegrityFailure,
                         "A bounded Covenant managed inventory page did not advance its cursor."));
-
             }
 
             foreach (CovenantManagedFileErasureRequest file in batch.Value.Requests)
             {
-
                 progress.EffectAttempted = true;
 
                 Result<CovenantArtifactErasureProgress> erased = await _managedFiles
@@ -3341,41 +3036,30 @@ internal sealed class CovenantErasureCoordinator(
 
                 if (erased.IsFailure)
                 {
-
                     return Result.Failure(erased.Error);
-
                 }
 
                 if (erased.Value.ErasedCount > 0)
                 {
-
                     progress.DurablyMutated = true;
-
                 }
 
                 if (erased.Value.IsBlocked)
                 {
-
                     return Result.Failure(
                         new Error(
                             ErrorCodes.Covenant.ManualArtifactErasureRequired,
                             "A managed workspace file could not be erased, so local erasure is incomplete."));
-
                 }
-
             }
 
             if (batch.Value.IsComplete)
             {
-
                 return Result.Success();
-
             }
 
             cursor = batch.Value.NextCursor;
-
         }
-
     }
 
     /// <summary>
@@ -3401,7 +3085,6 @@ internal sealed class CovenantErasureCoordinator(
     /// </remarks>
     private enum ReconciliationSuffix
     {
-
         /// <summary>No journal was ever opened, so there is nothing to retain or retire.</summary>
         NoJournal = 1,
 
@@ -3410,7 +3093,6 @@ internal sealed class CovenantErasureCoordinator(
 
         /// <summary>The journal is retained, so the gate must stay closed to agree with it.</summary>
         Parked = 3,
-
     }
 
     /// <summary>
@@ -3429,23 +3111,18 @@ internal sealed class CovenantErasureCoordinator(
         GrimoireOfflineTransitionPhaseSession phases,
         CancellationToken cancellationToken)
     {
-
         // A park is where the last attempt stopped, not where this transition ends. Lifting it first
         // puts the journal back at the state it was parked from, which is the state the rest of this
         // run is written against; leaving it parked would make every step below refuse an edge that
         // is only illegal because nobody ever came back for it.
         if (phases.State is GrimoireOfflineTransitionState.KeepClosed)
         {
-
             Result resumed = await phases.ResumeFromParkAsync(cancellationToken).ConfigureAwait(false);
 
             if (resumed.IsFailure)
             {
-
                 return resumed;
-
             }
-
         }
 
         // Closing is two publications, and a run can die between them. A journal left in Closing with
@@ -3456,16 +3133,12 @@ internal sealed class CovenantErasureCoordinator(
         // installation whose admission stays shut.
         if (phases.State is GrimoireOfflineTransitionState.Closing && !phases.ClosingProofIsComplete)
         {
-
             return await phases.RecordClosedAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         if (phases.State is not GrimoireOfflineTransitionState.Prepared)
         {
-
             return Result.Success();
-
         }
 
         Result entered = await phases.EnterClosingAsync(cancellationToken).ConfigureAwait(false);
@@ -3473,7 +3146,6 @@ internal sealed class CovenantErasureCoordinator(
         return entered.IsFailure
             ? entered
             : await phases.RecordClosedAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<CovenantErasureCheckpointState> AdvanceAsync(
@@ -3484,21 +3156,16 @@ internal sealed class CovenantErasureCoordinator(
         CovenantErasureProgress progress,
         CancellationToken cancellationToken)
     {
-
         if (checkpoint.Phase >= phase)
         {
-
             return checkpoint;
-
         }
 
         Result ordered = CovenantResetPhaseMachine.RequireAdvance(checkpoint.Phase, phase);
 
         if (ordered.IsFailure)
         {
-
             throw new CovenantErasureStepFailedException(ordered.Error);
-
         }
 
         await FaultAsync(
@@ -3512,16 +3179,12 @@ internal sealed class CovenantErasureCoordinator(
         // proof that neither the phase nor its effect began and retains the rollback edge.
         if (phases.State is GrimoireOfflineTransitionState.Closing)
         {
-
             Result applying = await phases.EnterApplyingAsync(cancellationToken).ConfigureAwait(false);
 
             if (applying.IsFailure)
             {
-
                 throw new CovenantErasureStepFailedException(applying.Error);
-
             }
-
         }
 
         // A journal that already names this phase in flight is a crash between the two publications.
@@ -3535,21 +3198,16 @@ internal sealed class CovenantErasureCoordinator(
         // running it again is how a resumed run finds out without having to be told.
         if (phases.InFlightPhase is { } inFlight)
         {
-
             if (inFlight != phase)
             {
-
                 throw new CovenantErasureStepFailedException(
                     new Error(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
                         "The offline transition journal names a different phase in flight."));
-
             }
-
         }
         else
         {
-
             // Published before the effect and again after it. A crash before the first means the
             // effect may not have begun; a crash after it never permits assuming it did, which is the
             // whole reason the pair cannot be one write.
@@ -3558,11 +3216,8 @@ internal sealed class CovenantErasureCoordinator(
 
             if (begun.IsFailure)
             {
-
                 throw new CovenantErasureStepFailedException(begun.Error);
-
             }
-
         }
 
         await FaultAsync(
@@ -3574,9 +3229,7 @@ internal sealed class CovenantErasureCoordinator(
 
         if (performed.IsFailure)
         {
-
             throw new CovenantErasureStepFailedException(performed.Error);
-
         }
 
         await FaultAsync(
@@ -3586,11 +3239,9 @@ internal sealed class CovenantErasureCoordinator(
 
         if (phase == CovenantResetPhase.CanonicalApplied)
         {
-
             progress.CanonicalResetApplied = true;
 
             progress.DurablyMutated = true;
-
         }
 
         Result completed = await phases.CompletePhaseAsync(phase, cancellationToken)
@@ -3598,9 +3249,7 @@ internal sealed class CovenantErasureCoordinator(
 
         if (completed.IsFailure)
         {
-
             throw new CovenantErasureStepFailedException(completed.Error);
-
         }
 
         await FaultAsync(
@@ -3609,7 +3258,6 @@ internal sealed class CovenantErasureCoordinator(
             cancellationToken).ConfigureAwait(false);
 
         return checkpoint with { Phase = phase };
-
     }
 
     /// <summary>
@@ -3635,7 +3283,6 @@ internal sealed class CovenantErasureCoordinator(
         CovenantErasureProgress progress,
         CancellationToken cancellationToken)
     {
-
         // Only while the phase is still ahead and has not begun. A checkpoint that already records
         // the phase has had this whole sequence run once, and staging again would export a second
         // candidate over a database that was already replaced; and once the phase is in flight the
@@ -3643,9 +3290,7 @@ internal sealed class CovenantErasureCoordinator(
         // into an unresumable one.
         if (checkpoint.Phase < CovenantResetPhase.DatabaseCompacted && phases.InFlightPhase is null)
         {
-
             await StageReplacementAsync(phases, maintenance, cancellationToken).ConfigureAwait(false);
-
         }
 
         GrimoireOfflineTransitionReplacementEvidence? replacement = phases.ReplacementEvidence;
@@ -3657,7 +3302,6 @@ internal sealed class CovenantErasureCoordinator(
             (_, token) => InstallReplacementAsync(maintenance, replacement, token),
             progress,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -3677,26 +3321,20 @@ internal sealed class CovenantErasureCoordinator(
         CovenantClosedPeriodAuthority maintenance,
         CancellationToken cancellationToken)
     {
-
         if (phases.ReplacementEvidence is null)
         {
-
             Result<bool> compacted = await _transition
                 .CompactAsync(maintenance, cancellationToken)
                 .ConfigureAwait(false);
 
             if (compacted.IsFailure)
             {
-
                 throw new CovenantErasureStepFailedException(compacted.Error);
-
             }
 
             if (!compacted.Value)
             {
-
                 return;
-
             }
 
             Result<CovenantDigest> canonical = await _transition
@@ -3705,9 +3343,7 @@ internal sealed class CovenantErasureCoordinator(
 
             if (canonical.IsFailure)
             {
-
                 throw new CovenantErasureStepFailedException(canonical.Error);
-
             }
 
             // The same identity three times over, and deliberately so. A compaction replaces a
@@ -3724,7 +3360,6 @@ internal sealed class CovenantErasureCoordinator(
                     canonical.Value,
                     canonical.Value,
                     cancellationToken).ConfigureAwait(false));
-
         }
 
         GrimoireOfflineTransitionReplacementEvidence planned =
@@ -3732,16 +3367,13 @@ internal sealed class CovenantErasureCoordinator(
 
         if (planned.StagingPhysicalIdentityDigest is null)
         {
-
             Result<CovenantDigest> staged = await _transition
                 .StageCandidateAsync(maintenance, cancellationToken)
                 .ConfigureAwait(false);
 
             if (staged.IsFailure)
             {
-
                 throw new CovenantErasureStepFailedException(staged.Error);
-
             }
 
             Require(
@@ -3750,14 +3382,11 @@ internal sealed class CovenantErasureCoordinator(
 
             planned = await RequirePlannedAsync(phases, maintenance, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (planned is not { StagingPhysicalIdentityDigest: { } stagingIdentity, StagedContentDigest: null })
         {
-
             return;
-
         }
 
         Result<CovenantDigest> proven = await _transition.ProveStagedCandidateAsync(
@@ -3767,15 +3396,12 @@ internal sealed class CovenantErasureCoordinator(
 
         if (proven.IsFailure)
         {
-
             throw new CovenantErasureStepFailedException(proven.Error);
-
         }
 
         Require(
             await phases.RecordStagedContentAsync(proven.Value, cancellationToken)
                 .ConfigureAwait(false));
-
     }
 
     /// <summary>
@@ -3798,7 +3424,6 @@ internal sealed class CovenantErasureCoordinator(
         CancellationToken cancellationToken) =>
         replacement switch
         {
-
             null => Task.FromResult(Result.Success()),
 
             {
@@ -3818,7 +3443,6 @@ internal sealed class CovenantErasureCoordinator(
             _ => Task.FromResult(
                 Result.Failure(
                     Ambiguous("a compaction replacement reached its phase without the evidence to install it"))),
-
         };
 
     /// <summary>Re-reads the plan and refuses if the file it was made against is no longer that file.</summary>
@@ -3827,21 +3451,16 @@ internal sealed class CovenantErasureCoordinator(
         CovenantClosedPeriodAuthority maintenance,
         CancellationToken cancellationToken)
     {
-
         if (phases.ReplacementEvidence is not { } planned)
         {
-
             throw new CovenantErasureStepFailedException(
                 Ambiguous("a compaction replacement was recorded and then read back as absent"));
-
         }
 
         if (!string.Equals(planned.StagingLeaf, maintenance.ExportStagingLeaf, StringComparison.Ordinal))
         {
-
             throw new CovenantErasureStepFailedException(
                 Ambiguous("a compaction replacement names a candidate belonging to another operation"));
-
         }
 
         Result<CovenantDigest> canonical = await _transition
@@ -3850,34 +3469,25 @@ internal sealed class CovenantErasureCoordinator(
 
         if (canonical.IsFailure)
         {
-
             throw new CovenantErasureStepFailedException(canonical.Error);
-
         }
 
         if (canonical.Value != planned.SourcePhysicalIdentityDigest)
         {
-
             throw new CovenantErasureStepFailedException(
                 Ambiguous("the database a compaction was planned against is not the one in place"));
-
         }
 
         return planned;
-
     }
 
     /// <summary>Turns a refused publication into the step failure that leaves admission closed.</summary>
     private static void Require(Result published)
     {
-
         if (published.IsFailure)
         {
-
             throw new CovenantErasureStepFailedException(published.Error);
-
         }
-
     }
 
     /// <summary>
@@ -3908,16 +3518,12 @@ internal sealed class CovenantErasureCoordinator(
         CovenantResetPhase phase,
         CancellationToken cancellationToken)
     {
-
         Result injected = await _faultSeam(boundary, phase, cancellationToken).ConfigureAwait(false);
 
         if (injected.IsFailure)
         {
-
             throw new CovenantErasureStepFailedException(injected.Error);
-
         }
-
     }
 
     /// <summary>
@@ -3932,28 +3538,22 @@ internal sealed class CovenantErasureCoordinator(
         LongRunningOperation operation,
         CovenantErasureCheckpointState checkpoint)
     {
-
         if (checkpoint.Operation is not CovenantExclusiveOperation.CovenantReset
             and not CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "Only a Covenant reset or a healthy-catalog factory erasure enters the erasure coordinator.");
-
         }
 
         if (checkpoint.OperationId == Guid.Empty || checkpoint.OperationId != operation.Id)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "This Covenant erasure checkpoint names a different durable operation.");
-
         }
 
         return CovenantResetPhaseMachine.RequireDeclared(checkpoint.Phase);
-
     }
 
     /// <summary>
@@ -3977,7 +3577,6 @@ internal sealed class CovenantErasureCoordinator(
         CovenantGrimoireClosure? closure,
         GrimoireClosureSlot? stranded = null)
     {
-
         using CancellationTokenSource lifecycle = new(DispositionBound, _timeProvider);
 
         // A parked transition keeps its journal. It is the only durable statement of where this
@@ -3990,7 +3589,6 @@ internal sealed class CovenantErasureCoordinator(
 
         try
         {
-
             suffix = phases is null
                 ? await ReconcileBeforeFirstJournalAsync(
                     operation,
@@ -4001,23 +3599,19 @@ internal sealed class CovenantErasureCoordinator(
                     ? Parked(await phases.ParkAsync(lifecycle.Token).ConfigureAwait(false))
                     : await ReconcileBeforeDispositionAsync(phases, disposition, closure, lifecycle.Token)
                         .ConfigureAwait(false);
-
         }
         catch (CovenantErasureStepFailedException failed)
         {
-
             _logger.LogError(
                 "A Covenant erasure could not physically close its terminal ledger window "
                 + "({ErrorCode}); admission stays closed.",
                 failed.Error.Code);
 
             return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
         }
 
         if (suffix.IsFailure)
         {
-
             _logger.LogError(
                 "A Covenant erasure could not publish its {Disposition} disposition to the offline "
                 + "transition journal ({ErrorCode}); admission stays closed.",
@@ -4025,7 +3619,6 @@ internal sealed class CovenantErasureCoordinator(
                 suffix.Error.Code);
 
             return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
         }
 
         // A parked journal and a reopened gate would disagree about whether this transition is over,
@@ -4033,31 +3626,25 @@ internal sealed class CovenantErasureCoordinator(
         // retained journal is what the next start reads, and it says the erasure is unfinished.
         if (suffix.Value is ReconciliationSuffix.Parked)
         {
-
             if (disposition is not CovenantExclusiveLeaseDisposition.KeepClosed
                 && blockingErrorCode is null)
             {
-
                 // A refused terminal reconciliation turned a successful disposition into attention.
                 // Record its fixed failure while the exact ledger permit is still available.
                 blockingErrorCode = ErrorCodes.Covenant.MaintenanceFailed;
-
             }
 
             disposition = CovenantExclusiveLeaseDisposition.KeepClosed;
 
             if (phases is null || string.IsNullOrWhiteSpace(blockingErrorCode))
             {
-
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
             }
 
             GrimoireOfflineTransitionAttentionReconciliation attention;
 
             try
             {
-
                 attention = await WithLedgerAsync(
                     closure,
                     token => _reconciler.ReconcileAttentionAsync(
@@ -4065,61 +3652,48 @@ internal sealed class CovenantErasureCoordinator(
                         blockingErrorCode,
                         token),
                     lifecycle.Token).ConfigureAwait(false);
-
             }
             catch (CovenantErasureStepFailedException failed)
             {
-
                 _logger.LogError(
                     "A Covenant erasure could not physically close its attention ledger window "
                     + "({ErrorCode}); admission stays closed.",
                     failed.Error.Code);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
             }
 
             if (!attention.IsProven)
             {
-
                 _logger.LogError(
                     "A Covenant erasure could not prove its parked operation attention state "
                     + "({AttentionOutcome}); admission stays closed.",
                     attention.Outcome);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
             }
-
         }
 
         // No maintenance capability may survive the Covenant disposition. The enclosing Grimoire
         // closure remains live until authenticated retirement has proved the transition finished.
         if (closure is not null)
         {
-
             await closure.CloseIoAsync().ConfigureAwait(false);
-
         }
 
         Result closed;
 
         try
         {
-
             closed = await lease.CompleteAsync(disposition, lifecycle.Token).ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             closed = Result.Failure(MaintenanceFailure());
-
         }
 
         if (closed.IsFailure)
         {
-
             Error normalized = MaintenanceFailure();
 
             // No database status is written to describe this. The journal already says the disposition
@@ -4134,19 +3708,16 @@ internal sealed class CovenantErasureCoordinator(
                 normalized.Code);
 
             return Result<CovenantErasureCompletion>.Failure(normalized);
-
         }
 
         // The Covenant disposition is spent, so the journal may say so and then retire. Ordinary
         // admission remains closed across the complete authenticated retirement protocol.
         if (phases is not null && suffix.Value is ReconciliationSuffix.Retirable)
         {
-
             Result retired = await RetireAsync(phases, lifecycle.Token).ConfigureAwait(false);
 
             if (retired.IsFailure)
             {
-
                 _logger.LogError(
                     "A Covenant erasure spent its {Disposition} disposition but could not retire the "
                     + "offline transition journal ({ErrorCode}); the journal stays adoptable.",
@@ -4154,21 +3725,17 @@ internal sealed class CovenantErasureCoordinator(
                     retired.Error.Code);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
             }
-
         }
 
         if (closure is not null)
         {
-
             Result reopened = await closure
                 .ReleaseAsync(GrimoireDispositionFor(disposition), lifecycle.Token)
                 .ConfigureAwait(false);
 
             if (reopened.IsFailure)
             {
-
                 _logger.LogError(
                     "A Covenant erasure could not spend its {Disposition} disposition on the Grimoire "
                     + "closure ({ErrorCode}); admission stays closed.",
@@ -4176,50 +3743,40 @@ internal sealed class CovenantErasureCoordinator(
                     reopened.Error.Code);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
             }
-
         }
         else if (disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen
             && stranded?.ClosingOwner is { } closingOwner)
         {
-
             Result reopened;
 
             try
             {
-
                 reopened = await _admissionGate
                     .AbortClosingAsync(
                         closingOwner,
                         static _ => ValueTask.FromResult(true),
                         lifecycle.Token)
                     .ConfigureAwait(false);
-
             }
             catch (Exception)
             {
-
                 reopened = Result.Failure(MaintenanceFailure());
-
             }
 
             if (reopened.IsFailure)
             {
-
                 _logger.LogError(
                     "A Covenant erasure proved and retired its rollback but could not abort the exact "
                     + "Grimoire closing owner ({ErrorCode}); admission stays closed.",
                     reopened.Error.Code);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
             }
 
             await closingOwner.DisposeAsync().ConfigureAwait(false);
 
             stranded.ClosingOwner = null;
-
         }
 
         return Result<CovenantErasureCompletion>.Success(
@@ -4229,7 +3786,6 @@ internal sealed class CovenantErasureCoordinator(
                 progress.LocalSecureErasureComplete,
                 progress.Exposure,
                 blockingErrorCode));
-
     }
 
     /// <summary>
@@ -4248,21 +3804,16 @@ internal sealed class CovenantErasureCoordinator(
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken)
     {
-
         if (disposition is CovenantExclusiveLeaseDisposition.KeepClosed)
         {
-
             return Result<ReconciliationSuffix>.Success(ReconciliationSuffix.NoJournal);
-
         }
 
         if (disposition is not CovenantExclusiveLeaseDisposition.RollbackAndReopen
             || string.IsNullOrWhiteSpace(ownerId)
             || !string.Equals(operation.LeaseOwner, ownerId, StringComparison.Ordinal))
         {
-
             return Result<ReconciliationSuffix>.Failure(MaintenanceFailure());
-
         }
 
         bool transitioned = await _store.TryTransitionAsync(
@@ -4276,9 +3827,7 @@ internal sealed class CovenantErasureCoordinator(
 
         if (!transitioned)
         {
-
             return Result<ReconciliationSuffix>.Failure(MaintenanceFailure());
-
         }
 
         LongRunningOperation? settled = await _store
@@ -4298,7 +3847,6 @@ internal sealed class CovenantErasureCoordinator(
                 StringComparison.Ordinal)
                 ? Result<ReconciliationSuffix>.Success(ReconciliationSuffix.NoJournal)
                 : Result<ReconciliationSuffix>.Failure(MaintenanceFailure());
-
     }
 
     private static bool DescribesSameLaunch(
@@ -4338,32 +3886,26 @@ internal sealed class CovenantErasureCoordinator(
         CovenantGrimoireClosure? closure,
         CancellationToken cancellationToken)
     {
-
         // The suffix is resumable, so every step below is entered only if the journal does not already
         // record it. A park lifted at the start of this run puts the transition back exactly where it
         // stopped, which is routinely inside this sequence - and replaying a step from there would ask
         // the graph for an edge it has already spent.
         if (phases.State is GrimoireOfflineTransitionState.RetirementPending)
         {
-
             return Result<ReconciliationSuffix>.Success(ReconciliationSuffix.Retirable);
-
         }
 
         if (phases.State is not GrimoireOfflineTransitionState.DatabaseReconciliationPending)
         {
-
             Result prepared = await PrepareForReconciliationAsync(phases, disposition, cancellationToken)
                 .ConfigureAwait(false);
 
             if (prepared.IsFailure)
             {
-
                 // A transition that cannot reach a terminal intent has neither answer available, which
                 // is the correct outcome for a run that stopped in the middle rather than a failure of
                 // this step. It parks, and the caller must not then retire what it just parked.
                 return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
-
             }
 
             Result opened = await phases.BeginReconciliationAsync(cancellationToken)
@@ -4371,11 +3913,8 @@ internal sealed class CovenantErasureCoordinator(
 
             if (opened.IsFailure)
             {
-
                 return Result<ReconciliationSuffix>.Failure(opened.Error);
-
             }
-
         }
 
         GrimoireOfflineTransitionReconciliationStep step = phases.ReconciliationStep
@@ -4383,7 +3922,6 @@ internal sealed class CovenantErasureCoordinator(
 
         if (step < GrimoireOfflineTransitionReconciliationStep.DatabaseTerminalWinner)
         {
-
             GrimoireOfflineTransitionDatabaseReconciliation reconciled = await WithLedgerAsync(
                 closure,
                 token => _reconciler.ReconcileAsync(
@@ -4396,12 +3934,10 @@ internal sealed class CovenantErasureCoordinator(
 
             if (reconciled.TerminalWinnerDigest is not { IsValid: true } winner)
             {
-
                 // A reconciliation that cannot name the exact terminal winner has no answer this
                 // transition may act on. The row is missing, or belongs to another launch, or moved,
                 // or somebody else terminalized it - four different facts, none to overwrite.
                 return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
-
             }
 
             Result interrupted = await _terminalSuffixFaultSeam(
@@ -4418,9 +3954,7 @@ internal sealed class CovenantErasureCoordinator(
 
             if (recorded.IsFailure)
             {
-
                 return Result<ReconciliationSuffix>.Failure(recorded.Error);
-
             }
 
             Result interruptedAfterWinner = await _terminalSuffixFaultSeam(
@@ -4431,17 +3965,14 @@ internal sealed class CovenantErasureCoordinator(
             {
                 return Result<ReconciliationSuffix>.Failure(interruptedAfterWinner.Error);
             }
-
         }
 
         if (step < GrimoireOfflineTransitionReconciliationStep.ParentReceiptSatisfied)
         {
-
             CovenantDigest? proved = null;
 
             if (phases.ParentReceipt is { } sink)
             {
-
                 // Published after the exact terminal winner is journaled and before the journal may
                 // record the step, so the two records cross only once and always in that order. The
                 // winner the outer record is told about is the one this transition already proved,
@@ -4449,9 +3980,7 @@ internal sealed class CovenantErasureCoordinator(
                 if (phases.Current.Payload.Lifecycle.ReconciliationEvidence
                         ?.DatabaseTerminalWinnerDigest is not { IsValid: true } winner)
                 {
-
                     return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
-
                 }
 
                 Result<CovenantDigest> published = await sink
@@ -4460,17 +3989,14 @@ internal sealed class CovenantErasureCoordinator(
 
                 if (published.IsFailure)
                 {
-
                     // The database is already terminal and no effect may repeat. A receipt that could
                     // not be published, or that read back as something else, means the two records
                     // disagree about what happened - which is a state to stay closed in, not one to
                     // resolve by preferring either of them.
                     return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
-
                 }
 
                 proved = published.Value;
-
             }
 
             Result receipt = await phases.RecordParentReceiptAsync(proved, cancellationToken)
@@ -4478,9 +4004,7 @@ internal sealed class CovenantErasureCoordinator(
 
             if (receipt.IsFailure)
             {
-
                 return Result<ReconciliationSuffix>.Failure(receipt.Error);
-
             }
 
             Result interruptedAfterParent = await _terminalSuffixFaultSeam(
@@ -4491,26 +4015,20 @@ internal sealed class CovenantErasureCoordinator(
             {
                 return Result<ReconciliationSuffix>.Failure(interruptedAfterParent.Error);
             }
-
         }
 
         if (step < GrimoireOfflineTransitionReconciliationStep.LaneClosed)
         {
-
             if (closure is not null)
             {
-
                 await closure.CloseIoAsync().ConfigureAwait(false);
-
             }
 
             Result lane = await phases.RecordLaneClosedAsync(cancellationToken).ConfigureAwait(false);
 
             if (lane.IsFailure)
             {
-
                 return Result<ReconciliationSuffix>.Failure(lane.Error);
-
             }
 
             Result interruptedAfterLane = await _terminalSuffixFaultSeam(
@@ -4521,14 +4039,11 @@ internal sealed class CovenantErasureCoordinator(
             {
                 return Result<ReconciliationSuffix>.Failure(interruptedAfterLane.Error);
             }
-
         }
 
         if (step >= GrimoireOfflineTransitionReconciliationStep.CovenantDispositionInFlight)
         {
-
             return Result<ReconciliationSuffix>.Success(ReconciliationSuffix.Retirable);
-
         }
 
         Result inFlight = await phases.BeginCovenantDispositionAsync(cancellationToken)
@@ -4537,7 +4052,6 @@ internal sealed class CovenantErasureCoordinator(
         return inFlight.IsFailure
             ? Result<ReconciliationSuffix>.Failure(inFlight.Error)
             : Result<ReconciliationSuffix>.Success(ReconciliationSuffix.Retirable);
-
     }
 
     /// <summary>
@@ -4554,11 +4068,9 @@ internal sealed class CovenantErasureCoordinator(
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken)
     {
-
         if (phases.State is GrimoireOfflineTransitionState.Closing
             or GrimoireOfflineTransitionState.Applying)
         {
-
             Result reopening = await phases.PrepareReopenAsync(
                 disposition is CovenantExclusiveLeaseDisposition.CommitAndReopen
                     ? GrimoireOfflineTransitionTerminalIntent.CommitAndReopen
@@ -4567,26 +4079,19 @@ internal sealed class CovenantErasureCoordinator(
 
             if (reopening.IsFailure)
             {
-
                 return reopening;
-
             }
-
         }
 
         if (phases.State is GrimoireOfflineTransitionState.ReopenPrepared)
         {
-
             Result verifying = await phases.EnterVerifyingAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (verifying.IsFailure)
             {
-
                 return verifying;
-
             }
-
         }
 
         // Published only when it would say something new. The graph admits a verification advance
@@ -4598,7 +4103,6 @@ internal sealed class CovenantErasureCoordinator(
             ? await phases.RecordVerificationAsync(true, true, true, cancellationToken)
                 .ConfigureAwait(false)
             : Result.Success();
-
     }
 
     private static Result<ReconciliationSuffix> Parked(Result parked) =>
@@ -4610,7 +4114,6 @@ internal sealed class CovenantErasureCoordinator(
         GrimoireOfflineTransitionPhaseSession phases,
         CancellationToken cancellationToken)
     {
-
         Result interruptedInFlight = await _terminalSuffixFaultSeam(
             GrimoireOfflineTransitionTerminalSuffixBoundary.CovenantDispositionInFlight,
             cancellationToken).ConfigureAwait(false);
@@ -4626,15 +4129,12 @@ internal sealed class CovenantErasureCoordinator(
         if (phases.ReconciliationStep
             < GrimoireOfflineTransitionReconciliationStep.CovenantDispositionVerified)
         {
-
             Result verified = await phases.CompleteCovenantDispositionAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (verified.IsFailure)
             {
-
                 return verified;
-
             }
 
             Result interruptedAfterDisposition = await _terminalSuffixFaultSeam(
@@ -4645,20 +4145,16 @@ internal sealed class CovenantErasureCoordinator(
             {
                 return interruptedAfterDisposition;
             }
-
         }
 
         if (phases.State is not GrimoireOfflineTransitionState.RetirementPending)
         {
-
             Result pending = await phases.PrepareRetirementAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (pending.IsFailure)
             {
-
                 return pending;
-
             }
 
             Result interruptedBeforeRetirement = await _terminalSuffixFaultSeam(
@@ -4669,7 +4165,6 @@ internal sealed class CovenantErasureCoordinator(
             {
                 return interruptedBeforeRetirement;
             }
-
         }
 
         Result retired = await phases.RetireAsync(cancellationToken).ConfigureAwait(false);
@@ -4682,7 +4177,6 @@ internal sealed class CovenantErasureCoordinator(
         return await _terminalSuffixFaultSeam(
             GrimoireOfflineTransitionTerminalSuffixBoundary.Retired,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private static bool IsRecoverableAttention(
@@ -4698,26 +4192,21 @@ internal sealed class CovenantErasureCoordinator(
         CovenantErasureCheckpointState checkpoint,
         string ownerId)
     {
-
         if (operation.State is not LongRunningOperationState.Running
             and not LongRunningOperationState.Waiting
             and not LongRunningOperationState.Cancelling
             || !string.Equals(operation.LeaseOwner, ownerId, StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         return HasExactCheckpoint(operation, checkpoint);
-
     }
 
     private static bool HasExactCheckpoint(
         LongRunningOperation operation,
         CovenantErasureCheckpointState checkpoint)
     {
-
         if (operation.Id != checkpoint.OperationId
             || !string.Equals(
                 operation.CheckpointReference,
@@ -4725,14 +4214,11 @@ internal sealed class CovenantErasureCoordinator(
                 StringComparison.Ordinal)
             || operation.CheckpointPayload is not { Length: > 0 } payload)
         {
-
             return false;
-
         }
 
         Result<CovenantErasureCheckpointState> durable = operation.Kind switch
         {
-
             LongRunningOperationKinds.DataRetentionMutation
                 when operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.ReconcileAndComplete
                     && operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion =>
@@ -4751,7 +4237,6 @@ internal sealed class CovenantErasureCoordinator(
                     payload),
 
             _ => Result<CovenantErasureCheckpointState>.Failure(MaintenanceFailure()),
-
         };
 
         // The phase is deliberately excluded. A launch row records what was committed to and nothing
@@ -4760,27 +4245,20 @@ internal sealed class CovenantErasureCoordinator(
         // a question it stopped being able to answer the moment offline phases stopped rewriting it.
         return durable.IsSuccess
             && durable.Value == checkpoint with { Phase = CovenantResetPhaseMachine.First };
-
     }
 
     private static async Task<Result> RunLifecycleAsync(
         Func<CancellationToken, Task<Result>> action,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             return await action(cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             return Result.Failure(MaintenanceFailure());
-
         }
-
     }
 
     private static Error MaintenanceFailure() =>
@@ -4809,7 +4287,5 @@ internal sealed class CovenantErasureCoordinator(
 internal sealed class CovenantErasureStepFailedException(Error error)
     : Exception(error.Message)
 {
-
     internal Error Error { get; } = error;
-
 }
