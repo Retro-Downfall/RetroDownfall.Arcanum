@@ -1618,6 +1618,106 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
         Assert.False(File.Exists(location.PreviousPath));
     }
 
+    /// <summary>
+    /// Renaming the predecessor back to the canonical name is the point of no return. A caller that
+    /// cancels once that rename has landed still gets the pass that follows it, which resumes the
+    /// working publication or accepts the restored file, rather than a cancellation that leaves the
+    /// slot between the two.
+    /// </summary>
+    [Theory]
+    [InlineData("with-working")]
+    [InlineData("previous-only")]
+    public async Task Recover_cancelled_after_the_predecessor_restore_lands_still_finishes_the_next_pass(string shape)
+    {
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(ReadyStore());
+
+        GrimoireOfflineTransitionJournalLocation location = current.Location;
+
+        if (shape is "with-working")
+        {
+            WriteOwnerOnly(
+                location.WorkingPath,
+                Value(GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(SealForTest(
+                    location,
+                    current.Envelope,
+                    revision: 2,
+                    current.EnvelopeDigest,
+                    Bytes("second")))));
+        }
+
+        File.Move(location.JournalPath, location.PreviousPath);
+
+        using CancellationTokenSource cancellation = new();
+
+        GrimoireOfflineTransitionJournalStore store = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(afterStep: step =>
+            {
+                if (step == "file:previous-restored")
+                {
+                    cancellation.Cancel();
+                }
+            }),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await store.RecoverAsync(
+            _lock,
+            _guarded,
+            cancellation.Token));
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated, recovered.Outcome);
+
+        Assert.Equal(shape is "with-working" ? 2UL : 1UL, recovered.Publication?.Anchor.Revision);
+    }
+
+    /// <summary>
+    /// Resuming the working publication lands its exchange before the pass ends. A caller that cancels
+    /// once it has landed still gets the pass that follows it, which retires the predecessor and
+    /// advances the anchor to the resumed revision.
+    /// </summary>
+    [Fact]
+    public async Task Recover_cancelled_after_the_resumed_publication_lands_still_finishes_the_next_pass()
+    {
+        GrimoireOfflineTransitionJournalPublication current = await BeginAsync(ReadyStore());
+
+        GrimoireOfflineTransitionJournalLocation location = current.Location;
+
+        WriteOwnerOnly(
+            location.WorkingPath,
+            Value(GrimoireOfflineTransitionJournalAuthenticator.EncodeEnvelope(SealForTest(
+                location,
+                current.Envelope,
+                revision: 2,
+                current.EnvelopeDigest,
+                Bytes("second")))));
+
+        using CancellationTokenSource cancellation = new();
+
+        GrimoireOfflineTransitionJournalStore store = new(
+            _credentials,
+            new GrimoireOfflineTransitionJournalFileStore(afterStep: step =>
+            {
+                if (step == "file:parent-flushed")
+                {
+                    cancellation.Cancel();
+                }
+            }),
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await store.RecoverAsync(
+            _lock,
+            _guarded,
+            cancellation.Token));
+
+        Assert.True(cancellation.IsCancellationRequested);
+
+        Assert.Equal(GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated, recovered.Outcome);
+
+        Assert.Equal(2UL, recovered.Publication?.Anchor.Revision);
+    }
+
     [Fact]
     public async Task Recover_refuses_an_unauthenticated_previous_when_canonical_absent()
     {

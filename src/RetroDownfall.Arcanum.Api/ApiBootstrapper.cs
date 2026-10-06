@@ -283,9 +283,14 @@ public static class ApiBootstrapper
     /// </remarks>
     public static IServiceCollection AddArcanumLoopbackHostFiltering(this IServiceCollection services)
     {
-        services.AddOptions<HostFilteringOptions>()
-            .Configure<IOptionsMonitor<ArcanumSettings>>(static (options, settings) =>
-                options.AllowedHosts = [.. ResolveAllowedHostNames(settings.CurrentValue)]);
+        // The registration OptionsBuilder<T>.Configure<TDep> adds, written out: the hosted-producer
+        // recovery-composition proof reads exact service registrations and does not follow an OptionsBuilder.
+        services.AddTransient<IConfigureOptions<HostFilteringOptions>>(static provider =>
+            new ConfigureNamedOptions<HostFilteringOptions, IOptionsMonitor<ArcanumSettings>>(
+                Options.DefaultName,
+                provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                static (options, settings) =>
+                    options.AllowedHosts = [.. ResolveAllowedHostNames(settings.CurrentValue)]));
 
         return services;
     }
