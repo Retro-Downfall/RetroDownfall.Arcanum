@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -34,30 +35,26 @@ internal static class ApiRequestJson
 
     public const string ParameterBindingFailedMessage = "Request parameters could not be bound to this route.";
 
-    private const string BodyReadItemKey = "Arcanum.ApiRequestJson.BodyRead";
-
     /// <summary>
-    /// Records that this request's route is reading the request body itself.
+    /// Whether the request carries a body.
     /// </summary>
     /// <remarks>
-    /// <c>ArcanumExceptionHandler</c> answers a <see cref="JsonException"/> as the caller's malformed body
-    /// only when the route had a body to read; this is how it knows. Without it, a
-    /// <see cref="JsonException"/> from data the server read or a payload it built, on a GET with no body at
-    /// all, was reported as "Request body could not be parsed" and never logged.
+    /// A declared <c>Content-Length</c> answers it. Without one, the server's own body detection does:
+    /// over HTTP/2 and HTTP/3 a body streams with neither a <c>Content-Length</c> nor a
+    /// <c>Transfer-Encoding</c>, and only the framework knows whether the request's headers ended its
+    /// stream. A host that offers no detection (a hand-built context) falls back to
+    /// <c>Transfer-Encoding</c>, which is how HTTP/1.1 sends a body of unknown length.
     /// </remarks>
-    public static void MarkBodyRead(HttpContext httpContext) => httpContext.Items[BodyReadItemKey] = true;
+    public static bool CarriesABody(HttpRequest request)
+    {
+        if (request.ContentLength is long length)
+        {
+            return length > 0;
+        }
 
-    /// <summary>
-    /// Whether a route read a request body that was actually sent.
-    /// </summary>
-    public static bool RouteReadARequestBody(HttpContext httpContext) =>
-        httpContext.Items.ContainsKey(BodyReadItemKey) && CarriesABody(httpContext.Request);
-
-    /// <summary>
-    /// Whether the request declares a body: a non-zero <c>Content-Length</c> or a <c>Transfer-Encoding</c>.
-    /// </summary>
-    public static bool CarriesABody(HttpRequest request) =>
-        request.ContentLength is > 0 || !string.IsNullOrEmpty(request.Headers.TransferEncoding);
+        return request.HttpContext.Features.Get<IHttpRequestBodyDetectionFeature>()?.CanHaveBody
+            ?? !string.IsNullOrEmpty(request.Headers.TransferEncoding);
+    }
 
     /// <summary>
     /// Whether the request is typed as JSON but names a charset the read cannot decode.
@@ -120,6 +117,38 @@ internal static class ApiRequestJson
         }
     }
 
+    /// <summary>
+    /// The request body as UTF-8, for a route that parses the raw bytes itself rather than through
+    /// <c>ReadFromJsonAsync</c>.
+    /// </summary>
+    /// <remarks>
+    /// Call only after <see cref="HasReadableJsonContentType"/> has accepted the request. A body with no
+    /// charset, or a UTF-8 one, is the request stream itself; one sent in any other charset .NET can decode
+    /// is transcoded to UTF-8 on the way through, which is what <c>ReadFromJsonAsync</c> does for every
+    /// other route. A parser that reads the stream as UTF-8 regardless would read such a body as garbage
+    /// and blame the caller for malformed JSON. The returned stream leaves the request body open.
+    /// </remarks>
+    public static Stream OpenUtf8Body(HttpRequest request)
+    {
+        if (!MediaTypeHeaderValue.TryParse(request.ContentType, out MediaTypeHeaderValue? mediaType))
+        {
+            return request.Body;
+        }
+
+        StringSegment charset = mediaType.Charset;
+
+        if (!charset.HasValue || charset.Equals("utf-8", StringComparison.OrdinalIgnoreCase))
+        {
+            return request.Body;
+        }
+
+        return Encoding.CreateTranscodingStream(
+            request.Body,
+            Encoding.GetEncoding(charset.Value!),
+            Encoding.UTF8,
+            leaveOpen: true);
+    }
+
     public static async ValueTask<(T? Body, IResult? Error)> ReadAsync<T>(
         HttpContext httpContext,
         JsonTypeInfo<T> typeInfo,
@@ -135,8 +164,6 @@ internal static class ApiRequestJson
         {
             return (default, UnsupportedMediaTypeResult(httpContext));
         }
-
-        MarkBodyRead(httpContext);
 
         try
         {
@@ -199,13 +226,13 @@ internal static class ApiRequestJson
     }
 
     /// <summary>
-    /// A 415 the framework's own binder wrote without throwing: the route binds its body and the request's
-    /// Content-Type is not one the binder accepts.
+    /// A 415 for a request whose Content-Type the route does not accept, with no exception to read.
     /// </summary>
     /// <remarks>
-    /// <c>ThrowOnBadRequest</c> routes a failed read or parse into the exception handler, but the binder
-    /// answers an unaccepted media type by setting the status and returning with nothing written, so this
-    /// result is what a status-code hook puts on that otherwise empty response. The wording does not say
+    /// A route that binds its body declares the media types it accepts, and routing refuses a request
+    /// carrying any other before the route is chosen: its accepts policy selects an endpoint that sets 415
+    /// and writes nothing, so no exception reaches the handler whatever <c>ThrowOnBadRequest</c> says. This
+    /// result is what the status-code hook puts on that otherwise empty response. The wording does not say
     /// JSON because a multipart route reaches it too.
     /// </remarks>
     public static IResult UnacceptedMediaTypeResult(HttpContext httpContext) =>
@@ -249,6 +276,9 @@ internal static class ApiRequestJson
             StatusCodes.Status400BadRequest when failure?.InnerException is JsonException =>
                 (ErrorCodes.Validation.InvalidBody, MalformedJsonMessage),
 
+            StatusCodes.Status400BadRequest when failure is not null && IsMissingBodyFault(failure) =>
+                (ErrorCodes.Validation.InvalidBody, DefaultInvalidBodyMessage),
+
             StatusCodes.Status400BadRequest when failure is not null && IsParameterBindingFault(failure) =>
                 (ErrorCodes.Validation.InvalidBody, ParameterBindingFailedMessage),
 
@@ -268,19 +298,33 @@ internal static class ApiRequestJson
         };
 
     /// <summary>
+    /// Whether the framework's binder raised this 400 because a body the route requires was never sent.
+    /// </summary>
+    /// <remarks>
+    /// The binder says so in two ways: a required body parameter that was not provided "from body", and an
+    /// inferred body with no body behind it. Both are a missing body, answered in the words a route that
+    /// reads its body itself uses for one, not as a parameter that could not be converted.
+    /// </remarks>
+    private static bool IsMissingBodyFault(BadHttpRequestException failure) =>
+        failure.InnerException is null
+        && ((failure.Message.StartsWith("Required parameter", StringComparison.Ordinal)
+                && failure.Message.EndsWith("was not provided from body.", StringComparison.Ordinal))
+            || failure.Message.StartsWith("Implicit body inferred", StringComparison.Ordinal));
+
+    /// <summary>
     /// Whether the framework's parameter binder, not a body read, raised this 400.
     /// </summary>
     /// <remarks>
     /// The binder reports a query, route or header value it could not convert, and a required one that
     /// was absent, with a 400 and no inner exception, and the wording below is what it has said since
-    /// minimal APIs shipped. Matching it is only a choice of which of two honest messages to send: a
-    /// wording change falls back to the body message, never to a different status or code.
+    /// minimal APIs shipped. A missing body is told apart first (<see cref="IsMissingBodyFault"/>). Matching
+    /// the wording is only a choice of which honest message to send: a wording change falls back to the
+    /// body message, never to a different status or code.
     /// </remarks>
     private static bool IsParameterBindingFault(BadHttpRequestException failure) =>
         failure.InnerException is null
         && (failure.Message.StartsWith("Failed to bind parameter", StringComparison.Ordinal)
-            || failure.Message.StartsWith("Required parameter", StringComparison.Ordinal)
-            || failure.Message.StartsWith("Implicit body inferred", StringComparison.Ordinal));
+            || failure.Message.StartsWith("Required parameter", StringComparison.Ordinal));
 
     public static IResult UnsupportedMediaTypeResult(HttpContext httpContext)
     {

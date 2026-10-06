@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -287,6 +289,47 @@ public sealed class ApiRequestJsonBodyFaultTests
         Assert.Equal(status, httpContext.Response.StatusCode);
 
         Assert.Equal(expectEnvelope, body.Length > 0);
+    }
+
+    /// <summary>
+    /// The status-code hook is global, so it would wrap a bare 415 from any surface in the Arcanum envelope.
+    /// The one surface a third-party SDK owns is the A2A server's JSON-RPC route, and it never gives the hook
+    /// a 415 to wrap: it answers a body that is not JSON itself, in its own protocol.
+    /// </summary>
+    /// <remarks>
+    /// The A2A SDK can also map an HTTP binding that declares the media type it accepts, which routing would
+    /// refuse with a bare 415; Arcanum maps only the JSON-RPC route, and this pins what that route does.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_a2a_server_route_answers_a_non_json_body_itself_and_the_hook_leaves_it_alone()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Features = (settings.Features ?? new FeatureSettings()) with
+                {
+                    Conclave = true,
+                    A2AServer = true,
+                },
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsync(
+            "/api/conclave/a2a",
+            new StringContent("{}", Encoding.UTF8, "text/plain"));
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.NotEqual(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        Assert.DoesNotContain(ErrorCodes.Validation.UnsupportedMediaType, body, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("\"isSuccess\"", body, StringComparison.Ordinal);
     }
 
     /// <summary>

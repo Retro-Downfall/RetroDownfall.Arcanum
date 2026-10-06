@@ -384,11 +384,12 @@ public static class ApiBootstrapper
 
         // The framework's default is to throw a binder failure into the exception handler only in
         // Development and to write an empty 400 everywhere else. Pinned on so a bound-body route answers a
-        // body that is not valid JSON, and a parameter that cannot be bound, with the same envelope in every
-        // environment, through ArcanumExceptionHandler's BadHttpRequestException arm. It does not reach the
-        // faults Kestrel raises while the generated reader pulls the body (too large, too slow, trailers
-        // too long), nor an unaccepted Content-Type: the generated code records those as a status and
-        // returns, and UseArcanumExceptionHandler's status-code hook answers them.
+        // body that is not valid JSON, a missing Content-Type, and a parameter that cannot be bound, with the
+        // same envelope in every environment, through ArcanumExceptionHandler's BadHttpRequestException arm.
+        // It does not reach the faults Kestrel raises while the generated reader pulls the body (too large,
+        // too slow, trailers too long), which the generated code records as a status and returns from, nor a
+        // Content-Type the route does not declare it accepts, which routing refuses with a bare 415 before
+        // the route is chosen; UseArcanumExceptionHandler's status-code hook answers those.
         services.Configure<RouteHandlerOptions>(static options => options.ThrowOnBadRequest = true);
 
         services.AddArcanumHostFiltering(configuration);
@@ -602,11 +603,11 @@ public static class ApiBootstrapper
         // A route that binds its body as a handler parameter reads it in framework-generated code that
         // catches the exceptions Kestrel raises for a bad body, writes the status onto the response and
         // returns -- it does not rethrow, whatever ThrowOnBadRequest says, so ArcanumExceptionHandler never
-        // sees them and the response would reach the client with a status and no body. The same generated
-        // code answers a Content-Type the route does not accept by setting 415 and returning. This hook is
-        // what gives those empty responses the envelope. It acts on exactly the statuses below and leaves
-        // every other empty status as it was, because a route can return a bodyless 400 on purpose
-        // (GET /api/presence).
+        // sees them and the response would reach the client with a status and no body. A Content-Type the
+        // route does not declare it accepts never reaches that code at all: routing's accepts policy picks
+        // an endpoint that sets 415 and writes nothing. This hook is what gives those empty responses the
+        // envelope. It acts on exactly the statuses below and leaves every other empty status as it was,
+        // because a route can return a bodyless 400 on purpose (GET /api/presence).
         app.UseStatusCodePages(WriteBodyFaultEnvelopeAsync);
     }
 
@@ -617,9 +618,11 @@ public static class ApiBootstrapper
     /// <remarks>
     /// 408 (a body under the minimum data rate), 413 (a body past the ceiling) and 431 (trailers over the
     /// header ceiling) only ever come from reading a body, so for a matched endpoint they are answered
-    /// here. 415 needs no endpoint: the binder sets it before any handler runs. A body that ends early
-    /// (400) is deliberately not covered: it is indistinguishable here from a bodyless 400 a route
-    /// returns on purpose, and the client that dropped the connection is no longer there to read it.
+    /// here. 415 is answered whatever the endpoint: routing sets it, before any route is chosen, for a
+    /// Content-Type no candidate route accepts, and the endpoint it reports is routing's own rejection
+    /// endpoint. A body that ends early (400) is deliberately not covered: it is indistinguishable here from
+    /// a bodyless 400 a route returns on purpose, and the client that dropped the connection is no longer
+    /// there to read it.
     /// </remarks>
     internal static async Task WriteBodyFaultEnvelopeAsync(StatusCodeContext context)
     {
