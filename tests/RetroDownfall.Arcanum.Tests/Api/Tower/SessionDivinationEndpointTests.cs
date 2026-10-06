@@ -676,9 +676,10 @@ public sealed class SessionDivinationEndpointTests
 
         if (!string.Equals(status, "active", StringComparison.OrdinalIgnoreCase))
         {
-            session.Status = status;
-
-            await sessionRepository.UpdateSessionAsync(session, CancellationToken.None);
+            Assert.NotNull(await sessionRepository.PatchSessionAsync(
+                session.Id,
+                new SessionHeaderPatch(SetTitle: false, Title: null, Status: status),
+                CancellationToken.None));
         }
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();

@@ -1665,9 +1665,6 @@ public sealed class WebWorkflowEndpointTests
         public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
             inner.GetEntryCountAsync(sessionId, ct);
 
-        public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
-            inner.UpdateSessionAsync(session, ct);
-
         public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
             inner.PatchSessionAsync(id, patch, ct);
 

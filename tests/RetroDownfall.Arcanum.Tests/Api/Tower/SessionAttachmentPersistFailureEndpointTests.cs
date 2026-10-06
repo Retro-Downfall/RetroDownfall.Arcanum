@@ -92,7 +92,9 @@ public sealed class SessionAttachmentPersistFailureEndpointTests
 
         Assert.DoesNotContain(ErrorCodes.Attachment.LimitExceeded, body, StringComparison.Ordinal);
 
-        Assert.NotEqual(HttpStatusCode.Created, response.StatusCode);
+        // A resolution whose bytes disagree with its own recorded hash is a server fault (API.md), so any
+        // earlier 4xx refusal of the request would be the wrong answer, not just a non-201.
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
     }
 
     /// <summary>

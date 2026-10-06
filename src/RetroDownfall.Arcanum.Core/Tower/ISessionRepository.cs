@@ -49,8 +49,6 @@ public interface ISessionRepository
 
     Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct);
 
-    Task UpdateSessionAsync(Session session, CancellationToken ct);
-
     /// <summary>
     /// Applies only the header fields <paramref name="patch"/> supplies, in one statement, so a concurrent
     /// change to a field the caller did not name is never overwritten with a stale read. Returns the
