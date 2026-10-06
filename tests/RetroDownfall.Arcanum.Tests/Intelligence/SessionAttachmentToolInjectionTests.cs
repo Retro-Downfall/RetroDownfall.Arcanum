@@ -1289,6 +1289,23 @@ public sealed class SessionAttachmentToolInjectionTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteCreatedAttachmentAsync(
+            SessionAttachmentRecord created,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task PromotePendingAsync(
             string pendingTurnId,
             Guid sessionId,

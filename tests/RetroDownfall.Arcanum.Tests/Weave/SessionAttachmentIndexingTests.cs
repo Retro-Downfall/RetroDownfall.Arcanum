@@ -252,6 +252,63 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.False(await _attachments.DeleteCreatedAttachmentAsync(created.Record));
     }
 
+    /// <summary>
+    /// The row is deleted under the attachment gate, but once the gate is released a concurrent persist of
+    /// the same logical key can reuse the freed version number and so the same blob path. Unlinking the
+    /// blob after the release could then remove the other persist's fresh bytes and leave its row pointing
+    /// at nothing, so the unlink has to happen while the gate is still held.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteCreatedAttachmentAsync_UnlinksTheBlobWhileStillHoldingTheAttachmentGate(bool pending)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        string pendingTurn = Guid.NewGuid().ToString("N");
+
+        SessionAttachmentPersistence created = await _attachments!.PersistNewWithOutcomeAsync(
+            pending ? null : sessionId,
+            pending ? pendingTurn : null,
+            null,
+            "gated",
+            "gated.txt",
+            Encoding.UTF8.GetBytes("gated content"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        Assert.True(created.NewVersionCreated);
+
+        string blobPath = Path.Combine(_attachmentsRoot, created.Record.RelativePath);
+
+        string gateKey = pending
+            ? SessionAttachmentStore.PendingTurnGateKey(pendingTurn)
+            : SessionAttachmentStore.SessionGateKey(sessionId);
+
+        bool? gateHeldBeforeUnlink = null;
+
+        bool? blobPresentBeforeUnlink = null;
+
+        _attachments.AfterCreatedRowDeletedForTesting = _ =>
+        {
+            gateHeldBeforeUnlink = SessionAttachmentStore.AttachmentGates.IsHeld(gateKey);
+
+            blobPresentBeforeUnlink = File.Exists(blobPath);
+
+            return Task.CompletedTask;
+        };
+
+        Assert.True(await _attachments.DeleteCreatedAttachmentAsync(created.Record));
+
+        Assert.True(blobPresentBeforeUnlink);
+
+        Assert.True(gateHeldBeforeUnlink, "the blob was unlinked after the attachment gate was released.");
+
+        Assert.False(File.Exists(blobPath));
+    }
+
     [SkippableFact]
 
     public async Task DeleteCreatedAttachmentAsync_LeavesARowThatWasPromotedSinceItWasCreated()
@@ -1036,6 +1093,45 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             (await _index!.GetStateAsync(attachment.Id, CancellationToken.None)).Status);
     }
 
+    /// <summary>
+    /// A provider that answers fewer vectors than inputs is failed once, by the real service, at the
+    /// provider boundary, so the processor sees an ordinary embedding failure: the attachment is marked
+    /// failed for the provider (not for its dimensions) and a retry is requested. Before the service
+    /// enforced the count, this shape reached the dimensions check and ended terminal without a retry.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task ProcessAsync_ProviderAnswersFewerVectorsThanChunks_MarksFailedAndRequestsRetry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "notes",
+            "notes.txt",
+            "text/plain",
+            "short answer");
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(
+            ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService()).ProcessUnderOpenAdmissionAsync(
+                new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+                CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.Empty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+
+        SessionAttachmentIndexState state = await _index.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, state.Status);
+
+        Assert.Equal("The embedding provider failed.", state.FailureReason);
+    }
+
     [SkippableFact]
 
     public async Task ProcessAsync_DimensionMismatch_MarksFailedWithoutPartialChunks()
@@ -1391,6 +1487,23 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             ReadOnlyMemory<byte> bytes,
             string mimeType,
             SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteCreatedAttachmentAsync(
+            SessionAttachmentRecord created,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

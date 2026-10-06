@@ -44,10 +44,44 @@ public sealed class RequestAugmentingHandlerTests
     /// <summary>
     /// The handler's own contract says streaming requests pass through unchanged, and nothing proved
     /// it: a structured-output request that asks for <c>text/event-stream</c> must reach the provider
-    /// byte for byte, with no <c>strict</c> flag injected and no retry.
+    /// byte for byte, with no <c>strict</c> flag injected and no retry. The body here carries no
+    /// <c>stream</c> marker, so the <c>Accept</c> header is the only thing that can pass it through.
     /// </summary>
     [Fact]
     public async Task OpenAiHandler_StreamingAccept_PassesThroughUnchanged()
+    {
+        CapturingHandler capturing = new();
+
+        OpenAiRequestAugmentingHandler handler = new(
+            NullLogger<OpenAiRequestAugmentingHandler>.Instance)
+        {
+            InnerHandler = capturing,
+        };
+
+        const string json = """
+            {"model": "gpt-4o", "messages": [], "response_format": {"type": "json_schema", "json_schema": {"name": "test", "schema": {"type": "object"}}}}
+            """;
+
+        using HttpRequestMessage request = CreateJsonRequest(json);
+
+        request.Headers.Accept.ParseAdd("text/event-stream");
+
+        using HttpResponseMessage response = await new HttpClient(handler).SendAsync(request, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(Encoding.UTF8.GetBytes(json), capturing.LastBody);
+
+        Assert.Equal(1, capturing.CallCount);
+    }
+
+    /// <summary>
+    /// The OpenAI client marks a streaming turn with <c>"stream": true</c> in the body and sends no
+    /// event-stream <c>Accept</c> header, so the body marker is its own pass-through path and is pinned
+    /// separately from the header: neither can stand in for the other.
+    /// </summary>
+    [Fact]
+    public async Task OpenAiHandler_StreamTrueBodyWithoutEventStreamAccept_PassesThroughUnchanged()
     {
         CapturingHandler capturing = new();
 
@@ -63,7 +97,7 @@ public sealed class RequestAugmentingHandlerTests
 
         using HttpRequestMessage request = CreateJsonRequest(json);
 
-        request.Headers.Accept.ParseAdd("text/event-stream");
+        Assert.Empty(request.Headers.Accept);
 
         using HttpResponseMessage response = await new HttpClient(handler).SendAsync(request, CancellationToken.None);
 

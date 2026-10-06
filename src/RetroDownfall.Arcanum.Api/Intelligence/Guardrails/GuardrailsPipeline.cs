@@ -77,6 +77,13 @@ public sealed partial class GuardrailsPipeline(
     /// <see cref="ErrorCodes.Guardrails.Blocked"/>. Returns <see cref="GuardrailsResult.Allowed"/>
     /// when the pipeline is disabled or no violation matched.
     /// </summary>
+    /// <param name="messages">The inbound messages to scan.</param>
+    /// <param name="cancellationToken">
+    /// Not observed. The scan is synchronous and bounded, and the violation audit record is a decision
+    /// already taken, so it is written on <see cref="CancellationToken.None"/> rather than dropped when
+    /// the request is cancelled. The parameter stays so the call shape matches the other pipeline stages.
+    /// </param>
+    /// <param name="auditContext">The session and model recorded on a violation's audit entry.</param>
     public async Task<Result<GuardrailsResult>> FilterInputAsync(
         IReadOnlyList<CoreChatMessage>? messages,
         CancellationToken cancellationToken,
@@ -113,6 +120,12 @@ public sealed partial class GuardrailsPipeline(
     /// <see cref="ErrorCodes.Guardrails.Blocked"/>. Returns <see cref="GuardrailsResult.Allowed"/>
     /// when the pipeline is disabled or no violation matched.
     /// </summary>
+    /// <param name="text">The model's completed output text.</param>
+    /// <param name="cancellationToken">
+    /// Not observed, for the same reason as on <see cref="FilterInputAsync"/>: the scan is synchronous
+    /// and a violation's audit record is written on <see cref="CancellationToken.None"/>.
+    /// </param>
+    /// <param name="auditContext">The session and model recorded on a violation's audit entry.</param>
     public async Task<Result<GuardrailsResult>> FilterOutputAsync(
         string text,
         CancellationToken cancellationToken,

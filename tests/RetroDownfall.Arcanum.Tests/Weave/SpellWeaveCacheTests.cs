@@ -167,7 +167,9 @@ public sealed class SpellWeaveCacheTests
         // only has to degrade to LLM routing instead of pairing the wrong spell with a vector.
         IWeaveService weave = ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService();
 
-        SpellWeaveCache cache = new(weave,new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), NullLogger<SpellWeaveCache>.Instance);
+        TestCapturingLogger<SpellWeaveCache> logger = new();
+
+        SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), logger);
 
         List<SpellMetadata> spells =
         [
@@ -178,6 +180,15 @@ public sealed class SpellWeaveCacheTests
         ConcurrentDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(spells, CancellationToken.None);
 
         Assert.Null(result);
+
+        // The null must come from the service's typed failure, not from the cache's catch-all swallowing
+        // an index fault, or this test would pass with the service's count guard removed: the failure
+        // is reported by code, and no exception was ever logged.
+        Assert.Contains(
+            logger.Entries,
+            static entry => entry.Message.Contains(ErrorCodes.Embeddings.ProviderUnavailable, StringComparison.Ordinal));
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Exception is not null);
     }
 
     [Fact]
