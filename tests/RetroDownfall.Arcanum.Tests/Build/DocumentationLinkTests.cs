@@ -13,9 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// <para>The failure this prevents is silent. A link written from the wrong base directory renders as
 /// a perfectly ordinary blue link and 404s only when a reader on GitHub clicks it, so a document that
 /// is read once and trusted for its cross references can carry a hundred dead ones for a release. The
-/// walk covers <c>README.md</c>, <c>AGENTS.md</c> and the top level of <c>docs</c>; the plan and
-/// specification archive under <c>docs/superpowers</c> is a historical record of a single run and is
-/// deliberately left alone.</para>
+/// walk covers <c>README.md</c>, <c>AGENTS.md</c> and the top level of <c>docs</c>.</para>
 /// <para>Fenced code blocks and inline code spans are not links, so they are masked before the scan.
 /// A path is checked with its exact casing, because a developer's case-insensitive file system accepts
 /// a link that the case-sensitive host serving it does not. A fragment is checked only against
@@ -174,8 +172,6 @@ public sealed class DocumentationLinkTests
         Assert.Contains("docs/Arcanum.Engineering.md", relative);
 
         Assert.Contains("docs/Arcanum.DESIGN.md", relative);
-
-        Assert.DoesNotContain(relative, static path => path.StartsWith("docs/superpowers/", StringComparison.Ordinal));
     }
 
     [Theory]
