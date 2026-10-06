@@ -2391,6 +2391,46 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(IdempotencyClaimState.Failed, store.Claim?.State);
     }
 
+    /// <summary>
+    /// A response marked protected is never stored for replay: the claim table is a generic cache that keeps
+    /// the body, and a replay is written by a request that never re-made the decision the protected headers
+    /// follow from. The claim is abandoned instead, so a retry with the same key runs again and carries its
+    /// own headers.
+    /// </summary>
+    [Fact]
+    public async Task A_protected_response_is_never_cached_for_replay()
+    {
+        string key = $"protected-response-{Guid.NewGuid():N}";
+
+        FakeClaimStore store = new();
+
+        using ServiceProvider services = CreateServices(store);
+
+        (TestEndpointFilterInvocationContext context, CompletionTrackingResponseFeature response) =
+            CreateContext(services, key);
+
+        EndpointFilterDelegate next = async invocationContext =>
+        {
+            CovenantRequestFeatures.MarkProtectedResponse(invocationContext.HttpContext);
+
+            await invocationContext.HttpContext.Response.WriteAsync(
+                """{"answer":"drawn from protected memory"}""",
+                invocationContext.HttpContext.RequestAborted);
+
+            return null;
+        };
+
+        await InvokeAndCompleteAsync(CreateFilter(), context, response, next);
+
+        Assert.Equal(StatusCodes.Status200OK, context.HttpContext.Response.StatusCode);
+
+        Assert.Equal(0, store.CompleteCallCount);
+
+        Assert.Equal(1, store.MarkAbandonedCallCount);
+
+        Assert.Null(store.Claim?.ResponseBody);
+    }
+
     private static Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> CreateFilter() =>
         IdempotencyEndpointFilters.ForBoundArgument(0, ArcanumJsonContext.Default.PingRequest);
 

@@ -379,6 +379,69 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         Assert.Equal(1, store.RowsRead);
     }
 
+    /// <summary>
+    /// A settlement that recorded the cost but could not close the row is settled again, exactly once, by the
+    /// peer's next delivery; after that the Sending is closed and a further delivery is the 404 a settled
+    /// Sending gets.
+    /// </summary>
+    /// <remarks>
+    /// The callback route answers 503 when a settlement fault escapes the ledger, and a peer retries a 503, so
+    /// a retry can arrive after a settlement that half-committed. The production ledger catches that fault
+    /// itself and leaves the row open, which is what makes the retry safe: it finds the same row, rewrites the
+    /// same cost, and closes it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_settlement_retried_after_the_row_failed_to_close_settles_once_and_then_finds_nothing()
+    {
+        RequireSqlCipher();
+
+        CountingOperationStore store = new(new LongRunningOperationStore(
+            _db!,
+            TestOrdinaryConnectionFactory.For(_db!)));
+
+        IA2ASendingLedger ledger = new A2ASendingLedger(
+            store,
+            TimeProvider.System,
+            NullLogger<A2ASendingLedger>.Instance);
+
+        string configId = A2ACallbackConfigId.Mint();
+
+        A2ASendingLedgerEntry dispatched = await ledger.RegisterOutboundAsync("remote-retried", "https://peer.example.test/");
+
+        await ledger.RecordOutboundCallbackAsync(dispatched, configId, A2ACallbackToken.Hash(A2ACallbackToken.Mint()));
+
+        A2AOutboundCallback first = Assert.NotNull(await ledger.FindOutboundCallbackAsync(configId));
+
+        // The cost is written, then closing the row fails.
+        store.FailNextTransitions = 1;
+
+        await ledger.SettleOutboundAsync(first.Ledger, A2ARemoteCost.Unknown);
+
+        LongRunningOperation? halfSettled = await store.GetAsync(dispatched.OperationId);
+
+        Assert.NotEqual(LongRunningOperationState.Completed, halfSettled!.State);
+
+        // The retry finds the same open row and settles it.
+        A2AOutboundCallback retried = Assert.NotNull(await ledger.FindOutboundCallbackAsync(configId));
+
+        Assert.Equal(dispatched.OperationId, retried.Ledger.OperationId);
+
+        await ledger.SettleOutboundAsync(retried.Ledger, A2ARemoteCost.Unknown);
+
+        LongRunningOperation? settled = await store.GetAsync(dispatched.OperationId);
+
+        Assert.Equal(LongRunningOperationState.Completed, settled!.State);
+
+        A2ASendingRecord? record = A2ASendingLedger.TryRead(settled);
+
+        Assert.NotNull(record);
+
+        Assert.False(record!.CostKnown);
+
+        // Settled once: a third delivery finds nothing to settle.
+        Assert.Null(await ledger.FindOutboundCallbackAsync(configId));
+    }
+
     private IA2ASendingLedger CreateLedger() =>
         new A2ASendingLedger(
             new LongRunningOperationStore(
@@ -424,7 +487,19 @@ internal sealed class CountingOperationStore(ILongRunningOperationStore inner) :
 {
     private int _rowsRead;
 
+    private int _failNextTransitions;
+
     public int RowsRead => Volatile.Read(ref _rowsRead);
+
+    /// <summary>
+    /// How many of the next state transitions throw instead of reaching the store, to stand in for a
+    /// write that committed part of a settlement and then failed.
+    /// </summary>
+    public int FailNextTransitions
+    {
+        get => Volatile.Read(ref _failNextTransitions);
+        set => Volatile.Write(ref _failNextTransitions, value);
+    }
 
     public async Task<IReadOnlyList<LongRunningOperation>> ListAsync(
         LongRunningOperationQuery query,
@@ -519,8 +594,16 @@ internal sealed class CountingOperationStore(ILongRunningOperationStore inner) :
         LongRunningOperationState state,
         DateTimeOffset utcNow,
         string? terminalErrorCode = null,
-        CancellationToken cancellationToken = default) =>
-        inner.TryTransitionAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.Decrement(ref _failNextTransitions) >= 0)
+        {
+            return Task.FromException<bool>(new InvalidOperationException("The state transition failed."));
+        }
+
+        Interlocked.Exchange(ref _failNextTransitions, 0);
+
+        return inner.TryTransitionAsync(
             operationId,
             expectedRevision,
             ownerId,
@@ -528,6 +611,7 @@ internal sealed class CountingOperationStore(ILongRunningOperationStore inner) :
             utcNow,
             terminalErrorCode,
             cancellationToken);
+    }
 
     public Task<bool> RequestCancellationAsync(
         Guid operationId,

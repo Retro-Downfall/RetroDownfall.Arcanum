@@ -122,6 +122,10 @@ internal static class A2ACallbackEndpoints
     /// The cost is recorded as <em>unknown</em> rather than fetched: this process never observed the
     /// remote task, and inventing a figure — or a zero — is exactly what issue #60 removed. The Sending
     /// shows up as unpriced delegated work, which is the honest description of it.
+    /// <para>The production ledger is best-effort and answers most of its own store faults: a lookup it
+    /// cannot complete is "no durable record" (404 here), and a settlement it cannot finish is logged and
+    /// leaves the row open, so a retried callback finds it and settles it then. The arms below are for a
+    /// ledger fault that does escape.</para>
     /// </remarks>
     internal static async Task<IResult> SettleFromLedgerAsync(
         string configId,
@@ -130,45 +134,58 @@ internal static class A2ACallbackEndpoints
         ILogger logger,
         CancellationToken cancellationToken)
     {
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        if (scope.ServiceProvider.GetService<IA2ASendingLedger>() is not { } ledger)
+        {
+            return Results.NotFound();
+        }
+
+        A2AOutboundCallback? recorded;
+
         try
         {
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-            if (scope.ServiceProvider.GetService<IA2ASendingLedger>() is not { } ledger)
-            {
-                return Results.NotFound();
-            }
-
-            A2AOutboundCallback? recorded = await ledger
+            recorded = await ledger
                 .FindOutboundCallbackAsync(configId, cancellationToken)
                 .ConfigureAwait(false);
-
-            if (recorded is not { } callback || !A2ACallbackToken.Matches(token, callback.TokenHash))
-            {
-                return Results.NotFound();
-            }
-
-            await ledger
-                .SettleOutboundAsync(callback.Ledger, A2ARemoteCost.Unknown, cancellationToken)
-                .ConfigureAwait(false);
-
-            logger.LogInformation(
-                "A2A: settled outbound Sending for remote task {TaskId} from a callback that arrived after "
-                + "the process which dispatched it had gone.",
-                callback.TaskId);
-
-            return Results.Accepted();
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not GrimoireMaintenanceUnavailableException)
         {
-            // A peer treats 404 as terminal and stops retrying, so a ledger that could not answer must not
-            // look like an id or token that was wrong. 503 says only that the ledger is unavailable, which
-            // is true for every caller and so is no oracle for a config id or a token. A maintenance window
-            // is deliberately excluded: it propagates to the exception handler, which answers the same 503
-            // everywhere else does.
+            // Nothing has been authenticated yet, so the answer must be the one an unknown config id gets: a
+            // lookup that failed for one id's row and not another's would otherwise tell a stranger which ids
+            // exist. A maintenance window propagates instead, to the same 503 every request gets, which says
+            // nothing about this id.
+            logger.LogWarning(ex, "A2A: could not look up the Sending behind a callback.");
+
+            return Results.NotFound();
+        }
+
+        if (recorded is not { } callback || !A2ACallbackToken.Matches(token, callback.TokenHash))
+        {
+            return Results.NotFound();
+        }
+
+        try
+        {
+            await ledger
+                .SettleOutboundAsync(callback.Ledger, A2ARemoteCost.Unknown, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not GrimoireMaintenanceUnavailableException)
+        {
+            // The caller proved the Sending's secret, so it may learn that the ledger could not settle it. A
+            // peer treats 404 as terminal and stops retrying, and this Sending is still owed its settlement;
+            // 503 asks it to come back.
             logger.LogWarning(ex, "A2A: could not settle a Sending from callback config {ConfigId}.", configId);
 
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
+
+        logger.LogInformation(
+            "A2A: settled outbound Sending for remote task {TaskId} from a callback that arrived after "
+            + "the process which dispatched it had gone.",
+            callback.TaskId);
+
+        return Results.Accepted();
     }
 }
