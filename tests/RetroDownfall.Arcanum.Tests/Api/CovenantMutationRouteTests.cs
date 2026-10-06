@@ -1,11 +1,11 @@
-using RetroDownfall.Arcanum.Tests.Covenant;
-using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.Covenant;
-using RetroDownfall.Arcanum.Api.Serialization;
-using System.Text.Json;
-using System.Text;
-using System.Net;
 using System.Diagnostics;
+
+using System.Net;
+
+using System.Text;
+
+using System.Text.Json;
+
 using Microsoft.AspNetCore.Builder;
 
 using Microsoft.AspNetCore.Http;
@@ -18,9 +18,18 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Api.Security;
 
+using RetroDownfall.Arcanum.Api.Serialization;
+
 using RetroDownfall.Arcanum.Api.Tower;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Tests.Covenant;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;

@@ -809,8 +809,6 @@ public sealed class A2AServerCapabilityTests
 
         public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) => Task.FromResult(0);
 
-        public Task UpdateSessionAsync(Session session, CancellationToken ct) => Task.CompletedTask;
-
         public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
             Task.FromResult<Session?>(null);
 

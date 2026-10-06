@@ -8,7 +8,10 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
@@ -221,6 +224,105 @@ public sealed class PromptTestEndpointTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.Contains(Sentinel, json);
+    }
+
+    /// <summary>
+    /// A Campaign prompt's codex is contained by the Campaign path, never by the working directory, so an
+    /// unlisted working directory the request also carries is not what the codex read depends on. It is
+    /// dropped as a workspace exactly as it is without a codexPath, and the codex is still read.
+    /// </summary>
+    [SkippableFact]
+    public async Task Test_of_a_campaign_prompt_reads_its_codex_under_the_campaign_path_when_the_workingDirectory_is_unlisted()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string campaignPath = Path.Combine(_scratch, "campaign");
+
+        Directory.CreateDirectory(campaignPath);
+
+        string codex = Path.Combine(campaignPath, "codex.md");
+
+        File.WriteAllText(codex, Sentinel);
+
+        string unlisted = Path.Combine(_scratch, "unlisted-working-directory");
+
+        Directory.CreateDirectory(unlisted);
+
+        RecordingMcpConnectionManager mcp = new();
+
+        await using ArcanumWebApplicationFactory factory = CreateFactoryWithSpellRoots([], mcp);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid campaignId = await SeedCampaignAsync(factory, campaignPath);
+
+        Guid promptId = await CreatePromptAsync(client, campaignId);
+
+        HttpResponseMessage response = await PostTestAsync(
+            client,
+            promptId,
+            new TestPromptRequest(unlisted, null, null, codex, null));
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Contains(Sentinel, json);
+
+        Assert.True(string.IsNullOrWhiteSpace(Assert.Single(mcp.ToolWorkspaces)));
+    }
+
+    private static async Task<Guid> SeedCampaignAsync(ArcanumWebApplicationFactory factory, string path)
+    {
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ICampaignRepository repository = scope.ServiceProvider.GetRequiredService<ICampaignRepository>();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Campaign campaign = new()
+        {
+            Id = Guid.NewGuid(),
+            Name = $"Campaign-{Guid.NewGuid():N}",
+            Path = path,
+            Type = WorkspaceType.Campaign,
+            Settings = CampaignRepository.SerializeSettings(CampaignSettings.CreateDefault()),
+            SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(CampaignRepository.DefaultSanctumConfig()),
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+
+        return (await repository.AddAsync(campaign, CancellationToken.None)).Value.Id;
+    }
+
+    private static async Task<Guid> CreatePromptAsync(HttpClient client, Guid campaignId)
+    {
+        CreatePromptRequest request = new(
+            $"campaign-prompt-test-{Guid.NewGuid():N}",
+            "1.0.0",
+            "Hello",
+            "Campaign test prompt",
+            [],
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            campaignId);
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/prompts",
+            new StringContent(JsonSerializer.Serialize(request, ArcanumJsonContext.Default.CreatePromptRequest), Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        ApiResponse<PromptDetailDto>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponsePromptDetailDto);
+
+        return body!.Data!.Id;
     }
 
     private static ArcanumWebApplicationFactory CreateFactoryWithSpellRoots(

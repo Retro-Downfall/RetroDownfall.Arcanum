@@ -674,9 +674,6 @@ public sealed class CovenantPlaintextExportTests
         public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
             throw new NotSupportedException();
 
-        public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
-            throw new NotSupportedException();
-
         public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
             throw new NotSupportedException();
 

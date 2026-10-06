@@ -774,7 +774,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task UpdateSessionAsync_does_not_clobber_unsummarized_entry_count()
+    public async Task PatchSessionAsync_does_not_clobber_unsummarized_entry_count()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -800,11 +800,10 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Assert.Equal(1, beforePatch!.UnsummarizedEntryCount);
 
-        beforePatch.Title = "After patch";
-
-        beforePatch.UnsummarizedEntryCount = 0;
-
-        await repository.UpdateSessionAsync(beforePatch, CancellationToken.None);
+        _ = await repository.PatchSessionAsync(
+            session.Id,
+            new SessionHeaderPatch(SetTitle: true, Title: "After patch", Status: null),
+            CancellationToken.None);
 
         Session? afterPatch = await repository.GetByIdAsync(session.Id, CancellationToken.None);
 
@@ -1087,6 +1086,43 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             ct: CancellationToken.None);
 
         Assert.Equal(new[] { e2, e1 }, secondPage.Select(e => e.Id).ToArray());
+    }
+
+    /// <summary>
+    /// The keyset cursor is a pair. A caller outside the route that passes one half used to get offset
+    /// paging back, the newest entries, as though its cursor had been honoured; the route refuses the same
+    /// request with a 400, and the repository refuses it too rather than answering a different question.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GetEntriesAsync_with_only_one_keyset_cursor_field_is_refused(bool suppliesId)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
+
+        Session session = await repository.CreateAsync(campaignId: null, title: "half cursor", CancellationToken.None);
+
+        _ = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = "newest",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        ArgumentException refused = await Assert.ThrowsAnyAsync<ArgumentException>(() => repository.GetEntriesAsync(
+            session.Id,
+            limit: 10,
+            beforeCreatedAt: suppliesId ? null : DateTimeOffset.UtcNow,
+            beforeId: suppliesId ? Guid.NewGuid() : null,
+            ct: CancellationToken.None));
+
+        Assert.Equal(suppliesId ? "beforeCreatedAt" : "beforeId", refused.ParamName);
     }
 
     [SkippableFact]

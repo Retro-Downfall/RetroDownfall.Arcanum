@@ -48,6 +48,24 @@ public sealed class SettingDescriptorCoverageTests
         Assert.Contains("empty list is a validation error", descriptor.Description, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The spell workspace roots gate more than file edits: running a spell or a prompt, ping, and a
+    /// prompt test's codex read all need a workspace under them, and an empty list refuses them all. Help
+    /// that says only "create, edit, or delete files" lets an operator leave it empty and then meet the
+    /// refusal on a run.
+    /// </summary>
+    [Fact]
+    public void Spell_workspace_roots_help_names_runs_and_says_empty_refuses_them()
+    {
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static item => item.Key == "security.spellWorkspaceRoots");
+
+        Assert.Contains("run spells and prompts", descriptor.Description, StringComparison.Ordinal);
+
+        Assert.Contains("Empty refuses them all", descriptor.Description, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Complete_configuration_reference_names_every_descriptor_exactly_once()
     {

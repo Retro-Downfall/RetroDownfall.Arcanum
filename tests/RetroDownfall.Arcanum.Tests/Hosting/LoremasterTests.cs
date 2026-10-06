@@ -996,6 +996,26 @@ public sealed class LoremasterTests
 
         internal Exception? RollupException { get; set; }
 
+        /// <summary>
+        /// A fresh header each read, as the store's own header read returns, so the service under test can
+        /// never write through to the harness's Session.
+        /// </summary>
+        private static Session HeaderCopy(Session session) => new()
+        {
+            Id = session.Id,
+            CampaignId = session.CampaignId,
+            Title = session.Title,
+            Status = session.Status,
+            CreatedAt = session.CreatedAt,
+            UpdatedAt = session.UpdatedAt,
+            Summary = session.Summary,
+            LastSummarizedMessageAt = session.LastSummarizedMessageAt,
+            TotalTokensUsed = session.TotalTokensUsed,
+            TotalCostUsd = session.TotalCostUsd,
+            UnsummarizedEntryCount = session.UnsummarizedEntryCount,
+            ForkedFromSessionId = session.ForkedFromSessionId,
+        };
+
         public async Task<List<Guid>> GetSessionsNeedingSummarizationAsync(
             int threshold,
             DateTime idleCutoff,
@@ -1014,7 +1034,7 @@ public sealed class LoremasterTests
 
             await harness.StepAsync("header", cancellationToken);
 
-            return ReturnSession && id == Session.Id ? Session.CloneHeader() : null;
+            return ReturnSession && id == Session.Id ? HeaderCopy(Session) : null;
         }
 
         public async Task<List<Entry>> GetUnsummarizedEntriesAsync(

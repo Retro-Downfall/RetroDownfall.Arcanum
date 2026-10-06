@@ -232,12 +232,14 @@ internal static class PromptEndpoints
 
                 // A name or version the caller sends must survive trimming, as on create, and a rename onto a
                 // (name, version) another prompt of the same scope already holds is the documented
-                // Prompt.DuplicateVersion rather than a unique-index failure.
+                // Prompt.DuplicateVersion rather than a unique-index failure. Only what the caller sends is
+                // validated: a row stored with a blank name before this check existed can still have its
+                // other fields updated without being renamed in the same request.
                 string newName = request.Name is null ? existing.Name : request.Name.Trim();
 
                 string newVersion = request.Version is null ? existing.Version : request.Version.Trim();
 
-                if (newName.Length == 0)
+                if (request.Name is not null && newName.Length == 0)
                 {
                     return Results.BadRequest(
                         ApiResponse<PromptDetailDto>.FromResult(
@@ -245,7 +247,7 @@ internal static class PromptEndpoints
                             traceId));
                 }
 
-                if (newVersion.Length == 0)
+                if (request.Version is not null && newVersion.Length == 0)
                 {
                     return Results.BadRequest(
                         ApiResponse<PromptDetailDto>.FromResult(
@@ -528,24 +530,44 @@ internal static class PromptEndpoints
 
                 string workingDirectory = request?.WorkingDirectory ?? string.Empty;
 
-                // A supplied workingDirectory is the codex containment root for a global prompt and the MCP
-                // workspace partition key for every prompt, so it must satisfy the same
+                string? codexPath = string.IsNullOrWhiteSpace(request?.CodexPath) ? null : request.CodexPath;
+
+                bool codexRequested = codexPath is not null;
+
+                // A Campaign prompt's codex is contained by its Campaign path, which wins over the working
+                // directory, so it is looked up before the working directory is judged.
+                string? campaignRoot = null;
+
+                if (codexRequested && prompt.CampaignId is Guid campaignId)
+                {
+                    Campaign? campaign = await campaignRepo
+                        .GetByIdAsync(campaignId, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
+                    campaignRoot = campaign?.Path;
+                }
+
+                bool codexContainedByWorkingDirectory = codexRequested && string.IsNullOrWhiteSpace(campaignRoot);
+
+                // A supplied workingDirectory is the codex containment root for a prompt with no Campaign path
+                // and the MCP workspace partition key for every prompt, so it must satisfy the same
                 // Arcanum:Security:SpellWorkspaceRoots allowlist as prompt execute, spell execute and ping
-                // before it is used as either. A request that also names a codexPath is refused (403
-                // Spell.PathNotAllowed) rather than quietly dropping the file it asked to read. A request
-                // without a codexPath only previews the prompt, and the shipping CLI (arcanum prompt test)
-                // sends its own current directory with no codexPath on every call, which is outside the
-                // empty allowlist of a stock installation: an unlisted directory is then not used as a
-                // workspace (no containment root, global tools only) instead of failing the preview. Any other
-                // resolution failure (a directory that does not exist or cannot be normalized) is still refused,
-                // and a blank workingDirectory is never resolved.
+                // before it is used as either. When the codex it would contain depends on it, an unlisted
+                // directory is refused (403 Spell.PathNotAllowed) rather than quietly dropping the file the
+                // request asked to read. Otherwise the request only previews the prompt (no codexPath, or a
+                // Campaign prompt whose codex the Campaign path contains), and the shipping CLI
+                // (arcanum prompt test) sends its own current directory with no codexPath on every call,
+                // which is outside the empty allowlist of a stock installation: an unlisted directory is then
+                // not used as a workspace (global tools only) instead of failing the preview. Any other
+                // resolution failure (a directory that does not exist or cannot be normalized) is still
+                // refused, and a blank workingDirectory is never resolved.
                 if (!string.IsNullOrWhiteSpace(workingDirectory))
                 {
                     Result<string?> workingDirectoryResult = workspaceResolver.Resolve(workingDirectory);
 
                     if (workingDirectoryResult.IsFailure
                         && workingDirectoryResult.Error.Code == ErrorCodes.Spell.PathNotAllowed
-                        && string.IsNullOrWhiteSpace(request?.CodexPath))
+                        && !codexContainedByWorkingDirectory)
                     {
                         workingDirectory = string.Empty;
                     }
@@ -568,18 +590,9 @@ internal static class PromptEndpoints
 
                 string? codexContent = null;
 
-                if (!string.IsNullOrWhiteSpace(request?.CodexPath))
+                if (codexPath is not null)
                 {
-                    string? containmentRoot = null;
-
-                    if (prompt.CampaignId is Guid campaignId)
-                    {
-                        Campaign? campaign = await campaignRepo
-                            .GetByIdAsync(campaignId, ctx.RequestAborted)
-                            .ConfigureAwait(false);
-
-                        containmentRoot = campaign?.Path;
-                    }
+                    string? containmentRoot = campaignRoot;
 
                     if (string.IsNullOrWhiteSpace(containmentRoot)
                         && !string.IsNullOrWhiteSpace(workingDirectory))
@@ -593,7 +606,7 @@ internal static class PromptEndpoints
                     long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
                     Result<CodexValidationResult> codexPathResult = CodexPathPolicy.ValidateContainedFile(
-                        request.CodexPath,
+                        codexPath,
                         containmentRoot ?? string.Empty,
                         maxBytes);
 

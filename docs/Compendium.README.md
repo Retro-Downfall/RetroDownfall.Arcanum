@@ -128,7 +128,7 @@ A model's `reasoning` block carries exactly the two keys above. `providers.model
 | `security.guardrails.blockedTopics` | `string[]`, `[]` | — | Optional topic-pattern blocklist. |
 | `security.guardrails.auditLog.enabled` | `bool`, `false` | — | Persists guardrail violations when guardrails are enabled. |
 | `security.perceptionWorkspaceRoots` | `string[]`, `[]` | absolute roots | Roots Perception may scan; empty denies scans. |
-| `security.spellWorkspaceRoots` | `string[]`, `[]` | absolute roots | Roots a request's workspace must fall under for spell CRUD, spell and prompt execution, ping, and the codex read of prompt `/test`; empty denies them all. A prompt `/test` without a codex path is not denied: an unlisted working directory is ignored and the preview uses no workspace. |
+| `security.spellWorkspaceRoots` | `string[]`, `[]` | absolute roots | Roots a request's workspace must fall under for spell CRUD, spell and prompt execution, ping, and the codex read of prompt `/test` when the working directory is what contains it; empty denies them all. A prompt `/test` without a codex path, or for a Campaign prompt whose codex its Campaign path contains, is not denied: an unlisted working directory is ignored and the preview uses no workspace. |
 | `security.campaignRoots` | `string[]`, `[]` | absolute roots | Roots from which campaigns may be registered; empty denies registration. |
 | `security.allowedUploadMimeTypes` | `string[]`, `[]` | MIME types | Optional additional upload restriction; empty adds no operator restriction. |
 | `security.allowedImageMimeTypes` | `string[]`, `["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]` | MIME types; nonempty while Scrying is enabled | MIME policy for Scrying images. |

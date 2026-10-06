@@ -357,6 +357,150 @@ public sealed class SessionDivinationEndpointTests
     }
 
     [SkippableFact]
+    public async Task Divine_widens_past_the_first_window_when_closer_entries_of_another_campaign_fill_it()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = enabled.CreateAuthenticatedClient();
+
+        Guid targetCampaignId = await SeedCampaignAsync(enabled);
+
+        Guid otherCampaignId = await SeedCampaignAsync(enabled);
+
+        // limit 1 looks at 4 candidates first; five closer entries of another Campaign fill that whole
+        // window, so only a wider second search can reach the one entry of the target.
+        for (int i = 0; i < 5; i++)
+        {
+            await SeedEmbeddedEntryAsync(
+                enabled,
+                content: $"closer entry of another campaign {i}",
+                vector: [1f, 0f, 0f],
+                campaignId: otherCampaignId,
+                status: "active");
+        }
+
+        (Guid targetSessionId, _, _) = await SeedEmbeddedEntryAsync(
+            enabled,
+            content: "farther entry of the target campaign",
+            vector: [0.9f, 0.1f, 0f],
+            campaignId: targetCampaignId,
+            status: "active");
+
+        SemanticSearchResult result = await ReadResultAsync(
+            await PostDivineAsync(client, new SemanticSearchRequest("entry", CampaignId: targetCampaignId, Limit: 1)));
+
+        Assert.Equal(targetSessionId, Assert.Single(result.Results).SessionId);
+
+        Assert.False(result.HasMore);
+    }
+
+    [SkippableFact]
+    public async Task Divine_retries_a_missed_first_window_once_at_the_cap_and_reports_more_when_the_cap_filled()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // Every window comes back full of candidates no Session owns, so no search is ever exhausted and
+        // nothing survives the filter.
+        RecordingDivinationService divination = new(_ => []);
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService(), divination: divination);
+
+        HttpClient client = enabled.CreateAuthenticatedClient();
+
+        SemanticSearchResult result = await ReadResultAsync(
+            await PostDivineAsync(client, new SemanticSearchRequest("entry", CampaignId: Guid.NewGuid(), Limit: 1)));
+
+        // One search at 4 x limit and one at the 500 cap. Doubling in between repeated the whole search and
+        // join for a few more candidates each time, eight searches for limit 1.
+        Assert.Equal([4, 500], divination.Windows);
+
+        Assert.Empty(result.Results);
+
+        // The cap filled without exhausting the ranking, so another matching hit could exist.
+        Assert.True(result.HasMore);
+    }
+
+    [SkippableFact]
+    public async Task Divine_reports_a_hit_both_windows_return_once()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid? targetEntryId = null;
+
+        // The target ranks first in both windows; the rest of every window is candidates no Session owns.
+        RecordingDivinationService divination = new(
+            _ => targetEntryId is { } id ? [id.ToString().ToUpperInvariant()] : []);
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService(), divination: divination);
+
+        HttpClient client = enabled.CreateAuthenticatedClient();
+
+        Guid campaignId = await SeedCampaignAsync(enabled);
+
+        (Guid sessionId, Guid entryId, _) = await SeedEmbeddedEntryAsync(
+            enabled,
+            content: "the only entry of the campaign",
+            vector: [1f, 0f, 0f],
+            campaignId: campaignId,
+            status: "active");
+
+        targetEntryId = entryId;
+
+        SemanticSearchResult result = await ReadResultAsync(
+            await PostDivineAsync(client, new SemanticSearchRequest("entry", CampaignId: campaignId, Limit: 2)));
+
+        Assert.Equal([8, 500], divination.Windows);
+
+        SemanticSessionSearchResult hit = Assert.Single(result.Results);
+
+        Assert.Equal(sessionId, hit.SessionId);
+
+        Assert.Equal(entryId, hit.EntryId);
+    }
+
+    [SkippableFact]
+    public async Task Divine_preview_is_the_first_200_characters_and_never_splits_a_surrogate_pair()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory enabled = CreateEnabledFactory(new FakeWeaveService());
+
+        HttpClient client = enabled.CreateAuthenticatedClient();
+
+        Guid longCampaignId = await SeedCampaignAsync(enabled);
+
+        Guid pairCampaignId = await SeedCampaignAsync(enabled);
+
+        _ = await SeedEmbeddedEntryAsync(
+            enabled,
+            content: new string('x', 300),
+            vector: [1f, 0f, 0f],
+            campaignId: longCampaignId,
+            status: "active");
+
+        // The 200th UTF-16 unit is the high half of a pair: the preview stops before it rather than ending
+        // on half a character.
+        _ = await SeedEmbeddedEntryAsync(
+            enabled,
+            content: new string('a', 199) + "\U0001F600" + new string('b', 50),
+            vector: [1f, 0f, 0f],
+            campaignId: pairCampaignId,
+            status: "active");
+
+        SemanticSearchResult longResult = await ReadResultAsync(
+            await PostDivineAsync(client, new SemanticSearchRequest("entry", CampaignId: longCampaignId)));
+
+        Assert.Equal(new string('x', 200), Assert.Single(longResult.Results).EntryContentPreview);
+
+        SemanticSearchResult pairResult = await ReadResultAsync(
+            await PostDivineAsync(client, new SemanticSearchRequest("entry", CampaignId: pairCampaignId)));
+
+        Assert.Equal(new string('a', 199), Assert.Single(pairResult.Results).EntryContentPreview);
+    }
+
+    [SkippableFact]
     public async Task Divine_LimitIsClampedToConfiguredMaximum()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -389,7 +533,8 @@ public sealed class SessionDivinationEndpointTests
 
     private static ArcanumWebApplicationFactory CreateEnabledFactory(
         IWeaveService weaveService,
-        FixtureOrdinaryConnectionFactory? connections = null) =>
+        FixtureOrdinaryConnectionFactory? connections = null,
+        IDivinationService? divination = null) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -413,6 +558,13 @@ public sealed class SessionDivinationEndpointTests
                 services.RemoveAll<IWeaveService>();
 
                 services.AddSingleton(weaveService);
+
+                if (divination is not null)
+                {
+                    services.RemoveAll<IDivinationService>();
+
+                    services.AddSingleton(divination);
+                }
 
                 if (connections is not null)
                 {
@@ -524,9 +676,10 @@ public sealed class SessionDivinationEndpointTests
 
         if (!string.Equals(status, "active", StringComparison.OrdinalIgnoreCase))
         {
-            session.Status = status;
-
-            await sessionRepository.UpdateSessionAsync(session, CancellationToken.None);
+            Assert.NotNull(await sessionRepository.PatchSessionAsync(
+                session.Id,
+                new SessionHeaderPatch(SetTitle: false, Title: null, Status: status),
+                CancellationToken.None));
         }
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
@@ -580,6 +733,79 @@ public sealed class SessionDivinationEndpointTests
         cmd.Parameters.Add(dimParam);
 
         _ = await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Records every window the endpoint asks for and answers each one full: the ids <c>leading</c>
+    /// returns rank first, and the rest of the window is filled with ids no Entry has.
+    /// </summary>
+    private sealed class RecordingDivinationService(Func<int, string[]> leading) : IDivinationService
+    {
+        private readonly List<int> _windows = [];
+
+        public IReadOnlyList<int> Windows
+        {
+            get
+            {
+                lock (_windows)
+                {
+                    return [.. _windows];
+                }
+            }
+        }
+
+        public Task<Result<DivinationResult[]>> SearchAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken)
+        {
+            lock (_windows)
+            {
+                _windows.Add(maxResults);
+            }
+
+            string[] first = leading(maxResults);
+
+            DivinationResult[] hits = new DivinationResult[maxResults];
+
+            for (int i = 0; i < maxResults; i++)
+            {
+                string id = i < first.Length ? first[i] : Guid.NewGuid().ToString().ToUpperInvariant();
+
+                hits[i] = new DivinationResult(id, 0.99f - (i * 0.0001f), new Dictionary<string, string>());
+            }
+
+            return Task.FromResult(Result<DivinationResult[]>.Success(hits));
+        }
+
+        public Task<Result<DivinationResult[]>> SearchScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            string scopeTableName,
+            string scopeJoinColumn,
+            string scopeFilterColumn,
+            string scopeFilterValue,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by the session divination endpoint.");
+
+        public Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            DivinationCampaignScope scope,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by the session divination endpoint.");
     }
 
     private sealed class FakeWeaveService : IWeaveService

@@ -1,7 +1,7 @@
-using System.Reflection;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -11,8 +11,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -1344,6 +1344,32 @@ public sealed class SessionEndpointTests
         Assert.Equal(ErrorCodes.Validation.InvalidQuery, payload.Error?.Code);
     }
 
+    /// <summary>
+    /// A count reads no page, but a half cursor is still a malformed request: it is refused before the
+    /// count, not ignored by it, so a caller never takes a count for an answer to the cursor it sent.
+    /// </summary>
+    [SkippableFact]
+    public async Task Entries_countOnly_with_only_one_keyset_cursor_field_is_400()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(3);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/sessions/{sessionId:D}/entries?countOnly=true&beforeId={Guid.NewGuid()}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<EntryDto[]>? payload = await response.Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
+
+        Assert.NotNull(payload);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidQuery, payload.Error?.Code);
+    }
+
     [SkippableFact]
     public async Task Entries_with_both_keyset_cursor_fields_still_pages_before_the_cursor()
     {
@@ -1624,9 +1650,6 @@ public sealed class SessionEndpointTests
             throw new NotSupportedException();
 
         public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
-            throw new NotSupportedException();
-
-        public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
             throw new NotSupportedException();
 
         public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>

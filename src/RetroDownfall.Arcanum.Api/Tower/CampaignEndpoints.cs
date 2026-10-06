@@ -631,6 +631,12 @@ internal static class CampaignEndpoints
 
                 var warnings = new List<string>();
 
+                // Only the prompt swap is atomic. The settings, the spells and merged prompts are written after
+                // it, each on its own, so once the first write has committed the rest of the import runs on
+                // CancellationToken.None: a caller that disconnected after the swap must not leave the
+                // Campaign's prompts replaced and its settings and spells not.
+                CancellationToken writeToken = ctx.RequestAborted;
+
                 if (replacePrompts)
                 {
                     // One transaction deletes every prompt the Campaign holds, however many, and writes the
@@ -641,7 +647,7 @@ internal static class CampaignEndpoints
                         .ReplaceCampaignPromptsAsync(
                             id,
                             [.. prompts.Select(promptExport => PromptImportHelper.BuildPrompt(promptExport, id))],
-                            ctx.RequestAborted)
+                            writeToken)
                         .ConfigureAwait(false);
 
                     if (replaced.IsFailure)
@@ -655,6 +661,8 @@ internal static class CampaignEndpoints
                     }
 
                     promptsImported = replaced.Value;
+
+                    writeToken = CancellationToken.None;
                 }
 
                 if (payload.Campaign.Settings is not null)
@@ -663,7 +671,9 @@ internal static class CampaignEndpoints
 
                     campaign.UpdatedAt = DateTimeOffset.UtcNow;
 
-                    await repo.UpdateAsync(campaign, ctx.RequestAborted).ConfigureAwait(false);
+                    await repo.UpdateAsync(campaign, writeToken).ConfigureAwait(false);
+
+                    writeToken = CancellationToken.None;
                 }
 
                 for (int i = 0; i < spells.Count; i++)
@@ -678,11 +688,13 @@ internal static class CampaignEndpoints
                         campaign.Path,
                         id);
 
-                    Result<SpellSummary> importResult = await spellRepo.ImportAsync(importReq, ctx.RequestAborted).ConfigureAwait(false);
+                    Result<SpellSummary> importResult = await spellRepo.ImportAsync(importReq, writeToken).ConfigureAwait(false);
 
                     if (importResult.IsSuccess)
                     {
                         spellsImported++;
+
+                        writeToken = CancellationToken.None;
                     }
                     else
                     {
@@ -694,12 +706,14 @@ internal static class CampaignEndpoints
                 foreach (PromptExportDto promptExport in replacePrompts ? Array.Empty<PromptExportDto>() : prompts)
                 {
                     Result<PromptSummaryDto> importResult = await PromptImportHelper
-                        .ImportAsync(promptRepo, new PromptImportRequest(promptExport, id), ctx.RequestAborted)
+                        .ImportAsync(promptRepo, new PromptImportRequest(promptExport, id), writeToken)
                         .ConfigureAwait(false);
 
                     if (importResult.IsSuccess)
                     {
                         promptsImported++;
+
+                        writeToken = CancellationToken.None;
                     }
                     else
                     {
