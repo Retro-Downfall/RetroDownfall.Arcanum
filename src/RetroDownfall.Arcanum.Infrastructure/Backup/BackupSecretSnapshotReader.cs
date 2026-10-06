@@ -46,6 +46,12 @@ internal sealed class BackupSecretSnapshotReader(
     /// possibly revoked, master key or a key ring without its active key, and a restore would
     /// reinstate it.
     /// </summary>
+    /// <remarks>
+    /// This reader holds no credential gate, and a save in another process can replace the mirror and
+    /// clear its marker while the superseded file is open here. The marker is therefore looked for
+    /// both before the mirror is read and after, and a marker seen at either point refuses the export:
+    /// only a mirror that was unmarked for the whole read is known not to be the superseded one.
+    /// </remarks>
     private async Task<SecretStoreReadResult> ReadWithoutHealingAsync(
         string account,
         string mirrorPath,
@@ -62,10 +68,12 @@ internal sealed class BackupSecretSnapshotReader(
             return SecretStoreReadResult.Ok(os.Value);
         }
 
+        bool markedBeforeRead = MirroredOsCredential.IsMirrorMarkedStale(mirrorPath);
+
         SecretStoreReadResult mirror = await readMirror().ConfigureAwait(false);
 
         if (mirror.Status == SecretStoreReadStatus.Ok
-            && MirroredOsCredential.IsMirrorMarkedStale(mirrorPath))
+            && (markedBeforeRead || MirroredOsCredential.IsMirrorMarkedStale(mirrorPath)))
         {
             return SecretStoreReadResult.Corrupted(
                 $"The encrypted mirror of {description} may be older than the OS credential (a mirror "

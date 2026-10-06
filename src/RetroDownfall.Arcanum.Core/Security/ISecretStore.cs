@@ -15,9 +15,11 @@ public interface ISecretStore
         GetApiKeyReadResultAsync();
 
     /// <summary>
-    /// True while this process's own <see cref="GetApiKeyReadResultAsync"/> was answered from the
-    /// encrypted mirror because OS key storage failed (a locked keychain at startup), and no OS read
-    /// has answered since. Peeks still fail closed in that state; only the request path may keep
+    /// True while this process's startup read of the master API key (the host's key bootstrap) was
+    /// answered from the encrypted mirror because OS key storage failed (a locked keychain at boot),
+    /// and no OS read has answered since — an answer that the store holds nothing counts. A runtime
+    /// read served from the mirror never sets it, and a save clears it only once the save has
+    /// committed. Peeks still fail closed in that state; only the request path may keep
     /// authenticating the key this process adopted at startup (DESIGN §11.2 item 4).
     /// </summary>
     bool ServesMasterApiKeyFromMirrorDuringOsFailure => false;

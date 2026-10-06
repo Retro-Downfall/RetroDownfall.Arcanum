@@ -343,6 +343,48 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
         Assert.Equal("minted-first-run-key", reread.Value);
     }
 
+    /// <summary>
+    /// The startup read and the probe before any regeneration are bounded by the store's own OS-read
+    /// timeout, and the probe joins the store's one outstanding read: a Keychain prompt nobody answers
+    /// on a first run (no mirror, no Grimoire) neither wedges startup nor gets a second prompt stacked
+    /// beside it. The parked read counts as a failure from a reachable backend, so nothing is minted.
+    /// </summary>
+    [Fact]
+    public async Task A_parked_startup_read_is_bounded_and_the_probe_raises_no_second_prompt()
+    {
+        using ParkedReadStore os = new();
+
+        using DataProtectionSecretStore mirrors = CreateDataProtectionStore();
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        using OsKeychainSecretStore store = new(
+            os,
+            mirrors,
+            cache,
+            NullLogger<OsKeychainSecretStore>.Instance,
+            TimeSpan.FromMilliseconds(200));
+
+        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+
+        _ = await Assert.ThrowsAsync<MasterApiKeyUnavailableException>(
+            () => ArcanumMasterKeyBootstrapper
+                .PrepareMasterApiKeyAsync(
+                    store,
+                    os,
+                    cache,
+                    grimoireExists: static () => false)
+                .WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(5), elapsed.Elapsed.ToString());
+
+        Assert.Equal(1, os.TryGetCallCount);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.False(cache.TryGetPresenceDigest(out _));
+    }
+
     private DataProtectionSecretStore CreateDataProtectionStore()
     {
         IDataProtectionProvider dataProtectionProvider = DataProtectionProvider.Create(
@@ -443,6 +485,49 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A reachable backend whose read parks — the Keychain dialog nobody answers — until disposal.
+    /// </summary>
+    private sealed class ParkedReadStore : IOsCredentialStore, IDisposable
+    {
+        private readonly ManualResetEventSlim _release = new(false);
+
+        private int _tryGetCallCount;
+
+        private int _setCallCount;
+
+        public int TryGetCallCount => Volatile.Read(ref _tryGetCallCount);
+
+        public int SetCallCount => Volatile.Read(ref _setCallCount);
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            _ = Interlocked.Increment(ref _tryGetCallCount);
+
+            _ = _release.Wait(TimeSpan.FromSeconds(60));
+
+            return OsCredentialStoreResult.Failed("test: the prompt was dismissed");
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+            _ = Interlocked.Increment(ref _setCallCount);
+
+            return OsCredentialStoreResult.Ok(secret);
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.NotFound();
+
+        /// <summary>
+        /// Releases the parked read. The event is left undisposed: the store abandoned that read rather
+        /// than cancelling it, so it may still be inside <see cref="TryGet"/>.
+        /// </summary>
+        public void Dispose() => _release.Set();
     }
 
     /// <summary>

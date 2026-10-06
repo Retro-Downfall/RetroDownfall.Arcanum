@@ -63,7 +63,6 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             new MirroredCredentialPolicy(
                 "the master API key",
                 "Restore the credential before retrying.",
-                SynchronizeMirrorFromOs: true,
                 OsReadFailureWithoutMirrorIsCorrupt: true),
             logger,
             osReadTimeout);
@@ -122,6 +121,30 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         return _masterApiKey.PeekAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The host's one startup read of the master API key (<see cref="ArcanumMasterKeyBootstrapper"/>):
+    /// <see cref="GetApiKeyReadResultAsync"/>, except that a mirror served because the OS read failed is
+    /// adopted for this process (<see cref="ServesMasterApiKeyFromMirrorDuringOsFailure"/>).
+    /// </summary>
+    internal Task<SecretStoreReadResult> ReadMasterApiKeyAtStartupAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return _masterApiKey.GetAtStartupAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Asks OS key storage alone whether it holds the master API key, through the same bounded read
+    /// every other master-key read uses — joining the outstanding one rather than raising a second
+    /// prompt beside a parked one.
+    /// </summary>
+    internal Task<OsCredentialStoreResult> ProbeMasterApiKeyOsStorageAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return _masterApiKey.ProbeOsAsync(cancellationToken);
     }
 
     /// <inheritdoc />
