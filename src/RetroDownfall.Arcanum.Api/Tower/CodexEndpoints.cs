@@ -26,6 +26,14 @@ internal static class CodexEndpoints
         ErrorCodes.Codex.PathNotContained,
         "The CODEX.md path resolves outside its campaign or Grimoire directory.");
 
+    /// <summary>
+    /// A write is never made through a <c>CODEX.md</c> that is itself a link, even one whose target is inside
+    /// the root: the write replaces the entry, which would quietly end whatever the link shared.
+    /// </summary>
+    private static readonly Error CodexIsALink = new(
+        ErrorCodes.Workspace.SymbolicLinkEscape,
+        "CODEX.md is a symbolic link or a file with more than one hard link, and is not written through. Delete it (DELETE removes the link, not its target) or write the file it points to.");
+
     public static RouteGroupBuilder MapCodexEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapGet(
@@ -379,8 +387,13 @@ internal static class CodexEndpoints
             {
                 AtomicReplaceStatus.Succeeded => null,
 
-                // The replace refuses a destination that is a link or has more than one hard link, and the
-                // gate above refuses one that moved outside the root since the check: both are containment.
+                // The replace refuses a destination that is itself a link -- a symbolic link, wherever it
+                // points, or a file with more than one hard link -- because replacing the entry would silently
+                // stop sharing the content the link shared. That is not an escape from the root, so it is not
+                // reported as one.
+                AtomicReplaceStatus.Aborted when IsLinkedCodex(fullPath) => CodexFailure(CodexIsALink, traceId),
+
+                // The gate above refuses a destination that moved outside the root since the check.
                 AtomicReplaceStatus.Aborted => CodexFailure(CodexPathNotContained, traceId),
 
                 _ => CodexFailure(
@@ -394,6 +407,29 @@ internal static class CodexEndpoints
                 new Error(ErrorCodes.Workspace.WriteFailed, "The CODEX.md could not be written."),
                 traceId);
         }
+    }
+
+    /// <summary>
+    /// Whether the <c>CODEX.md</c> entry is a symbolic link or a file with more than one hard link, the two
+    /// shapes the atomic replace refuses to write through.
+    /// </summary>
+    private static bool IsLinkedCodex(string path)
+    {
+        try
+        {
+            if (new FileInfo(path).LinkTarget is not null)
+            {
+                return true;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        return FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out FileHandleMetadata metadata)
+            && metadata.Kind == FileSystemObjectKind.RegularFile
+            && metadata.HardLinkCount > 1;
     }
 
     private static IResult CodexFailure(Error error, string traceId) =>
