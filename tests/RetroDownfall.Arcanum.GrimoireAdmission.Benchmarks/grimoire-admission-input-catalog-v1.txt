@@ -1702,6 +1702,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Process/CappedChildProcessRunner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/ChildProcessEnvironmentProfile.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/ChildProcessEnvironmentScrubber.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/ChildProcessFilesystemJail.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Process/ChildProcessMemoryMonitorMessages.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/ChildProcessSandboxMessages.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/ChildProcessSandboxRequest.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/ChildProcessSandboxRoots.cs
