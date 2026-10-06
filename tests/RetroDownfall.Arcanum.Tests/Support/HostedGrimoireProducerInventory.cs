@@ -44613,7 +44613,8 @@ internal static class HostedGrimoireProducerInventory
                 || type == "Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade"
                     && method.Name.StartsWith("BeginTransaction", StringComparison.Ordinal)
                 || type == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions"
-                    && method.Name.StartsWith("OpenConnection", StringComparison.Ordinal)
+                    && (method.Name.StartsWith("OpenConnection", StringComparison.Ordinal)
+                        || method.Name is "CloseConnection" or "CloseConnectionAsync")
                 || type == "Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction"
                     && method.Name is "Commit" or "CommitAsync" or "Rollback" or "RollbackAsync"
                 || type == "System.Data.Common.DbCommand"

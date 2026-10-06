@@ -11031,6 +11031,33 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     /// <summary>
+    /// Closing a context's connection through the relational facade acts on the provider connection the
+    /// facade opens, so it is a database access site like <c>OpenConnectionAsync</c> beside it and
+    /// <c>DbConnection.CloseAsync</c> beneath it, never an unclassified framework call.
+    /// </summary>
+    [Fact]
+    public void RelationalFacadeConnectionCloseIsADatabaseAccessSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission
+                + "Microsoft.EntityFrameworkCore.DbContext db = null!; await Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnectionAsync(db.Database); Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnection(db.Database); "));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnection",
+                StringComparison.Ordinal));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.DatabaseAccess
+            && site.Callee == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnectionAsync");
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.DatabaseAccess
+            && site.Callee == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnection");
+    }
+
+    /// <summary>
     /// Matching a path segment against a fixed list of names with a case-insensitive span comparison is
     /// pure in-memory work, so the predicate that decides whether a workspace path may be indexed adds no
     /// unclassified site to the hosted workspace-indexing graph.
