@@ -34,6 +34,9 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 [ExcludeFromCodeCoverage] // Reason: thin HTTP glue; behavior covered via A2ASendingCallbackRegistry and A2A callback tests.
 internal static class A2ACallbackEndpoints
 {
+    /// <summary>The callback route's endpoint name, which the Host-header scope recognises it by.</summary>
+    internal const string RouteName = "PostA2ASendingCallback";
+
     /// <summary>
     /// Whether the callback route exists for these settings: Conclave and the A2A surface on, and
     /// push notifications enabled. The one definition the route mapping, the per-call gate and the
@@ -61,7 +64,7 @@ internal static class A2ACallbackEndpoints
         RouteHandlerBuilder route = app.MapPost(
             $"{A2AClientService.ResolveCallbackPath(a2a)}/{{configId}}",
             HandleAsync)
-        .WithName("PostA2ASendingCallback")
+        .WithName(RouteName)
         .WithMetadata(InstallationResetRecoveryHiddenRouteMetadata.Instance)
         .AllowAnonymous();
 

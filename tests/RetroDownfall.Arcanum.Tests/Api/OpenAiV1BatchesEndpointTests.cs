@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -63,6 +64,55 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.Equal("invalid_request_error", body.Error.Type);
 
         Assert.Equal("payload_too_large", body.Error.Code);
+    }
+
+    /// <summary>
+    /// The route answers a body fault itself, with no exception handler above it: the end-to-end test above
+    /// passes either way, because the host's handler writes the same OpenAI 413 for an escaped exception.
+    /// </summary>
+    [Theory]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, "payload_too_large")]
+    [InlineData(StatusCodes.Status400BadRequest, "invalid_request")]
+    public async Task HandleCreateBatchAsync_answers_a_body_read_fault_itself(int status, string code)
+    {
+        DefaultHttpContext httpContext = new()
+        {
+            RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
+        };
+
+        httpContext.Request.Method = HttpMethods.Post;
+
+        httpContext.Request.Path = "/v1/batches";
+
+        httpContext.Request.ContentType = "application/json";
+
+        httpContext.Request.Body = new ApiRequestJsonBodyFaultTests.FaultingBody(
+            Encoding.UTF8.GetBytes("{\"input_file_id\":\"fi"),
+            new BadHttpRequestException("framework wording", status));
+
+        MemoryStream responseBody = new();
+
+        httpContext.Response.Body = responseBody;
+
+        IResult result = await OpenAiV1Endpoints.HandleCreateBatchAsync(
+            httpContext,
+            batches: null!,
+            files: null!,
+            CancellationToken.None);
+
+        await result.ExecuteAsync(httpContext);
+
+        Assert.Equal(status, httpContext.Response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            responseBody.ToArray(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal(code, body.Error.Code);
     }
 
     [SkippableFact]
