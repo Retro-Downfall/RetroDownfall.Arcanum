@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.DataProtection.Repositories;
@@ -35,10 +36,16 @@ internal static class DataProtectionKeyPaths
 
     /// <summary>
     /// <c>PersistKeysToFileSystem</c> for the Arcanum key ring, with the directory created owner-only
-    /// (<see cref="EnsureDirectory"/>) when Data Protection is first used rather than by the framework
-    /// on its first key write with the umask's permissions. Every composition root registers the ring
-    /// through this one call, so no stack can leave it group- or world-readable.
+    /// and verified (<see cref="EnsureDirectory"/>) before the first key is read or written, rather
+    /// than by the framework on its first key write with the umask's permissions. Every composition
+    /// root registers the ring through this one call, so no stack can leave it group- or world-readable.
     /// </summary>
+    /// <remarks>
+    /// The posture is established on the ring's first use, not while the options are built: building
+    /// it there made resolving the secret store throw, so <c>arcanum doctor</c> — whose checks take the
+    /// secret store — could not run in exactly the state its key-ring and permission checks report.
+    /// Every key read or write still fails closed until the posture is established.
+    /// </remarks>
     public static IDataProtectionBuilder PersistKeysToOwnerOnlyKeyRing(this IDataProtectionBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -48,9 +55,40 @@ internal static class DataProtectionKeyPaths
             ILoggerFactory loggerFactory = services.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
 
             return new ConfigureOptions<KeyManagementOptions>(options =>
-                options.XmlRepository = new FileSystemXmlRepository(EnsureDirectory(), loggerFactory));
+                options.XmlRepository = new OwnerOnlyKeyRingRepository(loggerFactory));
         });
 
         return builder;
+    }
+
+    /// <summary>
+    /// The key ring's file-system repository, created only once <see cref="EnsureDirectory"/> has
+    /// established the directory's owner-only posture. Until it has, every access throws the posture
+    /// failure, which Data Protection reports as a failed protect or unprotect; a failed attempt is not
+    /// remembered, so the next access tries again.
+    /// </summary>
+    private sealed class OwnerOnlyKeyRingRepository(ILoggerFactory loggerFactory) : IDeletableXmlRepository
+    {
+        private readonly Lock _sync = new();
+
+        private FileSystemXmlRepository? _repository;
+
+        public IReadOnlyCollection<XElement> GetAllElements() => Repository.GetAllElements();
+
+        public void StoreElement(XElement element, string friendlyName) => Repository.StoreElement(element, friendlyName);
+
+        public bool DeleteElements(Action<IReadOnlyCollection<IDeletableElement>> chooseElements) =>
+            Repository.DeleteElements(chooseElements);
+
+        private FileSystemXmlRepository Repository
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _repository ??= new FileSystemXmlRepository(EnsureDirectory(), loggerFactory);
+                }
+            }
+        }
     }
 }

@@ -88,11 +88,21 @@ internal static partial class SecureFileReader
     private static readonly UTF8Encoding StrictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
+    private static readonly AsyncLocal<Action<string>?> AfterOpenOverride = new();
+
     /// <summary>
-    /// Deterministic test seam invoked after the validated handle is open and before
-    /// the first bounded read.
+    /// Deterministic test seam invoked after the validated handle is open and before the first
+    /// bounded read, for the current async flow only: every secret mirror read passes through here, so
+    /// a process-global hook would fire inside unrelated tests running in parallel. A flow that started
+    /// before the seam was set does not see it: the in-process MCP server handles each call on the flow
+    /// its read loop captured at start, so a test arms the seam before it starts the server.
     /// </summary>
-    internal static Action<string>? AfterOpenForTests { get; set; }
+    internal static Action<string>? AfterOpenForTests
+    {
+        get => AfterOpenOverride.Value;
+
+        set => AfterOpenOverride.Value = value;
+    }
 
     /// <summary>
     /// Deterministic test seam invoked with the requested path each time

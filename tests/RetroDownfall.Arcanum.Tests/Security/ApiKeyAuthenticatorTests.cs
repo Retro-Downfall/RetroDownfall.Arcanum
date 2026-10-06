@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -26,7 +28,8 @@ public sealed class ApiKeyAuthenticatorTests
 
         ApiKeyAuthenticator authenticator = new(
             secretStore,
-            new ApiKeyDigestCache(new FakeTimeProvider()));
+            new ApiKeyDigestCache(new FakeTimeProvider()),
+            NullLogger<ApiKeyAuthenticator>.Instance);
 
         Task<bool>[] requests = new Task<bool>[20];
 
@@ -68,6 +71,7 @@ public sealed class ApiKeyAuthenticatorTests
         ApiKeyAuthenticator authenticator = new(
             secretStore,
             cache,
+            NullLogger<ApiKeyAuthenticator>.Instance,
             timeProvider: time);
 
         for (int request = 0; request < 5; request++)
@@ -138,7 +142,11 @@ public sealed class ApiKeyAuthenticatorTests
         Assert.NotNull(boot);
         Assert.False(boot.WasGenerated);
 
-        ApiKeyAuthenticator authenticator = new(store, cache, timeProvider: time);
+        ApiKeyAuthenticator authenticator = new(
+            store,
+            cache,
+            NullLogger<ApiKeyAuthenticator>.Instance,
+            timeProvider: time);
 
         Assert.True(await authenticator.IsAuthorizedAsync(CreateContext(ApiKey)));
 
@@ -152,6 +160,79 @@ public sealed class ApiKeyAuthenticatorTests
         Assert.Equal(
             SecretStoreReadStatus.Corrupted,
             (await store.PeekApiKeyReadResultAsync()).Status);
+    }
+
+    /// <summary>
+    /// A secret-store read that throws fails closed exactly like an unreadable store, but the fault is
+    /// not swallowed: a mirror or keychain fault the store rethrows without logging would otherwise
+    /// leave every client refused with nothing on record to say why.
+    /// </summary>
+    [Fact]
+    public async Task A_thrown_store_fault_fails_closed_and_is_logged()
+    {
+        InvalidOperationException fault = new("test: the keychain read threw");
+
+        ThrowingSecretStore secretStore = new(fault);
+
+        TestCapturingLogger<ApiKeyAuthenticator> logger = new();
+
+        ApiKeyAuthenticator authenticator = new(
+            secretStore,
+            new ApiKeyDigestCache(new FakeTimeProvider()),
+            logger);
+
+        Assert.False(await authenticator.IsAuthorizedAsync(CreateContext(ApiKey)));
+
+        TestLogEntry entry = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, entry.Level);
+
+        Assert.Same(fault, entry.Exception);
+    }
+
+    /// <summary>
+    /// ASP.NET Core activates <see cref="ApiKeyEndpointFilter"/> per endpoint. The filter must use the
+    /// middleware's singleton authenticator, so a read the middleware just saw fail is remembered for
+    /// the filter too, instead of the filter repeating its own secure-storage read for the same request.
+    /// </summary>
+    [Fact]
+    public async Task The_endpoint_filter_shares_the_middleware_authenticator()
+    {
+        GatedSecretStore secretStore = new(
+            SecretStoreReadResult.Corrupted("test: OS key storage failed"),
+            gated: false);
+
+        ServiceCollection services = new();
+
+        services.AddLogging();
+        services.AddSingleton<ISecretStore>(secretStore);
+        services.AddSingleton<IApiKeyDigestCache>(new ApiKeyDigestCache(new FakeTimeProvider()));
+        services.AddSingleton<ApiKeyAuthenticator>();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        ApiKeyAuthenticator middleware = provider.GetRequiredService<ApiKeyAuthenticator>();
+
+        ApiKeyEndpointFilter filter = ActivatorUtilities.CreateInstance<ApiKeyEndpointFilter>(provider);
+
+        DefaultHttpContext request = CreateContext(ApiKey);
+
+        Assert.False(await middleware.IsAuthorizedAsync(request));
+
+        bool nextCalled = false;
+
+        _ = await filter.InvokeAsync(
+            new TestEndpointFilterInvocationContext(request),
+            _ =>
+            {
+                nextCalled = true;
+
+                return ValueTask.FromResult<object?>(null);
+            });
+
+        Assert.False(nextCalled);
+
+        Assert.Equal(1, secretStore.PeekCallCount);
     }
 
     private static DefaultHttpContext CreateContext(string apiKey)
@@ -224,5 +305,33 @@ public sealed class ApiKeyAuthenticatorTests
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Failed("test: the keychain is locked");
+    }
+
+    private sealed class ThrowingSecretStore(Exception fault) : ISecretStore
+    {
+        public Task<string?> GetApiKeyAsync() =>
+            throw new InvalidOperationException("Authentication must use the non-mutating Peek read.");
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            throw new InvalidOperationException("Authentication must use the non-mutating Peek read.");
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() => Task.FromException<SecretStoreReadResult>(fault);
+
+        public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() =>
+            Task.FromResult<string?>(null);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
+            Task.CompletedTask;
+    }
+
+    private sealed class TestEndpointFilterInvocationContext(HttpContext httpContext) : EndpointFilterInvocationContext
+    {
+        public override HttpContext HttpContext { get; } = httpContext;
+
+        public override IList<object?> Arguments { get; } = [];
+
+        public override T GetArgument<T>(int index) => throw new NotSupportedException();
     }
 }

@@ -12,9 +12,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// same for every credential that keeps an OS copy and an encrypted file mirror.
 /// </summary>
 /// <param name="Description">Names the credential in messages, e.g. "the master API key".</param>
-/// <param name="RecoveryHint">Appended to an OS failure that carried no message of its own.</param>
-/// <param name="SynchronizeMirrorFromOs">
-/// Rewrites the mirror whenever an OS read returns a value the mirror does not hold.
+/// <param name="RecoveryHint">
+/// Appended to an OS failure that carried no message of its own, and to the refusal of a stale mirror
+/// that OS key storage holds no copy of.
 /// </param>
 /// <param name="MirrorRestoreFailureIsCorrupt">
 /// A mirror that cannot be restored into an empty OS store is refused rather than served.
@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 internal sealed record MirroredCredentialPolicy(
     string Description,
     string RecoveryHint,
-    bool SynchronizeMirrorFromOs = false,
     bool MirrorRestoreFailureIsCorrupt = false,
     bool OsReadFailureWithoutMirrorIsCorrupt = false,
     bool RequireOsWrite = false);
@@ -44,6 +43,9 @@ internal sealed record MirroredCredentialPolicy(
 /// <para>The gate is a <see cref="SemaphoreSlim"/> whose wait handle is never observed, so it is never
 /// disposed: disposing it under an in-flight caller would turn that caller's own release into an
 /// <see cref="ObjectDisposedException"/> that replaced its real result.</para>
+/// <para>The mirror follows the OS copy for every credential: an OS read that returns a value the
+/// mirror does not hold rewrites the mirror, so a credential rotated in OS key storage by another tool
+/// never leaves its superseded value to be served at the next locked-keychain read.</para>
 /// <para>Every OS read is bounded. The platform call is synchronous and cannot be cancelled — a
 /// Keychain dialog nobody answers parks it indefinitely — so it runs on its own thread, and a caller
 /// stops waiting after <c>osReadTimeout</c> and treats the read as failed. The abandoned call stays
@@ -78,9 +80,11 @@ internal sealed class MirroredOsCredential(
     private volatile bool _servingMirrorDuringOsFailure;
 
     /// <summary>
-    /// True while the last <see cref="GetAsync"/> was answered from the mirror because the OS read
-    /// failed, and no OS read has answered since. The permissive startup read adopted that value for
-    /// this process; <see cref="PeekAsync"/> still fails closed for it (DESIGN §11.2 item 4).
+    /// True while the startup read (<see cref="GetAtStartupAsync"/>) was answered from the mirror
+    /// because the OS read failed, and no OS read has answered since — an answer that the store holds
+    /// nothing counts. That read adopted the mirror's value for this process; <see cref="PeekAsync"/>
+    /// still fails closed for it (DESIGN §11.2 item 4). An ordinary runtime <see cref="GetAsync"/>
+    /// served from the mirror never sets it, and a save clears it only once the save has committed.
     /// </summary>
     internal bool ServingMirrorDuringOsFailure => _servingMirrorDuringOsFailure;
 
@@ -100,7 +104,20 @@ internal sealed class MirroredOsCredential(
     /// When the OS store cannot answer, a mirror is served — unless a mirror write after a committed
     /// OS change failed and left it marked stale, in which case it is refused.
     /// </summary>
-    internal async Task<SecretStoreReadResult> GetAsync(CancellationToken cancellationToken)
+    internal Task<SecretStoreReadResult> GetAsync(CancellationToken cancellationToken) =>
+        GetCoreAsync(adoptMirrorServedOverOsFailure: false, cancellationToken);
+
+    /// <summary>
+    /// <see cref="GetAsync"/> for the host's one startup read. A mirror served because the OS read
+    /// failed is adopted for this process (<see cref="ServingMirrorDuringOsFailure"/>), so a
+    /// locked-keychain boot keeps authenticating its key once the startup digest's TTL lapses.
+    /// </summary>
+    internal Task<SecretStoreReadResult> GetAtStartupAsync(CancellationToken cancellationToken) =>
+        GetCoreAsync(adoptMirrorServedOverOsFailure: true, cancellationToken);
+
+    private async Task<SecretStoreReadResult> GetCoreAsync(
+        bool adoptMirrorServedOverOsFailure,
+        CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -108,14 +125,11 @@ internal sealed class MirroredOsCredential(
         {
             OsCredentialStoreResult os = await ReadOsAsync(cancellationToken).ConfigureAwait(false);
 
+            NoteOsAnswer(os);
+
             if (os.Status == OsCredentialStoreStatus.Ok && !string.IsNullOrWhiteSpace(os.Value))
             {
-                _servingMirrorDuringOsFailure = false;
-
-                if (policy.SynchronizeMirrorFromOs)
-                {
-                    await SynchronizeMirrorAsync(os.Value).ConfigureAwait(false);
-                }
+                await SynchronizeMirrorAsync(os.Value).ConfigureAwait(false);
 
                 return SecretStoreReadResult.Ok(os.Value);
             }
@@ -132,7 +146,7 @@ internal sealed class MirroredOsCredential(
 
             if (fromMirror.Status == SecretStoreReadStatus.Ok && MirrorIsMarkedStale())
             {
-                return StaleMirrorRefusal();
+                return StaleMirrorRefusal(os);
             }
 
             if (fromMirror.Status == SecretStoreReadStatus.Ok)
@@ -153,7 +167,7 @@ internal sealed class MirroredOsCredential(
                         os.Message,
                         policy.Description);
                 }
-                else
+                else if (adoptMirrorServedOverOsFailure)
                 {
                     // A locked keychain at startup: serve the current mirror (item 4) and remember that
                     // this process adopted it without the OS store being able to confirm it.
@@ -206,10 +220,10 @@ internal sealed class MirroredOsCredential(
         {
             OsCredentialStoreResult os = await ReadOsAsync(cancellationToken).ConfigureAwait(false);
 
+            NoteOsAnswer(os);
+
             if (os.Status == OsCredentialStoreStatus.Ok && !string.IsNullOrWhiteSpace(os.Value))
             {
-                _servingMirrorDuringOsFailure = false;
-
                 return SecretStoreReadResult.Ok(os.Value);
             }
 
@@ -223,8 +237,35 @@ internal sealed class MirroredOsCredential(
             SecretStoreReadResult fromMirror = await mirror.ReadAsync(cancellationToken).ConfigureAwait(false);
 
             return fromMirror.Status == SecretStoreReadStatus.Ok && MirrorIsMarkedStale()
-                ? StaleMirrorRefusal()
+                ? StaleMirrorRefusal(os)
                 : fromMirror;
+        }
+        finally
+        {
+            _ = _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Asks OS key storage alone whether it holds the credential, joining the one outstanding read
+    /// rather than starting a second: a probe made after a startup read that timed out on a parked
+    /// prompt fails at once instead of stacking another prompt beside it. Bounded by the same OS-read
+    /// timeout as every other read, gate wait included.
+    /// </summary>
+    internal async Task<OsCredentialStoreResult> ProbeOsAsync(CancellationToken cancellationToken)
+    {
+        if (!await _gate.WaitAsync(_osReadTimeout, cancellationToken).ConfigureAwait(false))
+        {
+            return OsCredentialStoreResult.Failed(TimedOutMessage());
+        }
+
+        try
+        {
+            OsCredentialStoreResult os = await ReadOsAsync(cancellationToken).ConfigureAwait(false);
+
+            NoteOsAnswer(os);
+
+            return os;
         }
         finally
         {
@@ -246,13 +287,13 @@ internal sealed class MirroredOsCredential(
         {
             await WaitForOutstandingOsReadAsync(cancellationToken).ConfigureAwait(false);
 
-            // Whatever this process adopted at startup is superseded by the value being saved.
-            _servingMirrorDuringOsFailure = false;
-
             OsCredentialStoreResult os = osStore.Set(ArcanumCredentialIdentity.Service, account, value);
 
             if (os.Status == OsCredentialStoreStatus.Ok)
             {
+                // Committed: whatever this process adopted at startup is superseded by the saved value.
+                _servingMirrorDuringOsFailure = false;
+
                 try
                 {
                     await mirror.WriteAsync(value, CancellationToken.None).ConfigureAwait(false);
@@ -288,9 +329,13 @@ internal sealed class MirroredOsCredential(
                 os.Status,
                 os.Message);
 
+            // A refused save changes nothing, so it leaves any startup adoption in place: the adopted
+            // key is still the live one. Only the mirror write below commits the new value.
             PurgeSupersededOsCredential(os);
 
             await mirror.WriteAsync(value, CancellationToken.None).ConfigureAwait(false);
+
+            _servingMirrorDuringOsFailure = false;
 
             ClearStaleMarker();
         }
@@ -420,6 +465,18 @@ internal sealed class MirroredOsCredential(
         }
     }
 
+    /// <summary>
+    /// Any answer from OS key storage other than a failure — a value, an empty store, an absent
+    /// backend — ends a startup adoption: from then on the ordinary peek can answer for itself.
+    /// </summary>
+    private void NoteOsAnswer(OsCredentialStoreResult os)
+    {
+        if (os.Status != OsCredentialStoreStatus.Failed)
+        {
+            _servingMirrorDuringOsFailure = false;
+        }
+    }
+
     private string TimedOutMessage() =>
         $"OS key storage did not answer within {_osReadTimeout.TotalSeconds:0.###} seconds. Answer or "
         + "dismiss any pending OS prompt, then retry.";
@@ -460,8 +517,9 @@ internal sealed class MirroredOsCredential(
     }
 
     /// <summary>
-    /// Makes the mirror agree with the canonical OS credential. A mirror failure must not make a
-    /// healthy installation unavailable: the OS credential remains authoritative.
+    /// Makes the mirror agree with the canonical OS credential, for every mirrored credential. A mirror
+    /// failure must not make a healthy installation unavailable: the OS credential remains
+    /// authoritative, and the mirror is marked stale instead.
     /// </summary>
     private async Task SynchronizeMirrorAsync(string value)
     {
@@ -493,16 +551,29 @@ internal sealed class MirroredOsCredential(
 
     private bool MirrorIsMarkedStale() => IsMirrorMarkedStale(mirror.Path);
 
-    private SecretStoreReadResult StaleMirrorRefusal()
+    /// <summary>
+    /// The refusal of a mirror marked stale, with the remedy that applies. While OS key storage cannot
+    /// answer, the next read it does answer re-synchronizes the mirror and clears the marker. When it
+    /// answers that it holds no copy, there is nothing to re-synchronize from: only storing the
+    /// credential again (or restoring it) replaces the mirror.
+    /// </summary>
+    private SecretStoreReadResult StaleMirrorRefusal(OsCredentialStoreResult os)
     {
         logger?.LogWarning(
-            "The encrypted mirror of {Credential} is marked stale and is not served while OS key storage cannot confirm it.",
-            policy.Description);
+            "The encrypted mirror of {Credential} is marked stale and is not served while OS key storage cannot confirm it ({Status}).",
+            policy.Description,
+            os.Status);
+
+        const string Stale = "may be older than the OS credential (a mirror write after a change failed)";
 
         return SecretStoreReadResult.Corrupted(
-            $"The encrypted mirror of {policy.Description} may be older than the OS credential (a mirror "
-            + "write after a change failed), so it is not used while OS key storage cannot answer. "
-            + "Unlock or repair OS key storage and retry; an ordinary read re-synchronizes the mirror.");
+            os.Status == OsCredentialStoreStatus.Failed
+                ? $"The encrypted mirror of {policy.Description} {Stale}, so it is not used while OS key "
+                    + "storage cannot answer. Unlock or repair OS key storage and retry; the next read it "
+                    + "answers re-synchronizes the mirror."
+                : $"The encrypted mirror of {policy.Description} {Stale}, and OS key storage holds no copy "
+                    + "to confirm it, so it is not used. Store the credential again to replace it. "
+                    + policy.RecoveryHint);
     }
 
     /// <summary>

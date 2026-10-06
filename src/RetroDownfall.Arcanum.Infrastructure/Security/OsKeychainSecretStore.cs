@@ -63,7 +63,6 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             new MirroredCredentialPolicy(
                 "the master API key",
                 "Restore the credential before retrying.",
-                SynchronizeMirrorFromOs: true,
                 OsReadFailureWithoutMirrorIsCorrupt: true),
             logger,
             osReadTimeout);
@@ -115,20 +114,37 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
     /// Reads the master API key without promoting the Data Protection fallback into OS storage.
     /// An OS read failure remains ambiguous even when the fallback is readable, because that
     /// fallback may have been superseded by a credential the process cannot currently inspect.
+    /// The OS read inside is bounded by the store's own timeout and fails closed when it expires.
     /// </summary>
-    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
-        PeekApiKeyReadResultAsync(CancellationToken.None);
-
-    /// <summary>
-    /// The request-path peek. The OS read inside is bounded by the store's own timeout and fails
-    /// closed when it expires; <paramref name="cancellationToken"/> lets a caller that no longer
-    /// needs the answer stop waiting for it.
-    /// </summary>
-    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(CancellationToken cancellationToken)
+    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        return _masterApiKey.PeekAsync(cancellationToken);
+        return _masterApiKey.PeekAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The host's one startup read of the master API key (<see cref="ArcanumMasterKeyBootstrapper"/>):
+    /// <see cref="GetApiKeyReadResultAsync"/>, except that a mirror served because the OS read failed is
+    /// adopted for this process (<see cref="ServesMasterApiKeyFromMirrorDuringOsFailure"/>).
+    /// </summary>
+    internal Task<SecretStoreReadResult> ReadMasterApiKeyAtStartupAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return _masterApiKey.GetAtStartupAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Asks OS key storage alone whether it holds the master API key, through the same bounded read
+    /// every other master-key read uses — joining the outstanding one rather than raising a second
+    /// prompt beside a parked one.
+    /// </summary>
+    internal Task<OsCredentialStoreResult> ProbeMasterApiKeyOsStorageAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return _masterApiKey.ProbeOsAsync(cancellationToken);
     }
 
     /// <inheritdoc />

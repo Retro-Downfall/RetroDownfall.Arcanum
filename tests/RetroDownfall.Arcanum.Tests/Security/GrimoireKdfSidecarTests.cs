@@ -261,6 +261,98 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The committed <c>.kdf</c> sidecar is secret-bearing, so its promotion goes through the strict
+    /// posture gate like every other write of it (DESIGN §11.13.1), and verifies the staged file before
+    /// the rename: a promotion whose posture cannot be established leaves the pending salt where the
+    /// next start can retry it rather than publishing a sidecar nobody verified.
+    /// </summary>
+    [Fact]
+    public void PromotePending_refuses_a_pending_sidecar_whose_posture_cannot_be_verified()
+    {
+        string dbPath = Path.Combine(_tempDir, "grimoire.db");
+
+        GrimoireKdfSidecarFile.WritePending(dbPath, GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2));
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests = static (_, isDirectory) =>
+            isDirectory ? null : false;
+
+        try
+        {
+            _ = Assert.Throws<UnauthorizedAccessException>(() => GrimoireKdfSidecarFile.PromotePending(dbPath));
+        }
+        finally
+        {
+            SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
+        }
+
+        Assert.False(GrimoireKdfSidecarFile.Exists(dbPath));
+
+        Assert.True(GrimoireKdfSidecarFile.PendingExists(dbPath));
+    }
+
+    /// <summary>
+    /// Windows lane for R-249: a temp-file delete that Windows really refuses — a read-only file raises
+    /// <see cref="UnauthorizedAccessException"/> there — must not replace the exception explaining why
+    /// the write failed. The write is failed by the posture gate on the staged file, which runs after
+    /// the file is closed and before it is published, and the same hook makes the staged file
+    /// read-only so the cleanup that follows is refused by the operating system rather than a seam.
+    /// Not runnable on Unix, where deleting a read-only file needs only a writable directory.
+    /// </summary>
+    [SkippableFact]
+    public void Write_preserves_the_original_failure_when_windows_refuses_the_temp_cleanup()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "A read-only file refuses deletion only on Windows.");
+
+        string dbPath = Path.Combine(_tempDir, "grimoire.db");
+
+        string sidecarPath = GrimoireKdfSidecarFile.GetSidecarPath(dbPath);
+
+        List<string> refusedTempFiles = [];
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests = (path, isDirectory) =>
+        {
+            if (isDirectory || !Path.GetFileName(path).StartsWith(Path.GetFileName(sidecarPath) + ".tmp.", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
+
+            refusedTempFiles.Add(path);
+
+            return false;
+        };
+
+        try
+        {
+            UnauthorizedAccessException failure = Assert.Throws<UnauthorizedAccessException>(
+                () => GrimoireKdfSidecarFile.Write(
+                    dbPath,
+                    GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2)));
+
+            Assert.Contains("could not be restricted to the current user", failure.Message, StringComparison.Ordinal);
+
+            string refused = Assert.Single(refusedTempFiles);
+
+            // The cleanup really was refused: the read-only staged file is still there.
+            Assert.True(File.Exists(refused));
+
+            Assert.False(File.Exists(sidecarPath));
+        }
+        finally
+        {
+            SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
+
+            foreach (string path in refusedTempFiles.Where(File.Exists))
+            {
+                File.SetAttributes(path, FileAttributes.Normal);
+
+                File.Delete(path);
+            }
+        }
+    }
+
     public void Dispose()
     {
         try

@@ -93,7 +93,11 @@ public static class ArcanumMasterKeyBootstrapper
             return null;
         }
 
-        SecretStoreReadResult existing = await store.GetApiKeyReadResultAsync().ConfigureAwait(false);
+        // The shipping store's startup read adopts a mirror it serves over a failed OS read (DESIGN
+        // §11.2 item 4); any other read, by any other caller, never does.
+        SecretStoreReadResult existing = store is OsKeychainSecretStore keychain
+            ? await keychain.ReadMasterApiKeyAtStartupAsync(cancellationToken).ConfigureAwait(false)
+            : await store.GetApiKeyReadResultAsync().ConfigureAwait(false);
 
         if (existing.Status == SecretStoreReadStatus.Ok)
         {
@@ -143,7 +147,7 @@ public static class ArcanumMasterKeyBootstrapper
             // ours. The read that produced Corrupted may itself have been the OS failure, in which case
             // the live credential's existence is unknown — and SaveApiKeyAsync would overwrite it, or on
             // a failed write delete it outright. Probe once and fail closed unless the answer is clear.
-            OsCredentialStoreResult probe = await ProbeOsKeyStorageAsync(osStore, cancellationToken)
+            OsCredentialStoreResult probe = await ProbeOsKeyStorageAsync(store, osStore, cancellationToken)
                 .ConfigureAwait(false);
 
             ThrowIfOsKeyStorageMayHoldTheLiveKey(probe, osStore);
@@ -174,14 +178,23 @@ public static class ArcanumMasterKeyBootstrapper
     }
 
     /// <summary>
-    /// The same bound as every store read (<see cref="MirroredOsCredential.DefaultOsReadTimeout"/>): a
-    /// parked platform call cannot wedge startup. A probe that does not answer is a failure from a
-    /// reachable backend, so regeneration is refused.
+    /// The shipping store answers through its own bounded master-key read, joining the outstanding one:
+    /// when the startup read timed out on a parked prompt the probe fails at once instead of raising a
+    /// second prompt beside it. Any other store is probed directly under the same bound
+    /// (<see cref="MirroredOsCredential.DefaultOsReadTimeout"/>). Either way a parked platform call
+    /// cannot wedge startup, and a probe that does not answer is a failure from a reachable backend, so
+    /// regeneration is refused.
     /// </summary>
     private static async Task<OsCredentialStoreResult> ProbeOsKeyStorageAsync(
+        ISecretStore store,
         IOsCredentialStore osStore,
         CancellationToken cancellationToken)
     {
+        if (store is OsKeychainSecretStore keychain)
+        {
+            return await keychain.ProbeMasterApiKeyOsStorageAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         Task<OsCredentialStoreResult> probe = Task.Run(
             () => osStore.TryGet(
                 ArcanumCredentialIdentity.Service,

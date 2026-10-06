@@ -74,14 +74,16 @@ internal static class OwnerOnlyAtomicFile
     private static string TempPathFor(string path) => path + ".tmp." + Guid.NewGuid().ToString("N");
 
     /// <summary>
-    /// Replaces the target, then requires its owner-only posture: a secret-bearing file whose posture
-    /// cannot be verified fails the write instead of logging a warning after it.
+    /// Requires the staged file's owner-only posture, then replaces the target with it. A
+    /// secret-bearing file whose posture cannot be verified fails the write before anything is
+    /// published: verifying after the rename reported a failed save whose new bytes were already live.
+    /// The rename keeps the staged file's mode, owner and ACL, so what was verified is what is published.
     /// </summary>
     private static void Publish(string tempPath, string path)
     {
-        File.Move(tempPath, path, overwrite: true);
+        SecureFilePermissions.RequireOwnerOnlyFile(tempPath);
 
-        SecureFilePermissions.RequireOwnerOnlyFile(path);
+        File.Move(tempPath, path, overwrite: true);
     }
 
     private static void DeleteTempFile(string tempPath)
@@ -93,7 +95,17 @@ internal static class OwnerOnlyAtomicFile
 
         try
         {
-            (TempFileDeleteForTests ?? File.Delete)(tempPath);
+            // The seam is invoked through its own property, not coalesced with File.Delete into one
+            // delegate: the hosted-producer analysis proves a test seam absent only by its property,
+            // and a coalesced delegate leaves the delete with no exact target.
+            if (TempFileDeleteForTests is not null)
+            {
+                TempFileDeleteForTests.Invoke(tempPath);
+            }
+            else
+            {
+                File.Delete(tempPath);
+            }
         }
         catch (Exception cleanupFailure)
             when (cleanupFailure is IOException or UnauthorizedAccessException)

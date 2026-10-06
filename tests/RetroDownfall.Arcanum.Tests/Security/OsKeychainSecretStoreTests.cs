@@ -239,7 +239,7 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     [Fact]
     public async Task Get_does_not_serve_a_mirror_that_a_failed_mirror_write_left_stale()
     {
-        SwitchableReadStore os = new();
+        SwitchableReadOsCredentialStore os = new();
 
         WriteFailingProtectionProvider protection = new(
             DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
@@ -283,7 +283,7 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     public async Task Backup_snapshot_does_not_export_a_mirror_that_a_failed_mirror_write_left_stale(
         bool masterApiKey)
     {
-        SwitchableReadStore os = new();
+        SwitchableReadOsCredentialStore os = new();
 
         WriteFailingProtectionProvider protection = new(
             DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
@@ -326,10 +326,263 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Null(result.Value);
     }
 
+    /// <summary>
+    /// The backup snapshot reads a mirror without holding the credential's gate, and a save in
+    /// another process can land while it does: it replaces the mirror and clears the marker after the
+    /// snapshot opened the superseded file but before it looked for the marker. The marker is
+    /// therefore checked before the read as well as after it, and a marker seen at either point
+    /// refuses the export.
+    /// </summary>
+    [Fact]
+    public async Task Backup_snapshot_does_not_export_a_mirror_whose_stale_marker_clears_while_it_is_read()
+    {
+        SwitchableReadOsCredentialStore os = new();
+
+        WriteFailingProtectionProvider protection = new(
+            DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
+
+        using (OsKeychainSecretStore store = CreateStore(os, CreateDataProtectionStore(protection)))
+        {
+            await store.SaveApiKeyAsync("superseded-key");
+
+            protection.FailProtect = true;
+
+            await store.SaveApiKeyAsync("current-key");
+
+            protection.FailProtect = false;
+        }
+
+        os.FailReads = true;
+
+        string mirrorPath = Path.GetFullPath(ArcanumPaths.ApiKeyStoreFile);
+
+        string markerPath = mirrorPath + ".stale";
+
+        Assert.True(File.Exists(markerPath));
+
+        using DataProtectionSecretStore mirrors = CreateDataProtectionStore(protection);
+
+        BackupSecretSnapshotReader reader = new(os, mirrors);
+
+        SecureFileReader.AfterOpenForTests = openedPath =>
+        {
+            if (string.Equals(Path.GetFullPath(openedPath), mirrorPath, StringComparison.Ordinal))
+            {
+                File.Delete(markerPath);
+            }
+        };
+
+        SecretStoreReadResult result;
+
+        try
+        {
+            result = await reader.ReadMasterApiKeyAsync();
+        }
+        finally
+        {
+            SecureFileReader.AfterOpenForTests = null;
+        }
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
+    }
+
+    /// <summary>
+    /// Only the host's startup read adopts a mirror served over a failed OS read (DESIGN §11.2 item 4).
+    /// A runtime caller's permissive read — a backup restore, the recovery-authority bootstrap — serves
+    /// the same mirror, but it must not license the request path to keep authenticating a retained
+    /// digest past its TTL.
+    /// </summary>
+    [Fact]
+    public async Task A_runtime_read_served_from_the_mirror_is_not_a_startup_adoption()
+    {
+        SwitchableReadOsCredentialStore os = new();
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        using OsKeychainSecretStore store = CreateStore(os, CreateDataProtectionStore(), cache);
+
+        await store.SaveApiKeyAsync("adopted-key");
+
+        os.FailReads = true;
+
+        SecretStoreReadResult runtime = await store.GetApiKeyReadResultAsync();
+
+        Assert.Equal("adopted-key", runtime.Value);
+
+        Assert.False(store.ServesMasterApiKeyFromMirrorDuringOsFailure);
+
+        MasterApiKeyBootstrapResult? boot = await ArcanumMasterKeyBootstrapper.PrepareMasterApiKeyAsync(
+            store,
+            os,
+            cache,
+            grimoireExists: static () => true);
+
+        Assert.NotNull(boot);
+
+        Assert.Equal("adopted-key", boot.ApiKey);
+
+        Assert.True(store.ServesMasterApiKeyFromMirrorDuringOsFailure);
+    }
+
+    /// <summary>
+    /// The adoption lasts only until OS key storage answers again. An answer that it holds nothing is
+    /// an answer: the mirror is then served by the ordinary peek, so the request path no longer needs
+    /// the retained digest.
+    /// </summary>
+    [Fact]
+    public async Task An_os_answer_that_holds_nothing_ends_the_startup_adoption()
+    {
+        SwitchableReadOsCredentialStore os = new();
+
+        using DataProtectionSecretStore mirrors = CreateDataProtectionStore();
+
+        await mirrors.SaveApiKeyAsync("adopted-key");
+
+        os.FailReads = true;
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        using OsKeychainSecretStore store = CreateStore(os, mirrors, cache);
+
+        _ = await ArcanumMasterKeyBootstrapper.PrepareMasterApiKeyAsync(
+            store,
+            os,
+            cache,
+            grimoireExists: static () => true);
+
+        Assert.True(store.ServesMasterApiKeyFromMirrorDuringOsFailure);
+
+        os.FailReads = false;
+
+        SecretStoreReadResult peek = await store.PeekApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, peek.Status);
+
+        Assert.False(store.ServesMasterApiKeyFromMirrorDuringOsFailure);
+    }
+
+    /// <summary>
+    /// A rotation attempted while the keychain is locked fails with nothing changed. The key this
+    /// process adopted at startup is still the live one, so the adoption must survive the refused save
+    /// rather than turn every client into a 401 once the digest's TTL lapses.
+    /// </summary>
+    [Fact]
+    public async Task A_rotation_refused_while_the_keychain_is_locked_keeps_the_startup_adoption()
+    {
+        using DataProtectionSecretStore mirrors = CreateDataProtectionStore();
+
+        await mirrors.SaveApiKeyAsync("adopted-key");
+
+        WriteFailingStore os = new(new ReadFailingStore(), deleteFails: true);
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        using OsKeychainSecretStore store = CreateStore(os, mirrors, cache);
+
+        _ = await ArcanumMasterKeyBootstrapper.PrepareMasterApiKeyAsync(
+            store,
+            os,
+            cache,
+            grimoireExists: static () => true);
+
+        Assert.True(store.ServesMasterApiKeyFromMirrorDuringOsFailure);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.SaveApiKeyAsync("rotated-key"));
+
+        Assert.True(store.ServesMasterApiKeyFromMirrorDuringOsFailure);
+
+        Assert.Equal("adopted-key", (await mirrors.GetApiKeyReadResultAsync()).Value);
+    }
+
+    /// <summary>
+    /// A stale mirror is refused either way, but the remedy differs. While OS key storage cannot
+    /// answer, the next read it does answer re-synchronizes the mirror. When it answers that it holds
+    /// nothing, there is nothing to re-synchronize from, so the refusal must not promise that.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_stale_mirror_refusal_names_the_remedy_that_applies(bool osHoldsNothing)
+    {
+        SwitchableReadOsCredentialStore os = new();
+
+        WriteFailingProtectionProvider protection = new(
+            DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
+
+        using OsKeychainSecretStore store = CreateStore(os, CreateDataProtectionStore(protection));
+
+        await store.SaveApiKeyAsync("superseded-key");
+
+        protection.FailProtect = true;
+
+        await store.SaveApiKeyAsync("current-key");
+
+        protection.FailProtect = false;
+
+        if (osHoldsNothing)
+        {
+            _ = os.Delete(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MasterApiKeyAccount);
+        }
+        else
+        {
+            os.FailReads = true;
+        }
+
+        SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
+
+        if (osHoldsNothing)
+        {
+            Assert.Contains("holds no copy", result.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("re-synchronizes", result.Message, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains("re-synchronizes", result.Message, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Every mirrored credential's copy follows the OS credential, not only the master key's: an
+    /// out-of-band rotation of the file-encryption key ring must not leave its superseded ring to be
+    /// served at the next locked-keychain read.
+    /// </summary>
+    [Fact]
+    public async Task FileEncryptionSecret_mirror_follows_an_out_of_band_os_rotation()
+    {
+        SwitchableReadOsCredentialStore os = new();
+
+        using OsKeychainSecretStore store = CreateStore(os);
+
+        await store.SaveFileEncryptionSecretAsync("superseded-key-ring");
+
+        _ = os.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.FileEncryptionKeyAccount,
+            "rotated-key-ring");
+
+        Assert.Equal("rotated-key-ring", (await store.GetFileEncryptionSecretReadResultAsync()).Value);
+
+        os.FailReads = true;
+
+        SecretStoreReadResult locked = await store.GetFileEncryptionSecretReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, locked.Status);
+
+        Assert.Equal("rotated-key-ring", locked.Value);
+    }
+
     [Fact]
     public async Task A_resynchronized_mirror_is_served_again_after_a_stale_marker()
     {
-        SwitchableReadStore os = new();
+        SwitchableReadOsCredentialStore os = new();
 
         WriteFailingProtectionProvider protection = new(
             DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
@@ -783,30 +1036,6 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     private static DataProtectionSecretStore CreateDataProtectionStore(
         IDataProtectionProvider dataProtectionProvider) =>
         new(dataProtectionProvider, new ApiKeyDigestCache(new FakeTimeProvider()));
-
-    /// <summary>
-    /// The OS store an installation keeps across restarts, whose reads can be made to fail the way a
-    /// locked keychain's do while writes keep working.
-    /// </summary>
-    private sealed class SwitchableReadStore : IOsCredentialStore
-    {
-        private readonly InMemoryOsCredentialStore _inner = new();
-
-        public bool FailReads { get; set; }
-
-        public bool IsAvailable => true;
-
-        public OsCredentialStoreResult TryGet(string service, string account) =>
-            FailReads
-                ? OsCredentialStoreResult.Failed("test: the keychain is locked")
-                : _inner.TryGet(service, account);
-
-        public OsCredentialStoreResult Set(string service, string account, string secret) =>
-            _inner.Set(service, account, secret);
-
-        public OsCredentialStoreResult Delete(string service, string account) =>
-            _inner.Delete(service, account);
-    }
 
     /// <summary>
     /// A real Data Protection provider whose protectors can be made to refuse new ciphertext — the

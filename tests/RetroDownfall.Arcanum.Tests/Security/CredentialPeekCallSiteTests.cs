@@ -89,7 +89,7 @@ public sealed class CredentialPeekCallSiteTests
             },
             {
                 "src/RetroDownfall.Arcanum.Api/Security/ApiKeyAuthenticator.cs",
-                ".PeekApiKeyReadResultAsync(CancellationToken.None)",
+                ".PeekApiKeyReadResultAsync()",
                 ".GetApiKeyAsync()"
             },
             {

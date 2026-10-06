@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Security;
 
 /// <summary>
@@ -18,7 +20,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("ProcessEnvironment")]
 public sealed class ProviderCredentialStoreTests : IDisposable
 {
-
     private readonly string _testHome =
         Path.Combine(
             Path.GetTempPath(),
@@ -30,7 +31,6 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
     public ProviderCredentialStoreTests()
     {
-
         SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
 
         SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
@@ -42,47 +42,33 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         _dataProtectionProvider = DataProtectionProvider.Create(
             new DirectoryInfo(_testHome),
             _ => { });
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             if (Directory.Exists(_testHome))
             {
-
                 Directory.Delete(_testHome, recursive: true);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup.
-
         }
         finally
         {
-
             foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
             {
-
                 global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-
             }
-
         }
-
     }
 
     [Fact]
     public void Credential_identity_is_stable_and_distinct_from_the_web_research_account()
     {
-
         string openAi = ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("OpenAI");
 
         string spaced = ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("open ai");
@@ -107,13 +93,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.False(
             ArcanumCredentialIdentity.IsInferenceProviderApiKeyAccount(
                 ArcanumCredentialIdentity.MasterApiKeyAccount));
-
     }
 
     [Fact]
     public async Task Save_and_get_use_the_os_store_and_an_encrypted_mirror()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -140,7 +124,36 @@ public sealed class ProviderCredentialStoreTests : IDisposable
             "sk-provider-secret-value",
             Encoding.UTF8.GetString(await File.ReadAllBytesAsync(mirror)),
             StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// The mirror follows the OS credential for every mirrored credential, not only the master key: a
+    /// provider key rotated in the OS store by another tool must not leave the superseded key in the
+    /// mirror to be served at the next locked-keychain read.
+    /// </summary>
+    [Fact]
+    public async Task An_out_of_band_os_rotation_is_followed_by_the_mirror()
+    {
+        SwitchableReadOsCredentialStore os = new();
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        await store.SaveApiKeyAsync("OpenAI", "superseded-provider-secret");
+
+        _ = os.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("OpenAI"),
+            "rotated-provider-secret");
+
+        Assert.Equal("rotated-provider-secret", (await store.GetApiKeyReadResultAsync("OpenAI")).Value);
+
+        os.FailReads = true;
+
+        SecretStoreReadResult locked = await store.GetApiKeyReadResultAsync("OpenAI");
+
+        Assert.Equal(SecretStoreReadStatus.Ok, locked.Status);
+
+        Assert.Equal("rotated-provider-secret", locked.Value);
     }
 
     /// <summary>
@@ -155,7 +168,6 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     [Fact]
     public async Task Dispose_concurrent_with_an_in_flight_read_completes_without_ObjectDisposedException()
     {
-
         using BlockingOsCredentialStore os = new();
 
         ProviderCredentialStore store = CreateStore(os);
@@ -174,13 +186,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(SecretStoreReadStatus.Ok, result.Status);
 
         Assert.Equal("blocked-value", result.Value);
-
     }
 
     [Fact]
     public async Task Providers_are_isolated_from_each_other()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -200,13 +210,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
             (await store.GetApiKeyReadResultAsync("OpenAI")).Status);
 
         Assert.Equal("sk-ollama", (await store.GetApiKeyReadResultAsync("Ollama")).Value);
-
     }
 
     [Fact]
     public async Task Unavailable_os_store_round_trips_through_the_encrypted_mirror()
     {
-
         using ProviderCredentialStore writer = CreateStore(new UnavailableOsCredentialStore());
 
         await writer.SaveApiKeyAsync("OpenAI", "mirror-secret");
@@ -218,18 +226,14 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(SecretStoreReadStatus.Ok, result.Status);
 
         Assert.Equal("mirror-secret", result.Value);
-
     }
 
     [Fact]
     public async Task Legacy_mirror_is_promoted_into_the_os_store_on_first_read()
     {
-
         using (ProviderCredentialStore legacyWriter = CreateStore(new UnavailableOsCredentialStore()))
         {
-
             await legacyWriter.SaveApiKeyAsync("OpenAI", "legacy-secret");
-
         }
 
         InMemoryOsCredentialStore os = new();
@@ -249,18 +253,14 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(OsCredentialStoreStatus.Ok, promoted.Status);
 
         Assert.Equal("legacy-secret", promoted.Value);
-
     }
 
     [Fact]
     public async Task Peek_returns_a_legacy_mirror_without_promoting_or_changing_files()
     {
-
         using (ProviderCredentialStore writer = CreateStore(new UnavailableOsCredentialStore()))
         {
-
             await writer.SaveApiKeyAsync("OpenAI", "peek-provider-secret");
-
         }
 
         string[] before = SnapshotFileTree();
@@ -286,18 +286,14 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(0, os.DeleteCallCount);
 
         Assert.Equal(before, SnapshotFileTree());
-
     }
 
     [Fact]
     public async Task Peek_fails_closed_when_the_os_read_is_ambiguous_even_with_a_valid_mirror()
     {
-
         using (ProviderCredentialStore writer = CreateStore(new UnavailableOsCredentialStore()))
         {
-
             await writer.SaveApiKeyAsync("OpenAI", "possibly-superseded-provider-secret");
-
         }
 
         string[] before = SnapshotFileTree();
@@ -319,13 +315,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(0, os.DeleteCallCount);
 
         Assert.Equal(before, SnapshotFileTree());
-
     }
 
     [Fact]
     public async Task Peek_reports_missing_and_corrupt_mirrors_without_creating_or_repairing_state()
     {
-
         RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -357,13 +351,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(0, os.SetCallCount);
 
         Assert.Equal(0, os.DeleteCallCount);
-
     }
 
     [Fact]
     public async Task A_corrupt_mirror_fails_closed_without_generating_a_replacement()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -387,13 +379,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.NotNull(result.Message);
 
         Assert.DoesNotContain("sk-openai", result.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Repeated_saves_are_idempotent_and_replace_the_prior_value()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -405,13 +395,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         await store.SaveApiKeyAsync("OpenAI", "second");
 
         Assert.Equal("second", (await store.GetApiKeyReadResultAsync("OpenAI")).Value);
-
     }
 
     [Fact]
     public async Task A_failed_os_write_removes_the_superseded_os_credential()
     {
-
         InMemoryOsCredentialStore backing = new();
 
         _ = backing.Set(
@@ -430,13 +418,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
             backing.TryGet(
                 ArcanumCredentialIdentity.Service,
                 ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("OpenAI")).Status);
-
     }
 
     [Fact]
     public async Task A_failed_os_write_fails_closed_when_the_superseded_credential_survives()
     {
-
         InMemoryOsCredentialStore backing = new();
 
         _ = backing.Set(
@@ -450,10 +436,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         _ = await Assert.ThrowsAsync<InvalidOperationException>(
             () => store.SaveApiKeyAsync("OpenAI", "sk-new"));
 
-        Assert.Equal("sk-old", (await store.GetApiKeyReadResultAsync("OpenAI")).Value);
-
+        // The refused save wrote no mirror. (The read below then synchronizes one from the surviving
+        // OS credential, because every mirror follows its OS copy.)
         Assert.False(File.Exists(ArcanumPaths.InferenceProviderApiKeyStoreFile("OpenAI")));
 
+        Assert.Equal("sk-old", (await store.GetApiKeyReadResultAsync("OpenAI")).Value);
     }
 
     /// <summary>
@@ -469,20 +456,17 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     [Fact]
     public async Task A_backend_that_stops_answering_degrades_to_the_mirror_instead_of_throwing()
     {
-
         using ProviderCredentialStore store =
             CreateStore(new OsCredentialStore(new SilentBackendStore()));
 
         await store.SaveApiKeyAsync("OpenAI", "sk-new");
 
         Assert.Equal("sk-new", (await store.GetApiKeyReadResultAsync("OpenAI")).Value);
-
     }
 
     [Fact]
     public async Task Delete_is_safe_when_nothing_is_stored()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -492,13 +476,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(
             SecretStoreReadStatus.Missing,
             (await store.GetApiKeyReadResultAsync("OpenAI")).Status);
-
     }
 
     [Fact]
     public async Task Status_reports_presence_without_returning_the_credential()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -508,13 +490,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         await store.SaveApiKeyAsync("OpenAI", "sk-openai");
 
         Assert.True(await store.HasApiKeyAsync("OpenAI"));
-
     }
 
     [Fact]
     public async Task Empty_or_whitespace_credentials_are_rejected()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -524,24 +504,20 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         _ = await Assert.ThrowsAnyAsync<ArgumentException>(
             () => store.SaveApiKeyAsync("   ", "sk-openai"));
-
     }
 
     [Fact]
     public async Task Resolver_peek_uses_only_the_non_mutating_credential_contract()
     {
-
         RecordingProviderCredentialStore store = new();
 
         ProviderApiKeyResolver resolver = new(store);
 
         ProviderSettings provider = new()
         {
-
             Name = "OpenAI",
 
             Endpoint = "https://api.openai.invalid/v1",
-
         };
 
         Assert.Equal(
@@ -553,13 +529,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(1, store.PeekReadCount);
 
         Assert.Equal(0, store.WriteCount);
-
     }
 
     [Fact]
     public async Task Resolver_prefers_an_environment_reference_over_the_secure_store()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -568,13 +542,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         ProviderSettings provider = new()
         {
-
             Name = "OpenAI",
 
             Endpoint = "https://api.openai.invalid/v1",
 
             CredentialEnvironmentVariable = "ARCANUM_TEST_PROVIDER_KEY",
-
         };
 
         SetEnvironment("ARCANUM_TEST_PROVIDER_KEY", "environment-secret");
@@ -590,36 +562,30 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         Assert.Equal(
             "stored-secret",
             await resolver.ResolveAsync(provider, CancellationToken.None));
-
     }
 
     [Fact]
     public async Task Resolver_returns_null_when_no_credential_is_configured()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
 
         ProviderSettings provider = new()
         {
-
             Name = "Ollama",
 
             Endpoint = "http://127.0.0.1:11434/v1",
-
         };
 
         ProviderApiKeyResolver resolver = new(store);
 
         Assert.Null(await resolver.ResolveAsync(provider, CancellationToken.None));
-
     }
 
     [Fact]
     public async Task Resolver_treats_a_corrupt_stored_credential_as_absent()
     {
-
         InMemoryOsCredentialStore os = new();
 
         using ProviderCredentialStore store = CreateStore(os);
@@ -636,17 +602,14 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         ProviderSettings provider = new()
         {
-
             Name = "OpenAI",
 
             Endpoint = "https://api.openai.invalid/v1",
-
         };
 
         ProviderApiKeyResolver resolver = new(store);
 
         Assert.Null(await resolver.ResolveAsync(provider, CancellationToken.None));
-
     }
 
     private ProviderCredentialStore CreateStore(IOsCredentialStore osStore) =>
@@ -654,17 +617,13 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
     private void SetEnvironment(string name, string? value)
     {
-
         if (!_originalEnvironment.ContainsKey(name))
         {
-
             _originalEnvironment[name] =
                 global::System.Environment.GetEnvironmentVariable(name);
-
         }
 
         global::System.Environment.SetEnvironmentVariable(name, value);
-
     }
 
     private string[] SnapshotFileTree() => Directory
@@ -680,7 +639,6 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
     private sealed class RecordingProviderCredentialStore : IProviderCredentialStore
     {
-
         public int OrdinaryReadCount { get; private set; }
 
         public int PeekReadCount { get; private set; }
@@ -691,22 +649,18 @@ public sealed class ProviderCredentialStoreTests : IDisposable
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             OrdinaryReadCount++;
 
             return Task.FromResult(SecretStoreReadResult.Ok("ordinary-secret"));
-
         }
 
         public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             PeekReadCount++;
 
             return Task.FromResult(SecretStoreReadResult.Ok("peek-secret"));
-
         }
 
         public Task SaveApiKeyAsync(
@@ -714,30 +668,24 @@ public sealed class ProviderCredentialStoreTests : IDisposable
             string apiKey,
             CancellationToken cancellationToken = default)
         {
-
             WriteCount++;
 
             return Task.CompletedTask;
-
         }
 
         public Task DeleteApiKeyAsync(
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             WriteCount++;
 
             return Task.CompletedTask;
-
         }
-
     }
 
     private sealed class RecordingOsCredentialStore(OsCredentialStoreResult readResult)
         : IOsCredentialStore
     {
-
         public bool IsAvailable => readResult.Status != OsCredentialStoreStatus.Unavailable;
 
         public int SetCallCount { get; private set; }
@@ -748,22 +696,17 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         public OsCredentialStoreResult Set(string service, string account, string secret)
         {
-
             SetCallCount++;
 
             return OsCredentialStoreResult.Ok(secret);
-
         }
 
         public OsCredentialStoreResult Delete(string service, string account)
         {
-
             DeleteCallCount++;
 
             return OsCredentialStoreResult.Ok(string.Empty);
-
         }
-
     }
 
     /// <summary>
@@ -773,7 +716,6 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     private sealed class WriteFailingStore(IOsCredentialStore inner, bool deleteFails = false)
         : IOsCredentialStore
     {
-
         public bool IsAvailable => true;
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
@@ -786,7 +728,6 @@ public sealed class ProviderCredentialStoreTests : IDisposable
             deleteFails
                 ? OsCredentialStoreResult.Failed("test delete failure")
                 : inner.Delete(service, account);
-
     }
 
     /// <summary>
@@ -796,7 +737,6 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     /// </summary>
     private sealed class SilentBackendStore : IOsCredentialStore
     {
-
         public bool IsAvailable => true;
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
@@ -807,12 +747,10 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Unavailable("no secret service answered");
-
     }
 
     private sealed class UnavailableOsCredentialStore : IOsCredentialStore
     {
-
         public bool IsAvailable => false;
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
@@ -823,13 +761,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Unavailable("unavailable");
-
     }
 
     /// <summary>A backend whose TryGet parks inside the read until the test lets it finish.</summary>
     private sealed class BlockingOsCredentialStore : IOsCredentialStore, IDisposable
     {
-
         private readonly ManualResetEventSlim _entered = new(false);
 
         private readonly ManualResetEventSlim _release = new(false);
@@ -838,13 +774,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         public OsCredentialStoreResult TryGet(string service, string account)
         {
-
             _entered.Set();
 
             _ = _release.Wait(TimeSpan.FromSeconds(30));
 
             return OsCredentialStoreResult.Ok("blocked-value");
-
         }
 
         public OsCredentialStoreResult Set(string service, string account, string secret) =>
@@ -860,15 +794,11 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         public void Dispose()
         {
-
             _entered.Dispose();
 
             _release.Dispose();
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -878,7 +808,6 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 /// </summary>
 public sealed class ProviderCredentialIdentityParityTests
 {
-
     [Theory]
     [InlineData("OpenAI")]
     [InlineData("open ai")]
@@ -892,33 +821,26 @@ public sealed class ProviderCredentialIdentityParityTests
     public void Secure_store_and_environment_reference_normalize_provider_names_identically(
         string providerName)
     {
-
         Assert.Equal(
             EnvironmentCredentialResolver.NormalizeProviderName(providerName),
             ArcanumCredentialIdentity.NormalizeProviderName(providerName));
-
     }
 
     [Fact]
     public void Null_provider_names_normalize_identically()
     {
-
         Assert.Equal(
             EnvironmentCredentialResolver.NormalizeProviderName(null),
             ArcanumCredentialIdentity.NormalizeProviderName(null));
-
     }
 
     [Fact]
     public void Mirror_file_names_stay_inside_the_secret_store_directory()
     {
-
         string traversal = ArcanumPaths.InferenceProviderApiKeyStoreFile("../../escape");
 
         Assert.Equal(
             Path.GetFullPath(ArcanumPaths.SecretStoreDirectory),
             Path.GetFullPath(Path.GetDirectoryName(traversal)!));
-
     }
-
 }

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Api.Security;
@@ -21,7 +22,7 @@ public sealed class ApiKeyAuthenticatorConcurrencyTests
 
         ApiKeyDigestCache cache = new(new FakeTimeProvider());
 
-        ApiKeyAuthenticator authenticator = new(secretStore, cache);
+        ApiKeyAuthenticator authenticator = new(secretStore, cache, NullLogger<ApiKeyAuthenticator>.Instance);
 
         DefaultHttpContext httpContext = new();
 
@@ -53,7 +54,7 @@ public sealed class ApiKeyAuthenticatorConcurrencyTests
     {
         FailingFirstSecretStore secretStore = new(OriginalKey);
         ApiKeyDigestCache cache = new(new FakeTimeProvider());
-        ApiKeyAuthenticator authenticator = new(secretStore, cache);
+        ApiKeyAuthenticator authenticator = new(secretStore, cache, NullLogger<ApiKeyAuthenticator>.Instance);
 
         Task<bool> failedReader = authenticator
             .IsAuthorizedAsync(CreateContext(OriginalKey))
@@ -90,7 +91,7 @@ public sealed class ApiKeyAuthenticatorConcurrencyTests
 
         ApiKeyDigestCache cache = new(new FakeTimeProvider());
 
-        ApiKeyAuthenticator authenticator = new(secretStore, cache);
+        ApiKeyAuthenticator authenticator = new(secretStore, cache, NullLogger<ApiKeyAuthenticator>.Instance);
 
         Task<bool> staleAuthentication = authenticator
             .IsAuthorizedAsync(CreateContext(OriginalKey))
