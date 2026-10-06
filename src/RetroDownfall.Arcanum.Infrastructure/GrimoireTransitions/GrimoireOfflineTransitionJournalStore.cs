@@ -690,6 +690,32 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         string guardedDirectory,
         CancellationToken cancellationToken)
     {
+        CancellationToken passToken = cancellationToken;
+
+        while (true)
+        {
+            Result<GrimoireOfflineTransitionJournalRecoveryState>? recovered =
+                await RecoverPassAsync(heldInstallationLock, guardedDirectory, passToken)
+                    .ConfigureAwait(false);
+
+            if (recovered is not null)
+            {
+                return recovered;
+            }
+
+            // A landed rename is the point of no return, so every later pass runs to completion on
+            // CancellationToken.None. An arm that lands a rename returns null instead of re-entering
+            // RecoverAsync: a recursive re-entry does not converge in the hosted-producer analysis.
+            passToken = CancellationToken.None;
+        }
+    }
+
+    /// <returns>The recovery result, or <see langword="null"/> when the pass landed a rename (a resumed working publication or a restored predecessor) and recovery must start again from the slot that rename left.</returns>
+    private async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>?> RecoverPassAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         heldInstallationLock.AssertHeldFor(guardedDirectory);
@@ -793,7 +819,6 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         {
             return await RestorePreviousAsync(
                     heldInstallationLock,
-                    guardedDirectory,
                     location,
                     anchor,
                     evidence,
@@ -842,10 +867,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                         cancellationToken)
                     .ConfigureAwait(false);
 
-                return resumed.IsSuccess
-                    ? await RecoverAsync(heldInstallationLock, guardedDirectory, CancellationToken.None)
-                        .ConfigureAwait(false)
-                    : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+                return resumed.IsSuccess ? null : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
             }
 
             Result<GrimoireOfflineTransitionJournalPublication> workingOneAhead =
@@ -1223,12 +1245,12 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
     /// <remarks>
     /// The previous file must authenticate as exactly the anchor-current revision and a working file,
     /// when present, as exactly one ahead of it. The predecessor goes back to the canonical name and the
-    /// ordinary recovery then resumes the working publication or accepts the restored file. A rename that
-    /// landed is the point of no return, so that recovery runs on <see cref="CancellationToken.None"/>.
+    /// pass ends, so <see cref="RecoverAsync"/> starts a new pass on <see cref="CancellationToken.None"/>
+    /// that resumes the working publication or accepts the restored file: a rename that landed is the
+    /// point of no return.
     /// </remarks>
-    private async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RestorePreviousAsync(
+    private async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>?> RestorePreviousAsync(
         ArcanumMaintenanceLock heldInstallationLock,
-        string guardedDirectory,
         GrimoireOfflineTransitionJournalLocation location,
         GrimoireOfflineTransitionAnchorV1 anchor,
         GrimoireOfflineTransitionJournalEvidence evidence,
@@ -1273,8 +1295,7 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
                 : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
         }
 
-        return await RecoverAsync(heldInstallationLock, guardedDirectory, CancellationToken.None)
-            .ConfigureAwait(false);
+        return null;
     }
 
     private async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverClosedAsync(
