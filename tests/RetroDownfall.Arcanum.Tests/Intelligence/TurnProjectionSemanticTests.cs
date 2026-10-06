@@ -211,9 +211,9 @@ public sealed class TurnProjectionSemanticTests
         IntelligenceEvent frame = Assert.Single(IntelligenceEventProjection.Map(approval));
         Assert.Equal(IntelligenceEventType.Warded, frame.Type);
         Assert.Equal("ward-7", frame.WardId);
-        Assert.Equal("execute_command", frame.WardToolName);
+        Assert.Equal("execute_command", frame.ToolName);
 
-        JsonElement arguments = Assert.IsType<JsonElement>(frame.WardArguments);
+        JsonElement arguments = Assert.IsType<JsonElement>(frame.Arguments);
         Assert.Equal("rm -rf build", arguments.GetProperty("command").GetString());
         Assert.Equal(
             "Runs a shell command.",
@@ -231,7 +231,7 @@ public sealed class TurnProjectionSemanticTests
                 new ApprovalRequested(Correlation(1), "ward-8", "workspace_check", argumentsJson)));
 
         Assert.Equal(IntelligenceEventType.Warded, frame.Type);
-        Assert.Null(frame.WardArguments);
+        Assert.Null(frame.Arguments);
     }
 
     [Fact]

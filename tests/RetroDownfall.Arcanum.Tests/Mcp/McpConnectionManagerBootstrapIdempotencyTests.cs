@@ -2363,15 +2363,15 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
         Assert.Equal(warded.WardId, resolved.WardId);
 
-        Assert.Equal(toolName, warded.WardToolName);
+        Assert.Equal(toolName, warded.ToolName);
 
-        Assert.Equal(toolName, resolved.WardToolName);
+        Assert.Equal(toolName, resolved.ToolName);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, warded.Origin);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, resolved.Origin);
 
-        Assert.True(resolved.WardAllowed);
+        Assert.True(resolved.Allowed);
     }
 
     private async Task<AIFunction> GetToolAsync(

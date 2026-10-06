@@ -304,7 +304,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
 
         Assert.All(
             processed.WardEvents,
-            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.Origin));
     }
 
     /// <summary>

@@ -4731,13 +4731,13 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 events,
                 static evt => evt.Type == IntelligenceEventType.ToolResult);
 
-            Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+            Assert.Equal(WardResolutionOrigin.Ungated, warded.Origin);
 
-            Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+            Assert.Equal(WardResolutionOrigin.Ungated, resolved.Origin);
 
             Assert.Equal(warded.WardId, resolved.WardId);
 
-            Assert.True(resolved.WardAllowed);
+            Assert.True(resolved.Allowed);
 
             Assert.False(toolResult.ToolDenied);
 

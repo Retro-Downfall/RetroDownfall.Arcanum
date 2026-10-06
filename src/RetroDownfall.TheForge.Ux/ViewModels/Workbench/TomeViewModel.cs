@@ -21,7 +21,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// </summary>
 public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 {
-
     /// <summary>
     /// Retention bound for <see cref="Messages"/>. A chat bubble is heavier per item than
     /// <c>ChronicleEntryViewModel</c> (each can hold up to
@@ -100,7 +99,6 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         IConfirmationDialogService confirmationDialog,
         ITheForgeLocalMutationRunner mutationRunner)
     {
-
         SessionId = sessionId;
 
         _dataSource = dataSource;
@@ -116,7 +114,6 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         Title = $"Tome: {sessionId:D}";
 
         Trace = new InferenceTraceViewModel(mutationRunner);
-
     }
 
     public override DocumentKind? Kind => DocumentKind.Session;
@@ -139,12 +136,10 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
-
         IsBusy = true;
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -153,38 +148,29 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
             if (Session is not null)
             {
-
                 Title = string.IsNullOrWhiteSpace(Session.Title)
                     ? $"Tome: {Session.Id:D}"
                     : Session.Title!;
-
             }
 
             await RefreshEntriesAsync(linked.Token).ConfigureAwait(true);
 
             StartSessionObservation();
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task SendAsync(CancellationToken cancellationToken)
     {
-
         string prompt = InputText.Trim();
 
         if (string.IsNullOrEmpty(prompt) || IsStreaming)
         {
-
             return;
-
         }
 
         InputText = string.Empty;
@@ -208,56 +194,42 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             PingRequest request = new(prompt, SessionId: SessionId);
 
             await foreach (IntelligenceEvent ev in _dataSource.PingStreamAsync(request, sendToken).ConfigureAwait(true))
             {
-
                 ApplyIntelligenceEvent(ev);
-
             }
-
         }
         catch (OperationCanceledException) when (sendToken.IsCancellationRequested)
         {
-
             // Tab close or explicit cancel — leave partial transcript as-is.
-
         }
         catch (Exception ex)
         {
-
             AppendInlineError(ex.Message);
 
             _foundryFloor.AppendLine($"Tome stream error: {ex.Message}");
-
         }
         finally
         {
-
             CompleteStreamingContent();
 
             IsStreaming = false;
 
             _streamingAssistant = null;
             _streamingReasoning = null;
-
         }
-
     }
 
     [RelayCommand]
     public async Task AppendManualEntryAsync(CancellationToken cancellationToken)
     {
-
         string content = ManualEntryText?.Trim() ?? string.Empty;
 
         if (string.IsNullOrEmpty(content))
         {
-
             return;
-
         }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -272,17 +244,13 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (entry is not null)
         {
-
             AppendEntryIfNew(entry);
-
         }
-
     }
 
     [RelayCommand]
     public async Task ForkAsync(CancellationToken cancellationToken)
     {
-
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _lifetimeCts.Token);
@@ -293,17 +261,13 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (forked is not null)
         {
-
             _navigation.OpenDocument(DocumentKind.Session, forked.Id.ToString("D"));
-
         }
-
     }
 
     [RelayCommand]
     public async Task ExportAsync(CancellationToken cancellationToken)
     {
-
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _lifetimeCts.Token);
@@ -313,13 +277,11 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
             .ConfigureAwait(true);
 
         LastExportContent = export?.Content;
-
     }
 
     [RelayCommand]
     public async Task RefreshEntriesAsync(CancellationToken cancellationToken)
     {
-
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _lifetimeCts.Token);
@@ -330,13 +292,11 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (!result.Success)
         {
-
             MemoryStatusText = result.ErrorMessage ?? "Failed to load session entries.";
 
             _foundryFloor.AppendLine($"Tome entries refresh failed: {MemoryStatusText}");
 
             return;
-
         }
 
         Messages.Clear();
@@ -348,29 +308,21 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (result.Data is { } entries)
         {
-
             foreach (EntryDto entry in entries.OrderBy(static e => e.CreatedAt))
             {
-
                 AppendEntryIfNew(entry);
-
             }
-
         }
 
         MemoryStatusText = $"{Messages.Count} entries.";
-
     }
 
     [RelayCommand]
     public async Task PinEntryAsync(ChatMessageViewModel? message, CancellationToken cancellationToken)
     {
-
         if (message?.EntryId is not { } entryId || MemoryManagementDisabled)
         {
-
             return;
-
         }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -383,50 +335,40 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (result.Success)
         {
-
             message.IsPinned = true;
 
             MemoryStatusText = "Entry pinned.";
 
             return;
-
         }
 
         if (result.ErrorCode == ErrorCodes.Session.MemoryManagementDisabled)
         {
-
             ApplyMemoryManagementDisabled(result.ErrorMessage);
 
             return;
-
         }
 
         if (result.ErrorCode == ErrorCodes.Session.TooManyPinned)
         {
-
             MemoryStatusText = result.ErrorMessage ?? "Too many pinned entries.";
 
             _foundryFloor.AppendLine($"Tome pin failed: {MemoryStatusText}");
 
             return;
-
         }
 
         MemoryStatusText = result.ErrorMessage ?? "Failed to pin entry.";
 
         _foundryFloor.AppendLine($"Tome pin failed: {MemoryStatusText}");
-
     }
 
     [RelayCommand]
     public async Task UnpinEntryAsync(ChatMessageViewModel? message, CancellationToken cancellationToken)
     {
-
         if (message?.EntryId is not { } entryId || MemoryManagementDisabled)
         {
-
             return;
-
         }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -439,39 +381,31 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (result.Success)
         {
-
             message.IsPinned = false;
 
             MemoryStatusText = "Entry unpinned.";
 
             return;
-
         }
 
         if (result.ErrorCode == ErrorCodes.Session.MemoryManagementDisabled)
         {
-
             ApplyMemoryManagementDisabled(result.ErrorMessage);
 
             return;
-
         }
 
         MemoryStatusText = result.ErrorMessage ?? "Failed to unpin entry.";
 
         _foundryFloor.AppendLine($"Tome unpin failed: {MemoryStatusText}");
-
     }
 
     [RelayCommand]
     public async Task DeleteEntryAsync(ChatMessageViewModel? message, CancellationToken cancellationToken)
     {
-
         if (message?.EntryId is not { } entryId || MemoryManagementDisabled)
         {
-
             return;
-
         }
 
         // A transcript entry cannot be reconstructed from this surface once the server drops it.
@@ -485,9 +419,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (!confirmed)
         {
-
             return;
-
         }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -500,39 +432,31 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (result.Success)
         {
-
             Messages.Remove(message);
 
             MemoryStatusText = "Entry deleted.";
 
             return;
-
         }
 
         if (result.ErrorCode == ErrorCodes.Session.MemoryManagementDisabled)
         {
-
             ApplyMemoryManagementDisabled(result.ErrorMessage);
 
             return;
-
         }
 
         MemoryStatusText = result.ErrorMessage ?? "Failed to delete entry.";
 
         _foundryFloor.AppendLine($"Tome delete entry failed: {MemoryStatusText}");
-
     }
 
     [RelayCommand]
     public async Task CompactAsync(CancellationToken cancellationToken)
     {
-
         if (MemoryManagementDisabled)
         {
-
             return;
-
         }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -545,7 +469,6 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (result.Success && result.Data is { } compact)
         {
-
             await RefreshEntriesAsync(linked.Token).ConfigureAwait(true);
 
             // The refresh leaves the entry count, or why it could not load one, in the status line, and a
@@ -554,22 +477,18 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
             MemoryStatusText = $"{DescribeCompaction(compact)} {MemoryStatusText}";
 
             return;
-
         }
 
         if (result.ErrorCode == ErrorCodes.Session.MemoryManagementDisabled)
         {
-
             ApplyMemoryManagementDisabled(result.ErrorMessage);
 
             return;
-
         }
 
         MemoryStatusText = result.ErrorMessage ?? "Failed to compact session.";
 
         _foundryFloor.AppendLine($"Tome compact failed: {MemoryStatusText}");
-
     }
 
     [RelayCommand]
@@ -577,12 +496,9 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
     public void Dispose()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -596,7 +512,6 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         _sendCts?.Dispose();
 
         GC.SuppressFinalize(this);
-
     }
 
     /// <summary>Single gateway every append site funnels through, so the retention cap in
@@ -605,65 +520,46 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
     /// cap on.</summary>
     private void AddMessage(ChatMessageViewModel message)
     {
-
         Messages.Add(message);
 
         EnforceMessageCap();
-
     }
 
     private void EnforceMessageCap()
     {
-
         while (Messages.Count > MaxMessages)
         {
-
             Messages.RemoveAt(0);
-
         }
-
     }
 
     private void StartSessionObservation()
     {
-
         _ = ObserveSessionEntriesAsync(_lifetimeCts.Token);
-
     }
 
     private async Task ObserveSessionEntriesAsync(CancellationToken cancellationToken)
     {
-
         try
         {
-
             await foreach (EntryDto entry in _dataSource.StreamEntriesAsync(SessionId, since: null, cancellationToken)
                                .ConfigureAwait(true))
             {
-
                 AppendEntryIfNew(entry);
-
             }
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             // Expected on tab close.
-
         }
         catch (Exception ex)
         {
-
             _foundryFloor.AppendLine($"Tome session SSE error: {ex.Message}");
-
         }
-
     }
 
     private void ApplyIntelligenceEvent(IntelligenceEvent ev)
     {
-
         Trace.Capture(ev);
 
         if (ev.Type is not IntelligenceEventType.Token and not IntelligenceEventType.Reasoning)
@@ -698,18 +594,18 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
                 break;
 
             case IntelligenceEventType.Warded
-                when ev.WardOrigin is { } automaticOrigin && automaticOrigin != WardResolutionOrigin.Human:
+                when ev.Origin is { } automaticOrigin && automaticOrigin != WardResolutionOrigin.Human:
                 // The server already resolved this ward on its own (issue #53). Reporting it as
                 // pending would offer an approval the Gatehouse can no longer act on.
                 LastWhisper =
-                    $"Ward resolved automatically{(string.IsNullOrWhiteSpace(ev.WardToolName) ? string.Empty : $": {ev.WardToolName}")}";
+                    $"Ward resolved automatically{(string.IsNullOrWhiteSpace(ev.ToolName) ? string.Empty : $": {ev.ToolName}")}";
                 break;
 
             case IntelligenceEventType.Warded:
                 WardPending = true;
                 PendingWardId = ev.WardId;
                 LastWhisper = string.IsNullOrWhiteSpace(ev.Message)
-                    ? $"Ward pending{(string.IsNullOrWhiteSpace(ev.WardToolName) ? string.Empty : $": {ev.WardToolName}")}"
+                    ? $"Ward pending{(string.IsNullOrWhiteSpace(ev.ToolName) ? string.Empty : $": {ev.ToolName}")}"
                     : ev.Message;
                 break;
 
@@ -769,32 +665,25 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
                 _foundryFloor.AppendLine($"Tome error: {ev.Message}");
                 break;
         }
-
     }
 
     private void AppendToken(string data)
     {
-
         if (string.IsNullOrEmpty(data))
         {
-
             return;
-
         }
 
         if (_streamingAssistant is null)
         {
-
             _streamingAssistant = new ChatMessageViewModel("assistant", data);
 
             AddMessage(_streamingAssistant);
 
             return;
-
         }
 
         _streamingAssistant.AppendContent(data);
-
     }
 
     private void AppendReasoning(string data)
@@ -828,29 +717,24 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
     private void ApplyToolCall(IntelligenceEvent ev)
     {
-
         string callId = ev.ToolCall?.CallId ?? ev.Message;
 
-        string name = ev.ToolCall?.Name ?? ev.WardToolName ?? ev.Message;
+        string name = ev.ToolCall?.Name ?? ev.ToolName ?? ev.Message;
 
         string argumentsJson = ev.ToolCall?.ArgumentsJson ?? ev.Data ?? string.Empty;
 
         if (string.IsNullOrWhiteSpace(callId))
         {
-
             callId = Guid.NewGuid().ToString("N");
-
         }
 
         if (_toolCardsByCallId.TryGetValue(callId, out ToolCallCardViewModel? existing))
         {
-
             existing.Name = name;
 
             existing.ArgumentsJson = argumentsJson;
 
             return;
-
         }
 
         ToolCallCardViewModel card = new(callId, name, argumentsJson);
@@ -858,66 +742,52 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         _toolCardsByCallId[callId] = card;
 
         AddMessage(new ChatMessageViewModel("tool", name, card));
-
     }
 
     private void ApplyToolResult(IntelligenceEvent ev)
     {
-
         string callId = ev.ToolCall?.CallId ?? ev.Message;
 
         string result = ev.Data ?? ev.Message;
 
         if (!string.IsNullOrWhiteSpace(callId) && _toolCardsByCallId.TryGetValue(callId, out ToolCallCardViewModel? card))
         {
-
             card.Result = result;
 
             return;
-
         }
 
         AddMessage(new ChatMessageViewModel("tool", result));
-
     }
 
     private void ApplyToolError(IntelligenceEvent ev)
     {
-
         string callId = ev.ToolCall?.CallId ?? ev.Message;
 
         string error = ev.Message;
 
         if (!string.IsNullOrWhiteSpace(callId) && _toolCardsByCallId.TryGetValue(callId, out ToolCallCardViewModel? card))
         {
-
             card.HasError = true;
 
             card.ErrorMessage = error;
 
             return;
-
         }
 
         AddMessage(new ChatMessageViewModel("error", error));
-
     }
 
     private void AppendInlineError(string message)
     {
-
         AddMessage(new ChatMessageViewModel("error", message));
-
     }
 
     private void AppendEntryIfNew(EntryDto entry)
     {
-
         if (Messages.Any(m => m.EntryId == entry.Id))
         {
-
             return;
-
         }
 
         // Conservative backfill: attach server identity only when exactly one transient bubble matches.
@@ -930,7 +800,6 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         if (transientMatches.Length == 1)
         {
-
             ChatMessageViewModel match = transientMatches[0];
 
             match.EntryId = entry.Id;
@@ -938,27 +807,21 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
             match.IsPinned = entry.IsPinned;
 
             return;
-
         }
 
         if (transientMatches.Length > 1)
         {
-
             // Ambiguous — leave bubbles transient; RefreshEntriesAsync is the source of truth.
             return;
-
         }
 
         if (!string.IsNullOrWhiteSpace(entry.ToolCallId) || !string.IsNullOrWhiteSpace(entry.ToolName))
         {
-
             string callId = entry.ToolCallId ?? entry.Id.ToString("D");
 
             if (_toolCardsByCallId.ContainsKey(callId))
             {
-
                 return;
-
             }
 
             ToolCallCardViewModel card = new(callId, entry.ToolName ?? "tool", argumentsJson: string.Empty)
@@ -971,11 +834,9 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
             AddMessage(new ChatMessageViewModel("tool", entry.ToolName ?? "tool", card, entry.Id, entry.IsPinned));
 
             return;
-
         }
 
         AddMessage(new ChatMessageViewModel(entry.Role, entry.Content, entryId: entry.Id, isPinned: entry.IsPinned));
-
     }
 
     /// <summary>
@@ -983,26 +844,21 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
     /// </summary>
     private static string DescribeCompaction(CompactResult compact)
     {
-
         string summary =
             $"Compacted: {compact.EntriesRemoved} entries removed ({compact.TokensBefore} → {compact.TokensAfter} tokens).";
 
         return compact.StoppedBy is { } code
             ? $"{summary} Stopped early on {code}; the rest of the selected entries were left unchanged."
             : summary;
-
     }
 
     private void ApplyMemoryManagementDisabled(string? message)
     {
-
         MemoryManagementDisabled = true;
 
         MemoryStatusText = message
             ?? DisabledSettingPaths.FormatEnableMessage("Session memory management", DisabledSettingPaths.SessionMemoryManagement);
 
         _foundryFloor.AppendLine($"Tome: {MemoryStatusText}");
-
     }
-
 }

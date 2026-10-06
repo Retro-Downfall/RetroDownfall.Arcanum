@@ -39,8 +39,6 @@ public sealed class ManagedWeaveBannerTests
             false,
             false,
             false,
-            false,
-            false,
             5443,
             null,
             "http://localhost:5001",

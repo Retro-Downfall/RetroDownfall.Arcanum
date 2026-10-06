@@ -19,11 +19,9 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Collection("Telemetry")]
 public sealed class CovenantAgentRetirementTests
 {
-
     [Fact]
     public async Task Retirement_executes_without_waiting_under_the_most_restrictive_surviving_Ward_choices()
     {
-
         RecordingWard ward = new();
 
         CovenantRetirementHarness harness = new(ward, Wards());
@@ -39,13 +37,11 @@ public sealed class CovenantAgentRetirementTests
         Assert.Equal(0, ward.WaitCount);
 
         Assert.Equal([WardResolutionOrigin.Ungated], ward.AutomaticResolutionOrigins);
-
     }
 
     [Fact]
     public async Task An_unattended_eligible_turn_executes_retirement()
     {
-
         RecordingWard ward = new();
 
         CovenantRetirementHarness harness = new(ward, Wards());
@@ -60,13 +56,11 @@ public sealed class CovenantAgentRetirementTests
         Assert.False(processed.Denied);
 
         Assert.Equal(0, ward.WaitCount);
-
     }
 
     [Fact]
     public async Task Retirement_records_one_ungated_pair_and_never_requests_approval()
     {
-
         RecordingWard ward = new();
 
         CovenantRetirementHarness harness = new(ward, Wards());
@@ -91,20 +85,18 @@ public sealed class CovenantAgentRetirementTests
 
         Assert.Equal(warded.WardId, resolved.WardId);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, warded.Origin);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, resolved.Origin);
 
         Assert.DoesNotContain(
             harness.ObservedEvents,
             static evt => evt is ToolApprovalRequestedEvent);
-
     }
 
     [Fact]
     public async Task Disclosure_acknowledgement_precedes_the_retirement_effect()
     {
-
         CovenantRetirementHarness harness = new(new RecordingWard(), Wards());
 
         using IDisposable staging = harness.PublishStaging();
@@ -114,13 +106,11 @@ public sealed class CovenantAgentRetirementTests
         Assert.True(harness.ToolRan);
 
         Assert.Equal(["disclosed", "tool"], harness.Order);
-
     }
 
     [Fact]
     public async Task A_journal_failure_stops_the_retirement_effect()
     {
-
         CovenantRetirementHarness harness = new(new RecordingWard(), Wards())
         {
             JournalFailure = new Error(ErrorCodes.Covenant.Unavailable, "The disclosure journal is closed."),
@@ -131,13 +121,11 @@ public sealed class CovenantAgentRetirementTests
         _ = await harness.RetireAsync();
 
         Assert.False(harness.ToolRan);
-
     }
 
     [Fact]
     public async Task A_turn_with_no_staging_ambient_never_reaches_the_effect()
     {
-
         RecordingWard ward = new();
 
         CovenantRetirementHarness harness = new(ward, Wards());
@@ -149,7 +137,6 @@ public sealed class CovenantAgentRetirementTests
         Assert.Equal(0, ward.WaitCount);
 
         Assert.Contains("no Covenant staging capability", processed.ResultText, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -157,7 +144,6 @@ public sealed class CovenantAgentRetirementTests
     [InlineData("preference.builds", "confirmed")]
     public async Task A_malformed_target_never_reaches_the_effect(string key, string lane)
     {
-
         RecordingWard ward = new();
 
         CovenantRetirementHarness harness = new(ward, Wards());
@@ -169,13 +155,11 @@ public sealed class CovenantAgentRetirementTests
         Assert.False(harness.ToolRan);
 
         Assert.Equal(0, ward.WaitCount);
-
     }
 
     [Fact]
     public async Task An_ineligible_invocation_never_reaches_the_effect()
     {
-
         RecordingWard ward = new();
 
         CovenantRetirementHarness harness = new(ward, Wards());
@@ -187,7 +171,6 @@ public sealed class CovenantAgentRetirementTests
         Assert.False(harness.ToolRan);
 
         Assert.Equal(0, ward.WaitCount);
-
     }
 
     [Theory]
@@ -197,7 +180,6 @@ public sealed class CovenantAgentRetirementTests
     [InlineData("The target preflight is stale.")]
     public async Task A_target_the_probe_refuses_never_reaches_the_effect(string reason)
     {
-
         RecordingWard ward = new();
 
         CovenantRetirementHarness harness = new(ward, Wards())
@@ -214,13 +196,11 @@ public sealed class CovenantAgentRetirementTests
         Assert.Equal(0, ward.WaitCount);
 
         Assert.Contains(reason, processed.ResultText, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_mismatched_preflight_target_never_reaches_the_effect()
     {
-
         RecordingWard ward = new();
 
         CovenantRetirementHarness harness = new(ward, Wards());
@@ -233,13 +213,11 @@ public sealed class CovenantAgentRetirementTests
         Assert.False(harness.ToolRan);
 
         Assert.Equal(0, ward.WaitCount);
-
     }
 
     [Fact]
     public async Task The_disclosed_retirement_carries_no_ward_evidence_digest()
     {
-
         CovenantRetirementHarness harness = new(new RecordingWard(), Wards());
 
         using IDisposable staging = harness.PublishStaging();
@@ -247,13 +225,11 @@ public sealed class CovenantAgentRetirementTests
         _ = await harness.RetireAsync();
 
         Assert.Null(Assert.IsType<CovenantDisclosureDraft>(harness.DisclosureDraft).WardEvidenceDigest);
-
     }
 
     [Fact]
     public async Task Retirement_records_one_ungated_ward_metric()
     {
-
         ConcurrentQueue<KeyValuePair<string, object?>[]> measurements = new();
 
         using MeterListener listener = new()
@@ -264,12 +240,10 @@ public sealed class CovenantAgentRetirementTests
 
         listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
         {
-
             if (instrument.Name == "arcanum_ward_decisions_total")
             {
                 measurements.Enqueue(tags.ToArray());
             }
-
         });
 
         listener.Start();
@@ -285,7 +259,6 @@ public sealed class CovenantAgentRetirementTests
         Assert.Equal(CovenantToolNames.RetireCovenant, recorded[0].Value);
 
         Assert.Equal("ungated", recorded[1].Value);
-
     }
 
     private static WardPolicySettings Wards() =>
@@ -297,7 +270,6 @@ public sealed class CovenantAgentRetirementTests
 
     private sealed class RecordingWard : IWard
     {
-
         public int WaitCount { get; private set; }
 
         public List<WardResolutionOrigin> AutomaticResolutionOrigins { get; } = [];
@@ -310,12 +282,10 @@ public sealed class CovenantAgentRetirementTests
             TimeSpan timeout,
             CancellationToken cancellationToken)
         {
-
             WaitCount++;
 
             return Task.FromResult(
                 new WardResolution(true, null, DateTimeOffset.UtcNow, WardResolutionOrigin.Human));
-
         }
 
         public ResolveStatus Resolve(string wardId, bool allow, string? reason) => ResolveStatus.Success;
@@ -326,15 +296,11 @@ public sealed class CovenantAgentRetirementTests
             string? reason,
             WardResolutionOrigin origin)
         {
-
             AutomaticResolutionOrigins.Add(origin);
 
             return new WardResolution(allowed, reason, DateTimeOffset.UtcNow, origin);
-
         }
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
-
     }
-
 }

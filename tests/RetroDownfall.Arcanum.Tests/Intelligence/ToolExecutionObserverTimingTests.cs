@@ -16,11 +16,9 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ToolExecutionObserverTimingTests
 {
-
     [Fact]
     public async Task Workspace_check_without_tool_arguments_still_emits_host_owned_execution_risk_disclosure()
     {
-
         CapturingWard ward = new();
 
         ToolExecutionPipeline pipeline = new(
@@ -61,13 +59,13 @@ public sealed class ToolExecutionObserverTimingTests
 
         Assert.All(
             processed.WardEvents,
-            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.Origin));
 
         IntelligenceEvent warded = processed.WardEvents[0];
 
-        Assert.NotNull(warded.WardArguments);
+        Assert.NotNull(warded.Arguments);
 
-        string argumentsJson = warded.WardArguments.Value.GetRawText();
+        string argumentsJson = warded.Arguments.Value.GetRawText();
 
         Assert.Contains("workspace-authored code", argumentsJson, StringComparison.OrdinalIgnoreCase);
 
@@ -78,13 +76,11 @@ public sealed class ToolExecutionObserverTimingTests
         Assert.Contains("network", argumentsJson, StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(1, ward.RecordAutomaticResolutionCallCount);
-
     }
 
     [Fact]
     public async Task Workspace_check_replaces_a_caller_supplied_risk_disclosure()
     {
-
         CapturingWard ward = new();
 
         ToolExecutionPipeline pipeline = new(
@@ -126,7 +122,7 @@ public sealed class ToolExecutionObserverTimingTests
             processed.WardEvents,
             static evt => evt.Type == IntelligenceEventType.Warded);
 
-        JsonElement arguments = Assert.IsType<JsonElement>(warded.WardArguments);
+        JsonElement arguments = Assert.IsType<JsonElement>(warded.Arguments);
 
         JsonProperty disclosure = Assert.Single(
             arguments.EnumerateObject(),
@@ -137,13 +133,11 @@ public sealed class ToolExecutionObserverTimingTests
         Assert.NotEqual("model supplied", disclosureText);
 
         Assert.Contains("workspace-authored code", disclosureText, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task Workspace_check_emits_a_record_only_Ward_with_host_owned_execution_risk_disclosure()
     {
-
         CapturingWard ward = new();
         ToolExecutionPipeline pipeline = new(
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings
@@ -186,13 +180,13 @@ public sealed class ToolExecutionObserverTimingTests
             processed.WardEvents,
             static evt => evt.Type == IntelligenceEventType.WardResolved);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, warded.Origin);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, resolved.Origin);
 
-        Assert.NotNull(warded.WardArguments);
+        Assert.NotNull(warded.Arguments);
 
-        string argumentsJson = warded.WardArguments.Value.GetRawText();
+        string argumentsJson = warded.Arguments.Value.GetRawText();
 
         Assert.Contains(
             "workspace-authored code",
@@ -218,7 +212,6 @@ public sealed class ToolExecutionObserverTimingTests
 
     private sealed class CapturingWard : IWard
     {
-
         public int WardAsyncCallCount { get; private set; }
 
         public int RecordAutomaticResolutionCallCount { get; private set; }
@@ -231,7 +224,6 @@ public sealed class ToolExecutionObserverTimingTests
             TimeSpan timeout,
             CancellationToken cancellationToken)
         {
-
             WardAsyncCallCount++;
 
             return Task.FromResult(new WardResolution(true, null, DateTimeOffset.UtcNow));
@@ -249,7 +241,6 @@ public sealed class ToolExecutionObserverTimingTests
             string? reason,
             WardResolutionOrigin origin)
         {
-
             RecordAutomaticResolutionCallCount++;
 
             return new WardResolution(allowed, reason, DateTimeOffset.UtcNow, origin);
@@ -260,7 +251,6 @@ public sealed class ToolExecutionObserverTimingTests
 
     private sealed class AllowAllSanctumGuard : ISanctumGuard
     {
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -297,7 +287,5 @@ public sealed class ToolExecutionObserverTimingTests
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
-
 }

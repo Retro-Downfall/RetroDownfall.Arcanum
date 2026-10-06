@@ -1321,7 +1321,7 @@ public sealed class ToolExecutionPipeline(
             null,
             null,
             DateTimeOffset.UtcNow,
-            WardOrigin: WardResolutionOrigin.Ungated);
+            Origin: WardResolutionOrigin.Ungated);
 
         await EmitWardEventAsync(recordWardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
 
@@ -1345,7 +1345,7 @@ public sealed class ToolExecutionPipeline(
             recordResolution.Allowed,
             recordResolution.Reason,
             DateTimeOffset.UtcNow,
-            WardOrigin: recordResolution.Origin);
+            Origin: recordResolution.Origin);
 
         await EmitWardEventAsync(recordResolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
     }

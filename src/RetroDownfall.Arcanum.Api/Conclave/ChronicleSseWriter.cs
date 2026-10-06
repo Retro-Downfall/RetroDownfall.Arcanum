@@ -48,26 +48,26 @@ internal static class ChronicleSseWriter
             writer.WriteString("wardId", wizard.WardId);
         }
 
-        if (wizard.WardToolName is not null)
+        if (wizard.ToolName is not null)
         {
-            writer.WriteString("toolName", wizard.WardToolName);
+            writer.WriteString("toolName", wizard.ToolName);
         }
 
-        if (wizard.WardArguments is { } wardArgs)
+        if (wizard.Arguments is { } wardArgs)
         {
             writer.WritePropertyName("arguments");
 
             wardArgs.WriteTo(writer);
         }
 
-        if (wizard.WardAllowed is { } allowed)
+        if (wizard.Allowed is { } allowed)
         {
             writer.WriteBoolean("allowed", allowed);
         }
 
-        if (wizard.WardReason is not null)
+        if (wizard.Reason is not null)
         {
-            writer.WriteString("reason", wizard.WardReason);
+            writer.WriteString("reason", wizard.Reason);
         }
 
         writer.WriteString("timestamp", (wizard.Timestamp ?? envelope.Timestamp).ToString("O"));

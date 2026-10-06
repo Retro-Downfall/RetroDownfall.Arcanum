@@ -426,9 +426,9 @@ public sealed partial class WizardIntelligenceProvider(
                     yield return new ApprovalRequested(
                         correlation,
                         frame.WardId ?? string.Empty,
-                        frame.WardToolName ?? frame.Message,
-                        frame.WardArguments?.GetRawText() ?? string.Empty,
-                        frame.WardOrigin);
+                        frame.ToolName ?? frame.Message,
+                        frame.Arguments?.GetRawText() ?? string.Empty,
+                        frame.Origin);
 
                     yield break;
 
@@ -436,10 +436,10 @@ public sealed partial class WizardIntelligenceProvider(
                     yield return new ApprovalResolved(
                         correlation,
                         frame.WardId ?? string.Empty,
-                        frame.WardToolName ?? frame.Message,
-                        frame.WardAllowed == true,
-                        frame.WardReason,
-                        frame.WardOrigin);
+                        frame.ToolName ?? frame.Message,
+                        frame.Allowed == true,
+                        frame.Reason,
+                        frame.Origin);
 
                     yield break;
 

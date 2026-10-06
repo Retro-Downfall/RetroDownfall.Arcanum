@@ -39,7 +39,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
     [InlineData("execute_command")]
     public async Task Every_ordinary_tool_records_an_ungated_ward_pair_without_blocking(string toolName)
     {
-
         List<ToolExecutionEvent> observed = [];
 
         WardGate ward = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
@@ -86,32 +85,30 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         Assert.Equal(warded.WardId, resolved.WardId);
 
-        Assert.Equal(toolName, warded.WardToolName);
+        Assert.Equal(toolName, warded.ToolName);
 
-        Assert.Equal(toolName, resolved.WardToolName);
+        Assert.Equal(toolName, resolved.ToolName);
 
-        JsonElement arguments = Assert.IsType<JsonElement>(warded.WardArguments);
+        JsonElement arguments = Assert.IsType<JsonElement>(warded.Arguments);
 
         Assert.Equal(JsonValueKind.Object, arguments.ValueKind);
 
         Assert.Equal("fixture", arguments.GetProperty("scope").GetString());
 
-        Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, warded.Origin);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, resolved.Origin);
 
-        Assert.True(resolved.WardAllowed);
+        Assert.True(resolved.Allowed);
 
         Assert.DoesNotContain(observed, static evt => evt is ToolApprovalRequestedEvent);
 
         Assert.Empty(ward.GetActiveWards());
-
     }
 
     [Fact]
     public async Task Unattended_write_file_call_executes_when_listed_as_a_forbidden_art()
     {
-
         RecordingWard ward = new();
 
         ToolExecutionPipeline pipeline = CreatePipeline(
@@ -147,13 +144,11 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
         Assert.Equal(1, ward.AutomaticCount);
 
         Assert.Equal(WardResolutionOrigin.Ungated, ward.LastAutomaticOrigin);
-
     }
 
     [Fact]
     public async Task A_configured_forbidden_art_is_recorded_then_blocked_by_Sanctum()
     {
-
         RecordingWard ward = new();
 
         ToolExecutionPipeline pipeline = CreatePipeline(
@@ -188,8 +183,7 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         Assert.All(
             processed.WardEvents,
-            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
-
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.Origin));
     }
 
     [Theory]
@@ -201,7 +195,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
         string metricToolName,
         bool registerTool)
     {
-
         ConcurrentQueue<KeyValuePair<string, object?>[]> measurements = new();
 
         using MeterListener listener = new()
@@ -212,14 +205,12 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
         {
-
             if (instrument.Name != "arcanum_ward_decisions_total")
             {
                 return;
             }
 
             measurements.Enqueue(tags.ToArray());
-
         });
 
         listener.Start();
@@ -244,7 +235,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
         Assert.Equal(metricToolName, recorded[0].Value);
 
         Assert.Equal("ungated", recorded[1].Value);
-
     }
 
     /// <summary>
@@ -256,7 +246,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
     [Fact]
     public async Task A_tolerated_invocation_failure_still_reports_ungated_record_frames()
     {
-
         ToolExecutionPipeline pipeline = CreatePipeline(
             new RecordingWard(),
             new AllowAllSanctumGuard(),
@@ -295,14 +284,12 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         Assert.All(
             processed.WardEvents,
-            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
-
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.Origin));
     }
 
     [Fact]
     public async Task Live_ward_emit_forwards_the_pair_without_buffering_it()
     {
-
         List<IntelligenceEvent> emitted = [];
 
         ToolExecutionPipeline pipeline = CreatePipeline(
@@ -332,14 +319,12 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         Assert.All(
             emitted,
-            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
-
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.Origin));
     }
 
     [Fact]
     public async Task Live_apply_patch_session_refusal_emits_the_pair_without_a_buffer()
     {
-
         List<IntelligenceEvent> emitted = [];
 
         ToolExecutionPipeline pipeline = CreatePipeline(
@@ -373,14 +358,12 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         Assert.All(
             emitted,
-            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
-
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.Origin));
     }
 
     [Fact]
     public async Task Live_tolerated_failure_emits_the_pair_without_a_buffer()
     {
-
         List<IntelligenceEvent> emitted = [];
 
         ToolExecutionPipeline pipeline = CreatePipeline(
@@ -432,14 +415,12 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         Assert.All(
             emitted,
-            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
-
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.Origin));
     }
 
     [Fact]
     public async Task Malformed_non_empty_arguments_keep_the_raw_Ward_payload()
     {
-
         ToolExecutionPipeline pipeline = CreatePipeline(
             new RecordingWard(),
             new AllowAllSanctumGuard(),
@@ -464,29 +445,25 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             processed.WardEvents,
             static evt => evt.Type == IntelligenceEventType.Warded);
 
-        JsonElement arguments = Assert.IsType<JsonElement>(warded.WardArguments);
+        JsonElement arguments = Assert.IsType<JsonElement>(warded.Arguments);
 
         JsonProperty raw = Assert.Single(arguments.EnumerateObject());
 
         Assert.Equal("raw", raw.Name);
 
         Assert.Equal("{not-json", raw.Value.GetString());
-
     }
 
     [Fact]
     public void Ward_arguments_builder_rejects_an_empty_payload()
     {
-
         _ = Assert.Throws<ArgumentException>(
             static () => ToolExecutionPipeline.BuildWardArgumentsDocument("", ""));
-
     }
 
     [Fact]
     public async Task Ordinary_call_without_arguments_or_disclosure_skips_Ward_payload_materialization()
     {
-
         ToolExecutionPipeline pipeline = CreatePipeline(
             new RecordingWard(),
             new AllowAllSanctumGuard(),
@@ -523,10 +500,9 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         Assert.All(
             processed.WardEvents,
-            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.WardOrigin));
+            static evt => Assert.Equal(WardResolutionOrigin.Ungated, evt.Origin));
 
-        Assert.Null(warded.WardArguments);
-
+        Assert.Null(warded.Arguments);
     }
 
     /// <summary>
@@ -551,7 +527,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
     [Fact]
     public void N_tool_record_path_allocation_does_not_scale_with_ForbiddenArts_count()
     {
-
         const int WarmupCount = 8;
 
         const int SampleCount = 128;
@@ -570,9 +545,7 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         for (int i = 0; i < ForbiddenArtCount; i++)
         {
-
             configuredForbiddenArts.Add($"forbidden_art_{i}");
-
         }
 
         ArcanumSettings emptySettings = new()
@@ -602,7 +575,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
         // over — which is why the reduction below is a median and not a sum.
         for (int i = 0; i < TombstoneCapacitySeedCount; i++)
         {
-
             string wardId = $"allocation-capacity-seed-{i}";
 
             _ = emptyWard.RecordAutomaticResolution(
@@ -616,7 +588,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
                 allowed: true,
                 reason: null,
                 WardResolutionOrigin.Ungated);
-
         }
 
         ToolExecutionPipeline emptyPipeline = CreatePipeline(
@@ -633,12 +604,10 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
         for (int i = 0; i < calls.Length; i++)
         {
-
             calls[i] = new FunctionCallContent(
                 $"allocation-probe-{i}",
                 "allocation_probe",
                 new Dictionary<string, object?>());
-
         }
 
         AIFunction allocationProbe = AIFunctionFactory.Create(
@@ -713,7 +682,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             $"N={SampleCount}; empty={emptyBytesPerCall}/call over {emptyPerCallBytes.Sum()}; "
                 + $"configured={configuredBytesPerCall}/call over {configuredPerCallBytes.Sum()}; "
                 + $"delta={deltaBytesPerCall}/call");
-
     }
 
     /// <summary>
@@ -724,13 +692,11 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
     /// </summary>
     private static long MedianOf(long[] perCallBytes)
     {
-
         long[] ordered = (long[])perCallBytes.Clone();
 
         Array.Sort(ordered);
 
         return ordered[ordered.Length / 2];
-
     }
 
     /// <summary>
@@ -754,12 +720,10 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
         ToolExecutionPipeline.TurnContext turnContext,
         long[] perCallBytes)
     {
-
         int managedThreadId = System.Environment.CurrentManagedThreadId;
 
         for (int i = 0; i < perCallBytes.Length; i++)
         {
-
             long before = GC.GetAllocatedBytesForCurrentThread();
 
             Task<ToolExecutionPipeline.ProcessedToolCall> task = pipeline.ProcessSingleToolCallAsync(
@@ -775,24 +739,18 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
             if (!task.IsCompletedSuccessfully)
             {
-
                 throw new InvalidOperationException("Allocation probe did not complete synchronously.");
-
             }
 
             _ = task.GetAwaiter().GetResult();
 
             perCallBytes[i] = GC.GetAllocatedBytesForCurrentThread() - before;
-
         }
 
         if (System.Environment.CurrentManagedThreadId != managedThreadId)
         {
-
             throw new InvalidOperationException("Allocation measurement changed managed threads.");
-
         }
-
     }
 
     private static void RunToolCalls(
@@ -804,12 +762,10 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
         ChatOptions options,
         ToolExecutionPipeline.TurnContext turnContext)
     {
-
         int end = start + count;
 
         for (int i = start; i < end; i++)
         {
-
             Task<ToolExecutionPipeline.ProcessedToolCall> task = pipeline.ProcessSingleToolCallAsync(
                 calls[i],
                 request,
@@ -823,15 +779,11 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
             if (!task.IsCompletedSuccessfully)
             {
-
                 throw new InvalidOperationException("Allocation probe did not complete synchronously.");
-
             }
 
             _ = task.GetAwaiter().GetResult();
-
         }
-
     }
 
     private static ToolExecutionPipeline CreatePipeline(
@@ -899,7 +851,6 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 
     private sealed class RecordingWard : IWard
     {
-
         public int WaitCount { get; private set; }
 
         public int AutomaticCount { get; private set; }
@@ -914,12 +865,10 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             TimeSpan timeout,
             CancellationToken cancellationToken)
         {
-
             WaitCount++;
 
             return Task.FromResult(
                 new WardResolution(true, null, DateTimeOffset.UtcNow, WardResolutionOrigin.Human));
-
         }
 
         public ResolveStatus Resolve(string wardId, bool allow, string? reason) => ResolveStatus.Success;
@@ -930,22 +879,18 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             string? reason,
             WardResolutionOrigin origin)
         {
-
             AutomaticCount++;
 
             LastAutomaticOrigin = origin;
 
             return new WardResolution(allowed, reason, DateTimeOffset.UtcNow, origin);
-
         }
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
-
     }
 
     private sealed class AllowAllSanctumGuard : ISanctumGuard
     {
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -985,12 +930,10 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class DenyAllSanctumGuard : ISanctumGuard
     {
-
         private static SanctumResult Denied(string toolName) =>
             new()
             {
@@ -1044,7 +987,5 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
-
 }
