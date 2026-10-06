@@ -639,6 +639,13 @@ internal static class MemoryEndpoints
     /// from one that happened to fill its slice exactly. The extra row is trimmed here and never
     /// reaches the caller.
     /// </summary>
+    /// <remarks>
+    /// The trimmed row's content stays charged to the byte budget. That charge cannot starve a later
+    /// scope: a trimmed row exists only when this scope filled its whole slice, which leaves the row
+    /// budget at zero, so every later scope is already reported starved by rows whatever the bytes say.
+    /// Keeping the charge keeps the byte budget monotonic, which is what lets a spent budget, and the
+    /// stopped-early flag it raises, stay spent.
+    /// </remarks>
     private static void CloseSlice(
         MemorySearchScope scope,
         List<MemorySearchResultDto> results,
@@ -651,6 +658,9 @@ internal static class MemoryEndpoints
 
         bool overflowed = produced > slice;
 
+        // Read whether or not the scope overflowed, so the flag never outlives the scope that raised it.
+        bool stoppedEarly = bytes.TakeStoppedEarly();
+
         if (overflowed)
         {
             results.RemoveRange(budget, results.Count - budget);
@@ -658,7 +668,7 @@ internal static class MemoryEndpoints
             produced = slice;
         }
 
-        scopes.Add(new MemorySearchScopeStatusDto(scope, produced, overflowed || bytes.TakeStoppedEarly()));
+        scopes.Add(new MemorySearchScopeStatusDto(scope, produced, overflowed || stoppedEarly));
     }
 
     private static async Task<IResult> HandleLexiconListAsync(
