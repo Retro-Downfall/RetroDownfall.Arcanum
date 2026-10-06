@@ -192,6 +192,12 @@ public sealed class ArcanumErrorMapperTests
     // A spell write that failed is an infrastructure fault, exactly like Workspace.WriteFailed, and
     // must reach the caller as one rather than as the caller's own 400.
     [InlineData(ErrorCodes.Spell.WriteFailed, StatusCodes.Status500InternalServerError)]
+    // The canonical Campaign/Session resolution failures the prompt and spell execute routes answer with
+    // their own status rather than a flat 400. A binding or path identity that cannot be read intact is
+    // the installation's state, retried once maintenance or repair has run, never the caller's request.
+    [InlineData(ErrorCodes.Session.CampaignBindingRequired, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Covenant.CampaignBindingConflict, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Covenant.IntegrityFailure, StatusCodes.Status503ServiceUnavailable)]
     [InlineData("Unknown.Code", StatusCodes.Status500InternalServerError)]
     public void ResolveStatusCode_MapsExpectedValue(string code, int expected)
     {

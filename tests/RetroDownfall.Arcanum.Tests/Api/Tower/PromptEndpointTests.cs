@@ -1,9 +1,14 @@
+using System.Data;
+using System.Data.Common;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
@@ -112,6 +117,38 @@ public sealed class PromptEndpointTests(ArcanumWebApplicationFactory factory)
         Assert.Equal("1.0.0", (await GetAsync(client, id)).Version);
     }
 
+    /// <summary>
+    /// Before names were validated on update, a blank name was stored as "". An update that does not
+    /// name the prompt must still be able to change the rest of such a row; only a name the caller
+    /// sends is validated.
+    /// </summary>
+    [SkippableFact]
+    public async Task Update_that_omits_the_name_of_a_row_stored_with_a_blank_name_succeeds()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        // A version of its own keeps the planted "" name clear of every other global prompt.
+        string version = $"legacy-{Guid.NewGuid():N}";
+
+        Guid id = await CreatePromptAsync(client, $"legacy-{Guid.NewGuid():N}", version);
+
+        await SetStoredNameAsync(id, string.Empty);
+
+        HttpResponseMessage response = await PutAsync(client, id, new UpdatePromptRequest(null, null, "described later", null, null, null, null, null, null, null, null, null));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        PromptDetailDto updated = await GetAsync(client, id);
+
+        Assert.Equal("described later", updated.Description);
+
+        Assert.Equal(string.Empty, updated.Name);
+
+        Assert.Equal(version, updated.Version);
+    }
+
     [SkippableFact]
     public async Task Create_with_an_unknown_campaignId_answers_404()
     {
@@ -207,6 +244,43 @@ public sealed class PromptEndpointTests(ArcanumWebApplicationFactory factory)
             ArcanumJsonContext.Default.ApiResponsePromptDetailDto);
 
         return body!.Data!.Id;
+    }
+
+    /// <summary>Writes a name straight into the row, the way a prompt stored before update validation existed carries it.</summary>
+    private async Task SetStoredNameAsync(Guid id, string name)
+    {
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        DbConnection connection = db.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await db.Database.OpenConnectionAsync();
+        }
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = """UPDATE "Prompts" SET "Name" = @name WHERE upper("Id") = upper(@id)""";
+
+        DbParameter nameParameter = command.CreateParameter();
+
+        nameParameter.ParameterName = "@name";
+
+        nameParameter.Value = name;
+
+        command.Parameters.Add(nameParameter);
+
+        DbParameter idParameter = command.CreateParameter();
+
+        idParameter.ParameterName = "@id";
+
+        idParameter.Value = id.ToString();
+
+        command.Parameters.Add(idParameter);
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
     }
 
     private static Task<HttpResponseMessage> PutAsync(HttpClient client, Guid id, UpdatePromptRequest request) =>
