@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -85,7 +86,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     ApiKeyDigestCache cache = new(new FakeTimeProvider());
 
-    ApiKeyEndpointFilter filter = new(
+    ApiKeyEndpointFilter filter = NewFilter(
       store,
       cache);
 
@@ -229,7 +230,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     try
     {
-      ApiKeyEndpointFilter filter = new(
+      ApiKeyEndpointFilter filter = NewFilter(
         store,
         new ApiKeyDigestCache(new FakeTimeProvider()),
         capabilities);
@@ -272,7 +273,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     try
     {
-      ApiKeyEndpointFilter filter = new(
+      ApiKeyEndpointFilter filter = NewFilter(
         store,
         new ApiKeyDigestCache(new FakeTimeProvider()),
         capabilities);
@@ -317,7 +318,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     try
     {
-      ApiKeyEndpointFilter filter = new(
+      ApiKeyEndpointFilter filter = NewFilter(
         store,
         new ApiKeyDigestCache(new FakeTimeProvider()),
         capabilities);
@@ -352,7 +353,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     try
     {
-      ApiKeyEndpointFilter filter = new(
+      ApiKeyEndpointFilter filter = NewFilter(
         store,
         new ApiKeyDigestCache(new FakeTimeProvider()),
         capabilities);
@@ -441,7 +442,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     try
     {
-      ApiKeyEndpointFilter filter = new(
+      ApiKeyEndpointFilter filter = NewFilter(
         store,
         new ApiKeyDigestCache(new FakeTimeProvider()),
         capabilities);
@@ -487,7 +488,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     try
     {
-      ApiKeyEndpointFilter filter = new(
+      ApiKeyEndpointFilter filter = NewFilter(
         new FakeSecretStore(ValidKey),
         new ApiKeyDigestCache(new FakeTimeProvider()),
         currentProcess);
@@ -698,7 +699,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     FakeTimeProvider timeProvider = new();
 
-    ApiKeyEndpointFilter filter = new(
+    ApiKeyEndpointFilter filter = NewFilter(
       store,
       new ApiKeyDigestCache(timeProvider));
 
@@ -814,7 +815,7 @@ public sealed class ApiKeyEndpointFilterTests
   {
     TrackingDigestCache cache = new(ValidKey);
 
-    ApiKeyEndpointFilter filter = new(
+    ApiKeyEndpointFilter filter = NewFilter(
       new FakeSecretStore(apiKey: null),
       cache);
 
@@ -874,12 +875,19 @@ public sealed class ApiKeyEndpointFilterTests
   private static ApiKeyEndpointFilter CreateFilter(string? storedKey) =>
     CreateFilter(new FakeSecretStore(storedKey));
 
-  private static ApiKeyEndpointFilter CreateFilter(FakeSecretStore store)
-  {
-    return new ApiKeyEndpointFilter(
-      store,
-      new ApiKeyDigestCache(new FakeTimeProvider()));
-  }
+  private static ApiKeyEndpointFilter CreateFilter(FakeSecretStore store) =>
+    NewFilter(store, new ApiKeyDigestCache(new FakeTimeProvider()));
+
+  private static ApiKeyEndpointFilter NewFilter(
+    ISecretStore store,
+    IApiKeyDigestCache cache,
+    ArcanumProcessCapabilityService? capabilities = null) =>
+    new(
+      new ApiKeyAuthenticator(
+        store,
+        cache,
+        NullLogger<ApiKeyAuthenticator>.Instance,
+        capabilities));
 
   private static EndpointFilterInvocationContext CreateContext(HttpContext httpContext) =>
     new TestEndpointFilterInvocationContext(httpContext);

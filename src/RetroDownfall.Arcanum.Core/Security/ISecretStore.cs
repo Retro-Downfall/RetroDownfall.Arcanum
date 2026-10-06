@@ -15,14 +15,6 @@ public interface ISecretStore
         GetApiKeyReadResultAsync();
 
     /// <summary>
-    /// <see cref="PeekApiKeyReadResultAsync()"/> for a caller that can stop waiting. Stores whose
-    /// read can block on platform secure storage override it and honour the token; the default
-    /// ignores it.
-    /// </summary>
-    Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(CancellationToken cancellationToken) =>
-        PeekApiKeyReadResultAsync();
-
-    /// <summary>
     /// True while this process's own <see cref="GetApiKeyReadResultAsync"/> was answered from the
     /// encrypted mirror because OS key storage failed (a locked keychain at startup), and no OS read
     /// has answered since. Peeks still fail closed in that state; only the request path may keep

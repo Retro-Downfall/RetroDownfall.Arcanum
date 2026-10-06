@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -30,6 +31,7 @@ namespace RetroDownfall.Arcanum.Api.Security;
 public sealed class ApiKeyAuthenticator(
     ISecretStore secretStore,
     IApiKeyDigestCache digestCache,
+    ILogger<ApiKeyAuthenticator> logger,
     ArcanumProcessCapabilityService? processCapabilities = null,
     TimeProvider? timeProvider = null)
 {
@@ -197,7 +199,8 @@ public sealed class ApiKeyAuthenticator(
     /// Returns a caller-owned copy of the digest to compare against, or null to fail closed. A miss
     /// joins (or starts) the one refresh for the generation it observed and then answers from
     /// whatever that refresh — or a concurrent rotation — left published. The request token only
-    /// stops this request waiting; the shared read is bounded by the secret store itself.
+    /// stops this request waiting; the shared read observes no request's token and is bounded by the
+    /// secret store itself.
     /// </summary>
     private async Task<byte[]?> GetExpectedDigestAsync(CancellationToken cancellationToken)
     {
@@ -271,13 +274,21 @@ public sealed class ApiKeyAuthenticator(
 
         try
         {
+            // No request token: this read is shared by every request that misses in this generation,
+            // so one caller going away must not cancel it for the rest. The store bounds the OS read.
             expectedRead = await secretStore
-                .PeekApiKeyReadResultAsync(CancellationToken.None)
+                .PeekApiKeyReadResultAsync()
                 .ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            // Fail closed exactly like an unreadable store; the store logs its own fault.
+            // Fail closed exactly like an unreadable store. A thrown fault is not one the store has
+            // necessarily logged (a keychain or mirror exception is rethrown as is), so record it here:
+            // otherwise every client is refused with nothing on record to say why.
+            logger.LogWarning(
+                exception,
+                "The master API key could not be read to authenticate a request; failing closed.");
+
             RecordFailedRefresh(generation);
 
             return;

@@ -115,20 +115,13 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
     /// Reads the master API key without promoting the Data Protection fallback into OS storage.
     /// An OS read failure remains ambiguous even when the fallback is readable, because that
     /// fallback may have been superseded by a credential the process cannot currently inspect.
+    /// The OS read inside is bounded by the store's own timeout and fails closed when it expires.
     /// </summary>
-    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
-        PeekApiKeyReadResultAsync(CancellationToken.None);
-
-    /// <summary>
-    /// The request-path peek. The OS read inside is bounded by the store's own timeout and fails
-    /// closed when it expires; <paramref name="cancellationToken"/> lets a caller that no longer
-    /// needs the answer stop waiting for it.
-    /// </summary>
-    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(CancellationToken cancellationToken)
+    public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        return _masterApiKey.PeekAsync(cancellationToken);
+        return _masterApiKey.PeekAsync(CancellationToken.None);
     }
 
     /// <inheritdoc />
