@@ -27,6 +27,12 @@ internal static class GrimoireProbe
 
         MissingKey,
 
+        /// <summary>
+        /// The encryption secret exists but could not be read (permissions, file type, size, an I/O
+        /// error, or a key ring that cannot be opened): its content is unknown, not known bad.
+        /// </summary>
+        UnreadableKey,
+
         Unopenable,
     }
 
@@ -61,16 +67,26 @@ internal static class GrimoireProbe
         // be opened and pointed at 'arcanum backup restore' for a database that is perfectly healthy.
         SqliteNativeRuntime.Instance.Initialize();
 
-        string? secret;
+        SecretStoreReadResult secretRead;
 
         try
         {
-            secret = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
+            secretRead = await secretStore.GetGrimoireEncryptionSecretReadResultAsync().ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return new OpenResult(OpenState.MissingKey, null, exception.GetType().Name);
         }
+
+        // An unreadable secret keeps its own state: collapsing it into MissingKey sent the operator to
+        // a restore that would replace a file whose only fault is who may read it — the opposite of
+        // what grimoire.key_material says about the same file.
+        if (secretRead.Status == SecretStoreReadStatus.Unreadable)
+        {
+            return new OpenResult(OpenState.UnreadableKey, null, null);
+        }
+
+        string? secret = secretRead.Status == SecretStoreReadStatus.Ok ? secretRead.Value : null;
 
         if (string.IsNullOrEmpty(secret))
         {
@@ -263,6 +279,13 @@ internal static class GrimoireProbe
                     DoctorRemedyCommands.BackupRestore,
                     "Restore the secret store and Data Protection key ring alongside the database. A new key cannot read the existing pages."),
             ]),
+
+        OpenState.UnreadableKey => new DoctorFinding(
+            DoctorOutcome.Unhealthy,
+            "The Grimoire database exists but its encryption secret could not be read (permissions, file "
+            + "type, size, an I/O error, or a key ring that cannot be opened), so it cannot be opened. The "
+            + "secret was left unchanged: make it an owner-only regular file readable by this user and "
+            + "retry. 'grimoire.key_material' reports the same file."),
 
         _ => new DoctorFinding(
             DoctorOutcome.Unhealthy,

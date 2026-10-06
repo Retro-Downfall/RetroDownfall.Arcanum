@@ -125,6 +125,34 @@ public sealed class GrimoireKeyMaterialCheckTests : IDisposable
         Assert.Equal(DoctorOutcome.Degraded, finding.Outcome);
     }
 
+    /// <summary>
+    /// The database checks open the Grimoire themselves. A <c>grimoire-key.dat</c> that exists but
+    /// cannot be read is content unknown, not a missing key: <c>grimoire.integrity</c> must give the same
+    /// "fix its permissions, it was left unchanged" guidance as <c>grimoire.key_material</c>, never the
+    /// missing-key restore that would replace a file whose only fault is who may read it.
+    /// </summary>
+    [Fact]
+    public async Task An_unreadable_secret_is_not_reported_by_the_integrity_check_as_a_missing_key()
+    {
+        _ = CreateDatabaseFile();
+
+        UnreadableSecretStore store = new();
+
+        DoctorFinding keyMaterial = await new GrimoireKeyMaterialCheck(store).InspectAsync(CancellationToken.None);
+
+        DoctorFinding integrity = await new GrimoireIntegrityCheck(store).InspectAsync(CancellationToken.None);
+
+        Assert.Equal(DoctorOutcome.Unhealthy, integrity.Outcome);
+
+        Assert.True(integrity.Remedies is null or { Count: 0 }, "An unreadable secret must not point at a restore.");
+
+        Assert.Contains("could not be read", integrity.Detail, StringComparison.Ordinal);
+
+        Assert.Contains("left unchanged", integrity.Detail, StringComparison.Ordinal);
+
+        Assert.True(keyMaterial.Remedies is null or { Count: 0 });
+    }
+
     private static bool CanOpenForRead(string path)
     {
         try
@@ -150,6 +178,30 @@ public sealed class GrimoireKeyMaterialCheckTests : IDisposable
 
     private static Task<DoctorFinding> InspectAsync() =>
         new GrimoireKeyMaterialCheck(new SecretBearingStore()).InspectAsync(CancellationToken.None);
+
+    /// <summary>A <c>grimoire-key.dat</c> that exists but cannot be read (mode 000, wrong owner).</summary>
+    private sealed class UnreadableSecretStore : ISecretStore
+    {
+        public Task<string?> GetApiKeyAsync() =>
+            throw new InvalidOperationException("The database checks must not read the master key.");
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            throw new InvalidOperationException("The database checks must not read the master key.");
+
+        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Missing());
+
+        public Task SaveApiKeyAsync(string apiKey) =>
+            throw new InvalidOperationException("The database checks must not persist anything.");
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
+
+        public Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Unreadable("grimoire-key.dat exists but could not be read (access denied)."));
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
+            throw new InvalidOperationException("The database checks must not persist anything.");
+    }
 
     private sealed class SecretBearingStore : ISecretStore
     {
