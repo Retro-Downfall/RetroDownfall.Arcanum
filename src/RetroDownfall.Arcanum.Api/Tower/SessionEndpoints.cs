@@ -1547,7 +1547,8 @@ internal static class SessionEndpoints
 
                 Task pumpTask = PumpSessionLiveAsync(id, eventHub, liveBuffer, logger, pumpCts.Token);
 
-                // Ends the overflow episode when the client reads on, so a later one is reported again.
+                // Reports the entries lost in front of the one just read. Taking that read ended the overflow
+                // episode, so a later one is reported again.
                 Task WriteLiveEntryAsync(Entry liveEntry, CancellationToken ct)
                 {
                     long dropped = liveBuffer.TakeDropped();

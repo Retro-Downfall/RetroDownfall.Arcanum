@@ -1,5 +1,4 @@
-using System.Diagnostics;
-using SystemProcess = System.Diagnostics.Process;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
@@ -7,77 +6,71 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 /// The DevHost is a development convenience that prints the master API key it generates, so it does not
 /// run anywhere else.
 /// </summary>
+/// <remarks>
+/// Nothing here starts the DevHost. These tests once launched it in Production and Staging to watch it
+/// refuse; the day the guard regressed, that would start a real host that creates or reads a master-key item
+/// in the developer's operating-system credential store, which a redirected home directory does not reach.
+/// The decision is a pure function, tested in-process, and the wiring is pinned by reading Program.cs.
+/// </remarks>
 public sealed class DevHostEnvironmentGuardTests
 {
     [Theory]
     [InlineData("Production")]
     [InlineData("Staging")]
-    public async Task DevHost_refuses_to_start_outside_Development_or_Testing(string environment)
+    [InlineData("")]
+    [InlineData("Developer")]
+    public void DevHost_refuses_any_environment_but_Development_or_Testing(string environment)
     {
-        string devHost = typeof(Program).Assembly.Location;
+        string? refusal = Program.RefusalForEnvironment(environment);
 
-        string home = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"devhost-guard-{Guid.NewGuid():N}");
+        Assert.NotNull(refusal);
 
-        _ = Directory.CreateDirectory(home);
+        Assert.Contains("Development or Testing", refusal, StringComparison.Ordinal);
 
-        try
-        {
-            ProcessStartInfo start = new(
-                global::System.Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
+        Assert.Contains($"'{environment}'", refusal, StringComparison.Ordinal);
+    }
 
-            start.ArgumentList.Add(devHost);
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("development")]
+    [InlineData("Testing")]
+    [InlineData("TESTING")]
+    public void DevHost_starts_in_Development_and_Testing(string environment) =>
+        Assert.Null(Program.RefusalForEnvironment(environment));
 
-            // The child must never reach the developer's real profile, whatever it decides to do.
-            start.Environment["HOME"] = home;
+    /// <summary>
+    /// Program.cs consults the guard on the host's own environment before it reads configuration or builds
+    /// anything, and exits 2 with the refusal.
+    /// </summary>
+    [Fact]
+    public void Program_consults_the_guard_before_anything_else_and_exits_2()
+    {
+        string program = File.ReadAllText(Path.Combine(
+            TestRepositoryPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Api.DevHost",
+            "Program.cs"));
 
-            start.Environment["USERPROFILE"] = home;
+        int guard = program.IndexOf(
+            "Program.RefusalForEnvironment(builder.Environment.EnvironmentName)",
+            StringComparison.Ordinal);
 
-            start.Environment["ASPNETCORE_ENVIRONMENT"] = environment;
+        Assert.True(guard > 0, "Program.cs no longer consults the environment guard.");
 
-            start.Environment["DOTNET_ENVIRONMENT"] = environment;
+        Assert.True(
+            guard < program.IndexOf("AddArcanumConfiguration", StringComparison.Ordinal),
+            "The guard must run before configuration is read.");
 
-            start.Environment.Remove("ARCANUM_TEST_HOME");
+        Assert.True(
+            guard < program.IndexOf("builder.Build()", StringComparison.Ordinal),
+            "The guard must run before the host is built.");
 
-            using SystemProcess process = SystemProcess.Start(start)!;
+        string afterGuard = program[guard..];
 
-            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+        int returnTwo = afterGuard.IndexOf("return 2;", StringComparison.Ordinal);
 
-            Task<string> standardError = process.StandardError.ReadToEndAsync(CancellationToken.None);
-
-            try
-            {
-                await process.WaitForExitAsync(timeout.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                process.Kill(entireProcessTree: true);
-
-                Assert.Fail($"The DevHost kept running in a '{environment}' environment instead of refusing to start.");
-            }
-
-            string error = await standardError;
-
-            Assert.Equal(2, process.ExitCode);
-
-            Assert.Contains("Development or Testing", error, StringComparison.Ordinal);
-
-            Assert.DoesNotContain("listening", error, StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            try
-            {
-                Directory.Delete(home, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup of a unique temp directory.
-            }
-        }
+        Assert.True(
+            returnTwo > 0 && returnTwo < afterGuard.IndexOf("AddArcanumConfiguration", StringComparison.Ordinal),
+            "A refused environment must exit 2 before anything else runs.");
     }
 }

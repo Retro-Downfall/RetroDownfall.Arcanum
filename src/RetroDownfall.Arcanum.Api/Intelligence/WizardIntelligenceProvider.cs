@@ -426,9 +426,9 @@ public sealed partial class WizardIntelligenceProvider(
                     yield return new ApprovalRequested(
                         correlation,
                         frame.WardId ?? string.Empty,
-                        frame.WardToolName ?? frame.Message,
-                        frame.WardArguments?.GetRawText() ?? string.Empty,
-                        frame.WardOrigin);
+                        frame.ToolName ?? frame.Message,
+                        frame.Arguments?.GetRawText() ?? string.Empty,
+                        frame.Origin);
 
                     yield break;
 
@@ -436,10 +436,10 @@ public sealed partial class WizardIntelligenceProvider(
                     yield return new ApprovalResolved(
                         correlation,
                         frame.WardId ?? string.Empty,
-                        frame.WardToolName ?? frame.Message,
-                        frame.WardAllowed == true,
-                        frame.WardReason,
-                        frame.WardOrigin);
+                        frame.ToolName ?? frame.Message,
+                        frame.Allowed == true,
+                        frame.Reason,
+                        frame.Origin);
 
                     yield break;
 
@@ -8185,14 +8185,14 @@ public sealed partial class WizardIntelligenceProvider(
     /// connectivity failure — it propagates immediately and is never retried. Model-not-found, token
     /// limit, content filter, and tool-loop-limit failures also do not count.
     /// </summary>
-    /// <summary>
-    /// Classifies an inference-call exception as a connectivity failure (triggers provider
-    /// fallback/health-tracking) purely by exception type/status — never by inspecting
-    /// <see cref="Exception.Message"/>. A substring match on the message text is both too broad
-    /// (any error whose text happens to contain "connection" — including some 4xx/5xx model errors —
-    /// would wrongly fall back) and too narrow (a real connectivity failure phrased differently would
-    /// be missed), and message text is not a stable contract across SDK/runtime versions.
-    /// </summary>
+    /// <remarks>
+    /// The classification (which triggers provider fallback and health tracking) goes purely by exception
+    /// type/status — never by inspecting <see cref="Exception.Message"/>. A substring match on the
+    /// message text is both too broad (any error whose text happens to contain "connection" — including
+    /// some 4xx/5xx model errors — would wrongly fall back) and too narrow (a real connectivity failure
+    /// phrased differently would be missed), and message text is not a stable contract across
+    /// SDK/runtime versions.
+    /// </remarks>
     private static bool IsConnectivityFailure(Exception ex, CancellationToken callerToken)
     {
         if (ex is HttpRequestException or System.Net.Sockets.SocketException)

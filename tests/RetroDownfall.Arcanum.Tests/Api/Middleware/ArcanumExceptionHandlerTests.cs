@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -35,18 +36,22 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.False(handled);
     }
 
+    /// <summary>
+    /// The <c>/v1</c> body readers answer a malformed body themselves, so a <see cref="JsonException"/> that
+    /// reaches the handler there is the server's own and gets the OpenAI shape of the logged 500.
+    /// </summary>
     [Fact]
-    public async Task TryHandleAsync_JsonException_V1Path_ReturnsOpenAiInvalidJson()
+    public async Task TryHandleAsync_JsonException_V1Path_IsTheOpenAiUnhandledError()
     {
-        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
 
         DefaultHttpContext httpContext = CreateHttpContext();
 
         httpContext.Request.Path = "/v1/chat/completions";
 
         httpContext.Request.ContentLength = 8;
-
-        ApiRequestJson.MarkBodyRead(httpContext);
 
         bool handled = await handler.TryHandleAsync(
             httpContext,
@@ -55,7 +60,15 @@ public sealed class ArcanumExceptionHandlerTests
 
         Assert.True(handled);
 
-        Assert.Equal(400, httpContext.Response.StatusCode);
+        Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Error);
     }
 
     [Fact]
@@ -73,29 +86,6 @@ public sealed class ArcanumExceptionHandlerTests
             CancellationToken.None);
 
         Assert.False(handled);
-    }
-
-    [Fact]
-    public async Task TryHandleAsync_JsonException_NonV1Path_ReturnsInvalidBody()
-    {
-        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
-
-        DefaultHttpContext httpContext = CreateHttpContext();
-
-        httpContext.Request.Path = "/api/spells/execute";
-
-        httpContext.Request.ContentLength = 8;
-
-        ApiRequestJson.MarkBodyRead(httpContext);
-
-        bool handled = await handler.TryHandleAsync(
-            httpContext,
-            new JsonException("bad json"),
-            CancellationToken.None);
-
-        Assert.True(handled);
-
-        Assert.Equal(400, httpContext.Response.StatusCode);
     }
 
     /// <summary>
@@ -132,34 +122,6 @@ public sealed class ArcanumExceptionHandlerTests
             ArcanumJsonContext.Default.ApiResponseString);
 
         Assert.Equal(ErrorCodes.Hub.Unhandled, body?.Error?.Code);
-    }
-
-    /// <summary>
-    /// A request that carried a body, and a route that read it, is the one case where a
-    /// <see cref="JsonException"/> is the caller's.
-    /// </summary>
-    [Fact]
-    public async Task TryHandleAsync_JsonException_after_the_route_read_a_request_body_is_a_400()
-    {
-        RecordingLogger logger = new();
-
-        ArcanumExceptionHandler handler = new(logger);
-
-        DefaultHttpContext httpContext = CreateHttpContext();
-
-        httpContext.Request.Path = "/api/spells/execute";
-
-        httpContext.Request.ContentLength = 12;
-
-        ApiRequestJson.MarkBodyRead(httpContext);
-
-        bool handled = await handler.TryHandleAsync(httpContext, new JsonException("bad json"), CancellationToken.None);
-
-        Assert.True(handled);
-
-        Assert.Equal(StatusCodes.Status400BadRequest, httpContext.Response.StatusCode);
-
-        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
     }
 
     [Fact]
@@ -653,6 +615,241 @@ public sealed class ArcanumExceptionHandlerTests
             CancellationToken.None);
 
         Assert.False(handled);
+    }
+
+    /// <summary>
+    /// A route that read its body through <c>ApiRequestJson.ReadAsync</c> has already answered a malformed
+    /// body itself, so a <see cref="JsonException"/> raised afterwards -- a corrupt row the POST loaded, a
+    /// payload the server built -- is the server's own fault, logged and answered 500.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_JsonException_after_a_completed_body_read_is_the_servers_own_and_a_logged_500()
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/lore";
+
+        httpContext.Request.ContentType = "application/json";
+
+        byte[] payload = Encoding.UTF8.GetBytes("""{"prompt":"hello"}""");
+
+        httpContext.Request.Body = new MemoryStream(payload);
+
+        httpContext.Request.ContentLength = payload.Length;
+
+        (PingRequest? request, IResult? error) = await ApiRequestJson.ReadAsync(
+            httpContext,
+            ArcanumJsonContext.Default.PingRequest,
+            static context => ApiRequestJson.InvalidBodyResult(context, ApiRequestJson.MalformedJsonMessage),
+            CancellationToken.None);
+
+        Assert.Null(error);
+
+        Assert.Equal("hello", request?.Prompt);
+
+        JsonException corruptRow = new("A row the route loaded after reading its body is not valid JSON.");
+
+        bool handled = await handler.TryHandleAsync(httpContext, corruptRow, CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
+
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Error && ReferenceEquals(entry.Exception, corruptRow));
+
+        Assert.DoesNotContain(ApiRequestJson.MalformedJsonMessage, ReadBody(httpContext), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A request over HTTP/2 or HTTP/3 can stream its body with neither a <c>Content-Length</c> nor a
+    /// <c>Transfer-Encoding</c>; the framework's own body detection is what says it carries one.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_InvalidOperationException_for_an_unreadable_charset_on_a_streamed_body_without_length_is_a_415()
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/prompts";
+
+        httpContext.Request.Protocol = "HTTP/2";
+
+        httpContext.Request.ContentType = "application/json; charset=bogus";
+
+        httpContext.Features.Set<IHttpRequestBodyDetectionFeature>(new BodyDetectionFeature(canHaveBody: true));
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new InvalidOperationException("Unable to read the request as JSON because the request content type charset 'bogus' is not a known encoding."),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status415UnsupportedMediaType, httpContext.Response.StatusCode);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    /// <summary>
+    /// The framework's body detection saying there is no body outranks nothing else: such a request has
+    /// nothing for the charset to have spoiled, so the exception is the server's own.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_InvalidOperationException_on_a_request_the_framework_says_has_no_body_is_the_logged_500()
+    {
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/prompts";
+
+        httpContext.Request.ContentType = "application/json; charset=bogus";
+
+        httpContext.Features.Set<IHttpRequestBodyDetectionFeature>(new BodyDetectionFeature(canHaveBody: false));
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new InvalidOperationException("boom"),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
+
+        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Error);
+    }
+
+    /// <summary>
+    /// The two refusals that derive from <see cref="InvalidOperationException"/> keep their own answers on
+    /// a request that also happens to name an undecodable charset: the charset arm is for the reader's
+    /// exception alone.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_MaintenanceRefusal_on_a_request_with_an_unreadable_charset_is_still_the_503()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/sessions";
+
+        httpContext.Request.ContentType = "application/json; charset=bogus";
+
+        httpContext.Request.ContentLength = 2;
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new GrimoireMaintenanceUnavailableException(),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, httpContext.Response.StatusCode);
+
+        Assert.Contains(ErrorCodes.Grimoire.MaintenanceUnavailable, ReadBody(httpContext), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_LabeledArtifactRefusal_on_a_request_with_an_unreadable_charset_is_still_the_guards_403()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/sessions/00000000-0000-0000-0000-000000000000/compact";
+
+        httpContext.Request.ContentType = "application/json; charset=bogus";
+
+        httpContext.Request.ContentLength = 2;
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new LabeledArtifactRefusalException(new Error(ErrorCodes.Covenant.ForbiddenAuthority, "The guard refused the delete.")),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status403Forbidden, httpContext.Response.StatusCode);
+
+        Assert.Contains(ErrorCodes.Covenant.ForbiddenAuthority, ReadBody(httpContext), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A bound body that never arrived is a missing body, not a parameter the binder could not convert.
+    /// </summary>
+    [Theory]
+    [InlineData("Required parameter \"PromptCreateRequest request\" was not provided from body.")]
+    [InlineData("Implicit body inferred for parameter \"PromptCreateRequest request\" but no body was provided. Did you mean to use a Service instead?")]
+    public async Task TryHandleAsync_BadHttpRequestException_for_a_missing_bound_body_says_the_body_is_required(string frameworkMessage)
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/prompts";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new BadHttpRequestException(frameworkMessage, StatusCodes.Status400BadRequest),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, httpContext.Response.StatusCode);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, body?.Error?.Code);
+
+        Assert.Equal(ApiRequestJson.DefaultInvalidBodyMessage, body?.Error?.Message);
+    }
+
+    /// <summary>
+    /// A query, route or header value the binder could not convert, or one that was required and absent,
+    /// keeps the parameter wording.
+    /// </summary>
+    [Theory]
+    [InlineData("Failed to bind parameter \"int limit\" from \"abc\".")]
+    [InlineData("Required parameter \"string name\" was not provided from query string.")]
+    [InlineData("Required parameter \"Guid id\" was not provided from route.")]
+    public async Task TryHandleAsync_BadHttpRequestException_for_an_unbindable_parameter_keeps_the_parameter_wording(string frameworkMessage)
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/prompts";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new BadHttpRequestException(frameworkMessage, StatusCodes.Status400BadRequest),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.Equal(ApiRequestJson.ParameterBindingFailedMessage, body?.Error?.Message);
+    }
+
+    private sealed class BodyDetectionFeature(bool canHaveBody) : IHttpRequestBodyDetectionFeature
+    {
+        public bool CanHaveBody { get; } = canHaveBody;
     }
 
     private static string ReadBody(HttpContext httpContext)

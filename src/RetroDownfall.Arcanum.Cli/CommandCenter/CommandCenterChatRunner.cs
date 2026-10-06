@@ -263,7 +263,7 @@ internal sealed class CommandCenterChatRunner(
                     case IntelligenceEventType.WardResolved:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
                         _ = state.Incantations.AppendWardNote(
-                            NormalizeToolName(evt.WardToolName ?? evt.Message),
+                            NormalizeToolName(evt.ToolName ?? evt.Message),
                             ResolvedWardNote(evt),
                             evt.WardId);
                         await uiUpdates.WriteAsync(
@@ -458,12 +458,12 @@ internal sealed class CommandCenterChatRunner(
         CancellationToken cancellationToken)
     {
         string wardId = evt.WardId ?? string.Empty;
-        string toolName = NormalizeToolName(evt.WardToolName ?? evt.Message);
-        string argsPreview = FormatWardArgumentsPreview(evt.WardArguments);
+        string toolName = NormalizeToolName(evt.ToolName ?? evt.Message);
+        string argsPreview = FormatWardArgumentsPreview(evt.Arguments);
 
         _ = state.Incantations.AppendWardNote(
             toolName,
-            InformationalWardNote(evt.WardOrigin, toolName, argsPreview),
+            InformationalWardNote(evt.Origin, toolName, argsPreview),
             wardId);
 
         await uiUpdates.WriteAsync(
@@ -608,9 +608,9 @@ internal sealed class CommandCenterChatRunner(
 
     private static string ResolvedWardNote(IntelligenceEvent evt)
     {
-        string toolName = NormalizeToolName(evt.WardToolName ?? evt.Message);
-        string outcome = evt.WardAllowed == true ? "allowed" : "denied";
-        string headline = evt.WardOrigin switch
+        string toolName = NormalizeToolName(evt.ToolName ?? evt.Message);
+        string outcome = evt.Allowed == true ? "allowed" : "denied";
+        string headline = evt.Origin switch
         {
             WardResolutionOrigin.Ungated => $"Ward record resolved (ungated, {outcome}): {toolName}",
             WardResolutionOrigin.AutoApproved => $"Ward record resolved (host allowed): {toolName}",
@@ -620,9 +620,9 @@ internal sealed class CommandCenterChatRunner(
             _ => $"Ward record resolved ({outcome}): {toolName}",
         };
 
-        return string.IsNullOrWhiteSpace(evt.WardReason)
+        return string.IsNullOrWhiteSpace(evt.Reason)
             ? headline
-            : $"{headline} ({evt.WardReason})";
+            : $"{headline} ({evt.Reason})";
     }
 
     internal static string FormatWardArgumentsPreview(JsonElement? arguments, int maxChars = 480)

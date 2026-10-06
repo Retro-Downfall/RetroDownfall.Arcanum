@@ -265,21 +265,26 @@ public sealed class CampaignEndpointTests
     /// <c>.arcanum/campaign.json</c> is not trusted to be a small regular file.
     /// </summary>
     /// <remarks>
-    /// Each shape is a valid bundle that the unbounded, link-following read used to import, so a refusal
-    /// here is the reader's and not the parser's: a link to a file outside the campaign, a link in the
-    /// place of the <c>.arcanum</c> directory, and a regular file past the size cap.
+    /// The first three shapes are a valid bundle that the unbounded, link-following read used to import, so a
+    /// refusal there is the reader's and not the parser's: a link to a file outside the campaign, a link in the
+    /// place of the <c>.arcanum</c> directory, and a regular file past the size cap. The last two are the
+    /// shapes that read could never finish: a FIFO with no writer, whose blocking open never returned, and a
+    /// link to <c>/dev/zero</c>, which never ends. The request has to come back, refused, well inside the
+    /// timeout, which is the evidence that neither was read to the end -- or opened for a blocking read at all.
     /// </remarks>
     [SkippableTheory]
     [InlineData("symlinked-file")]
     [InlineData("symlinked-directory")]
     [InlineData("oversized-file")]
-    public async Task Import_from_disk_refuses_a_symlinked_or_oversized_campaign_json(string shape)
+    [InlineData("fifo")]
+    [InlineData("device-link")]
+    public async Task Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(string shape)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Skip.If(
-            OperatingSystem.IsWindows() && shape.StartsWith("symlinked", StringComparison.Ordinal),
-            "Creating a symbolic link needs a privilege the Windows lane does not hold.");
+            OperatingSystem.IsWindows() && shape is not "oversized-file",
+            "Symbolic links need a privilege the Windows lane does not hold, and FIFOs and /dev/zero are POSIX.");
 
         await using ArcanumWebApplicationFactory factory = new();
 
@@ -323,6 +328,22 @@ public sealed class CampaignEndpointTests
 
                 break;
 
+            case "fifo":
+
+                Directory.CreateDirectory(arcanumDirectory);
+
+                CreateFifo(Path.Combine(arcanumDirectory, "campaign.json"));
+
+                break;
+
+            case "device-link":
+
+                Directory.CreateDirectory(arcanumDirectory);
+
+                File.CreateSymbolicLink(Path.Combine(arcanumDirectory, "campaign.json"), "/dev/zero");
+
+                break;
+
             default:
 
                 Directory.CreateDirectory(arcanumDirectory);
@@ -350,14 +371,17 @@ public sealed class CampaignEndpointTests
                 break;
         }
 
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
+
         HttpResponseMessage response = await client.PostAsync(
             $"/api/campaigns/{campaign.Id}/import",
-            new StringContent("{}", Encoding.UTF8, "application/json"));
+            new StringContent("{}", Encoding.UTF8, "application/json"),
+            deadline.Token);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         ApiResponse<CampaignImportResultDto>? body = JsonSerializer.Deserialize(
-            await response.Content.ReadAsStringAsync(),
+            await response.Content.ReadAsStringAsync(deadline.Token),
             ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto);
 
         Assert.NotNull(body);
@@ -365,6 +389,20 @@ public sealed class CampaignEndpointTests
         Assert.False(body!.IsSuccess);
 
         Assert.Equal(ErrorCodes.Campaign.ImportFailed, body.Error!.Value.Code);
+    }
+
+    private static void CreateFifo(string path)
+    {
+        const string mkfifo = "/usr/bin/mkfifo";
+
+        Skip.IfNot(File.Exists(mkfifo), "The mkfifo utility is unavailable.");
+
+        using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(
+            new global::System.Diagnostics.ProcessStartInfo(mkfifo, [path]) { UseShellExecute = false })!;
+
+        process.WaitForExit();
+
+        Assert.Equal(0, process.ExitCode);
     }
 
     [SkippableFact]

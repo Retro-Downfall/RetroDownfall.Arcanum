@@ -121,8 +121,8 @@ public sealed partial class ApprenticeServiceReliabilityTests
                 IntelligenceEventType.WardResolved,
                 Message: "legacy audit record",
                 WardId: "legacy-ward",
-                WardToolName: "write_file",
-                WardAllowed: false),
+                ToolName: "write_file",
+                Allowed: false),
             new IntelligenceEvent(
                 IntelligenceEventType.Result,
                 Message: "completed"));

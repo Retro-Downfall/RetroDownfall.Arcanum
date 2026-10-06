@@ -13,8 +13,6 @@ public sealed record InstanceMetadataDto(
     int Port,
     bool ListenAny,
     bool ArchiveSearchEnabled,
-    bool ContextCompressionEnabled,
-    bool TokenTrackingEnabled,
     bool HttpsEnabled,
     int HttpsPort,
     string? HttpsUrl,

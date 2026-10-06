@@ -115,7 +115,7 @@ internal static partial class OpenAiV1Endpoints
     /// framework <c>400</c>, so an OpenAI SDK client would never see the OpenAI error envelope this
     /// surface promises (<c>docs/Arcanum.API.md</c> §8.23, "/api vs /v1").
     /// </summary>
-    private static async Task<IResult> HandleCreateBatchAsync(
+    internal static async Task<IResult> HandleCreateBatchAsync(
         HttpContext httpContext,
         IBatchRepository batches,
         IUploadedFileRepository files,

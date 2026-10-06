@@ -505,6 +505,54 @@ public sealed class ArcanumJsonContextCompletenessTests
         Assert.Equal(original.Message, result.Message);
     }
 
+    /// <summary>
+    /// The Ward frame's wire names come from the member names alone now that they carry no renames, and
+    /// they are the names clients have always read.
+    /// </summary>
+    [Fact]
+    public void Ward_frames_keep_their_wire_names_without_renames()
+    {
+        using JsonDocument warded = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(
+            new IntelligenceEvent(
+                IntelligenceEventType.Warded,
+                "write_file",
+                WardId: "ward-1",
+                ToolName: "write_file",
+                Arguments: JsonDocument.Parse("""{"path":"a.txt"}""").RootElement.Clone(),
+                Timestamp: DateTimeOffset.UnixEpoch,
+                Origin: WardResolutionOrigin.Ungated),
+            ArcanumJsonContext.Default.IntelligenceEvent));
+
+        using JsonDocument resolved = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(
+            new IntelligenceEvent(
+                IntelligenceEventType.WardResolved,
+                "write_file",
+                WardId: "ward-1",
+                ToolName: "write_file",
+                Allowed: false,
+                Reason: "refused",
+                Origin: WardResolutionOrigin.Human),
+            ArcanumJsonContext.Default.IntelligenceEvent));
+
+        Assert.Equal("ward-1", warded.RootElement.GetProperty("wardId").GetString());
+
+        Assert.Equal("write_file", warded.RootElement.GetProperty("toolName").GetString());
+
+        Assert.Equal("a.txt", warded.RootElement.GetProperty("arguments").GetProperty("path").GetString());
+
+        Assert.Equal("ungated", warded.RootElement.GetProperty("origin").GetString());
+
+        Assert.True(warded.RootElement.TryGetProperty("timestamp", out _));
+
+        Assert.False(resolved.RootElement.GetProperty("allowed").GetBoolean());
+
+        Assert.Equal("refused", resolved.RootElement.GetProperty("reason").GetString());
+
+        string[] names = [.. warded.RootElement.EnumerateObject().Select(static property => property.Name)];
+
+        Assert.DoesNotContain(names, static name => name.StartsWith("ward", StringComparison.Ordinal) && name != "wardId");
+    }
+
     [Fact]
     public void Ungated_ward_origin_round_trips_through_stream_and_api_contracts()
     {
@@ -514,9 +562,9 @@ public sealed class ArcanumJsonContextCompletenessTests
             IntelligenceEventType.WardResolved,
             "read_file_chunk",
             WardId: "ward-ungated",
-            WardToolName: "read_file_chunk",
-            WardAllowed: true,
-            WardOrigin: origin);
+            ToolName: "read_file_chunk",
+            Allowed: true,
+            Origin: origin);
 
         byte[] streamBytes = JsonSerializer.SerializeToUtf8Bytes(
             streamFrame,
@@ -528,7 +576,7 @@ public sealed class ArcanumJsonContextCompletenessTests
 
         Assert.NotNull(roundTrippedFrame);
 
-        Assert.Equal(origin, roundTrippedFrame.WardOrigin);
+        Assert.Equal(origin, roundTrippedFrame.Origin);
 
         Assert.Contains(
             "\"origin\":\"ungated\"",

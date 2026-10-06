@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -32,13 +31,14 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
         {
             // Expected control flow, not a fault. The framework's parameter binder and Kestrel's body
             // reader raise this for a request the client got wrong -- a body that is not valid JSON for
-            // the parameter, a body past the ceiling or under the minimum data rate on a route that reads it
-            // itself -- and carry the status they chose. AddArcanumApiServices turns
-            // RouteHandlerOptions.ThrowOnBadRequest on in every environment so a bound route reaches this
-            // arm for malformed JSON and an unbindable parameter instead of the binder's own empty 400
-            // outside Development, and instead of the logged 500 below inside it. A bound route's too-large,
-            // too-slow and unaccepted-Content-Type faults never get here: the generated reader records them
-            // as a status and returns, and the status-code hook in UseArcanumExceptionHandler answers them.
+            // the parameter, a missing Content-Type the generated reader checks, a body past the ceiling or
+            // under the minimum data rate on a route that reads it itself -- and carry the status they chose.
+            // AddArcanumApiServices turns RouteHandlerOptions.ThrowOnBadRequest on in every environment so a
+            // bound route reaches this arm instead of the binder's own empty status outside Development, and
+            // instead of the logged 500 below inside it. A bound route's too-large and too-slow faults never
+            // get here (the generated reader records them as a status and returns), and neither does a
+            // Content-Type the route does not declare it accepts (routing refuses that with a bare 415 before
+            // the route is chosen); the status-code hook in UseArcanumExceptionHandler answers those.
             //
             // The line is Debug and carries only the status: the client's mistake is not the operator's
             // error, and the exception text is the framework's wording, which is not echoed back.
@@ -54,66 +54,6 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
                 : ApiRequestJson.UnreadableBodyResult(httpContext, badRequest);
 
             await bodyFault.ExecuteAsync(httpContext).ConfigureAwait(false);
-
-            return true;
-        }
-
-        // A route that binds its body as a handler parameter reads it in framework-generated code, so unlike
-        // the routes that read it themselves it has no pre-check to answer a charset the read cannot decode:
-        // ReadFromJsonAsync raises InvalidOperationException for it. That exception is the caller's only
-        // when the request itself is JSON-typed with an unreadable charset and carries a body to read; an
-        // InvalidOperationException on any other request is a fault of the server's own and falls through to
-        // the logged 500 below.
-        if (exception is InvalidOperationException
-            && ApiRequestJson.CarriesABody(httpContext.Request)
-            && ApiRequestJson.IsJsonWithAnUnreadableCharset(httpContext.Request))
-        {
-            logger.LogDebug("A request was refused because its JSON Content-Type names a charset that cannot be decoded.");
-
-            if (httpContext.Response.HasStarted)
-            {
-                return false;
-            }
-
-            IResult unreadableCharset = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase)
-                ? OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(StatusCodes.Status415UnsupportedMediaType)
-                : ApiRequestJson.UnsupportedMediaTypeResult(httpContext);
-
-            await unreadableCharset.ExecuteAsync(httpContext).ConfigureAwait(false);
-
-            return true;
-        }
-
-        // Only a JsonException from a body the caller sent and the route read is the caller's. One raised on
-        // a request with no body, or on a route that never read one, is the server's own: corrupt data it
-        // loaded or a payload it built, which is a fault to log, not a malformed request to explain.
-        if (exception is JsonException && ApiRequestJson.RouteReadARequestBody(httpContext))
-        {
-            if (httpContext.Response.HasStarted)
-            {
-                return false;
-            }
-
-            if (httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
-            {
-                IResult openAiJsonError = OpenAiV1Endpoints.CreateInvalidJsonErrorResult();
-
-                await openAiJsonError.ExecuteAsync(httpContext).ConfigureAwait(false);
-
-                return true;
-            }
-
-            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-
-            httpContext.Response.ContentType = "application/json";
-
-            ApiResponse<bool> invalidBody = ApiResponse<bool>.FromResult(
-                Result<bool>.Failure(new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.MalformedJsonMessage)),
-                traceId);
-
-            await httpContext.Response
-                .WriteAsJsonAsync(invalidBody, ArcanumJsonContext.Default.ApiResponseBoolean, cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
 
             return true;
         }
@@ -171,6 +111,40 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
 
             return true;
         }
+
+        // A route that binds its body as a handler parameter reads it in framework-generated code, so unlike
+        // the routes that read it themselves it has no pre-check to answer a charset the read cannot decode:
+        // ReadFromJsonAsync raises InvalidOperationException for it. That exception is the caller's only
+        // when the request itself is JSON-typed with an unreadable charset and carries a body to read; an
+        // InvalidOperationException on any other request is a fault of the server's own and falls through to
+        // the logged 500 below. The reader raises the exact type, so a type derived from it -- the
+        // maintenance and labelled-artifact refusals above are two -- is never mistaken for it, whatever
+        // Content-Type the request that hit it happened to carry.
+        if (exception.GetType() == typeof(InvalidOperationException)
+            && ApiRequestJson.CarriesABody(httpContext.Request)
+            && ApiRequestJson.IsJsonWithAnUnreadableCharset(httpContext.Request))
+        {
+            logger.LogDebug("A request was refused because its JSON Content-Type names a charset that cannot be decoded.");
+
+            if (httpContext.Response.HasStarted)
+            {
+                return false;
+            }
+
+            IResult unreadableCharset = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase)
+                ? OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(StatusCodes.Status415UnsupportedMediaType)
+                : ApiRequestJson.UnsupportedMediaTypeResult(httpContext);
+
+            await unreadableCharset.ExecuteAsync(httpContext).ConfigureAwait(false);
+
+            return true;
+        }
+
+        // No JsonException that reaches this handler is the request body's. Every reader of a request body
+        // answers its own: ApiRequestJson.ReadAsync and the routes that read by hand catch it at the read,
+        // and the generated binder wraps it in the BadHttpRequestException answered above. One that gets
+        // here was raised after the body was read, or on a request that never had one -- corrupt data the
+        // server loaded or a payload it built -- and is a fault to log, not a malformed request to explain.
 
         logger.LogError(
             exception,

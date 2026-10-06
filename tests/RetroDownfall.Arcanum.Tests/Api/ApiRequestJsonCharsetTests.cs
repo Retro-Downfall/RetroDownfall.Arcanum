@@ -43,6 +43,10 @@ public sealed class ApiRequestJsonCharsetTests(ArcanumWebApplicationFactory fact
     [InlineData("/api/lore", "\"bogus\"")]
     [InlineData("/api/intelligence/ping-stream", "windows-1252")]
     [InlineData("/api/intelligence/ping-stream", "bogus")]
+    // Reads its body with JsonDocument.ParseAsync, which decodes nothing itself, so it used to read past
+    // any charset as UTF-8 instead of refusing one it cannot decode.
+    [InlineData("/api/config/validate", "windows-1252")]
+    [InlineData("/api/config/validate", "bogus")]
     // A route that binds its body as a handler parameter: the framework's generated reader does the same
     // charset resolution, so it has the same hole.
     [InlineData("/api/prompts", "windows-1252")]
@@ -122,6 +126,31 @@ public sealed class ApiRequestJsonCharsetTests(ArcanumWebApplicationFactory fact
         Assert.NotEqual(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
 
         Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+    }
+
+    /// <summary>
+    /// The configuration routes read the raw JSON tree themselves, so a body sent in a charset .NET can
+    /// decode is decoded as that charset, the way <c>ReadFromJsonAsync</c> decodes it on every other route,
+    /// rather than read as UTF-8 regardless.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_config_body_sent_as_utf_16_is_read_as_utf_16()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using ByteArrayContent content = new(Encoding.Unicode.GetBytes("{}"));
+
+        Assert.True(content.Headers.TryAddWithoutValidation("Content-Type", "application/json; charset=utf-16"));
+
+        using HttpResponseMessage response = await client.PostAsync("/api/config/validate", content);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("Request body must be a valid ArcanumSettings JSON object.", json, StringComparison.Ordinal);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     /// <summary>

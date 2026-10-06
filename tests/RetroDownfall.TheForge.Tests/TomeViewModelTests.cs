@@ -16,13 +16,11 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class TomeViewModelTests
 {
-
     private static readonly Guid SessionId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
 
     [Fact]
     public async Task LoadAsync_PopulatesSessionAndTitle()
     {
-
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession("Forge chat"),
@@ -37,13 +35,11 @@ public class TomeViewModelTests
         Assert.Equal("Forge chat", viewModel.Title);
 
         Assert.Equal(DocumentKind.Session, viewModel.Kind);
-
     }
 
     [Fact]
     public async Task SendAsync_AppendsUserMessageAndStreamsTokenDataIntoAssistantBubble()
     {
-
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession(),
@@ -79,7 +75,6 @@ public class TomeViewModelTests
         Assert.Equal("assistant", viewModel.Messages[1].Role);
 
         Assert.Equal("Hello", viewModel.Messages[1].Content);
-
     }
 
     [Fact]
@@ -213,7 +208,6 @@ public class TomeViewModelTests
     [Fact]
     public async Task SendAsync_HandlesToolCallResultErrorStatusWardedAndResult()
     {
-
         Guid wardId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
 
         FakeTomeDataSource dataSource = new()
@@ -241,12 +235,12 @@ public class TomeViewModelTests
                     IntelligenceEventType.Warded,
                     "awaiting approval",
                     WardId: wardId.ToString(),
-                    WardToolName: "hammer"),
+                    ToolName: "hammer"),
                 new IntelligenceEvent(
                     IntelligenceEventType.WardResolved,
                     "allowed",
                     WardId: wardId.ToString(),
-                    WardAllowed: true),
+                    Allowed: true),
                 new IntelligenceEvent(
                     IntelligenceEventType.Result,
                     "complete",
@@ -287,7 +281,6 @@ public class TomeViewModelTests
         Assert.Equal(30, viewModel.LastUsage.TotalTokens);
 
         Assert.True(viewModel.ManaPercent > 0);
-
     }
 
     // Issue #53: a server-side auto-approved ward is already resolved, so The Forge must report it
@@ -295,7 +288,6 @@ public class TomeViewModelTests
     [Fact]
     public async Task SendAsync_AutoApprovedWard_ReportsWithoutRaisingPendingApproval()
     {
-
         Guid wardId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
 
         FakeTomeDataSource dataSource = new()
@@ -307,14 +299,14 @@ public class TomeViewModelTests
                     IntelligenceEventType.Warded,
                     "apply_patch",
                     WardId: wardId.ToString(),
-                    WardToolName: "apply_patch",
-                    WardOrigin: WardResolutionOrigin.AutoApproved),
+                    ToolName: "apply_patch",
+                    Origin: WardResolutionOrigin.AutoApproved),
                 new IntelligenceEvent(
                     IntelligenceEventType.WardResolved,
                     "allowed",
                     WardId: wardId.ToString(),
-                    WardAllowed: true,
-                    WardOrigin: WardResolutionOrigin.AutoApproved),
+                    Allowed: true,
+                    Origin: WardResolutionOrigin.AutoApproved),
                 new IntelligenceEvent(IntelligenceEventType.Result, "complete"),
             ],
         };
@@ -330,13 +322,11 @@ public class TomeViewModelTests
         Assert.False(viewModel.WardPending);
 
         Assert.Null(viewModel.PendingWardId);
-
     }
 
     [Fact]
     public async Task SendAsync_SessionBoundUpdatesSessionIdAndIgnoresConversationBound()
     {
-
         Guid boundId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
 
         FakeTomeDataSource dataSource = new()
@@ -362,13 +352,11 @@ public class TomeViewModelTests
         Assert.Single(viewModel.Messages);
 
         Assert.Equal("user", viewModel.Messages[0].Role);
-
     }
 
     [Fact]
     public async Task SendAsync_ErrorLogsToFoundryFloorAndAddsInlineError()
     {
-
         FoundryFloorViewModel foundryFloor = new(new NullLogService());
 
         FakeTomeDataSource dataSource = new()
@@ -391,13 +379,11 @@ public class TomeViewModelTests
         Assert.Contains(viewModel.Messages, static message => message.Role == "error" && message.Content.Contains("the anvil cracked"));
 
         Assert.Contains(foundryFloor.Lines, static line => line.Contains("the anvil cracked"));
-
     }
 
     [Fact]
     public async Task AppendManualEntryAsync_PostsEntryAndAddsMessage()
     {
-
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession(),
@@ -421,13 +407,11 @@ public class TomeViewModelTests
         Assert.Contains(viewModel.Messages, static message => message.Role == "system" && message.Content == "operator note");
 
         Assert.Equal(string.Empty, viewModel.ManualEntryText);
-
     }
 
     [Fact]
     public async Task ForkAsync_OpensForkedSessionDocument()
     {
-
         Guid forkedId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
 
         NavigationService navigation = new();
@@ -456,13 +440,11 @@ public class TomeViewModelTests
         await viewModel.ForkAsync(CancellationToken.None);
 
         Assert.Equal((DocumentKind.Session, forkedId.ToString("D")), opened);
-
     }
 
     [Fact]
     public async Task ExportAsync_StoresMarkdownContent()
     {
-
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession(),
@@ -478,13 +460,11 @@ public class TomeViewModelTests
         Assert.Equal("# transcript", viewModel.LastExportContent);
 
         Assert.Equal("markdown", dataSource.LastExportFormat);
-
     }
 
     [Fact]
     public async Task LoadAsync_StartsSessionObservationAndAppendsLiveEntries()
     {
-
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession(),
@@ -503,13 +483,11 @@ public class TomeViewModelTests
         Assert.Contains(viewModel.Messages, static message => message.Role == "assistant" && message.Content == "from the stream");
 
         Assert.True(dataSource.ObserveStarted);
-
     }
 
     [Fact]
     public void Dispose_CanBeCalledTwiceSafely()
     {
-
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession(),
@@ -520,13 +498,11 @@ public class TomeViewModelTests
         viewModel.Dispose();
 
         viewModel.Dispose();
-
     }
 
     [Fact]
     public async Task RefreshEntries_PopulatesIdentity()
     {
-
         Guid entryId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
         FakeTomeDataSource dataSource = new()
@@ -549,13 +525,11 @@ public class TomeViewModelTests
         Assert.Equal("user", viewModel.Messages[0].Role);
 
         Assert.Equal("hello", viewModel.Messages[0].Content);
-
     }
 
     [Fact]
     public async Task PinEntry_CallsDataSource()
     {
-
         Guid entryId = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
         FakeTomeDataSource dataSource = new()
@@ -581,13 +555,11 @@ public class TomeViewModelTests
         Assert.True(message.IsPinned);
 
         Assert.Equal("Entry pinned.", viewModel.MemoryStatusText);
-
     }
 
     [Fact]
     public async Task PinEntry_MemoryManagementDisabled_SetsFlag()
     {
-
         Guid entryId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
         FakeTomeDataSource dataSource = new()
@@ -613,13 +585,11 @@ public class TomeViewModelTests
         Assert.True(viewModel.MemoryManagementDisabled);
 
         Assert.Contains(DisabledSettingPaths.AllowMemoryManagement, viewModel.MemoryManagementDisabledMessage);
-
     }
 
     [Fact]
     public async Task CopyDisabledPaths_CopiesJoinedPaths()
     {
-
         FakeClipboardService clipboard = new();
 
         TomeViewModel viewModel = CreateViewModel(new FakeTomeDataSource(), clipboard: clipboard);
@@ -631,13 +601,11 @@ public class TomeViewModelTests
         Assert.Equal(
             DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.SessionMemoryManagement),
             clipboard.LastText);
-
     }
 
     [Fact]
     public async Task PinEntry_TooManyPinned_SurfacesMessage()
     {
-
         Guid entryId = Guid.Parse("44444444-4444-4444-4444-444444444444");
 
         FakeTomeDataSource dataSource = new()
@@ -665,13 +633,11 @@ public class TomeViewModelTests
         Assert.Equal("pin limit reached", viewModel.MemoryStatusText);
 
         Assert.Contains(foundryFloor.Lines, static line => line.Contains("pin limit reached"));
-
     }
 
     [Fact]
     public async Task Compact_CallsDataSource()
     {
-
         CompactResult compact = new(100, 40, 3);
 
         FakeTomeDataSource dataSource = new()
@@ -693,13 +659,11 @@ public class TomeViewModelTests
         // The refresh that follows a compaction writes the entry count, and the compaction result has to
         // survive it: the count of entries removed is the one thing the operator asked to see.
         Assert.Equal("Compacted: 3 entries removed (100 → 40 tokens). 0 entries.", viewModel.MemoryStatusText);
-
     }
 
     [Fact]
     public async Task Compact_WhenTheCompactionStopped_ShowsTheStopBesideTheCount()
     {
-
         CompactResult compact = new(100, 70, 2, "Covenant.StaleSnapshot");
 
         FakeTomeDataSource dataSource = new()
@@ -719,7 +683,6 @@ public class TomeViewModelTests
         Assert.Equal(
             "Compacted: 2 entries removed (100 → 70 tokens). Stopped early on Covenant.StaleSnapshot; the rest of the selected entries were left unchanged. 0 entries.",
             viewModel.MemoryStatusText);
-
     }
 
     // AppendEntryIfNew backfill during SSE observation is not unit-tested here — the path is private
@@ -728,7 +691,6 @@ public class TomeViewModelTests
     [Fact]
     public async Task DeleteEntry_WhenDeclined_KeepsTheEntry()
     {
-
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession(),
@@ -750,13 +712,11 @@ public class TomeViewModelTests
         Assert.Single(confirmation.Prompts);
 
         Assert.Contains(message, viewModel.Messages);
-
     }
 
     [Fact]
     public async Task DeleteEntry_WhenConfirmed_RemovesTheEntry()
     {
-
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession(),
@@ -777,13 +737,11 @@ public class TomeViewModelTests
         Assert.Equal(entryId, dataSource.LastDeletedEntryId);
 
         Assert.DoesNotContain(message, viewModel.Messages);
-
     }
 
     [Fact]
     public async Task RefreshEntriesAsync_ManyServerEntries_TrimsMessagesToTheDocumentedCap()
     {
-
         EntryDto[] entries = Enumerable.Range(0, 5_000)
             .Select(i => new EntryDto(
                 Guid.NewGuid(),
@@ -811,7 +769,6 @@ public class TomeViewModelTests
         Assert.Equal("entry-4999", viewModel.Messages[^1].Content);
 
         Assert.Equal($"entry-{5_000 - TomeViewModel.MaxMessages}", viewModel.Messages[0].Content);
-
     }
 
     private static TomeViewModel CreateViewModel(
@@ -842,7 +799,6 @@ public class TomeViewModelTests
 
     private sealed class FakeTomeDataSource : ITomeDataSource
     {
-
         public SessionDetailDto? Session { get; init; }
 
         public IReadOnlyList<IntelligenceEvent> PingEvents { get; init; } = [];
@@ -882,27 +838,21 @@ public class TomeViewModelTests
 
         public async IAsyncEnumerable<IntelligenceEvent> PingStreamAsync(PingRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
-
             LastPingRequest = request;
 
             foreach (IntelligenceEvent ev in PingEvents)
             {
-
                 yield return ev;
 
                 await Task.Yield();
-
             }
-
         }
 
         public Task<EntryDto?> AppendEntryAsync(Guid id, AppendEntryRequest request, CancellationToken cancellationToken)
         {
-
             LastAppendRequest = request;
 
             return Task.FromResult(AppendedEntry);
-
         }
 
         public Task<SessionDetailDto?> ForkAsync(Guid id, ForkSessionRequest? request, CancellationToken cancellationToken) =>
@@ -910,45 +860,35 @@ public class TomeViewModelTests
 
         public Task<SessionExportResult?> ExportAsync(Guid id, string format, CancellationToken cancellationToken)
         {
-
             LastExportFormat = format;
 
             return Task.FromResult(ExportResult);
-
         }
 
         public async IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid id, Guid? since, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
-
             ObserveStarted = true;
 
             foreach (EntryDto entry in LiveEntries)
             {
-
                 yield return entry;
 
                 await Task.Yield();
-
             }
-
         }
 
         public Task<DataSourceResult<EntryDto[]>> GetEntriesAsync(Guid id, int? offset, int? limit, CancellationToken cancellationToken)
         {
-
             GetEntriesCallCount++;
 
             return Task.FromResult(new DataSourceResult<EntryDto[]>(Entries.ToArray(), true, null, null));
-
         }
 
         public Task<DataSourceResult<bool>> PinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken)
         {
-
             LastPinEntryId = entryId;
 
             return Task.FromResult(PinResult);
-
         }
 
         public Task<DataSourceResult<bool>> UnpinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
@@ -958,22 +898,16 @@ public class TomeViewModelTests
 
         public Task<DataSourceResult<bool>> DeleteEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken)
         {
-
             LastDeletedEntryId = entryId;
 
             return Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
-
         }
 
         public Task<DataSourceResult<CompactResult>> CompactAsync(Guid id, CancellationToken cancellationToken)
         {
-
             CompactCalled = true;
 
             return Task.FromResult(CompactResult);
-
         }
-
     }
-
 }

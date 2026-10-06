@@ -1,9 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -396,29 +394,23 @@ public sealed class ApiWireContractTests
 
     /// <summary>
     /// A route that lets the framework bind its body answers a malformed or mistyped body with the
-    /// documented envelope in every environment.
+    /// documented envelope.
     /// </summary>
     /// <remarks>
-    /// The framework's own default is to answer a binder failure with an empty 400/415 outside Development
-    /// and to throw into the exception handler inside it, so the two environments are driven separately:
-    /// the first used to leave the envelope off the wire, the second used to report the client's mistake
-    /// as a logged 500 <c>Hub.Unhandled</c>.
+    /// The framework's own default answers a binder failure with an empty 400/415 outside Development and
+    /// throws it into the exception handler inside it, where it used to become a logged 500
+    /// <c>Hub.Unhandled</c>. The host pins <c>ThrowOnBadRequest</c> on in every environment, so the answer no
+    /// longer depends on the environment; that pin is asserted by
+    /// <see cref="BoundBodyBinderFailures_AreThrownToTheExceptionHandler_InEveryEnvironment"/>, and this test
+    /// drives the envelope that follows from it. It once ran a second, Development-named leg, which read the
+    /// same pinned option and so proved nothing the first leg did not.
     /// </remarks>
-    [SkippableTheory]
-    [InlineData("Testing")]
-    [InlineData("Development")]
-    public async Task PostPrompts_MalformedJson_And_NonJsonContentType_ReturnEnvelopedErrors(string environment)
+    [SkippableFact]
+    public async Task PostPrompts_MalformedJson_And_NonJsonContentType_ReturnEnvelopedErrors()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await using ArcanumWebApplicationFactory factory = new();
-
-        await using WebApplicationFactory<Program> scoped = factory.WithWebHostBuilder(
-            builder => builder.UseEnvironment(environment));
-
-        using HttpClient client = scoped.CreateClient();
-
-        client.DefaultRequestHeaders.Add(ArcanumApiHeaders.ApiKey, ArcanumWebApplicationFactory.TestApiKey);
+        HttpClient client = _factory.CreateAuthenticatedClient();
 
         using HttpResponseMessage malformed = await client.PostAsync(
             "/api/prompts",

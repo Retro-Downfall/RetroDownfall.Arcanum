@@ -431,8 +431,6 @@ public class WeaveInspectorViewModelTests
             Port: 5000,
             ListenAny: false,
             ArchiveSearchEnabled: true,
-            ContextCompressionEnabled: true,
-            TokenTrackingEnabled: true,
             HttpsEnabled: false,
             HttpsPort: 0,
             HttpsUrl: null,

@@ -1,10 +1,7 @@
 using System.Net;
 using System.Text.Json;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -95,19 +92,15 @@ public sealed class MetaEndpointTests
 
         Assert.NotNull(body?.Data);
 
-        IntelligenceSettings resolved = factory.Services
-            .GetRequiredService<IOptions<ArcanumSettings>>()
-            .Value
-            .ResolveIntelligence();
-
         Assert.Equal(archiveSearch, body.Data.ArchiveSearchEnabled);
 
-        Assert.Equal(resolved.EnableContextCompression, body.Data.ContextCompressionEnabled);
-
-        Assert.Equal(resolved.EnableTokenTracking, body.Data.TokenTrackingEnabled);
-
-        // The retired Lore system had no setting left to report, so the flag that said so, always false, is gone.
+        // Flags no setting can move are not configuration and are not reported as if they were: the retired
+        // Lore system's flag was always false, and context compression and token tracking are code-owned on.
         Assert.DoesNotContain("loreSystemEnabled", json, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("contextCompressionEnabled", json, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("tokenTrackingEnabled", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [SkippableFact]

@@ -13,10 +13,11 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// token it matched but whose Sending it could not settle.
 /// </summary>
 /// <remarks>
-/// A peer treats 404 as terminal and stops retrying, so reporting a ledger fault as 404 told a legitimate
-/// peer to give up on a Sending that was still owed its settlement. The route is anonymous, so the answer
-/// must never differ between an unknown config id and a wrong token; it differs only for a ledger that
-/// cannot answer, which says nothing about whether any id or token was right.
+/// A peer treats 404 as terminal and stops retrying, so reporting a settlement fault as 404 told a
+/// legitimate peer to give up on a Sending that was still owed its settlement. The route is anonymous, so
+/// nothing it answers before the token has matched may differ between config ids: a lookup that fails for
+/// one config id's row and not another's would say which ids exist if it answered 503, so a lookup fault is
+/// the same 404 an unknown id gets. Only a caller that proved the secret learns that the ledger failed.
 /// </remarks>
 public sealed class A2ACallbackEndpointTests
 {
@@ -42,19 +43,39 @@ public sealed class A2ACallbackEndpointTests
         Assert.Equal(string.Empty, body);
     }
 
+    /// <summary>
+    /// Before the token has matched, a lookup fault is answered exactly as an unknown config id is.
+    /// </summary>
     [Fact]
-    public async Task SettleFromLedger_when_the_lookup_throws_returns_503_not_404()
+    public async Task SettleFromLedger_when_the_lookup_throws_is_the_404_an_unknown_config_gets()
     {
         FakeLedger ledger = new(callback: null)
         {
-            FindFault = new InvalidOperationException("ledger unavailable"),
+            FindFault = new InvalidOperationException("one row could not be read"),
         };
 
-        (IResult result, string body) = await SettleAsync(ledger, A2ACallbackToken.Mint());
+        (IResult faulted, string faultedBody) = await SettleAsync(ledger, A2ACallbackToken.Mint());
 
-        Assert.Equal(StatusCodes.Status503ServiceUnavailable, StatusOf(result));
+        (IResult unknown, string unknownBody) = await SettleAsync(new FakeLedger(callback: null), A2ACallbackToken.Mint());
 
-        Assert.Equal(string.Empty, body);
+        Assert.Equal(StatusCodes.Status404NotFound, StatusOf(faulted));
+
+        Assert.Equal(StatusOf(unknown), StatusOf(faulted));
+
+        Assert.Equal(unknownBody, faultedBody);
+
+        Assert.Equal(0, ledger.Settled);
+    }
+
+    [Fact]
+    public async Task SettleFromLedger_lets_a_maintenance_refusal_during_the_lookup_reach_the_exception_handler()
+    {
+        FakeLedger ledger = new(callback: null)
+        {
+            FindFault = new GrimoireMaintenanceUnavailableException(),
+        };
+
+        _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(() => SettleAsync(ledger, A2ACallbackToken.Mint()));
     }
 
     [Fact]

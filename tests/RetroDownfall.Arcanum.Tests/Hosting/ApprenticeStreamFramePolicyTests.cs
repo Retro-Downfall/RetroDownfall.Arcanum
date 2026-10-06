@@ -51,8 +51,8 @@ public sealed class ApprenticeStreamFramePolicyTests
             IntelligenceEventType.WardResolved,
             "write_file",
             WardId: "legacy-ward",
-            WardToolName: "write_file",
-            WardAllowed: false);
+            ToolName: "write_file",
+            Allowed: false);
 
         Assert.False(ApprenticeStreamFramePolicy.IsTerminalToolDenial(frame));
     }

@@ -222,14 +222,6 @@ public sealed class ToolExecutionPipeline(
     internal const string UnregisteredToolMetricLabel = "unregistered";
 
     /// <summary>
-    /// Records <c>arcanum_tool_invocations_total</c>. <paramref name="outcome"/> is one of
-    /// <c>success</c>, <c>denied</c> (Sanctum or another live policy blocked the call), or <c>error</c> (the tool
-    /// invocation itself threw, or the model named a tool that was never registered). The configured
-    /// MCP/local tool set is finite and an unregistered name collapses to
-    /// <see cref="UnregisteredToolMetricLabel"/>, so <paramref name="toolName"/> is a bounded label
-    /// value by construction.
-    /// </summary>
-    /// <summary>
     /// A call that resolved to no registered function never ran, so it is an <c>error</c> rather
     /// than a <c>success</c> even though the pipeline hands the model a synthetic string result.
     /// </summary>
@@ -238,6 +230,14 @@ public sealed class ToolExecutionPipeline(
         : isRegisteredTool ? "success"
         : "error";
 
+    /// <summary>
+    /// Records <c>arcanum_tool_invocations_total</c>. <paramref name="outcome"/> is one of
+    /// <c>success</c>, <c>denied</c> (Sanctum or another live policy blocked the call), or <c>error</c> (the tool
+    /// invocation itself threw, or the model named a tool that was never registered). The configured
+    /// MCP/local tool set is finite and an unregistered name collapses to
+    /// <see cref="UnregisteredToolMetricLabel"/>, so <paramref name="toolName"/> is a bounded label
+    /// value by construction.
+    /// </summary>
     private static void RecordToolInvocationMetric(string toolName, string outcome)
     {
         ArcanumMetrics.ToolInvocationsTotal.Add(
@@ -1321,7 +1321,7 @@ public sealed class ToolExecutionPipeline(
             null,
             null,
             DateTimeOffset.UtcNow,
-            WardOrigin: WardResolutionOrigin.Ungated);
+            Origin: WardResolutionOrigin.Ungated);
 
         await EmitWardEventAsync(recordWardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
 
@@ -1345,7 +1345,7 @@ public sealed class ToolExecutionPipeline(
             recordResolution.Allowed,
             recordResolution.Reason,
             DateTimeOffset.UtcNow,
-            WardOrigin: recordResolution.Origin);
+            Origin: recordResolution.Origin);
 
         await EmitWardEventAsync(recordResolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
     }

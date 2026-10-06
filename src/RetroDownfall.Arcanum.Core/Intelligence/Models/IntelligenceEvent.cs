@@ -5,40 +5,40 @@ using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 
+/// <summary>
+/// One frame of the native inference stream (<c>application/x-ndjson</c>) and of its buffered projections.
+/// </summary>
+/// <remarks>
+/// The wire names are the camelCase of these member names, with no renames (AGENTS.md rule 4), so the
+/// members a Ward frame carries are named for what they are on the wire: <c>ToolName</c> (the tool a
+/// <c>warded</c> or <c>wardResolved</c> frame is about), <c>Arguments</c> (the call's arguments, on
+/// <c>warded</c>), <c>Allowed</c> and <c>Reason</c> (the resolution, on <c>wardResolved</c>) and
+/// <c>Origin</c> (how that resolution was produced).
+/// </remarks>
 public sealed record IntelligenceEvent(
     IntelligenceEventType Type,
     string Message,
     string? Data = null,
     ChatCompletionUsage? Usage = null,
     IntelligenceToolCallEvent? ToolCall = null,
-    [property: JsonPropertyName("wardId")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? WardId = null,
-    [property: JsonPropertyName("toolName")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? WardToolName = null,
-    [property: JsonPropertyName("arguments")]
+    string? ToolName = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    JsonElement? WardArguments = null,
-    [property: JsonPropertyName("allowed")]
+    JsonElement? Arguments = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    bool? WardAllowed = null,
-    [property: JsonPropertyName("reason")]
+    bool? Allowed = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? WardReason = null,
-    [property: JsonPropertyName("timestamp")]
+    string? Reason = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DateTimeOffset? Timestamp = null,
-    [property: JsonPropertyName("finishReason")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? FinishReason = null,
-    [property: JsonPropertyName("reasoning")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     ReasoningContentSegment? Reasoning = null,
-    [property: JsonPropertyName("contextBreakdown")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     ContextTokenBreakdown? ContextBreakdown = null,
-    [property: JsonPropertyName("attachmentRefresh")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     AttachmentRefreshEvent? AttachmentRefresh = null,
     [property: JsonIgnore]
@@ -49,13 +49,10 @@ public sealed record IntelligenceEvent(
     /// use it to describe retained historical outcomes. Every Ward frame is informational; clients
     /// report it and never open an approval prompt.
     /// </summary>
-    [property: JsonPropertyName("origin")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    WardResolutionOrigin? WardOrigin = null)
+    WardResolutionOrigin? Origin = null)
 {
-
     public IReadOnlyList<string> Warnings { get; init; } = [];
-
 }
 
 /// <summary>

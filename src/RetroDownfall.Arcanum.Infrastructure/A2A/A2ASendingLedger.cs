@@ -330,6 +330,9 @@ internal sealed class A2ASendingLedger(
                         },
                         A2ASendingLedgerJsonContext.Default.A2ASendingRecord);
 
+                    // The reference is kept, not cleared: it is how the callback route finds this row, and
+                    // if closing the row below fails, the peer's retried delivery has to find it again to
+                    // finish the settlement. A closed row is never matched, whatever reference it keeps.
                     await store
                         .SaveCheckpointAsync(
                             entry.OperationId,
@@ -337,7 +340,7 @@ internal sealed class A2ASendingLedger(
                             expectedCheckpointVersion: CheckpointVersion,
                             checkpointVersion: CheckpointVersion,
                             payload,
-                            checkpointReference: null,
+                            checkpointReference: current.CheckpointReference,
                             $"Outbound A2A Sending {record.TaskId} settled ({cost.Describe()}).",
                             timeProvider.GetUtcNow(),
                             cancellationToken)

@@ -719,16 +719,16 @@ internal static class CampaignEndpoints
     }
 
     /// <summary>
-    /// The one 400 shape <c>POST /api/campaigns/{id}/import</c> answers with when the bundle itself
-    /// is unusable, so a malformed bundle never reaches the generic unhandled-exception handler.
-    /// </summary>
-    /// <summary>
     /// The largest <c>.arcanum/campaign.json</c> an import will read from disk: the same 16 MiB the import
     /// route accepts as a request body, so a bundle that could be posted can also be read from the
     /// campaign directory, and nothing larger is read into memory.
     /// </summary>
     private const int MaxOnDiskImportBundleBytes = 16 * 1024 * 1024;
 
+    /// <summary>
+    /// The one 400 shape <c>POST /api/campaigns/{id}/import</c> answers with when the bundle itself
+    /// is unusable, so a malformed bundle never reaches the generic unhandled-exception handler.
+    /// </summary>
     private static IResult ImportFailed(string traceId, string message) =>
         Results.BadRequest(
             ApiResponse<CampaignImportResultDto>.FromResult(

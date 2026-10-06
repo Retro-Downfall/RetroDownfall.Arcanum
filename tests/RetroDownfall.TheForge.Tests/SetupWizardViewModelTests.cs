@@ -174,8 +174,6 @@ public class SetupWizardViewModelTests
             false,
             false,
             false,
-            false,
-            false,
             0,
             null,
             null,

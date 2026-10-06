@@ -568,7 +568,17 @@ public static class IdempotencyEndpointFilters
             // NDJSON, or SSE — all guaranteed UTF-8 — so this cannot change behavior for a current
             // caller; it only stops a future non-text route from attaching the filter and getting a
             // silently corrupted replay. An empty body has nothing to corrupt, so it is exempt.
+            //
+            // And never for a response marked protected. The claim keeps the body in a generic cache table,
+            // and a replay is written by a later request that did not re-make the decision the protected
+            // header tuple follows from, so it would go out without them. Rather than store a flag beside the
+            // body and trust every replay path to honour it, the protected body is not stored at all: the
+            // claim is abandoned, a retry with the same key runs again and carries its own headers, and
+            // protected content never rests in the cache table.
+            bool protectedResponse = CovenantRequestFeatures.IsProtectedResponse(httpContext);
+
             bool terminalStreamValid = !neverCache
+                && !protectedResponse
                 && withinCap
                 && IsIdempotencyReplayableStatus(httpContext.Response.StatusCode)
                 && (buffered.Length == 0 || IsReplayableContentType(httpContext.Response.ContentType))

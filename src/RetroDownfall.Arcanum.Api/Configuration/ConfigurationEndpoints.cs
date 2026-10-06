@@ -314,8 +314,10 @@ internal static class ConfigurationEndpoints
         CancellationToken cancellationToken)
     {
         // This helper needs the raw JsonDocument tree for RejectObsoleteJsonKeys, so it cannot route through
-        // ApiRequestJson.ReadAsync — but it still owes callers the same documented 415 media-type gate.
-        if (!httpContext.Request.HasJsonContentType())
+        // ApiRequestJson.ReadAsync — but it still owes callers the same documented 415 gate, charset
+        // included: JsonDocument decodes nothing itself, so a charset it cannot honour is refused here and one
+        // .NET can decode is transcoded to UTF-8 below, rather than either being read as UTF-8 regardless.
+        if (!ApiRequestJson.HasReadableJsonContentType(httpContext.Request))
         {
             return (null, ApiRequestJson.UnsupportedMediaTypeResult(httpContext));
         }
@@ -324,9 +326,11 @@ internal static class ConfigurationEndpoints
 
         JsonDocument document;
 
+        Stream body = ApiRequestJson.OpenUtf8Body(httpContext.Request);
+
         try
         {
-            document = await JsonDocument.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken)
+            document = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (JsonException)
@@ -345,6 +349,14 @@ internal static class ConfigurationEndpoints
             // Sharing the helper's own result keeps the two in step. Other routes read JSON by hand
             // too, and a hand reader that catches only JsonException still has this hole.
             return (null, ApiRequestJson.UnreadableBodyResult(httpContext, failure));
+        }
+        finally
+        {
+            // A transcoding stream is this method's own; the request body under it is the server's.
+            if (!ReferenceEquals(body, httpContext.Request.Body))
+            {
+                await body.DisposeAsync().ConfigureAwait(false);
+            }
         }
 
         using (document)

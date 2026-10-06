@@ -97,6 +97,9 @@ public sealed class MemoryErasureStructuralTests
     internal static readonly (string File, string Reason)[] ReviewedOlderLoggers =
     [
         (
+            "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs",
+            "The restore service. Its two warnings carry an operation id, an exception type name and a reversal diagnostic made of paths and counts under the earlier rule, and it reaches the erasure family only through the key provider it hands the erasure-evidence step, which is scanned."),
+        (
             "src/RetroDownfall.Arcanum.Infrastructure/Data/CovenantErasureCoordinator.cs",
             "The older Covenant erasure kernels for managed files and protected artifacts, which log under the rule that preceded the content-free one."),
         (

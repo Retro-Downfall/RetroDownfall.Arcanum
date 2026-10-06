@@ -76,43 +76,43 @@ public sealed class HostHeaderAllowListTests(ArcanumWebApplicationFactory factor
     }
 
     /// <summary>
-    /// An all-interfaces bind answers every name: a client on the network, or a reverse proxy relaying the
-    /// public name, sends a Host that is not a loopback name, and refusing it would lock out the one
-    /// topology the allow-list exists to leave alone.
+    /// The dev host binds loopback whatever the all-interfaces settings say, so it keeps the loopback
+    /// allow-list under them too: a page that rebinds its name to 127.0.0.1 reaches a dev host exactly as it
+    /// would reach a loopback <c>arcanum serve</c>.
     /// </summary>
     /// <remarks>
-    /// These run the real host, because the framework's own web defaults put the host-filtering middleware
-    /// at the front of the pipeline whatever Arcanum asks of it, and the way to tell whether the list is
-    /// applied is to send a request. The predicate that decides it is pinned separately in
-    /// <see cref="Effectiveness"/>.
+    /// An all-interfaces bind of <c>arcanum serve</c>, which does answer every name, is pinned by
+    /// <see cref="HostHeaderAllowListRegistrationTests"/> through the same registration the host uses. This
+    /// host (the dev host the test factory runs) never binds anything but loopback, so the allow-list is its
+    /// own, whatever <c>Arcanum:Host:ListenAny</c> or <c>ARCANUM_HOST_ANY</c> say.
     /// </remarks>
     [Collection("ProcessEnvironment")]
-    public sealed class AllInterfacesBind : IDisposable
+    public sealed class DevHostUnderTheAllInterfacesOverride : IDisposable
     {
         private readonly string? _originalHostAny = global::System.Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
 
-        public AllInterfacesBind() => global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", "true");
+        public DevHostUnderTheAllInterfacesOverride() => global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", "true");
 
         public void Dispose() => global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", _originalHostAny);
 
         [SkippableTheory]
-        [InlineData("http://192.168.1.10:5001/api/health")]
-        [InlineData("https://arcanum.example.com/api/health")]
-        [InlineData("http://rebound.example.com:5001/api/health")]
-        [InlineData("http://localhost:5001/api/health")]
-        public async Task Any_name_is_answered(string url)
+        [InlineData("http://192.168.1.10:5001/api/health", true)]
+        [InlineData("https://arcanum.example.com/api/health", true)]
+        [InlineData("http://rebound.example.com:5001/api/health", true)]
+        [InlineData("http://localhost:5001/api/health", false)]
+        public async Task Only_the_loopback_names_are_answered(string url, bool refused)
         {
             Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-            await using ArcanumWebApplicationFactory allInterfaces = new();
+            await using ArcanumWebApplicationFactory devHost = new();
 
-            // The startup validator refuses an all-interfaces bind that is not HTTPS-only. It checks the
+            // The startup validator refuses an all-interfaces setting that is not HTTPS-only. It checks the
             // certificate path names a file and loads nothing, and the test server binds no socket.
-            string certificatePath = Path.Combine(allInterfaces.TempHome, "all-interfaces-test.pfx");
+            string certificatePath = Path.Combine(devHost.TempHome, "all-interfaces-test.pfx");
 
             await File.WriteAllBytesAsync(certificatePath, []);
 
-            allInterfaces.SettingsOverride = settings => settings with
+            devHost.SettingsOverride = settings => settings with
             {
                 Host = settings.Host with
                 {
@@ -120,11 +120,11 @@ public sealed class HostHeaderAllowListTests(ArcanumWebApplicationFactory factor
                 },
             };
 
-            using HttpClient client = allInterfaces.CreateAuthenticatedClient();
+            using HttpClient client = devHost.CreateAuthenticatedClient();
 
             using HttpResponseMessage response = await client.GetAsync(url);
 
-            Assert.NotEqual(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal(refused, response.StatusCode == HttpStatusCode.BadRequest);
         }
     }
 
@@ -199,6 +199,45 @@ public sealed class HostHeaderAllowListTests(ArcanumWebApplicationFactory factor
             using HttpResponseMessage sibling = await client.PostAsync($"http://api.arcanum.example.com{CallbackRoute}", content: null);
 
             Assert.Equal(HttpStatusCode.BadRequest, sibling.StatusCode);
+        }
+
+        /// <summary>
+        /// The configured name is admitted for the callback route alone: it is where the operator told peers
+        /// to post, not a name the rest of the API is reached by, so a same-host proxy or tunnel relaying it
+        /// reaches nothing else.
+        /// </summary>
+        /// <remarks>
+        /// An internationalised name is configured in its Unicode spelling but arrives in its ASCII (IDNA)
+        /// one, the spelling a client puts in the <c>Host</c> header and the one the host-filtering middleware
+        /// converts its list to before comparing; it is confined in that spelling too, not only in the one it
+        /// was configured in.
+        /// </remarks>
+        [SkippableTheory]
+        [InlineData("https://arcanum.example.com:8443", "arcanum.example.com")]
+        [InlineData("https://bücher.example:8443", "xn--bcher-kva.example")]
+        public async Task The_host_of_the_callback_base_url_reaches_no_route_but_the_callback(string callbackBaseUrl, string addressedHost)
+        {
+            Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+            await using ArcanumWebApplicationFactory configured = CreateFactory(pushNotifications: true, callbackBaseUrl);
+
+            using HttpClient client = configured.CreateAuthenticatedClient();
+
+            using HttpResponseMessage health = await client.GetAsync($"http://{addressedHost}/api/health");
+
+            Assert.Equal(HttpStatusCode.BadRequest, health.StatusCode);
+
+            using HttpResponseMessage meta = await client.GetAsync($"http://{addressedHost}:8443/api/meta");
+
+            Assert.Equal(HttpStatusCode.BadRequest, meta.StatusCode);
+
+            using HttpResponseMessage callback = await client.PostAsync($"http://{addressedHost}{CallbackRoute}", content: null);
+
+            Assert.Equal(HttpStatusCode.NotFound, callback.StatusCode);
+
+            using HttpResponseMessage loopback = await client.GetAsync("http://localhost/api/health");
+
+            Assert.NotEqual(HttpStatusCode.BadRequest, loopback.StatusCode);
         }
 
         /// <summary>

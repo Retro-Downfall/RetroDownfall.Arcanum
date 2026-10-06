@@ -120,8 +120,6 @@ internal static class HealthEndpoints
                 Port: ArcanumSettingClamps.HostPort(settings.Value.Host.Port),
                 ListenAny: listenAny,
                 ArchiveSearchEnabled: intelligence.EnableArchiveSearch,
-                ContextCompressionEnabled: intelligence.EnableContextCompression,
-                TokenTrackingEnabled: intelligence.EnableTokenTracking,
                 HttpsEnabled: httpsEnabled,
                 HttpsPort: httpsPort,
                 HttpsUrl: httpsUrl,
