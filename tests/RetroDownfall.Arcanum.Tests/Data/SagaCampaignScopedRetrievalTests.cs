@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -511,6 +512,96 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         // checked first, no longer refuses it.
         Assert.Equal(SagaMemoryWriteOutcome.AlreadyPresent, rewritten);
     }
+
+    /// <summary>
+    /// Extraction commits each conclusion before it moves the page cursor, so a page retried after an
+    /// in-process fault meets the conclusions its earlier attempt already stored. The insert chokepoint answers
+    /// those with <c>AlreadyPresent</c> instead of storing a second row.
+    /// </summary>
+    [Fact]
+    public async Task A_conclusion_its_session_already_holds_in_that_scope_is_already_present_and_not_stored_twice()
+    {
+        Guid session = await SeedCampaignSessionAsync(CampaignA);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, await InsertOutcomeAsync(session, "a repeated conclusion"));
+
+        Assert.Equal(SagaMemoryWriteOutcome.AlreadyPresent, await InsertOutcomeAsync(session, "a repeated conclusion"));
+
+        Assert.Equal(1, await _store!.CountBySessionAsync(session, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// The identity is the owning Session, not only the scope: the same conclusion reached in another Session of
+    /// the Campaign is that Session's own memory, so resetting one Session never removes the other's.
+    /// </summary>
+    [Fact]
+    public async Task The_same_conclusion_reached_in_another_session_of_the_campaign_is_its_own_memory()
+    {
+        Guid first = await SeedCampaignSessionAsync(CampaignA);
+
+        Guid second = await SeedSessionAsync(CampaignA, bindingKindCode: 2);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, await InsertOutcomeAsync(first, "a shared conclusion"));
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, await InsertOutcomeAsync(second, "a shared conclusion"));
+
+        Assert.Equal(1, await _store!.CountBySessionAsync(first, CancellationToken.None));
+
+        Assert.Equal(1, await _store.CountBySessionAsync(second, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// A restatement of a conclusion the Session already holds is the same memory even when an attachment backs
+    /// the restatement. It records no attachment provenance on the stored ordinary memory: that would make
+    /// removing the attachment take a conclusion the conversation reached on its own.
+    /// </summary>
+    [Fact]
+    public async Task An_attachment_backed_restatement_of_a_stored_conclusion_is_already_present_and_adds_no_provenance()
+    {
+        Guid session = await SeedCampaignSessionAsync(CampaignA);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, await InsertOutcomeAsync(session, "a restated conclusion"));
+
+        SagaMemoryWriteOutcome restated = await _store!.InsertAsync(
+            Guid.NewGuid().ToString(),
+            "a restated conclusion",
+            DateTimeOffset.UtcNow,
+            session,
+            tags: null,
+            source: "attachment-extraction",
+            Vec(1f),
+            new AttachmentMemoryProvenance(
+                session,
+                Guid.NewGuid(),
+                "architecture",
+                1,
+                "attachment-hash",
+                DateTimeOffset.UtcNow,
+                "SessionAttachmentRag",
+                AttachmentSourceAvailability.Available),
+            CancellationToken.None);
+
+        Assert.Equal(SagaMemoryWriteOutcome.AlreadyPresent, restated);
+
+        Assert.Equal(1, await _store.CountBySessionAsync(session, CancellationToken.None));
+
+        await using DbCommand provenance = Connection.CreateCommand();
+
+        provenance.CommandText = "SELECT COUNT(*) FROM saga_memory_attachment_provenance;";
+
+        Assert.Equal(0L, Convert.ToInt64(await provenance.ExecuteScalarAsync(CancellationToken.None), CultureInfo.InvariantCulture));
+    }
+
+    private async Task<SagaMemoryWriteOutcome> InsertOutcomeAsync(Guid sessionId, string content) =>
+        await _store!.InsertAsync(
+            Guid.NewGuid().ToString(),
+            content,
+            DateTimeOffset.UtcNow,
+            sessionId,
+            tags: null,
+            source: "test",
+            Vec(1f),
+            CancellationToken.None);
 
     private sealed record SeededCorpus(
         string GlobalId,

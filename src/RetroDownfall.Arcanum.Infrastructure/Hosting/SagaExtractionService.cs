@@ -43,6 +43,18 @@ internal sealed record SagaExtractionPreparedCandidate(
     Guid? AttachmentId,
     float[]? Embedding);
 
+/// <summary>
+/// A paid extraction response whose every eligible conclusion then failed to embed, with the exact page it
+/// answers: the durable cursor it was read from, the interval it reviewed, and the last Entry and count it saw.
+/// </summary>
+internal sealed record SagaExtractionUnembeddedPage(
+    long CursorEntrySequence,
+    long AfterEntrySequenceExclusive,
+    long ThroughEntrySequence,
+    long LastEntrySequence,
+    int EntryCount,
+    IReadOnlyList<SagaExtractionCandidate> Candidates);
+
 internal enum SagaExtractionOutcome : byte
 {
     Completed = 1,
@@ -66,10 +78,12 @@ internal sealed record SagaExtractionAttemptResult(
 /// <param name="FailedThroughEntrySequence">The interval whose consecutive failures this ladder counts.</param>
 /// <param name="Attempt">Every consecutive failure of that interval; it sets the backoff rung.</param>
 /// <param name="CountedFailures">
-/// The failures that count toward abandonment: a schema-invalid extraction response, or an unexpected
-/// exception after a usable one. A provider outage is never counted, whether the extraction provider fails
-/// or every eligible conclusion then fails to embed, so it keeps the interval on the capped ladder until the
-/// provider recovers.
+/// The failures that count toward abandonment: a schema-invalid extraction response, an unexpected exception
+/// after a usable one, or a deterministic verdict the inference pipeline reached about the page (a guardrail
+/// rejection, a structured-output rejection, or a repetition, no-progress, turn-limit, invalid-tool-call, or
+/// context-budget stop). A provider outage is never counted, whether the extraction provider fails, its model
+/// cannot be resolved, or every eligible conclusion then fails to embed, so it keeps the interval on the capped
+/// ladder until the provider recovers.
 /// </param>
 internal sealed record SagaExtractionRetryState(
     long FailedThroughEntrySequence,
@@ -82,10 +96,11 @@ internal sealed class SagaExtractionAttemptContext
 
     /// <summary>
     /// Whether the active page's failure counts toward abandonment. It is set once the extraction model
-    /// answers, so a schema-invalid response or an unexpected exception after a usable one counts. It is
-    /// cleared again when every eligible conclusion then fails to embed: that is the embedding provider's
-    /// outage, not a deterministic model-shape failure, and it re-buys at most one extraction response per
-    /// ladder rung rather than ending the ladder.
+    /// answers, so a schema-invalid response or an unexpected exception after a usable one counts, and when
+    /// the pipeline answers with a deterministic verdict about the page. It is cleared again when every
+    /// eligible conclusion then fails to embed: that is the embedding provider's outage, not a deterministic
+    /// model-shape failure, and the page's retry reuses the response it already paid for rather than ending
+    /// the ladder.
     /// </summary>
     internal bool FailureCountsTowardAbandonment { get; set; }
 }
@@ -167,6 +182,15 @@ public sealed class SagaExtractionService : BackgroundService
     /// cursor passes it. A restart loses it, and only a policy that is lost leaves a gap to deny-all.
     /// </summary>
     private readonly ConcurrentDictionary<Guid, ImmutableArray<SagaExtractionRequest>> _abandonedSegments = new();
+
+    /// <summary>
+    /// The paid extraction response of a page whose every eligible conclusion then failed to embed, one page
+    /// per session at most. The response is still valid, so the page's retry reuses it instead of buying
+    /// another: an embedding outage, or an embedding model that refuses every input, costs no extraction
+    /// response however long it lasts. The entry names the exact page it answers, is taken when that page is
+    /// retried, and is dropped when the session's pending work is abandoned, dropped, or the service stops.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, SagaExtractionUnembeddedPage> _unembeddedPages = new();
 
     private readonly object _pendingPolicySync = new();
 
@@ -656,6 +680,8 @@ public sealed class SagaExtractionService : BackgroundService
 
                         _ = _retryAttempts.TryRemove(sessionId, out _);
 
+                        _ = _unembeddedPages.TryRemove(sessionId, out _);
+
                         lock (_pendingPolicySync)
                         {
                             _ = _abandonedSegments.TryRemove(sessionId, out _);
@@ -697,6 +723,8 @@ public sealed class SagaExtractionService : BackgroundService
                     _ = _pending.TryRemove(sessionId, out _);
 
                     _ = _retryAttempts.TryRemove(sessionId, out _);
+
+                    _ = _unembeddedPages.TryRemove(sessionId, out _);
 
                     return;
                 }
@@ -746,9 +774,11 @@ public sealed class SagaExtractionService : BackgroundService
                             attemptContext.FailureCountsTowardAbandonment) is not { } delay)
                     {
                         _logger.LogError(
-                            "Saga extraction for session {SessionId} reached {Attempts} counted failures (a schema-invalid extraction response, or an unexpected error after a usable one); abandoning the failed interval. The exact cursor is unchanged and the interval keeps its own provenance policy, so a later successful turn reviews it again under that policy.",
+                            "Saga extraction for session {SessionId} reached {Attempts} counted failures (a schema-invalid extraction response, an unexpected error after a usable one, or a deterministic verdict about the page); abandoning the failed interval. The exact cursor is unchanged and the interval keeps its own provenance policy, so a later successful turn reviews it again under that policy.",
                             sessionId,
                             MaximumCountedFailuresBeforeAbandonment);
+
+                        _ = _unembeddedPages.TryRemove(sessionId, out _);
 
                         SagaExtractionPendingWork? remainder;
 
@@ -829,6 +859,8 @@ public sealed class SagaExtractionService : BackgroundService
                 _retryAttempts.Clear();
 
                 _abandonedSegments.Clear();
+
+                _unembeddedPages.Clear();
             }
         }
     }
@@ -863,6 +895,8 @@ public sealed class SagaExtractionService : BackgroundService
         _ = _pending.TryRemove(sessionId, out _);
 
         _ = _retryAttempts.TryRemove(sessionId, out _);
+
+        _ = _unembeddedPages.TryRemove(sessionId, out _);
     }
 
     /// <summary>
@@ -1190,80 +1224,102 @@ public sealed class SagaExtractionService : BackgroundService
 
             await using IGrimoireExternalEffectGroup effect = effectGroup!;
 
-            string prompt = BuildExtractionPrompt(newEntries, pageRequest);
+            long pageCursor = cursor?.EntrySequence ?? 0L;
 
-            string? model = ResolveExtractionModel(embeddings.Saga.ExtractionModel, settings);
+            IReadOnlyList<SagaExtractionCandidate>? memories = TakeUnembeddedPage(
+                sessionId,
+                pageCursor,
+                pageRequest,
+                newEntries);
 
-            List<CoreChatMessage> statelessMessages =
-            [
-                new CoreChatMessage("system", ExtractionSystemPrompt),
-
-                new CoreChatMessage("user", prompt),
-            ];
-
-            // The Entries being reviewed can carry hostile text (a fetched page, a tool result), and this
-            // call runs unattended, so the model has nothing it could be talked into calling: with web
-            // browsing on, a hub-native read_url would carry the transcript out of the installation.
-            // DisableMcpTools stops only the MCP block of the tool set; DisableAllTools advertises none.
-            PingRequest ping = new(
-                Prompt: string.Empty,
-                Model: model,
-                WorkingDirectory: string.Empty,
-                UnattendedMode: true,
-                DisableMcpTools: true,
-                StatelessMessages: statelessMessages,
-                SkipSpellRouting: true,
-                DisableAllTools: true);
-
-            Result<PromptTurnResult> result;
-
-            try
+            if (memories is not null)
             {
-                result = await intelligence.ExecutePromptAsync(ping, ArcanumInvocationContext.None, cancellationToken).ConfigureAwait(false);
+                // This exact page was answered before and only its embeddings failed. That response is paid
+                // for and still valid, so the retry reuses it rather than buying another; every conclusion is
+                // still authorized and erasure-checked below, against the page's current policy.
+                attemptContext.FailureCountsTowardAbandonment = true;
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            else
             {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Saga extraction LLM call threw for session {SessionId}.", sessionId);
+                string prompt = BuildExtractionPrompt(newEntries, pageRequest);
 
-                return new SagaExtractionAttemptResult(
-                    SagaExtractionOutcome.Retry,
-                    sourceSegment);
-            }
+                string? model = ResolveExtractionModel(embeddings.Saga.ExtractionModel, settings);
 
-            if (result.IsFailure)
-            {
-                // The exact sequence cursor is deliberately not advanced: the background worker automatically
-                // retries from the same starting point.
-                _logger.LogWarning(
-                    "Saga extraction LLM call failed for session {SessionId}: {Code} {Message}",
-                    sessionId,
-                    result.Error.Code,
-                    result.Error.Message);
+                List<CoreChatMessage> statelessMessages =
+                [
+                    new CoreChatMessage("system", ExtractionSystemPrompt),
 
-                return new SagaExtractionAttemptResult(
-                    SagaExtractionOutcome.Retry,
-                    sourceSegment);
-            }
+                    new CoreChatMessage("user", prompt),
+                ];
 
-            // From here a failure re-buys this response on retry, so a schema-invalid response or an
-            // unexpected exception counts toward abandonment. An embedding outage clears it again below.
-            attemptContext.FailureCountsTowardAbandonment = true;
+                // The Entries being reviewed can carry hostile text (a fetched page, a tool result), and this
+                // call runs unattended, so the model has nothing it could be talked into calling: with web
+                // browsing on, a hub-native read_url would carry the transcript out of the installation.
+                // DisableMcpTools stops only the MCP block of the tool set; DisableAllTools advertises none.
+                PingRequest ping = new(
+                    Prompt: string.Empty,
+                    Model: model,
+                    WorkingDirectory: string.Empty,
+                    UnattendedMode: true,
+                    DisableMcpTools: true,
+                    StatelessMessages: statelessMessages,
+                    SkipSpellRouting: true,
+                    DisableAllTools: true);
 
-            IReadOnlyList<SagaExtractionCandidate>? memories = ParseMemories(
-                result.Value.Text,
-                sessionId);
+                Result<PromptTurnResult> result;
 
-            if (memories is null)
-            {
-                // Malformed LLM response: the exact cursor is deliberately not advanced so the
-                // automatic retry reviews the same entries again.
-                return new SagaExtractionAttemptResult(
-                    SagaExtractionOutcome.Retry,
-                    sourceSegment);
+                try
+                {
+                    result = await intelligence.ExecutePromptAsync(ping, ArcanumInvocationContext.None, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Saga extraction LLM call threw for session {SessionId}.", sessionId);
+
+                    return new SagaExtractionAttemptResult(
+                        SagaExtractionOutcome.Retry,
+                        sourceSegment);
+                }
+
+                if (result.IsFailure)
+                {
+                    // The exact sequence cursor is deliberately not advanced: the background worker automatically
+                    // retries from the same starting point. A provider outage stays on the capped ladder; a
+                    // verdict the pipeline reached about this page repeats identically on every retry — and is
+                    // paid for again each time when the model had already answered — so it counts.
+                    attemptContext.FailureCountsTowardAbandonment = IsDeterministicPageVerdict(result.Error.Code);
+
+                    _logger.LogWarning(
+                        "Saga extraction LLM call failed for session {SessionId}: {Code} {Message}",
+                        sessionId,
+                        result.Error.Code,
+                        result.Error.Message);
+
+                    return new SagaExtractionAttemptResult(
+                        SagaExtractionOutcome.Retry,
+                        sourceSegment);
+                }
+
+                // From here a failure re-buys this response on retry, so a schema-invalid response or an
+                // unexpected exception counts toward abandonment. An embedding outage clears it again below.
+                attemptContext.FailureCountsTowardAbandonment = true;
+
+                memories = ParseMemories(
+                    result.Value.Text,
+                    sessionId);
+
+                if (memories is null)
+                {
+                    // Malformed LLM response: the exact cursor is deliberately not advanced so the
+                    // automatic retry reviews the same entries again.
+                    return new SagaExtractionAttemptResult(
+                        SagaExtractionOutcome.Retry,
+                        sourceSegment);
+                }
             }
 
             lock (_pendingPolicySync)
@@ -1318,7 +1374,25 @@ public sealed class SagaExtractionService : BackgroundService
                     continue;
                 }
 
-                Result<Embedding<float>> embedResult = await weave.EmbedAsync(trimmed, cancellationToken).ConfigureAwait(false);
+                Result<Embedding<float>> embedResult;
+
+                try
+                {
+                    embedResult = await weave.EmbedAsync(trimmed, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // An embedding endpoint that stops answering makes the transport give up with a cancellation
+                    // nobody here asked for. That is an embedding outage like a refused connection, so it is this
+                    // conclusion's failed embedding, never a counted failure of the page.
+                    _logger.LogDebug(
+                        ex,
+                        "Saga extraction: an embedding request timed out for session {SessionId}.",
+                        sessionId);
+
+                    embedResult = Result<Embedding<float>>.Failure(
+                        new Error(ErrorCodes.Embeddings.ProviderUnavailable, "The embedding request timed out."));
+                }
 
                 preparedCandidates.Add(
                     new SagaExtractionPreparedCandidate(
@@ -1449,8 +1523,17 @@ public sealed class SagaExtractionService : BackgroundService
                 // always inserted, suppressed, or thrown. The extraction model answered correctly, and
                 // the configuration-only availability check cannot see an embedding endpoint outage, so
                 // this is not counted: the interval stays on the capped ladder under its own policy
-                // until the embedding provider recovers, rather than being abandoned within seconds.
+                // until the embedding provider recovers, rather than being abandoned within seconds. The
+                // paid response is kept for this exact page, so those retries buy no second one.
                 attemptContext.FailureCountsTowardAbandonment = false;
+
+                _unembeddedPages[sessionId] = new SagaExtractionUnembeddedPage(
+                    pageCursor,
+                    pageRequest.AfterEntrySequenceExclusive,
+                    pageRequest.ThroughEntrySequence,
+                    newEntries[^1].Sequence,
+                    newEntries.Count,
+                    memories);
 
                 return new SagaExtractionAttemptResult(
                     SagaExtractionOutcome.Retry,
@@ -1470,6 +1553,8 @@ public sealed class SagaExtractionService : BackgroundService
                 cursor,
                 cancellationToken).ConfigureAwait(false);
 
+            _ = _unembeddedPages.TryRemove(sessionId, out _);
+
             ReleaseAbandonedSegmentsThrough(sessionId, exhaustedThroughSequence);
 
             // Durable forward progress starts a new consecutive-failure ladder for the next page.
@@ -1477,6 +1562,46 @@ public sealed class SagaExtractionService : BackgroundService
             _ = _retryAttempts.TryRemove(sessionId, out _);
         }
     }
+
+    /// <summary>
+    /// Takes the paid response kept for this exact page — the same durable cursor, interval, and Entries — or
+    /// returns null. A response kept for any other page is left alone; it never answers a page it did not read.
+    /// </summary>
+    private IReadOnlyList<SagaExtractionCandidate>? TakeUnembeddedPage(
+        Guid sessionId,
+        long pageCursor,
+        SagaExtractionRequest pageRequest,
+        List<Entry> newEntries)
+    {
+        if (!_unembeddedPages.TryGetValue(sessionId, out SagaExtractionUnembeddedPage? kept)
+            || kept.CursorEntrySequence != pageCursor
+            || kept.AfterEntrySequenceExclusive != pageRequest.AfterEntrySequenceExclusive
+            || kept.ThroughEntrySequence != pageRequest.ThroughEntrySequence
+            || kept.LastEntrySequence != newEntries[^1].Sequence
+            || kept.EntryCount != newEntries.Count
+            || !_unembeddedPages.TryRemove(KeyValuePair.Create(sessionId, kept)))
+        {
+            return null;
+        }
+
+        return kept.Candidates;
+    }
+
+    /// <summary>
+    /// Whether an extraction failure is a verdict the inference pipeline reached about this page rather than a
+    /// provider outage: a guardrail or structured-output rejection, or a repetition, no-progress, turn-limit,
+    /// invalid-tool-call, or context-budget stop. Each repeats identically on every retry, and those reached
+    /// after the model answered are paid for again each time, so they count toward abandonment. A provider
+    /// failure (<c>Hub.Error</c>) or an unresolvable model (<c>Hub.Model</c>) is an outage and never counts.
+    /// </summary>
+    private static bool IsDeterministicPageVerdict(string code) =>
+        code.StartsWith("Guardrails.", StringComparison.Ordinal)
+        || code.StartsWith("StructuredOutput.", StringComparison.Ordinal)
+        || code is ErrorCodes.Hub.RepetitionDetected
+            or ErrorCodes.Hub.NoProgressDetected
+            or ErrorCodes.Hub.TurnLimitExceeded
+            or ErrorCodes.Hub.ProviderToolCallInvalid
+            or ErrorCodes.Hub.ContextBudgetExceeded;
 
     private SagaExtractionRequest RefreshPagePolicy(
         Guid sessionId,
